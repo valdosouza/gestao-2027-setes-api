@@ -100,16 +100,16 @@ export async function runMigrationsForSchema(schemaName: string): Promise<void> 
   }
 }
 
-export async function runMigrationsForAllTenants(): Promise<void> {
-  const [tenants] = await pool.query<any[]>(
-    'SELECT schema_name FROM setes_central.tenants WHERE active = TRUE'
+export async function runMigrationsForAllInstitutions(): Promise<void> {
+  const [institutions] = await pool.query<any[]>(
+    "SELECT schema_name FROM setes_central.tb_institution WHERE active = 'S' AND deleted = 'N'"
   )
 
-  logger.info(`Iniciando migrations para ${tenants.length} tenant(s)`)
+  logger.info(`Iniciando migrations para ${institutions.length} institution(s)`)
 
-  for (const tenant of tenants) {
-    await runMigrationsForSchema(tenant.schema_name)
+  for (const institution of institutions) {
+    await runMigrationsForSchema(institution.schema_name)
   }
 
-  logger.info('Migrations finalizadas para todos os tenants')
+  logger.info('Migrations finalizadas para todas as institutions')
 }

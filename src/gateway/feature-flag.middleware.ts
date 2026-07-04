@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { isModuleEnabled } from '@feature-flags/flag.service'
+import { isSuper } from '@shared/auth/roles'
 import logger from '@shared/logger/logger'
 
 export function featureFlagMiddleware(req: Request, res: Response, next: NextFunction) {
@@ -8,15 +9,15 @@ export function featureFlagMiddleware(req: Request, res: Response, next: NextFun
 
   if (!moduleKey) return next()
 
-  // Setes admin passa direto
-  if (req.tenant?.role === 'setes_admin') return next()
+  // Superusuário da Setes passa direto (decisão 14)
+  if (isSuper(req.institution)) return next()
 
-  const tenantId = req.tenant!.tenantId
+  const institutionId = req.institution!.institutionId
 
-  isModuleEnabled(tenantId, moduleKey)
+  isModuleEnabled(institutionId, moduleKey)
     .then(enabled => {
       if (!enabled) {
-        logger.warn('Módulo bloqueado', { tenantId, moduleKey })
+        logger.warn('Módulo bloqueado', { institutionId, moduleKey })
         res.status(403).json({ error: `Módulo "${moduleKey}" não habilitado para este cliente` })
         return
       }

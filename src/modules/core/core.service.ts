@@ -1,7 +1,7 @@
-import { getTenantInfo } from './core.repository'
+import { getInstitutionInfo } from './core.repository'
 
-export async function getTenantData(schemaName: string) {
-  const tenant = await getTenantInfo(schemaName)
-  if (!tenant) throw new Error('Tenant não encontrado')
-  return tenant
+export async function getInstitutionData(schemaName: string) {
+  const institution = await getInstitutionInfo(schemaName)
+  if (!institution) throw new Error('Institution não encontrada')
+  return institution
 }

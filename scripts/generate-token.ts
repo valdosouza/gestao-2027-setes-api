@@ -2,24 +2,27 @@ import jwt from 'jsonwebtoken'
 
 const secret = 'sucessoem2027!'
 
+// Fase 2: institutionId (int) no lugar de tenantId (string) — decisão 16/18.
+// TTL 24h, sem refresh token — decisão 19.
 const tokenAlpha = jwt.sign(
-  { tenantId: 'tenant-001', userId: 'user-001', role: 'client_user', schemaName: 'setes_alpha' },
+  { institutionId: 2, userId: 2, role: 'user', schemaName: 'setes_alpha' },
   secret,
   { expiresIn: '24h' }
 )
 
 const tokenBeta = jwt.sign(
-  { tenantId: 'tenant-002', userId: 'user-002', role: 'client_user', schemaName: 'setes_beta' },
+  { institutionId: 3, userId: 3, role: 'user', schemaName: 'setes_beta' },
   secret,
   { expiresIn: '24h' }
 )
 
+// 'super' só é reconhecido na institution 1 (Setes) — decisão 14
 const tokenSetes = jwt.sign(
-  { tenantId: 'setes', userId: 'admin-001', role: 'setes_admin', schemaName: 'setes_central' },
+  { institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' },
   secret,
   { expiresIn: '24h' }
 )
 
 console.log('Token Alpha (ERP habilitado):\n', tokenAlpha)
 console.log('\nToken Beta (ERP bloqueado):\n', tokenBeta)
-console.log('\nToken Setes Admin:\n', tokenSetes)
+console.log('\nToken Setes Super:\n', tokenSetes)

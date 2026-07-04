@@ -2,15 +2,15 @@
  * @swagger
  * /api/core/info:
  *   get:
- *     summary: Obter Informações do Tenant
- *     description: Retorna informações do tenant autenticado (via JWT)
+ *     summary: Obter Informações da Institution
+ *     description: Retorna informações da institution autenticado (via JWT)
  *     tags:
  *       - Core
  *     security:
  *       - BearerAuth: []
  *     responses:
  *       200:
- *         description: Informações do tenant
+ *         description: Informações da institution
  *         content:
  *           application/json:
  *             schema:
@@ -22,7 +22,7 @@
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  *       403:
- *         description: Token não contém dados de tenant
+ *         description: Token não contém dados de institution
  *         content:
  *           application/json:
  *             schema:
@@ -56,9 +56,9 @@
  *                 module:
  *                   type: string
  *                   example: "erp"
- *                 tenantId:
+ *                 institutionId:
  *                   type: string
- *                   example: "tenant-001"
+ *                   example: 2
  *                 message:
  *                   type: string
  *                   example: "Módulo ERP ativo"
@@ -69,7 +69,7 @@
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  *       403:
- *         description: Módulo não habilitado para este tenant
+ *         description: Módulo não habilitado para esta institution
  *         content:
  *           application/json:
  *             schema:
@@ -81,17 +81,17 @@
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  *
- * /api/admin/tenants:
+ * /api/admin/institutions:
  *   get:
- *     summary: Listar Todos os Tenants
- *     description: Lista todos os tenants registrados (requer role setes_admin)
+ *     summary: Listar Todas as Institutions
+ *     description: Lista todos as institutions registrados (requer role 'super' na institution 1)
  *     tags:
  *       - Admin
  *     security:
  *       - BearerAuth: []
  *     responses:
  *       200:
- *         description: Lista de tenants
+ *         description: Lista de institutions
  *         content:
  *           application/json:
  *             schema:
@@ -120,11 +120,11 @@
  *       403:
  *         description: Acesso restrito à equipe Setes
  *       500:
- *         description: Erro ao listar tenants
+ *         description: Erro ao listar institutions
  *
  *   post:
- *     summary: Criar Novo Tenant
- *     description: Cria um novo tenant (requer role setes_admin)
+ *     summary: Criar Nova Institution
+ *     description: Cria um nova institution (requer role 'super' na institution 1)
  *     tags:
  *       - Admin
  *     security:
@@ -147,7 +147,7 @@
  *                 example: "schema_xyz"
  *     responses:
  *       201:
- *         description: Tenant criado com sucesso
+ *         description: Institution criada com sucesso
  *         content:
  *           application/json:
  *             schema:
@@ -163,7 +163,7 @@
  *       403:
  *         description: Acesso restrito à equipe Setes
  *       500:
- *         description: Erro ao criar tenant
+ *         description: Erro ao criar institution
  */
 
 // Este arquivo contém apenas documentação Swagger dos endpoints

@@ -7,6 +7,7 @@ import { authMiddleware }        from '@gateway/auth.middleware'
 import { featureFlagMiddleware } from '@gateway/feature-flag.middleware'
 import { rateLimitMiddleware }   from '@gateway/rate-limit.middleware'
 import apiRouter                 from '@gateway/router'
+import authRoutes                from '@modules/auth/auth.routes'
 import logger                    from '@shared/logger/logger'
 import { swaggerSpec }           from '@shared/swagger/swagger-config'
 
@@ -39,6 +40,9 @@ app.get('/docs.json', (_, res) => {
  *               $ref: '#/components/schemas/HealthResponse'
  */
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }))
+
+// Login unificado multi-institution (público, rate limit por IP)
+app.use('/auth', rateLimitMiddleware, authRoutes)
 
 // Auth JWT em todas as rotas /api
 app.use('/api', authMiddleware)

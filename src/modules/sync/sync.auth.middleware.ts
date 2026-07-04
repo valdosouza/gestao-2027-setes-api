@@ -4,7 +4,7 @@ import logger from '@shared/logger/logger'
 
 export interface SyncClient {
   establishmentCode: string
-  tenantId:          string
+  institutionId:     number
   schemaName:        string
 }
 
@@ -25,10 +25,14 @@ async function resolveApiKey(apiKey: string): Promise<SyncClient | null> {
   const cached = keyCache.get(apiKey)
   if (cached && cached.expiresAt > now) return cached.client
 
+  // Fase 2: tb_sync_api_key indexada por tb_institution_id;
+  // schema_name vem de tb_institution (fonte única)
   const [rows] = await pool.query<any[]>(
-    `SELECT establishment_code, tenant_id, schema_name
-     FROM setes_central.sync_api_keys
-     WHERE api_key = ? AND active = TRUE`,
+    `SELECT k.establishment_code, k.tb_institution_id, i.schema_name
+     FROM setes_central.tb_sync_api_key k
+       INNER JOIN setes_central.tb_institution i ON (i.id = k.tb_institution_id)
+     WHERE k.api_key = ? AND k.active = 'S' AND k.deleted = 'N'
+       AND i.active = 'S' AND i.deleted = 'N'`,
     [apiKey]
   )
 
@@ -36,7 +40,7 @@ async function resolveApiKey(apiKey: string): Promise<SyncClient | null> {
 
   const client: SyncClient = {
     establishmentCode: rows[0].establishment_code,
-    tenantId:          rows[0].tenant_id,
+    institutionId:     Number(rows[0].tb_institution_id),
     schemaName:        rows[0].schema_name,
   }
 

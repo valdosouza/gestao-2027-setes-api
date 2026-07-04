@@ -2,38 +2,38 @@ import { isModuleEnabled } from '../feature-flags/flag.service'
 
 // Mock do repositório para não depender do banco nos testes unitários
 jest.mock('../feature-flags/flag.repository', () => ({
-  getFlagsForTenant: jest.fn(async (tenantId: string) => {
-    if (tenantId === 'tenant-com-erp') {
+  getFlagsForInstitution: jest.fn(async (institutionId: number) => {
+    if (institutionId === 2) {
       return [
-        { tenantId: 'tenant-com-erp', moduleKey: 'core', enabled: true },
-        { tenantId: 'tenant-com-erp', moduleKey: 'erp',  enabled: true },
+        { institutionId: 2, moduleKey: 'core', enabled: true },
+        { institutionId: 2, moduleKey: 'erp',  enabled: true },
       ]
     }
     return [
-      { tenantId: 'tenant-sem-erp', moduleKey: 'core', enabled: true },
-      { tenantId: 'tenant-sem-erp', moduleKey: 'erp',  enabled: false },
+      { institutionId: 3, moduleKey: 'core', enabled: true },
+      { institutionId: 3, moduleKey: 'erp',  enabled: false },
     ]
   }),
 }))
 
 describe('flag.service', () => {
-  it('setes admin tem acesso a qualquer módulo', async () => {
-    const result = await isModuleEnabled('setes', 'erp')
+  it('institution da Setes (id 1) tem acesso a qualquer módulo', async () => {
+    const result = await isModuleEnabled(1, 'erp')
     expect(result).toBe(true)
   })
 
-  it('tenant com erp habilitado retorna true', async () => {
-    const result = await isModuleEnabled('tenant-com-erp', 'erp')
+  it('institution com erp habilitado retorna true', async () => {
+    const result = await isModuleEnabled(2, 'erp')
     expect(result).toBe(true)
   })
 
-  it('tenant sem erp habilitado retorna false', async () => {
-    const result = await isModuleEnabled('tenant-sem-erp', 'erp')
+  it('institution sem erp habilitado retorna false', async () => {
+    const result = await isModuleEnabled(3, 'erp')
     expect(result).toBe(false)
   })
 
-  it('módulo core está habilitado para ambos', async () => {
-    expect(await isModuleEnabled('tenant-com-erp', 'core')).toBe(true)
-    expect(await isModuleEnabled('tenant-sem-erp', 'core')).toBe(true)
+  it('módulo core está habilitado para ambas', async () => {
+    expect(await isModuleEnabled(2, 'core')).toBe(true)
+    expect(await isModuleEnabled(3, 'core')).toBe(true)
   })
 })
