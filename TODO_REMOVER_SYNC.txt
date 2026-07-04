@@ -1,0 +1,16 @@
+IMPORTANTE: REMOVER PASTA SYNC
+
+As importações de sync foram removidas de app.ts, mas a pasta ainda existe em:
+src/modules/sync/
+
+Esta pasta contém os 30 endpoints que foram movidos para setes-sync.
+
+Para completar a limpeza, delete manualmente:
+- src/modules/sync/
+
+Você pode fazer isso via:
+1. Windows Explorer (selecionar pasta e Delete)
+2. Git: git rm -r src/modules/sync/
+3. Terminal: rm -rf src/modules/sync/
+
+A partir de agora, setes-api está desacoplada de sync.

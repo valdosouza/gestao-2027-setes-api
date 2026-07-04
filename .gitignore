@@ -1,0 +1,76 @@
+# Dependências
+node_modules/
+package-lock.json
+yarn.lock
+npm-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Variáveis de ambiente (dados sensíveis)
+.env
+.env.local
+.env.*.local
+.env.production.local
+
+# Arquivos de compilação
+dist/
+build/
+*.js.map
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+log.txt
+
+# IDE e Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.iml
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# Testes
+coverage/
+.nyc_output/
+.mocha_output/
+*.lcov
+
+# Sistema operacional
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+desktop.ini
+
+# Ferramentas
+.turbo/
+.cache/
+.vscode-test/
+out/
+
+# Bancos de dados locais
+*.db
+*.sqlite
+*.sqlite3
+
+# Configurações de node
+.node_repl_history
+.npm
+.eslintcache
+.stylelintcache
+
+# Compilação TypeScript
+*.tsc
