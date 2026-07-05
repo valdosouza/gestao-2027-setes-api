@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "tsx watch --require tsconfig-paths/register src/server.ts",
+    "db:bootstrap": "tsx --require tsconfig-paths/register scripts/bootstrap-db.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "jest --runInBand --forceExit"

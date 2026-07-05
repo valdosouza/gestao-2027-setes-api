@@ -1,5 +1,9 @@
 import { Router, Request, Response } from 'express'
-import { onboardInstitution } from './admin.service'
+import { z } from 'zod'
+import {
+  onboardInstitution,
+  getInstitutionInterfaces, updateInstitutionInterfaces, updateFeatureFlag,
+} from './admin.service'
 import { isSuper } from '@shared/auth/roles'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
@@ -52,6 +56,112 @@ router.get('/institutions', async (_req: Request, res: Response) => {
     res.json({ ok: true, data: rows })
   } catch (err) {
     res.status(500).json({ error: 'Erro ao listar institutions' })
+  }
+})
+
+// ---------------------------------------------------------------------
+// setes-app Fase 1 — licenciamento de interfaces (decisões 17, 18, 23).
+// O Super informa o institutionId ALVO; o schema é resolvido na central.
+// ---------------------------------------------------------------------
+
+function parseInstitutionId(req: Request, res: Response): number | null {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'institutionId inválido' })
+    return null
+  }
+  return id
+}
+
+/**
+ * @swagger
+ * /api/admin/institutions/{id}/interfaces:
+ *   get:
+ *     summary: Catálogo de interfaces + situação do contrato do cliente alvo
+ *     tags: [Admin]
+ */
+router.get('/institutions/:id/interfaces', async (req: Request, res: Response) => {
+  const institutionId = parseInstitutionId(req, res)
+  if (institutionId === null) return
+  try {
+    const data = await getInstitutionInterfaces(institutionId)
+    res.json({ ok: true, data })
+  } catch (err) {
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message })
+      return
+    }
+    logger.error('Erro ao listar interfaces do cliente', { err })
+    res.status(500).json({ error: 'Erro interno' })
+  }
+})
+
+const interfacesSchema = z.object({
+  interfaceIds: z.array(z.number().int().positive()),
+})
+
+/**
+ * @swagger
+ * /api/admin/institutions/{id}/interfaces:
+ *   put:
+ *     summary: Sincroniza o contrato comercial (concede a lista, revoga as demais)
+ *     tags: [Admin]
+ */
+router.put('/institutions/:id/interfaces', async (req: Request, res: Response) => {
+  const institutionId = parseInstitutionId(req, res)
+  if (institutionId === null) return
+
+  const parsed = interfacesSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Body inválido: esperado { interfaceIds: number[] }' })
+    return
+  }
+  try {
+    await updateInstitutionInterfaces(institutionId, parsed.data.interfaceIds)
+    logger.info('Contrato de interfaces atualizado', { institutionId, total: parsed.data.interfaceIds.length })
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message })
+      return
+    }
+    logger.error('Erro ao atualizar interfaces do cliente', { err })
+    res.status(500).json({ error: 'Erro interno' })
+  }
+})
+
+const flagSchema = z.object({
+  moduleKey: z.string().min(1).max(100).regex(/^[a-z0-9_-]+$/i),
+  enabled:   z.boolean(),
+})
+
+/**
+ * @swagger
+ * /api/admin/institutions/{id}/feature-flags:
+ *   put:
+ *     summary: Gate técnico de módulo da API (mantido coerente com o contrato — decisão 17)
+ *     tags: [Admin]
+ */
+router.put('/institutions/:id/feature-flags', async (req: Request, res: Response) => {
+  const institutionId = parseInstitutionId(req, res)
+  if (institutionId === null) return
+
+  const parsed = flagSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Body inválido: esperado { moduleKey: string, enabled: boolean }' })
+    return
+  }
+  try {
+    await updateFeatureFlag(institutionId, parsed.data.moduleKey, parsed.data.enabled)
+    logger.info('Feature flag atualizada', { institutionId, ...parsed.data })
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message })
+      return
+    }
+    logger.error('Erro ao atualizar feature flag', { err })
+    res.status(500).json({ error: 'Erro interno' })
   }
 })
 
