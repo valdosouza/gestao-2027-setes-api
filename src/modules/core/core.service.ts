@@ -1,7 +1,7 @@
 import fs   from 'fs'
 import path from 'path'
 import {
-  getInstitutionInfo,
+  getInstitutionInfo, getUserName,
   getPreferences, upsertPreference,
   getTheme, upsertTheme,
   getModuleInterfaces, getUngroupedInterfaces,
@@ -16,6 +16,29 @@ export async function getInstitutionData(schemaName: string) {
   const institution = await getInstitutionInfo(schemaName)
   if (!institution) throw new Error('Institution não encontrada')
   return institution
+}
+
+// Identificação do usuário logado (UserBadge do setes-app)
+export interface SessionInfo {
+  userId:          number
+  name:            string
+  role:            string
+  institutionId:   number
+  institutionName: string | null
+}
+
+export async function getSessionInfo(payload: InstitutionPayload): Promise<SessionInfo> {
+  const [userName, institution] = await Promise.all([
+    getUserName(payload.userId),
+    getInstitutionInfo(payload.schemaName),
+  ])
+  return {
+    userId:          payload.userId,
+    name:            userName ?? `Usuário ${payload.userId}`,
+    role:            payload.role,
+    institutionId:   payload.institutionId,
+    institutionName: institution?.name ?? null,
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -99,6 +122,7 @@ export async function setInstitutionTheme(institutionId: number, input: ThemeInp
 export interface MenuInterface {
   id:           number
   description:  string | null
+  i18nKey:      string | null // decisão 26: app traduz 'menu.interfaces.<key>' com fallback na description
   buttonAction: string | null
   imgIndex:     number | null
   privileges:   string[]
@@ -137,8 +161,9 @@ export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[
     modules.get(key)!.interfaces.push({
       id:           row.interfaceId,
       description:  row.interfaceDescription,
-      buttonAction: row.buttonAction,
-      imgIndex:     row.imgIndex,
+      i18nKey:      row.i18nKey ?? null,
+      buttonAction: row.buttonAction ?? null,
+      imgIndex:     row.imgIndex ?? null,
       privileges:   privMap.get(row.interfaceId) ?? [],
     })
   }

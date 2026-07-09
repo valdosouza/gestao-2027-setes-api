@@ -42,6 +42,11 @@ async function main() {
     // 05 — tb_sync_api_key (re-executável)
     await runFile(conn, '05_sync_api_key.sql')
 
+    // Ajustes incrementais da central (idempotentes): colunas adicionadas ao
+    // sql/01 após a base já existir — o CREATE IF NOT EXISTS não altera tabelas.
+    await ensureColumn(conn, 'tb_interface', 'i18n_key',
+      "ALTER TABLE setes_central.tb_interface ADD COLUMN i18n_key varchar(100) DEFAULT NULL AFTER group_default") // decisão 26 setes-app
+
     const [dbs] = await conn.query<any[]>(
       "SELECT COUNT(*) AS tabelas FROM information_schema.tables WHERE table_schema = 'setes_central'"
     )
@@ -50,6 +55,20 @@ async function main() {
   } finally {
     await conn.end()
   }
+}
+
+async function ensureColumn(conn: mysql.Connection, table: string, column: string, alterSql: string) {
+  const [rows] = await conn.query<any[]>(
+    `SELECT COUNT(*) AS existe FROM information_schema.columns
+     WHERE table_schema = 'setes_central' AND table_name = ? AND column_name = ?`,
+    [table, column]
+  )
+  if (Number(rows[0].existe) > 0) {
+    console.log(`[bootstrap] coluna ${table}.${column} já existe — OK`)
+    return
+  }
+  await conn.query(alterSql)
+  console.log(`[bootstrap] coluna ${table}.${column} ADICIONADA`)
 }
 
 async function runFile(conn: mysql.Connection, file: string) {

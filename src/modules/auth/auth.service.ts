@@ -1,9 +1,14 @@
-import { createHash } from 'crypto'
+import { createHash, randomInt } from 'crypto'
 import jwt from 'jsonwebtoken'
-import { findUserByEmail, getInstitutionsForUser, UserInstitution } from './auth.repository'
+import {
+  findUserByEmail, getInstitutionsForUser, UserInstitution,
+  setActivationKey, getActivationInfo, updatePassword,
+} from './auth.repository'
 import { InstitutionPayload } from '@shared/types/express'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
 import { HttpError } from '@shared/errors/http-error'
+import { sendMail, isMailerConfigured } from '@shared/mailer/mailer'
+import logger from '@shared/logger/logger'
 
 const FINAL_TOKEN_TTL     = '24h'                 // decisão 19: TTL 24h, sem refresh
 const SELECTION_TOKEN_TTL = '5m'
@@ -94,4 +99,72 @@ async function issueForInstitution(userId: number, institutionId: number): Promi
   const link = institutions.find(i => i.institutionId === institutionId)
   if (!link) throw new HttpError(403, 'Usuário sem vínculo ativo com esta institution')
   return signFinalToken(userId, link)
+}
+
+// ---------------------------------------------------------------------
+// Recuperação e alteração de senha (fluxo do weberpsetes)
+// ---------------------------------------------------------------------
+
+const RECOVERY_CODE_TTL_MINUTES = 15
+
+// Passo 1: gera código de 6 dígitos, grava em activation_key e envia por
+// email (SMTP via .env; sem SMTP → código no LOG para dev).
+// Resposta é SEMPRE genérica (não revela se o email existe).
+export async function recoveryPassword(email: string): Promise<void> {
+  const user = await findUserByEmail(email)
+  if (!user || user.active !== 'S') return // silencioso: sem enumeração de usuários
+
+  const code = String(randomInt(100000, 1000000)) // 6 dígitos
+  await setActivationKey(user.id, code)
+
+  const changeUrl = process.env.APP_CHANGE_PASSWORD_URL ?? 'http://localhost:5050/#/change-password'
+  try {
+    await sendMail({
+      to: email,
+      subject: 'Setes — código de recuperação de senha',
+      text: `Seu código de recuperação é ${code} (válido por 15 minutos). Acesse ${changeUrl} para definir a nova senha.`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto">
+          <h2 style="color:#1B3A5F">Recuperação de senha</h2>
+          <p>Use o código abaixo para definir sua nova senha no Setes ERP.
+             Ele é válido por <strong>15 minutos</strong>.</p>
+          <p style="font-size:32px;font-weight:bold;letter-spacing:8px;
+                    color:#2E6DA4;text-align:center">${code}</p>
+          <p style="text-align:center">
+            <a href="${changeUrl}"
+               style="background:#3E9B4F;color:#fff;padding:12px 24px;
+                      border-radius:24px;text-decoration:none;display:inline-block">
+              Definir nova senha</a>
+          </p>
+          <p style="color:#8793B2;font-size:12px">Se você não solicitou esta
+             recuperação, ignore este email — sua senha permanece a mesma.</p>
+        </div>`,
+    })
+  } catch (err) {
+    logger.error('Falha no envio do email de recuperação', { email, err })
+    // segue: o código está gravado; em dev sai no log abaixo
+  }
+
+  if (!isMailerConfigured()) {
+    logger.info('Código de recuperação de senha (modo dev, SMTP ausente)', { email, code })
+  }
+}
+
+// Passo 2: valida email + código (janela de 15 min) e troca a senha.
+// MD5 aplicado AQUI no backend (decisão 2) — o app envia texto puro por HTTPS.
+export async function changePassword(email: string, code: string, newPassword: string): Promise<void> {
+  if (newPassword.length < 5) throw new HttpError(400, 'A nova senha deve ter pelo menos 5 caracteres')
+
+  const user = await findUserByEmail(email)
+  if (!user) throw new HttpError(401, 'Código inválido ou expirado')
+
+  const info = await getActivationInfo(user.id)
+  if (!info || !info.activationKey || info.activationKey !== code) {
+    throw new HttpError(401, 'Código inválido ou expirado')
+  }
+  if (info.ageMinutes > RECOVERY_CODE_TTL_MINUTES) {
+    throw new HttpError(401, 'Código inválido ou expirado')
+  }
+
+  await updatePassword(user.id, md5(newPassword))
 }

@@ -16,6 +16,18 @@ export async function getInstitutionInfo(schemaName: string) {
   }
 }
 
+// Nome de exibição do usuário logado (tb_user herda PK de tb_entity — decisão 1 Fase 2)
+export async function getUserName(userId: number): Promise<string | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT e.nick_trade AS nickTrade, e.name_company AS nameCompany
+     FROM setes_central.tb_entity e
+     WHERE e.id = ? AND e.deleted = 'N'`,
+    [userId]
+  )
+  if (!rows.length) return null
+  return rows[0].nickTrade || rows[0].nameCompany || null
+}
+
 // ---------------------------------------------------------------------
 // Preferências do usuário — setes_central.tb_user_has_preference
 // (setes-app Fase 1, decisão 14)
@@ -104,6 +116,7 @@ export interface MenuInterfaceRow {
   moduleIcon:           number | null
   interfaceId:          number
   interfaceDescription: string | null
+  i18nKey:              string | null  // decisão 26: chave de tradução; app faz fallback para description
   buttonAction:         string | null
   imgIndex:             number | null
 }
@@ -124,7 +137,8 @@ export async function getModuleInterfaces(
             m.description   AS moduleDescription,
             m.image_icon    AS moduleIcon,
             i.id            AS interfaceId,
-            i.description   AS interfaceDescription
+            i.description   AS interfaceDescription,
+            i.i18n_key      AS i18nKey
      FROM \`${s}\`.tb_module m
      INNER JOIN \`${s}\`.tb_module_has_interface mhi
        ON (mhi.tb_module_id = m.id AND mhi.active = 'S' AND mhi.deleted = 'N')
@@ -156,7 +170,8 @@ export async function getUngroupedInterfaces(
             i.group_default AS moduleDescription,
             NULL            AS moduleIcon,
             i.id            AS interfaceId,
-            i.description   AS interfaceDescription
+            i.description   AS interfaceDescription,
+            i.i18n_key      AS i18nKey
      FROM \`${s}\`.tb_institution_has_interface ihi
      INNER JOIN setes_central.tb_interface i
        ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')

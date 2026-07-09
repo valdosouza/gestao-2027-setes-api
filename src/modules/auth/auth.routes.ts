@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { login, selectInstitution, switchInstitution } from './auth.service'
+import { login, selectInstitution, switchInstitution, recoveryPassword, changePassword } from './auth.service'
 import { authMiddleware } from '@gateway/auth.middleware'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
@@ -52,6 +52,36 @@ router.post('/select-institution', async (req: Request, res: Response) => {
     res.json({ ok: true, token })
   } catch (err) {
     fail(res, err, 'select-institution')
+  }
+})
+
+// POST /auth/recovery-password — público; resposta sempre genérica
+router.post('/recovery-password', async (req: Request, res: Response) => {
+  const { email } = req.body ?? {}
+  if (!email) {
+    res.status(400).json({ error: 'O campo "email" é obrigatório' })
+    return
+  }
+  try {
+    await recoveryPassword(String(email))
+    res.json({ ok: true, message: 'Se o email existir, um código de recuperação foi enviado' })
+  } catch (err) {
+    fail(res, err, 'recovery-password')
+  }
+})
+
+// POST /auth/change-password — público (email + código enviado por email)
+router.post('/change-password', async (req: Request, res: Response) => {
+  const { email, code, newPassword } = req.body ?? {}
+  if (!email || !code || !newPassword) {
+    res.status(400).json({ error: 'Os campos "email", "code" e "newPassword" são obrigatórios' })
+    return
+  }
+  try {
+    await changePassword(String(email), String(code), String(newPassword))
+    res.json({ ok: true })
+  } catch (err) {
+    fail(res, err, 'change-password')
   }
 })
 

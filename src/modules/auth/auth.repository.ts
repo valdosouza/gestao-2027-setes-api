@@ -49,3 +49,41 @@ export async function getInstitutionsForUser(userId: number): Promise<UserInstit
     profile:       r.profile,
   }))
 }
+
+// ---------------------------------------------------------------------
+// Recuperação/alteração de senha (fluxo do weberpsetes):
+// código em tb_user.activation_key + janela de validade via updated_at
+// ---------------------------------------------------------------------
+
+export async function setActivationKey(userId: number, code: string): Promise<void> {
+  await pool.query(
+    `UPDATE setes_central.tb_user SET activation_key = ?, updated_at = NOW() WHERE id = ?`,
+    [code, userId]
+  )
+}
+
+export interface ActivationInfo {
+  activationKey: string | null
+  ageMinutes:    number
+}
+
+export async function getActivationInfo(userId: number): Promise<ActivationInfo | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT activation_key AS activationKey,
+            TIMESTAMPDIFF(MINUTE, updated_at, NOW()) AS ageMinutes
+     FROM setes_central.tb_user WHERE id = ? AND deleted = 'N'`,
+    [userId]
+  )
+  if (!rows.length) return null
+  return { activationKey: rows[0].activationKey, ageMinutes: Number(rows[0].ageMinutes ?? 0) }
+}
+
+// Senha já chega com hash aplicado pelo service (decisão 2 — nunca na query)
+export async function updatePassword(userId: number, passwordHash: string): Promise<void> {
+  await pool.query(
+    `UPDATE setes_central.tb_user
+     SET password = ?, activation_key = NULL, updated_at = NOW()
+     WHERE id = ?`,
+    [passwordHash, userId]
+  )
+}

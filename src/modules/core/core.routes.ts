@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import {
-  getInstitutionData,
+  getInstitutionData, getSessionInfo,
   getUserPreferences, setUserPreference,
   getInstitutionTheme, setInstitutionTheme,
   getMenus,
@@ -26,6 +26,22 @@ router.get('/info', async (req: Request, res: Response) => {
     res.json({ ok: true, data })
   } catch (err) {
     handleError(res, err, 'core/info')
+  }
+})
+
+/**
+ * @swagger
+ * /api/core/me:
+ *   get:
+ *     summary: Identificação do usuário logado (nome, papel, institution)
+ *     tags: [Core]
+ */
+router.get('/me', async (req: Request, res: Response) => {
+  try {
+    const data = await getSessionInfo(req.institution!)
+    res.json({ ok: true, data })
+  } catch (err) {
+    handleError(res, err, 'core/me GET')
   }
 })
 
