@@ -68,10 +68,16 @@ src/
 │   ├── auth.middleware.ts          # JWT validation
 │   ├── feature-flag.middleware.ts  # Module access control
 │   ├── rate-limit.middleware.ts    # Per-tenant rate limiting
-│   └── router.ts                   # Routes registration
-├── modules/           # Feature modules
+│   ├── super.guard.ts              # isSuper() guard da área /api/super/*
+│   └── router.ts                   # Routes registration (compõe as áreas)
+├── modules/           # Feature modules — 1 CADASTRO = 1 MÓDULO (simetria com o setes-app)
+│   ├── countries/     # countries.{interface,dto,repository,service,controller,routes}.ts
+│   ├── states/        # idem (JOIN devolve countryName)
+│   ├── cities/        # idem (JOIN devolve stateName)
+│   ├── interfaces/    # idem + tb_interface_has_privilege (N:N pertence a este módulo)
+│   ├── privileges/    # idem
 │   ├── admin/         # Admin operations (repository, service, routes)
-│   ├── core/          # Tenant info & setup
+│   ├── core/          # Tenant info & setup (GET /api/core/menus lê tb_interface)
 │   ├── erp/           # ERP module stub
 │   └── sync/          # Sync endpoints from Sincronizador
 │       ├── endpoints/         # One file per data type (brand.ts, customer.ts, etc.)
@@ -81,39 +87,29 @@ src/
 │   └── flag.repository.ts   # DB queries
 ├── migrations/        # Database schema management
 ├── shared/
-│   ├── db/connection.ts     # MySQL connection pool (per-schema)
+│   ├── db/connection.ts     # MySQL pool (decimalNumbers: true — NUNCA remover)
 │   ├── errors/http-error.ts # Custom HTTP error class
+│   ├── http/controller-utils.ts # handleError + parseId (todo controller usa)
 │   ├── logger/logger.ts     # Simple console logger with timestamps
 │   └── types/express.d.ts   # TypeScript augmentation for req.tenant
 ├── app.ts            # Express app configuration
 └── server.ts         # Server bootstrap
 ```
 
-### Module Pattern (Repository → Service → Routes)
+### Module Pattern (Routes → Controller → Service → Repository)
 
-Each module (admin, core, erp) follows this three-layer pattern:
+**Cadastros seguem o padrão simétrico com o setes-app** — regras completas e
+checklist em `D:\Gestao2027\Infra-IA\setes-api\ARQUITETURA_MODULOS_API.md`
+(LER antes de criar/alterar módulo de cadastro). Resumo:
 
-```typescript
-// admin.repository.ts — Database queries
-export async function getUserById(schemaName: string, userId: string) {
-  const conn = await getConnection(schemaName)
-  const [rows] = await conn.query('SELECT * FROM users WHERE id = ?', [userId])
-  conn.release()
-  return rows[0]
-}
-
-// admin.service.ts — Business logic
-import { getUserById } from './admin.repository'
-export async function fetchUser(schemaName: string, userId: string) {
-  return getUserById(schemaName, userId)
-}
-
-// admin.routes.ts — HTTP endpoints
-router.get('/users/:id', async (req, res) => {
-  const user = await fetchUser(req.tenant!.schemaName, req.params.id)
-  res.json(user)
-})
-```
+- `<m>.interface.ts` tipos Row/Input · `<m>.dto.ts` Zod · `<m>.repository.ts` SQL
+  · `<m>.service.ts` regra (404/409/MAX+1) · `<m>.controller.ts` HTTP ↔ service
+  · `<m>.routes.ts` router fino + Swagger
+- "Super" NÃO é módulo: é área no gateway (prefixo `/super` + `super.guard.ts`) —
+  URLs `/api/super/<modulo>` preservadas
+- Módulo nunca importa módulo; compartilhado vai para `shared/`
+- Módulos legados (admin, core, erp, sync) ainda usam Repository → Service → Routes
+  sem controller/dto separados — migrar quando forem tocados
 
 ## Authentication & Authorization
 
