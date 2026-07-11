@@ -15,17 +15,14 @@ router.use('/core',  coreRoutes)
 router.use('/erp',   erpRoutes)
 router.use('/admin', adminRoutes)
 
-// Área Super: "Super" NÃO é módulo de código — é agrupador de menu no app
-// e aqui apenas prefixo de URL + guard (simetria com o setes-app, onde
-// 1 interface = 1 módulo e módulo de sistema nunca vira pasta).
-// URLs preservadas: /api/super/<modulo>[...].
-const superArea = Router()
-superArea.use(superGuard)
-superArea.use('/countries',  countriesRoutes)
-superArea.use('/states',     statesRoutes)
-superArea.use('/cities',     citiesRoutes)
-superArea.use('/interfaces', interfacesRoutes)
-superArea.use('/privileges', privilegesRoutes)
-router.use('/super', superArea)
+// Cadastros: 1 módulo = 1 rota raiz /api/<modulo>, espelho de /home/<modulo>
+// no app (decisão do Valdo, 2026-07-11 — a URL segue o módulo, não o
+// agrupador de menu). O guard vai POR MÓDULO: os cadastros do catálogo
+// central são do Super (isSuper); cadastros de cliente terão guard próprio.
+router.use('/countries',  superGuard, countriesRoutes)
+router.use('/states',     superGuard, statesRoutes)
+router.use('/cities',     superGuard, citiesRoutes)
+router.use('/interfaces', superGuard, interfacesRoutes)
+router.use('/privileges', superGuard, privilegesRoutes)
 
 export default router

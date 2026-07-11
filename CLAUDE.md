@@ -68,8 +68,8 @@ src/
 │   ├── auth.middleware.ts          # JWT validation
 │   ├── feature-flag.middleware.ts  # Module access control
 │   ├── rate-limit.middleware.ts    # Per-tenant rate limiting
-│   ├── super.guard.ts              # isSuper() guard da área /api/super/*
-│   └── router.ts                   # Routes registration (compõe as áreas)
+│   ├── super.guard.ts              # isSuper() — aplicado POR MÓDULO nos cadastros do catálogo central
+│   └── router.ts                   # Routes registration (1 cadastro = /api/<modulo> + guard)
 ├── modules/           # Feature modules — 1 CADASTRO = 1 MÓDULO (simetria com o setes-app)
 │   ├── countries/     # countries.{interface,dto,repository,service,controller,routes}.ts
 │   ├── states/        # idem (JOIN devolve countryName)
@@ -105,8 +105,9 @@ checklist em `D:\Gestao2027\Infra-IA\setes-api\ARQUITETURA_MODULOS_API.md`
 - `<m>.interface.ts` tipos Row/Input · `<m>.dto.ts` Zod · `<m>.repository.ts` SQL
   · `<m>.service.ts` regra (404/409/MAX+1) · `<m>.controller.ts` HTTP ↔ service
   · `<m>.routes.ts` router fino + Swagger
-- "Super" NÃO é módulo: é área no gateway (prefixo `/super` + `super.guard.ts`) —
-  URLs `/api/super/<modulo>` preservadas
+- "Super" NÃO é módulo — nem pasta, nem URL: é só agrupador de menu no app. A URL
+  segue o módulo: `/api/<modulo>` espelha `/home/<modulo>` (ex.: /api/countries).
+  Guard POR MÓDULO no gateway: `router.use('/countries', superGuard, countriesRoutes)`
 - Módulo nunca importa módulo; compartilhado vai para `shared/`
 - Módulos legados (admin, core, erp, sync) ainda usam Repository → Service → Routes
   sem controller/dto separados — migrar quando forem tocados
