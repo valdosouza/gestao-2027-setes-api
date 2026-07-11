@@ -6,6 +6,7 @@ import {
   getTheme, upsertTheme,
   getModuleInterfaces, getUngroupedInterfaces,
   getUserPrivileges, getAllInterfacePrivileges,
+  getAllCentralInterfaces,
   MenuInterfaceRow,
 } from './core.repository'
 import { InstitutionPayload } from '@shared/types/express'
@@ -137,11 +138,19 @@ export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[
   const superUser = isSuper(payload)
   const { schemaName, userId } = payload
 
-  const [inModules, ungrouped, privileges] = await Promise.all([
-    getModuleInterfaces(schemaName, userId, superUser),
-    getUngroupedInterfaces(schemaName, userId, superUser),
-    superUser ? getAllInterfacePrivileges() : getUserPrivileges(schemaName, userId),
-  ])
+  // Super: lê catálogo central diretamente — sem tb_institution_has_interface nem
+  // tb_user_has_privilege (isSuper() é a única verificação necessária, decisão 2026-07-09).
+  const [inModules, ungrouped, privileges] = superUser
+    ? await Promise.all([
+        Promise.resolve([] as MenuInterfaceRow[]),
+        getAllCentralInterfaces(),
+        getAllInterfacePrivileges(),
+      ])
+    : await Promise.all([
+        getModuleInterfaces(schemaName, userId, false),
+        getUngroupedInterfaces(schemaName, userId, false),
+        getUserPrivileges(schemaName, userId),
+      ])
 
   const privMap = new Map<number, string[]>()
   for (const p of privileges) {

@@ -218,3 +218,22 @@ export async function getAllInterfacePrivileges(): Promise<PrivilegeRow[]> {
   )
   return rows
 }
+
+// Superusuário: lê TODAS as interfaces do catálogo central, agrupadas por group_default.
+// Bypassa tb_institution_has_interface e tb_user_has_privilege (decisão: isSuper() é suficiente).
+export async function getAllCentralInterfaces(): Promise<MenuInterfaceRow[]> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT NULL            AS moduleId,
+            i.group_default AS moduleDescription,
+            NULL            AS moduleIcon,
+            i.id            AS interfaceId,
+            i.description   AS interfaceDescription,
+            i.i18n_key      AS i18nKey,
+            NULL            AS buttonAction,
+            NULL            AS imgIndex
+     FROM setes_central.tb_interface i
+     WHERE i.deleted = 'N'
+     ORDER BY i.group_default, i.position, i.description`
+  )
+  return rows
+}
