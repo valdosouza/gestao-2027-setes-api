@@ -15,7 +15,64 @@ function fail(res: Response, err: unknown, context: string) {
   res.status(500).json({ error: 'Erro interno' })
 }
 
-// POST /auth/login — público
+/**
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     summary: Autenticação unificada (retorna token ou lista de institutions)
+ *     description: Login com email/password. Retorna JWT se usuário tem uma institution; se múltiplas, retorna selectionToken para escolher.
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: user@example.com
+ *               password:
+ *                 type: string
+ *                 example: senha123
+ *     responses:
+ *       200:
+ *         description: Login bem-sucedido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - type: object
+ *                   properties:
+ *                     ok:
+ *                       type: boolean
+ *                       example: true
+ *                     token:
+ *                       type: string
+ *                       description: JWT válido
+ *                 - type: object
+ *                   properties:
+ *                     ok:
+ *                       type: boolean
+ *                       example: true
+ *                     select:
+ *                       type: boolean
+ *                       example: true
+ *                     selectionToken:
+ *                       type: string
+ *                       description: Token temporário para seleção de institution
+ *                     institutions:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       400:
+ *         description: Email ou password ausente
+ *       401:
+ *         description: Credenciais inválidas
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/login', async (req: Request, res: Response) => {
   const { email, password } = req.body ?? {}
   if (!email || !password) {
@@ -35,7 +92,47 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 })
 
-// POST /auth/select-institution — header: Bearer <selectionToken>
+/**
+ * @swagger
+ * /auth/select-institution:
+ *   post:
+ *     summary: Seleciona institution quando usuário tem múltiplas
+ *     description: Converte selectionToken em JWT final com institutionId escolhido
+ *     tags: [Auth]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               institutionId:
+ *                 type: number
+ *                 example: 1
+ *     responses:
+ *       200:
+ *         description: Institution selecionada; JWT retornado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 token:
+ *                   type: string
+ *       400:
+ *         description: institutionId ausente ou inválido
+ *       401:
+ *         description: selectionToken ausente ou inválido
+ *       404:
+ *         description: Institution não existe ou usuário não tem acesso
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/select-institution', async (req: Request, res: Response) => {
   const header = req.headers.authorization
   if (!header?.startsWith('Bearer ')) {
@@ -55,7 +152,42 @@ router.post('/select-institution', async (req: Request, res: Response) => {
   }
 })
 
-// POST /auth/recovery-password — público; resposta sempre genérica
+/**
+ * @swagger
+ * /auth/recovery-password:
+ *   post:
+ *     summary: Inicia recuperação de senha (resposta genérica por segurança)
+ *     description: Envia email com código de recuperação se o email existe
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: user@example.com
+ *     responses:
+ *       200:
+ *         description: Resposta genérica (sempre sucesso por segurança)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Email ausente
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/recovery-password', async (req: Request, res: Response) => {
   const { email } = req.body ?? {}
   if (!email) {
@@ -70,7 +202,47 @@ router.post('/recovery-password', async (req: Request, res: Response) => {
   }
 })
 
-// POST /auth/change-password — público (email + código enviado por email)
+/**
+ * @swagger
+ * /auth/change-password:
+ *   post:
+ *     summary: Altera senha com código de recuperação
+ *     description: Valida email + código + nova senha; altera a senha se código é válido
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *               code:
+ *                 type: string
+ *                 description: Código de 6 dígitos enviado por email
+ *               newPassword:
+ *                 type: string
+ *                 minLength: 8
+ *     responses:
+ *       200:
+ *         description: Senha alterada com sucesso
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *       400:
+ *         description: Campos obrigatórios ausentes ou senha muito curta
+ *       401:
+ *         description: Código inválido ou expirado
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/change-password', async (req: Request, res: Response) => {
   const { email, code, newPassword } = req.body ?? {}
   if (!email || !code || !newPassword) {
@@ -85,7 +257,47 @@ router.post('/change-password', async (req: Request, res: Response) => {
   }
 })
 
-// POST /auth/switch-institution — requer JWT final válido
+/**
+ * @swagger
+ * /auth/switch-institution:
+ *   post:
+ *     summary: Alterna para outra institution do usuário logado
+ *     description: Retorna novo JWT com a institution escolhida
+ *     tags: [Auth]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               institutionId:
+ *                 type: number
+ *                 example: 2
+ *     responses:
+ *       200:
+ *         description: JWT alterado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 token:
+ *                   type: string
+ *       400:
+ *         description: institutionId ausente
+ *       401:
+ *         description: JWT inválido ou expirado
+ *       403:
+ *         description: Usuário não tem acesso a essa institution
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/switch-institution', authMiddleware, async (req: Request, res: Response) => {
   const { institutionId } = req.body ?? {}
   if (!institutionId) {

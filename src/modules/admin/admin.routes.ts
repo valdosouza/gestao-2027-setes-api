@@ -22,7 +22,36 @@ router.use((req: Request, res: Response, next) => {
 // o onboarding foi absorvido pelo cadastro de Estabelecimento —
 // POST /api/institutions (módulo institutions, skill cadastro-entidade-fiscal.md).
 
-// GET /api/admin/institutions
+/**
+ * @swagger
+ * /api/admin/institutions:
+ *   get:
+ *     summary: Lista todas as institutions cadastradas
+ *     tags: [Admin]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de institutions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       401:
+ *         description: JWT inválido
+ *       403:
+ *         description: Apenas superusuários da Setes
+ *       500:
+ *         description: Erro interno
+ */
 router.get('/institutions', async (_req: Request, res: Response) => {
   const pool = (await import('@shared/db/connection')).default
   try {

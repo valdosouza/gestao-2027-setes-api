@@ -20,6 +20,31 @@ function handleError(res: Response, err: unknown, context: string) {
   res.status(500).json({ error: 'Erro interno' })
 }
 
+/**
+ * @swagger
+ * /api/core/info:
+ *   get:
+ *     summary: Informações da institution (schema, nome, ativa)
+ *     tags: [Core]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Informações da institution
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *       401:
+ *         description: JWT inválido
+ *       500:
+ *         description: Erro interno
+ */
 router.get('/info', async (req: Request, res: Response) => {
   try {
     const data = await getInstitutionData(req.institution!.schemaName)
