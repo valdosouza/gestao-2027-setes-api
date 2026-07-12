@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'crypto'
+import { randomInt } from 'crypto'
 import jwt from 'jsonwebtoken'
 import {
   findUserByEmail, getInstitutionsForUser, UserInstitution,
@@ -6,6 +6,7 @@ import {
 } from './auth.repository'
 import { InstitutionPayload } from '@shared/types/express'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { md5Password } from '@shared/auth/password'
 import { HttpError } from '@shared/errors/http-error'
 import { sendMail, isMailerConfigured } from '@shared/mailer/mailer'
 import logger from '@shared/logger/logger'
@@ -25,10 +26,9 @@ export interface LoginResult {
   institutions?: UserInstitution[]
 }
 
-// MD5 aplicado no backend, nunca na query (decisão 2)
-function md5(value: string): string {
-  return createHash('md5').update(value).digest('hex').toUpperCase()
-}
+// MD5 aplicado no backend, nunca na query (decisão 2) — função compartilhada
+// com o cadastro de Usuário (@shared/auth/password).
+const md5 = md5Password
 
 function secret(): string {
   return process.env.JWT_SECRET!

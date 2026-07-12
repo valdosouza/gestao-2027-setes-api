@@ -9,7 +9,9 @@ import citiesRoutes     from '@modules/cities/cities.routes'
 import interfacesRoutes from '@modules/interfaces/interfaces.routes'
 import privilegesRoutes from '@modules/privileges/privileges.routes'
 import interfaceFieldsRoutes from '@modules/interface-fields/interface-fields.routes'
+import usersRoutes from '@modules/users/users.routes'
 import { superGuard } from './super.guard'
+import { adminGuard } from './admin.guard'
 
 const router = Router()
 
@@ -27,6 +29,10 @@ router.use('/cities',     superGuard, citiesRoutes)
 router.use('/interfaces', superGuard, interfacesRoutes)
 router.use('/privileges', superGuard, privilegesRoutes)
 router.use('/institutions', superGuard, institutionsRoutes)
+// Usuários (workflow 2026-07-12): super gerencia qualquer institution
+// (aba Usuários do Estabelecimento); ADMIN do cliente gerencia os do
+// PRÓPRIO institution (módulo Sistema) — escopo forçado no service.
+router.use('/users',        adminGuard, usersRoutes)
 
 // Painel de campos configuráveis (Fase 2, decisões 6 e 9): módulo do CLIENTE
 // (sem superGuard — privilégio da tela no app) e isento do gate de flags
