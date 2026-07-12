@@ -92,6 +92,17 @@ src/
 ├── migrations/        # Database schema management
 ├── shared/
 │   ├── db/connection.ts     # MySQL pool (decimalNumbers: true — NUNCA remover)
+│   ├── address/             # peça independente: tb_address (types/dto/repository —
+│   │                        # syncAddresses/listAddresses; recebe conn + entityId)
+│   ├── phone/               # peça independente: tb_phone (syncPhones/listPhones)
+│   ├── social-media/        # peça independente: tb_social_media
+│   ├── fiscal/              # peça independente: tb_person × tb_company (upsertFiscal,
+│   │                        # getPerson/getCompany)
+│   ├── entity/              # tb_entity + entity-fiscal.ts (COMPOSIÇÃO da cadeia de
+│   │                        # entidade fiscal: saveEntityFiscalChain, getEntityFiscalFull,
+│   │                        # entityFiscalBody+withFiscalRefinements) + index.ts (barrel
+│   │                        # '@shared/entity'); peças NUNCA importam entity/ — só a
+│   │                        # composição importa as peças; concretos consomem o barrel
 │   ├── errors/http-error.ts # Custom HTTP error class
 │   ├── http/controller-utils.ts # handleError + parseId (todo controller usa)
 │   ├── logger/logger.ts     # Simple console logger with timestamps
