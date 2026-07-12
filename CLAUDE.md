@@ -76,7 +76,11 @@ src/
 │   ├── cities/        # idem (JOIN devolve stateName)
 │   ├── interfaces/    # idem + tb_interface_has_privilege (N:N pertence a este módulo)
 │   ├── privileges/    # idem
-│   ├── admin/         # Admin operations (repository, service, routes)
+│   ├── institutions/  # cadeia de entidade fiscal (skill cadastro-entidade-fiscal.md):
+│   │                  # cascade em transação única; POST absorveu o onboarding
+│   │                  # (cadeia → runMigrationsForSchema → active='S')
+│   ├── admin/         # Admin operations (POST /institutions APOSENTADO 2026-07-11 —
+│   │                  # onboarding vive no módulo institutions; GET/interfaces/flags ficam)
 │   ├── core/          # Tenant info & setup (GET /api/core/menus lê tb_interface)
 │   ├── erp/           # ERP module stub
 │   └── sync/          # Sync endpoints from Sincronizador

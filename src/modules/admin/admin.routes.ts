@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import {
-  onboardInstitution,
   getInstitutionInterfaces, updateInstitutionInterfaces, updateFeatureFlag,
 } from './admin.service'
 import { isSuper } from '@shared/auth/roles'
@@ -19,28 +18,9 @@ router.use((req: Request, res: Response, next) => {
   next()
 })
 
-// POST /api/admin/institutions
-router.post('/institutions', async (req: Request, res: Response) => {
-  const { name, schemaName } = req.body
-
-  if (!name || !schemaName) {
-    res.status(400).json({ error: 'Os campos "name" e "schemaName" são obrigatórios' })
-    return
-  }
-
-  try {
-    const result = await onboardInstitution({ name, schemaName })
-    logger.info('Nova institution criada', result)
-    res.status(201).json({ ok: true, data: result })
-  } catch (err) {
-    if (err instanceof HttpError) {
-      res.status(err.statusCode).json({ error: err.message })
-      return
-    }
-    logger.error('Erro ao criar institution', { err })
-    res.status(500).json({ error: 'Erro interno ao criar institution' })
-  }
-})
+// POST /api/admin/institutions foi APOSENTADO (decisão do Valdo, 2026-07-11):
+// o onboarding foi absorvido pelo cadastro de Estabelecimento —
+// POST /api/institutions (módulo institutions, skill cadastro-entidade-fiscal.md).
 
 // GET /api/admin/institutions
 router.get('/institutions', async (_req: Request, res: Response) => {
