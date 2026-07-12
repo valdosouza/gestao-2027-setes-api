@@ -7,7 +7,9 @@ export const addressBody = z.object({
   nmbr:         z.string().max(10).nullable().optional(),
   complement:   z.string().max(100).nullable().optional(),
   neighborhood: z.string().max(100).nullable().optional(),
-  zipCode:      z.string().max(15).nullable().optional(),
+  // SEM máscara (decisão 19): somente dígitos; máscara só na digitação/exibição.
+  zipCode:      z.string().max(15).regex(/^\d*$/, 'CEP deve conter somente dígitos, sem máscara')
+                 .nullable().optional(),
   tbCountryId:  z.number().int().positive(),
   tbStateId:    z.number().int().positive(),
   tbCityId:     z.number().int().positive(),

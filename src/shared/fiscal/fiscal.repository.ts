@@ -1,6 +1,8 @@
-import { PoolConnection } from 'mysql2/promise'
+import { Pool, PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { FiscalInput, PersonRow, CompanyRow } from './fiscal.types'
+
+type Executor = Pool | PoolConnection
 
 /**
  * Persistência FISCAL (tb_person × tb_company, setes_central).
@@ -41,6 +43,31 @@ export async function upsertFiscal(
       [entityId]
     )
   }
+}
+
+/**
+ * Entity dona do CPF (null se livre) — duplicidade, decisão 21 da Fase 2.
+ * Dentro de transação passe a conn; fora (endpoint de existência) usa o pool.
+ */
+export async function findEntityIdByCpf(
+  cpf: string, db: Executor = pool
+): Promise<number | null> {
+  const [rows] = await db.query<any[]>(
+    `SELECT id FROM setes_central.tb_person WHERE cpf = ? AND deleted = 'N' LIMIT 1`,
+    [cpf]
+  )
+  return rows.length > 0 ? Number(rows[0].id) : null
+}
+
+/** Entity dona do CNPJ (null se livre) — duplicidade, decisão 21 da Fase 2. */
+export async function findEntityIdByCnpj(
+  cnpj: string, db: Executor = pool
+): Promise<number | null> {
+  const [rows] = await db.query<any[]>(
+    `SELECT id FROM setes_central.tb_company WHERE cnpj = ? AND deleted = 'N' LIMIT 1`,
+    [cnpj]
+  )
+  return rows.length > 0 ? Number(rows[0].id) : null
 }
 
 /** PF viva da entity (null se não é PF). Datas com DATE_FORMAT. */

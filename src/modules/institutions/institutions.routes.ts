@@ -22,6 +22,33 @@ router.get('/', controller.list)
 
 /**
  * @swagger
+ * /api/institutions/fiscal-exists:
+ *   get:
+ *     summary: CPF/CNPJ já cadastrado? (verificação antecipada ao sair do campo — decisão 21 Fase 2)
+ *     tags: [Institutions]
+ *     parameters:
+ *       - in: query
+ *         name: cpf
+ *         schema: { type: string }
+ *         description: CPF com 11 dígitos, sem máscara (informe cpf OU cnpj)
+ *       - in: query
+ *         name: cnpj
+ *         schema: { type: string }
+ *         description: CNPJ com 14 dígitos, sem máscara
+ *       - in: query
+ *         name: ignoreId
+ *         schema: { type: integer }
+ *         description: Entity em edição (ignorada na checagem)
+ *     responses:
+ *       200:
+ *         description: '{ ok: true, data: { exists: boolean } }'
+ *       400:
+ *         description: Parâmetros inválidos ou dígito verificador não confere
+ */
+router.get('/fiscal-exists', controller.fiscalExists)
+
+/**
+ * @swagger
  * /api/institutions/{id}:
  *   get:
  *     summary: Retorna o estabelecimento COMPLETO (entity + fiscal + endereços/fones/redes + institution)

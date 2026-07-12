@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
-import { handleError, parseId } from '@shared/http/controller-utils'
+import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import { privilegeDto } from './privileges.dto'
 import {
   fetchPrivileges, fetchPrivilege, createPrivilege, editPrivilege, removePrivilege,
@@ -26,13 +27,11 @@ export async function getById(req: Request, res: Response): Promise<void> {
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const parsed = privilegeDto.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Body inválido', details: parsed.error.flatten().fieldErrors })
-    return
-  }
+  const body = parseBody(privilegeDto, req, res)
+  if (body === null) return
   try {
-    const result = await createPrivilege(parsed.data.description)
+    await assertClientRequired(req.institution!, 'privileges', body)
+    const result = await createPrivilege(body.description)
     logger.info('Privilégio criado', result)
     res.status(201).json({ ok: true, data: result })
   } catch (err) {
@@ -43,13 +42,11 @@ export async function create(req: Request, res: Response): Promise<void> {
 export async function update(req: Request, res: Response): Promise<void> {
   const id = parseId(req, res)
   if (id === null) return
-  const parsed = privilegeDto.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Body inválido', details: parsed.error.flatten().fieldErrors })
-    return
-  }
+  const body = parseBody(privilegeDto, req, res)
+  if (body === null) return
   try {
-    await editPrivilege(id, parsed.data.description)
+    await assertClientRequired(req.institution!, 'privileges', body)
+    await editPrivilege(id, body.description)
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'privileges/:id PUT')

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
-import { handleError, parseId } from '@shared/http/controller-utils'
+import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import { cityCreateDto, cityUpdateDto } from './cities.dto'
 import {
   fetchCities, fetchCity, createCity, editCity, removeCity,
@@ -27,13 +28,11 @@ export async function getById(req: Request, res: Response): Promise<void> {
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const parsed = cityCreateDto.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Body inválido', details: parsed.error.flatten().fieldErrors })
-    return
-  }
+  const body = parseBody(cityCreateDto, req, res)
+  if (body === null) return
   try {
-    const { id, ...input } = parsed.data
+    await assertClientRequired(req.institution!, 'cities', body)
+    const { id, ...input } = body
     const result = await createCity({ ...input, id })
     logger.info('Cidade criada', result)
     res.status(201).json({ ok: true, data: result })
@@ -45,13 +44,11 @@ export async function create(req: Request, res: Response): Promise<void> {
 export async function update(req: Request, res: Response): Promise<void> {
   const id = parseId(req, res)
   if (id === null) return
-  const parsed = cityUpdateDto.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Body inválido', details: parsed.error.flatten().fieldErrors })
-    return
-  }
+  const body = parseBody(cityUpdateDto, req, res)
+  if (body === null) return
   try {
-    await editCity(id, parsed.data)
+    await assertClientRequired(req.institution!, 'cities', body)
+    await editCity(id, body)
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'cities/:id PUT')

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
-import { handleError, parseId } from '@shared/http/controller-utils'
+import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import { countryCreateDto, countryUpdateDto } from './countries.dto'
 import {
   fetchCountries, fetchCountry, createCountry, editCountry, removeCountry,
@@ -31,13 +32,11 @@ export async function getById(req: Request, res: Response): Promise<void> {
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const parsed = countryCreateDto.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Body inválido', details: parsed.error.flatten().fieldErrors })
-    return
-  }
+  const body = parseBody(countryCreateDto, req, res)
+  if (body === null) return
   try {
-    const result = await createCountry(parsed.data.id, parsed.data.name)
+    await assertClientRequired(req.institution!, 'countries', body)
+    const result = await createCountry(body.id, body.name)
     logger.info('País criado', result)
     res.status(201).json({ ok: true, data: result })
   } catch (err) {
@@ -48,13 +47,11 @@ export async function create(req: Request, res: Response): Promise<void> {
 export async function update(req: Request, res: Response): Promise<void> {
   const id = parseId(req, res)
   if (id === null) return
-  const parsed = countryUpdateDto.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Body inválido', details: parsed.error.flatten().fieldErrors })
-    return
-  }
+  const body = parseBody(countryUpdateDto, req, res)
+  if (body === null) return
   try {
-    await editCountry(id, parsed.data.name)
+    await assertClientRequired(req.institution!, 'countries', body)
+    await editCountry(id, body.name)
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'countries/:id PUT')

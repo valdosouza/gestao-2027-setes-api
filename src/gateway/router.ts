@@ -8,6 +8,7 @@ import statesRoutes     from '@modules/states/states.routes'
 import citiesRoutes     from '@modules/cities/cities.routes'
 import interfacesRoutes from '@modules/interfaces/interfaces.routes'
 import privilegesRoutes from '@modules/privileges/privileges.routes'
+import interfaceFieldsRoutes from '@modules/interface-fields/interface-fields.routes'
 import { superGuard } from './super.guard'
 
 const router = Router()
@@ -26,5 +27,10 @@ router.use('/cities',     superGuard, citiesRoutes)
 router.use('/interfaces', superGuard, interfacesRoutes)
 router.use('/privileges', superGuard, privilegesRoutes)
 router.use('/institutions', superGuard, institutionsRoutes)
+
+// Painel de campos configuráveis (Fase 2, decisões 6 e 9): módulo do CLIENTE
+// (sem superGuard — privilégio da tela no app) e isento do gate de flags
+// (o GET resolvido é infraestrutura de montagem de toda tela, como o core).
+router.use('/interface-fields', interfaceFieldsRoutes)
 
 export default router

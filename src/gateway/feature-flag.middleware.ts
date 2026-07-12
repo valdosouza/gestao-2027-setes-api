@@ -4,8 +4,9 @@ import { isSuper } from '@shared/auth/roles'
 import logger from '@shared/logger/logger'
 
 // Módulos fora do gate tb_feature_flag: todo cliente autenticado precisa deles
-// para o app sequer carregar ('core' serve o menu em /api/core/menus).
-const FLAG_EXEMPT_MODULES = new Set(['core'])
+// para o app sequer carregar ('core' serve o menu em /api/core/menus;
+// 'interface-fields' serve a config resolvida que monta TODA tela — Fase 2).
+const FLAG_EXEMPT_MODULES = new Set(['core', 'interface-fields'])
 
 export function featureFlagMiddleware(req: Request, res: Response, next: NextFunction) {
   // Montado em app.use('/api', ...): o Express remove o prefixo do mount,

@@ -9,7 +9,10 @@ import {
   PersonType, FiscalInput, PersonRow, CompanyRow,
 } from '../fiscal/fiscal.types'
 import { personBody, companyBody } from '../fiscal/fiscal.dto'
-import { upsertFiscal, getPerson, getCompany } from '../fiscal/fiscal.repository'
+import {
+  upsertFiscal, getPerson, getCompany, findEntityIdByCpf, findEntityIdByCnpj,
+} from '../fiscal/fiscal.repository'
+import { HttpError } from '../errors/http-error'
 import { AddressInput, AddressRow } from '../address/address.types'
 import { addressBody } from '../address/address.dto'
 import { syncAddresses, listAddresses } from '../address/address.repository'
@@ -139,6 +142,29 @@ export function withFiscalRefinements<Out extends FiscalShape, In>(
 // ---------------------------------------------------------------------
 
 /**
+ * Duplicidade de CPF/CNPJ (decisão 21 da Fase 2): garantia FINAL no salvar —
+ * o app já avisa ao sair do campo (endpoint de existência), mas a API é a
+ * fonte da verdade. 409 com erro por campo (decisão 20).
+ */
+async function assertFiscalNotDuplicated(
+  conn: PoolConnection, id: number | null, input: EntityFiscalInput
+): Promise<void> {
+  if (input.personType === 'F') {
+    const owner = await findEntityIdByCpf(input.person!.cpf, conn)
+    if (owner !== null && owner !== id) {
+      throw new HttpError(409, 'CPF já cadastrado em outro registro',
+        [{ field: 'cpf', message: 'CPF já cadastrado em outro registro' }])
+    }
+  } else {
+    const owner = await findEntityIdByCnpj(input.company!.cnpj, conn)
+    if (owner !== null && owner !== id) {
+      throw new HttpError(409, 'CNPJ já cadastrado em outro registro',
+        [{ field: 'cnpj', message: 'CNPJ já cadastrado em outro registro' }])
+    }
+  }
+}
+
+/**
  * Orquestra a cadeia inteira DENTRO da transação do concreto:
  * id null → INSERT (id = MAX+1 FOR UPDATE); id informado → UPDATE.
  * Devolve o id da entity. A tabela concreta (tb_institution, tb_customer...)
@@ -147,6 +173,7 @@ export function withFiscalRefinements<Out extends FiscalShape, In>(
 export async function saveEntityFiscalChain(
   conn: PoolConnection, id: number | null, input: EntityFiscalInput
 ): Promise<number> {
+  await assertFiscalNotDuplicated(conn, id, input)
   let entityId: number
   if (id === null) {
     entityId = await nextEntityId(conn)
