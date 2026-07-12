@@ -2,12 +2,14 @@ import { HttpError } from '@shared/errors/http-error'
 import { md5Password } from '@shared/auth/password'
 import {
   UserListRow, UserRow, UserInput, UserCreateInput, UserScope,
-  UserInstitutionGrant, UserInstitutionLink,
+  UserInstitutionGrant, UserInstitutionLink, UserInterfacePrivileges,
 } from './users.interface'
 import {
   listUsers, getUser, findLoginEmailOwner, insertUserCascade,
   updateUserCascade, userExists, deleteUser, userLinkedToInstitution,
   listInstitutionLinks, setInstitutionLinks,
+  findInstitutionSchema, listUserPrivileges, setUserPrivileges,
+  listInterfaceCatalogPrivilegeIds,
 } from './users.repository'
 
 /**
@@ -113,4 +115,66 @@ export async function saveInstitutionLinks(
   assertSuper(scope)
   if (!(await userExists(userId))) throw new HttpError(404, 'Usuário não encontrado')
   await setInstitutionLinks(userId, links)
+}
+
+// ---------------------------------------------------------------------
+// Privilégios de acesso (workflow ACL 2026-07-12): definidos POR
+// INSTITUTION (tb_user_has_privilege vive no schema do cliente).
+// Perfis: super/admin operam sem ACL (menu por perfil); o REGULAR só
+// enxerga (VISUALIZAR) e opera o que for concedido aqui.
+// ---------------------------------------------------------------------
+
+interface PrivilegeTarget { institutionId: number; schemaName: string }
+
+/** Alvo: super escolhe o institution; admin é FORÇADO ao do JWT. */
+async function resolvePrivilegeTarget(
+  scope: UserScope, requested: number | null
+): Promise<PrivilegeTarget> {
+  if (!scope.isSuper) {
+    return { institutionId: scope.institutionId, schemaName: scope.schemaName }
+  }
+  if (requested === null) {
+    throw new HttpError(400, 'Informe o estabelecimento (institutionId)',
+      [{ field: 'institutionId', message: 'Obrigatório para o super' }])
+  }
+  const schemaName = await findInstitutionSchema(requested)
+  if (schemaName === null) throw new HttpError(404, 'Estabelecimento não encontrado')
+  return { institutionId: requested, schemaName }
+}
+
+async function assertUserLinkedTo(
+  userId: number, target: PrivilegeTarget
+): Promise<void> {
+  if (!(await userLinkedToInstitution(userId, target.institutionId))) {
+    throw new HttpError(400,
+      'Usuário sem vínculo ativo com este estabelecimento — vincule antes de definir privilégios')
+  }
+}
+
+export async function fetchUserPrivileges(
+  scope: UserScope, userId: number, institutionId: number | null
+): Promise<UserInterfacePrivileges[]> {
+  if (!(await userExists(userId))) throw new HttpError(404, 'Usuário não encontrado')
+  const target = await resolvePrivilegeTarget(scope, institutionId)
+  await assertUserLinkedTo(userId, target)
+  return listUserPrivileges(target.schemaName, target.institutionId, userId)
+}
+
+export async function saveUserPrivileges(
+  scope: UserScope, userId: number, interfaceId: number,
+  privilegeIds: number[], institutionId: number | null
+): Promise<void> {
+  if (!(await userExists(userId))) throw new HttpError(404, 'Usuário não encontrado')
+  const target = await resolvePrivilegeTarget(scope, institutionId)
+  await assertUserLinkedTo(userId, target)
+
+  // Só privilégios DEFINIDOS no catálogo da interface (tb_interface_has_privilege).
+  const catalog = new Set(await listInterfaceCatalogPrivilegeIds(interfaceId))
+  const invalid = privilegeIds.filter(id => !catalog.has(id))
+  if (invalid.length > 0) {
+    throw new HttpError(400, 'Privilégio não definido para esta interface',
+      [{ field: 'privilegeIds', message: `Fora do catálogo da interface: ${invalid.join(', ')}` }])
+  }
+
+  await setUserPrivileges(target.schemaName, userId, interfaceId, privilegeIds)
 }

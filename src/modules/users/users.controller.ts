@@ -4,10 +4,13 @@ import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { assertClientRequired } from '@shared/field-config'
 import { isSuper } from '@shared/auth/roles'
 import { UserScope } from './users.interface'
-import { userCreateDto, userUpdateDto, userInstitutionsDto } from './users.dto'
+import {
+  userCreateDto, userUpdateDto, userInstitutionsDto, userPrivilegesDto,
+} from './users.dto'
 import {
   fetchUsers, fetchUser, createUser, editUser, removeUser,
   fetchInstitutionLinks, saveInstitutionLinks,
+  fetchUserPrivileges, saveUserPrivileges,
 } from './users.service'
 
 /** Escopo derivado do JWT: super opera qualquer institution; admin, a sua. */
@@ -15,6 +18,7 @@ function scopeOf(req: Request): UserScope {
   return {
     isSuper:       isSuper(req.institution),
     institutionId: req.institution!.institutionId,
+    schemaName:    req.institution!.schemaName,
   }
 }
 
@@ -74,6 +78,42 @@ export async function remove(req: Request, res: Response): Promise<void> {
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'users/:id DELETE')
+  }
+}
+
+export async function getPrivileges(req: Request, res: Response): Promise<void> {
+  const id = parseId(req, res)
+  if (id === null) return
+  const institutionId =
+    req.query.institutionId ? Number(req.query.institutionId) : null
+  try {
+    res.json({
+      ok: true,
+      data: await fetchUserPrivileges(scopeOf(req), id, institutionId),
+    })
+  } catch (err) {
+    handleError(res, err, 'users/:id/privileges GET')
+  }
+}
+
+export async function putPrivileges(req: Request, res: Response): Promise<void> {
+  const id = parseId(req, res)
+  if (id === null) return
+  const interfaceId = Number(req.params.interfaceId)
+  if (!Number.isInteger(interfaceId) || interfaceId <= 0) {
+    res.status(400).json({ error: 'interfaceId inválido' })
+    return
+  }
+  const body = parseBody(userPrivilegesDto, req, res)
+  if (body === null) return
+  try {
+    await saveUserPrivileges(
+      scopeOf(req), id, interfaceId, body.privilegeIds, body.institutionId ?? null)
+    logger.info('Privilégios do usuário atualizados',
+      { userId: id, interfaceId, total: body.privilegeIds.length })
+    res.json({ ok: true })
+  } catch (err) {
+    handleError(res, err, 'users/:id/privileges/:interfaceId PUT')
   }
 }
 

@@ -136,10 +136,14 @@ export interface MenuModule {
 
 export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[]> {
   const superUser = isSuper(payload)
+  // Definições por perfil (decisão do Valdo 2026-07-12):
+  // SUPER   → tudo, inclusive o módulo Super (catálogo central direto);
+  // ADMIN   → tudo do CONTRATO do institution, sem tb_user_has_privilege
+  //           (o módulo Super não existe no schema do cliente);
+  // REGULAR → só interfaces com privilégio VISUALIZAR (opção 1 do workflow).
+  const adminUser = !superUser && payload.role === 'admin'
   const { schemaName, userId } = payload
 
-  // Super: lê catálogo central diretamente — sem tb_institution_has_interface nem
-  // tb_user_has_privilege (isSuper() é a única verificação necessária, decisão 2026-07-09).
   const [inModules, ungrouped, privileges] = superUser
     ? await Promise.all([
         Promise.resolve([] as MenuInterfaceRow[]),
@@ -147,9 +151,11 @@ export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[
         getAllInterfacePrivileges(),
       ])
     : await Promise.all([
-        getModuleInterfaces(schemaName, userId, false),
-        getUngroupedInterfaces(schemaName, userId, false),
-        getUserPrivileges(schemaName, userId),
+        getModuleInterfaces(schemaName, userId, adminUser),
+        getUngroupedInterfaces(schemaName, userId, adminUser),
+        // Admin opera tudo: botões liberados com o catálogo de privilégios
+        // de cada interface; regular recebe só o que lhe foi concedido.
+        adminUser ? getAllInterfacePrivileges() : getUserPrivileges(schemaName, userId),
       ])
 
   const privMap = new Map<number, string[]>()

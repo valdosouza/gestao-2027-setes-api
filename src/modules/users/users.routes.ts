@@ -64,6 +64,39 @@ router.put('/:id/institutions', controller.putInstitutions)
 
 /**
  * @swagger
+ * /api/users/{id}/privileges:
+ *   get:
+ *     summary: Interfaces contratadas do institution alvo × privilégios do catálogo × concessão ao usuário (ACL — workflow 2026-07-12)
+ *     tags: [Users]
+ *     parameters:
+ *       - in: query
+ *         name: institutionId
+ *         schema: { type: integer }
+ *         description: Obrigatório para o super; admin do cliente é forçado ao JWT
+ */
+router.get('/:id/privileges', controller.getPrivileges)
+
+/**
+ * @swagger
+ * /api/users/{id}/privileges/{interfaceId}:
+ *   put:
+ *     summary: Sincroniza os privilégios de UMA interface (concede a lista, revoga o resto; VISUALIZAR decide o menu do regular)
+ *     tags: [Users]
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               institutionId: { type: integer, nullable: true }
+ *               privilegeIds:
+ *                 type: array
+ *                 items: { type: integer }
+ */
+router.put('/:id/privileges/:interfaceId', controller.putPrivileges)
+
+/**
+ * @swagger
  * /api/users/{id}:
  *   get:
  *     summary: Usuário completo (nome/apelido + email de login + ativo — senha NUNCA sai)

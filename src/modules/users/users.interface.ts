@@ -13,6 +13,8 @@ export interface UserListRow {
   name:   string | null   // nick_trade (fallback name_company)
   email:  string | null   // email de login (grupo 2)
   active: 'S' | 'N'
+  /** Perfil do vínculo com o institution do filtro (null sem filtro). */
+  kind:   string | null
 }
 
 export interface UserRow {
@@ -46,6 +48,30 @@ export interface UserCreateInput extends UserInput {
 export interface UserScope {
   isSuper:       boolean
   institutionId: number
+  schemaName:    string
+}
+
+/** Um privilégio do catálogo da interface + situação da concessão ao usuário. */
+export interface UserPrivilegeGrant {
+  privilegeId: number
+  description: string | null
+  granted:     'S' | 'N'
+}
+
+/**
+ * Linha da tela de privilégios (workflow ACL 2026-07-12): interface
+ * CONTRATADA pelo institution alvo, com os privilégios definidos no
+ * catálogo (tb_interface_has_privilege) e a concessão ao usuário
+ * (tb_user_has_privilege no schema do cliente).
+ */
+export interface UserInterfacePrivileges {
+  interfaceId:  number
+  description:  string | null
+  i18nKey:      string | null
+  groupDefault: string | null
+  /** Módulos do cliente que contêm a interface — filtro da tela. */
+  moduleNames:  string | null
+  privileges:   UserPrivilegeGrant[]
 }
 
 /** Linha da seção Estabelecimentos: catálogo + situação do vínculo. */

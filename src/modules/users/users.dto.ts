@@ -38,6 +38,14 @@ export const userInstitutionsDto = z.object({
   })),
 })
 
+// PUT /:id/privileges/:interfaceId — sincroniza a concessão de UMA interface.
+// institutionId: obrigatório para o super (alvo explícito); o admin do
+// cliente tem o alvo forçado ao JWT.
+export const userPrivilegesDto = z.object({
+  institutionId: z.number().int().positive().nullable().optional(),
+  privilegeIds:  z.array(z.number().int().positive()),
+})
+
 export type UserCreateDto = z.infer<typeof userCreateDto>
 export type UserUpdateDto = z.infer<typeof userUpdateDto>
 export type UserInstitutionsDto = z.infer<typeof userInstitutionsDto>

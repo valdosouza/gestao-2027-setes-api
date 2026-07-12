@@ -3,7 +3,15 @@ import pool from '@shared/db/connection'
 import { nextEntityId, insertEntity, updateEntity } from '@shared/entity/entity.repository'
 import {
   UserListRow, UserRow, UserInput, UserInstitutionGrant, UserInstitutionLink,
+  UserInterfacePrivileges, UserPrivilegeGrant,
 } from './users.interface'
+
+const SCHEMA_RE = /^setes_[a-z0-9_]+$/
+
+function assertSchema(schemaName: string): string {
+  if (!SCHEMA_RE.test(schemaName)) throw new Error(`schemaName inválido: ${schemaName}`)
+  return schemaName
+}
 
 /**
  * SQL do cadastro de Usuário — cadeia do LOGIN em setes_central:
@@ -23,7 +31,10 @@ export async function listUsers(
     `SELECT u.id,
             COALESCE(e.nick_trade, e.name_company) AS name,
             m.email,
-            u.active
+            u.active,
+            (SELECT ihu.kind FROM setes_central.tb_institution_has_user ihu
+              WHERE ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
+                AND ihu.active = 'S' AND ihu.deleted = 'N') AS kind
      FROM setes_central.tb_user u
        INNER JOIN setes_central.tb_entity e ON e.id = u.id
        LEFT JOIN setes_central.tb_entity_has_mailing ehm
@@ -39,7 +50,7 @@ export async function listUsers(
              WHERE ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
                AND ihu.active = 'S' AND ihu.deleted = 'N'))
      ORDER BY name`,
-    [filter, like, like, like, institutionId, institutionId]
+    [institutionId, filter, like, like, like, institutionId, institutionId]
   )
   return rows as UserListRow[]
 }
@@ -255,6 +266,134 @@ export async function listInstitutionLinks(
     [userId]
   )
   return rows as UserInstitutionGrant[]
+}
+
+/** Schema do institution alvo (super opera cross-schema — decisão 23). */
+export async function findInstitutionSchema(institutionId: number): Promise<string | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT schema_name AS schemaName FROM setes_central.tb_institution
+     WHERE id = ? AND deleted = 'N'`,
+    [institutionId]
+  )
+  return rows.length > 0 ? String(rows[0].schemaName) : null
+}
+
+// ---------------------------------------------------------------------
+// Privilégios de acesso (workflow ACL 2026-07-12): interfaces CONTRATADAS
+// pelo institution alvo × catálogo de privilégios da interface × concessão
+// ao usuário (tb_user_has_privilege no schema do cliente).
+// ---------------------------------------------------------------------
+
+export async function listUserPrivileges(
+  schemaName: string, institutionId: number, userId: number
+): Promise<UserInterfacePrivileges[]> {
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT i.id            AS interfaceId,
+            i.description,
+            i.i18n_key      AS i18nKey,
+            i.group_default AS groupDefault,
+            (SELECT GROUP_CONCAT(m.description ORDER BY m.description SEPARATOR ', ')
+               FROM \`${s}\`.tb_module_has_interface mhi
+               JOIN \`${s}\`.tb_module m
+                 ON m.id = mhi.tb_module_id AND m.deleted = 'N'
+              WHERE mhi.tb_interface_id = i.id
+                AND mhi.deleted = 'N' AND mhi.active = 'S') AS moduleNames,
+            p.id            AS privilegeId,
+            p.description   AS privilegeDescription,
+            CASE WHEN uhp.tb_user_id IS NULL THEN 'N' ELSE 'S' END AS granted
+       FROM \`${s}\`.tb_institution_has_interface ihi
+       INNER JOIN setes_central.tb_interface i
+         ON i.id = ihi.tb_interface_id AND i.deleted = 'N'
+       INNER JOIN setes_central.tb_interface_has_privilege ihp
+         ON ihp.tb_interface_id = i.id AND ihp.active = 'S' AND ihp.deleted = 'N'
+       INNER JOIN setes_central.tb_privilege p
+         ON p.id = ihp.tb_privilege_id AND p.deleted = 'N'
+       LEFT JOIN \`${s}\`.tb_user_has_privilege uhp
+         ON uhp.tb_user_id = ?
+        AND uhp.tb_interface_id = i.id
+        AND uhp.tb_privilege_id = p.id
+        AND uhp.active = 'S' AND uhp.deleted = 'N'
+      WHERE ihi.tb_institution_id = ? AND ihi.active = 'S' AND ihi.deleted = 'N'
+      ORDER BY i.description, p.id`,
+    [userId, institutionId]
+  )
+
+  const byInterface = new Map<number, UserInterfacePrivileges>()
+  for (const row of rows) {
+    let entry = byInterface.get(row.interfaceId)
+    if (!entry) {
+      entry = {
+        interfaceId:  Number(row.interfaceId),
+        description:  row.description,
+        i18nKey:      row.i18nKey,
+        groupDefault: row.groupDefault,
+        moduleNames:  row.moduleNames,
+        privileges:   [],
+      }
+      byInterface.set(row.interfaceId, entry)
+    }
+    entry.privileges.push({
+      privilegeId: Number(row.privilegeId),
+      description: row.privilegeDescription,
+      granted:     row.granted as 'S' | 'N',
+    } as UserPrivilegeGrant)
+  }
+  return Array.from(byInterface.values())
+}
+
+/** Ids dos privilégios definidos no catálogo para a interface (validação). */
+export async function listInterfaceCatalogPrivilegeIds(
+  interfaceId: number
+): Promise<number[]> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT tb_privilege_id AS id
+     FROM setes_central.tb_interface_has_privilege
+     WHERE tb_interface_id = ? AND active = 'S' AND deleted = 'N'`,
+    [interfaceId]
+  )
+  return rows.map(r => Number(r.id))
+}
+
+/** Sincroniza a concessão de UMA interface: concede a lista, revoga (soft) o resto. */
+export async function setUserPrivileges(
+  schemaName: string, userId: number, interfaceId: number, privilegeIds: number[]
+): Promise<void> {
+  const s = assertSchema(schemaName)
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    if (privilegeIds.length > 0) {
+      await conn.query(
+        `INSERT INTO \`${s}\`.tb_user_has_privilege
+           (tb_user_id, tb_interface_id, tb_privilege_id, active, created_at, updated_at, deleted)
+         VALUES ${privilegeIds.map(() => "(?, ?, ?, 'S', NOW(), NOW(), 'N')").join(', ')}
+         ON DUPLICATE KEY UPDATE active = 'S', deleted = 'N', updated_at = NOW()`,
+        privilegeIds.flatMap(privilegeId => [userId, interfaceId, privilegeId])
+      )
+      await conn.query(
+        `UPDATE \`${s}\`.tb_user_has_privilege
+         SET active = 'N', updated_at = NOW()
+         WHERE tb_user_id = ? AND tb_interface_id = ? AND tb_privilege_id NOT IN (?)`,
+        [userId, interfaceId, privilegeIds]
+      )
+    } else {
+      await conn.query(
+        `UPDATE \`${s}\`.tb_user_has_privilege
+         SET active = 'N', updated_at = NOW()
+         WHERE tb_user_id = ? AND tb_interface_id = ?`,
+        [userId, interfaceId]
+      )
+    }
+
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /** Sincroniza vínculos: concede a lista (com kind), revoga (soft) as demais. */

@@ -1,4 +1,5 @@
 import pool from '@shared/db/connection'
+import { PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 
 export async function getInstitutionInfo(schemaName: string) {
   const conn = await pool.getConnection()
@@ -110,6 +111,14 @@ function assertSchema(schemaName: string): string {
   return schemaName
 }
 
+// Agrupador do catálogo EXCLUSIVO do superusuário (definição por perfil do
+// Valdo, 2026-07-12: admin = tudo EXCETO o módulo Super). Interfaces com
+// este group_default nunca entram no menu de não-super — mesmo que estejam
+// no contrato ou num módulo do cliente (o superGuard já dá 403 na API;
+// aqui evitamos até exibi-las).
+const SUPER_MENU_GROUP = 'Super'
+const NOT_SUPER_GROUP  = `AND COALESCE(i.group_default, '') <> '${SUPER_MENU_GROUP}'`
+
 export interface MenuInterfaceRow {
   moduleId:             number | null
   moduleDescription:    string | null
@@ -121,7 +130,10 @@ export interface MenuInterfaceRow {
   imgIndex:             number | null
 }
 
-// Interfaces registradas em módulos do cliente (workflow do prompt, passo 1)
+// Interfaces registradas em módulos do cliente (workflow do prompt, passo 1).
+// Usuário REGULAR só enxerga o que tem privilégio VISUALIZAR (opção 1 do
+// workflow de privilégios — decisão do Valdo 2026-07-12); ADMIN pula o
+// filtro (contrato completo, exceto módulo Super — que nem está no schema).
 export async function getModuleInterfaces(
   schemaName: string, userId: number, skipPrivilegeFilter: boolean
 ): Promise<MenuInterfaceRow[]> {
@@ -129,6 +141,7 @@ export async function getModuleInterfaces(
   const privilegeFilter = skipPrivilegeFilter ? '' : `
     AND EXISTS (SELECT 1 FROM \`${s}\`.tb_user_has_privilege uhp
                 WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id
+                  AND uhp.tb_privilege_id = ${PRIVILEGE_VISUALIZAR}
                   AND uhp.active = 'S' AND uhp.deleted = 'N')`
   const params = skipPrivilegeFilter ? [] : [userId]
 
@@ -146,7 +159,7 @@ export async function getModuleInterfaces(
        ON (ihi.tb_interface_id = mhi.tb_interface_id AND ihi.active = 'S' AND ihi.deleted = 'N')
      INNER JOIN setes_central.tb_interface i
        ON (i.id = mhi.tb_interface_id AND i.deleted = 'N')
-     WHERE m.deleted = 'N'${privilegeFilter}
+     WHERE m.deleted = 'N' ${NOT_SUPER_GROUP}${privilegeFilter}
      ORDER BY m.description, i.description`,
     params
   )
@@ -162,6 +175,7 @@ export async function getUngroupedInterfaces(
   const privilegeFilter = skipPrivilegeFilter ? '' : `
     AND EXISTS (SELECT 1 FROM \`${s}\`.tb_user_has_privilege uhp
                 WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id
+                  AND uhp.tb_privilege_id = ${PRIVILEGE_VISUALIZAR}
                   AND uhp.active = 'S' AND uhp.deleted = 'N')`
   const params = skipPrivilegeFilter ? [] : [userId]
 
@@ -175,7 +189,7 @@ export async function getUngroupedInterfaces(
      FROM \`${s}\`.tb_institution_has_interface ihi
      INNER JOIN setes_central.tb_interface i
        ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-     WHERE ihi.active = 'S' AND ihi.deleted = 'N'
+     WHERE ihi.active = 'S' AND ihi.deleted = 'N' ${NOT_SUPER_GROUP}
        AND NOT EXISTS (SELECT 1 FROM \`${s}\`.tb_module_has_interface mhi
                        WHERE mhi.tb_interface_id = i.id
                          AND mhi.active = 'S' AND mhi.deleted = 'N')${privilegeFilter}

@@ -7,21 +7,28 @@
 import * as repo from '../modules/users/users.repository'
 import {
   fetchUsers, createUser, editUser, saveInstitutionLinks,
+  fetchUserPrivileges, saveUserPrivileges,
 } from '../modules/users/users.service'
 import { UserCreateInput, UserScope } from '../modules/users/users.interface'
 
 jest.mock('../modules/users/users.repository')
 
-const mockList      = repo.listUsers                as jest.Mock
-const mockFindOwner = repo.findLoginEmailOwner      as jest.Mock
-const mockInsert    = repo.insertUserCascade        as jest.Mock
-const mockUpdate    = repo.updateUserCascade        as jest.Mock
-const mockExists    = repo.userExists               as jest.Mock
-const mockLinked    = repo.userLinkedToInstitution  as jest.Mock
-const mockSetLinks  = repo.setInstitutionLinks      as jest.Mock
+const mockList       = repo.listUsers                       as jest.Mock
+const mockFindOwner  = repo.findLoginEmailOwner             as jest.Mock
+const mockInsert     = repo.insertUserCascade               as jest.Mock
+const mockUpdate     = repo.updateUserCascade               as jest.Mock
+const mockExists     = repo.userExists                      as jest.Mock
+const mockLinked     = repo.userLinkedToInstitution         as jest.Mock
+const mockSetLinks   = repo.setInstitutionLinks             as jest.Mock
+const mockSchema     = repo.findInstitutionSchema           as jest.Mock
+const mockListPrivs  = repo.listUserPrivileges              as jest.Mock
+const mockSetPrivs   = repo.setUserPrivileges               as jest.Mock
+const mockCatalogIds = repo.listInterfaceCatalogPrivilegeIds as jest.Mock
 
-const superScope: UserScope = { isSuper: true,  institutionId: 1 }
-const adminScope: UserScope = { isSuper: false, institutionId: 5 }
+const superScope: UserScope =
+  { isSuper: true,  institutionId: 1, schemaName: 'setes_setes' }
+const adminScope: UserScope =
+  { isSuper: false, institutionId: 5, schemaName: 'setes_acme' }
 
 const input: UserCreateInput = {
   nameCompany: 'Valdo de Souza',
@@ -116,6 +123,52 @@ describe('editUser', () => {
     await expect(editUser(adminScope, 9, input))
       .rejects.toMatchObject({ statusCode: 404 })
     expect(mockUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('privilégios de acesso (ACL — workflow 2026-07-12)', () => {
+  beforeEach(() => {
+    mockSchema.mockResolvedValue('setes_cliente')
+    mockListPrivs.mockResolvedValue([])
+    mockCatalogIds.mockResolvedValue([1, 2, 3, 6])
+  })
+
+  it('super informa o institution alvo; schema resolvido na central', async () => {
+    await fetchUserPrivileges(superScope, 9, 7)
+
+    expect(mockListPrivs).toHaveBeenCalledWith('setes_cliente', 7, 9)
+  })
+
+  it('super sem institutionId → 400 por campo', async () => {
+    await expect(fetchUserPrivileges(superScope, 9, null)).rejects.toMatchObject({
+      statusCode: 400,
+      fields: [{ field: 'institutionId', message: expect.any(String) }],
+    })
+  })
+
+  it('admin do cliente é FORÇADO ao próprio institution/schema', async () => {
+    await fetchUserPrivileges(adminScope, 9, 999)
+
+    expect(mockListPrivs).toHaveBeenCalledWith('setes_acme', 5, 9)
+    expect(mockSchema).not.toHaveBeenCalled()
+  })
+
+  it('usuário sem vínculo com o alvo → 400 (vincule antes)', async () => {
+    mockLinked.mockResolvedValue(false)
+
+    await expect(fetchUserPrivileges(adminScope, 9, null))
+      .rejects.toMatchObject({ statusCode: 400 })
+  })
+
+  it('PUT sincroniza somente privilégios do catálogo da interface', async () => {
+    await saveUserPrivileges(adminScope, 9, 4, [6, 1], null)
+    expect(mockSetPrivs).toHaveBeenCalledWith('setes_acme', 9, 4, [6, 1])
+
+    await expect(saveUserPrivileges(adminScope, 9, 4, [5], null))
+      .rejects.toMatchObject({
+        statusCode: 400,
+        fields: [{ field: 'privilegeIds', message: expect.stringContaining('5') }],
+      })
   })
 })
 
