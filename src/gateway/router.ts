@@ -17,6 +17,7 @@ import customersRoutes from '@modules/customers/customers.routes'
 import collaboratorsRoutes from '@modules/collaborators/collaborators.routes'
 import categoriesRoutes from '@modules/categories/categories.routes'
 import financialPlansRoutes from '@modules/financial-plans/financial-plans.routes'
+import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
 import { superGuard, superWriteGuard } from './super.guard'
 import { adminGuard } from './admin.guard'
 
@@ -80,5 +81,10 @@ router.use('/categories', categoriesRoutes)
 // Plano de contas (2026-07-18): 2º cadastro em ÁRVORE — mesmo desenho do
 // categories; escopo por institution no service; flag 'financial-plans'.
 router.use('/financial-plans', financialPlansRoutes)
+
+// Formas de pagamento (2026-07-18): catálogo CENTRAL compartilhado (cliente
+// inicia o cadastro) + vínculo por institution — grupo Financeiro; flag
+// 'payment-types'.
+router.use('/payment-types', paymentTypesRoutes)
 
 export default router

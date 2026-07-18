@@ -3,6 +3,7 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
+import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
 import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
 } from './customers.interface'
@@ -98,38 +99,29 @@ const CUSTOMER_FIELDS = (input: CustomerInput, paymentTypesId: number) => [
 ]
 
 /**
- * Porta do Fc_PegaFormaPgto do Delphi (decisão 18): garante a forma de
- * pagamento "Carteira" (fiado/pendurado — id_nfce 05 = Crédito Loja) no
- * schema do cliente, criando-a on-demand com id MAX+1 (FOR UPDATE, dentro
- * da transação do salvar). Devolve o id para gravar em tb_payment_types_id.
+ * Porta do Fc_PegaFormaPgto do Delphi (decisão 18), REFORMADA em
+ * 2026-07-18: o catálogo de formas virou CENTRAL (workflow do Valdo —
+ * cliente inicia, reuso por descrição) — garante "Carteira" (id_nfce 05 =
+ * Crédito Loja) em setes_central.tb_payment_types + o VÍNCULO da
+ * institution na tb_institution_has_payment_types, dentro da transação do
+ * salvar. Devolve o id central para gravar em tb_customer.tb_payment_types_id.
  */
 async function ensureWalletPaymentType(
-  conn: PoolConnection, schemaName: string
+  conn: PoolConnection, schemaName: string, institutionId: number
 ): Promise<number> {
-  const table = `${schemaName}.tb_payment_types`
-  const [rows] = await conn.query<any[]>(
-    `SELECT id FROM ?? WHERE description = ? AND deleted = 'N' LIMIT 1 FOR UPDATE`,
-    [table, 'Carteira']
-  )
-  if (rows.length > 0) return Number(rows[0].id)
-
-  const [mx] = await conn.query<any[]>(
-    'SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM ?? FOR UPDATE', [table]
-  )
-  const id = Number(mx[0].nextId)
-  await conn.query(
-    `INSERT INTO ?? (id, description, id_nfce, created_at, updated_at)
-     VALUES (?, ?, '05', NOW(), NOW())`,
-    [table, id, 'Carteira']
-  )
+  const { id } = await ensureCatalogPaymentType(conn, 'Carteira', '05')
+  await upsertLink(conn, schemaName, institutionId, id)
   return id
 }
 
 /** wallet da UI (Sim/Não) → id da forma de pagamento (0 = sem carteira). */
 async function resolveWalletPaymentType(
-  conn: PoolConnection, schemaName: string, input: CustomerInput
+  conn: PoolConnection, schemaName: string, institutionId: number,
+  input: CustomerInput
 ): Promise<number> {
-  return input.wallet === 'S' ? ensureWalletPaymentType(conn, schemaName) : 0
+  return input.wallet === 'S'
+    ? ensureWalletPaymentType(conn, schemaName, institutionId)
+    : 0
 }
 
 /**
@@ -159,7 +151,8 @@ export async function insertCustomerCascade(
         [{ field: 'id', message: String(id) }])
     }
 
-    const paymentTypesId = await resolveWalletPaymentType(conn, schemaName, input)
+    const paymentTypesId =
+      await resolveWalletPaymentType(conn, schemaName, institutionId, input)
 
     if (existing.length > 0) {
       await conn.query(
@@ -206,7 +199,8 @@ export async function updateCustomerCascade(
 
     await saveEntityFiscalChain(conn, id, input, updatedBy)
 
-    const paymentTypesId = await resolveWalletPaymentType(conn, schemaName, input)
+    const paymentTypesId =
+      await resolveWalletPaymentType(conn, schemaName, institutionId, input)
 
     await conn.query(
       `UPDATE ?? SET tb_salesman_id = ?, tb_carrier_id = ?, credit_status = ?,
