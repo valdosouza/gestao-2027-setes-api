@@ -14,6 +14,7 @@ import usersRoutes from '@modules/users/users.routes'
 import entitiesRoutes from '@modules/entities/entities.routes'
 import customersRoutes from '@modules/customers/customers.routes'
 import collaboratorsRoutes from '@modules/collaborators/collaborators.routes'
+import categoriesRoutes from '@modules/categories/categories.routes'
 import { superGuard, superWriteGuard } from './super.guard'
 import { adminGuard } from './admin.guard'
 
@@ -67,5 +68,9 @@ router.use('/customers', customersRoutes)
 // 16): mesmo desenho do customers — sem superGuard (privilégio da tela é do
 // app); escopo por institution no service; gate técnico = flag 'collaborators'.
 router.use('/collaborators', collaboratorsRoutes)
+
+// Categorias de produtos/serviços (2026-07-18): cadastro de CLIENTE — sem
+// superGuard; escopo por institution no service; flag 'categories'.
+router.use('/categories', categoriesRoutes)
 
 export default router
