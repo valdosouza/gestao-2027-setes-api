@@ -19,6 +19,16 @@ export interface InterfaceInput {
   groupDefault?: string | null
   i18nKey?:      string | null
   description:   string
-  kind?:         string | null
+  /** 'T' = tela (vai a menu); 'R' = recurso/aba (decisão 13). Omitido = 'T'. */
+  kind?:         'T' | 'R' | null
   position?:     string | null
+}
+
+/** Entrada do upsert de UMA configuração do catálogo (tb_interface_has_config). */
+export interface InterfaceConfigInput {
+  description:    string
+  kind:           string          // String|Integer|Float|Boolean|Date|Options
+  options?:       string | null   // obrigatório quando kind = Options
+  defaultContent: string
+  scope:          'I' | 'U'
 }

@@ -39,7 +39,8 @@ describe('createInstitution (POST /api/institutions absorve o onboarding)', () =
     const result = await createInstitution(input, 'setes_alpha')
 
     expect(result).toEqual({ id: 2, schemaName: 'setes_alpha', active: 'S' })
-    expect(mockInsertCascade).toHaveBeenCalledWith(input, 'setes_alpha')
+    // 3º arg = updatedBy (rastro do last-write-wins — Fase 3, decisão 1)
+    expect(mockInsertCascade).toHaveBeenCalledWith(input, 'setes_alpha', null)
     expect(mockInsertDefaultFlags).toHaveBeenCalledWith(2)
     expect(mockRunMigrations).toHaveBeenCalledWith('setes_alpha')
     expect(mockSetActive).toHaveBeenCalledWith(2, 'S')

@@ -11,36 +11,37 @@ import { AddressInput, AddressRow } from './address.types'
 
 /** Diff por kind: upsert dos enviados, deleted='S' nos ausentes (nunca DELETE). */
 export async function syncAddresses(
-  conn: PoolConnection, entityId: number, addresses: AddressInput[]
+  conn: PoolConnection, entityId: number, addresses: AddressInput[],
+  updatedBy: number | null = null
 ): Promise<void> {
   for (const a of addresses) {
     await conn.query(
       `INSERT INTO setes_central.tb_address
          (id, kind, street, nmbr, complement, neighborhood, zip_code,
-          tb_country_id, tb_state_id, tb_city_id, main, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+          tb_country_id, tb_state_id, tb_city_id, main, created_at, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)
        ON DUPLICATE KEY UPDATE
          street = VALUES(street), nmbr = VALUES(nmbr), complement = VALUES(complement),
          neighborhood = VALUES(neighborhood), zip_code = VALUES(zip_code),
          tb_country_id = VALUES(tb_country_id), tb_state_id = VALUES(tb_state_id),
          tb_city_id = VALUES(tb_city_id), main = VALUES(main),
-         deleted = 'N', updated_at = NOW()`,
+         deleted = 'N', updated_at = NOW(), updated_by = VALUES(updated_by)`,
       [entityId, a.kind, a.street, a.nmbr ?? 'sn', a.complement ?? null,
        a.neighborhood ?? null, a.zipCode ?? null, a.tbCountryId, a.tbStateId,
-       a.tbCityId, a.main ?? 'S']
+       a.tbCityId, a.main ?? 'S', updatedBy]
     )
   }
   const kinds = addresses.map(a => a.kind)
   if (kinds.length > 0) {
     await conn.query(
-      `UPDATE setes_central.tb_address SET deleted = 'S', updated_at = NOW()
+      `UPDATE setes_central.tb_address SET deleted = 'S', updated_at = NOW(), updated_by = ?
        WHERE id = ? AND kind NOT IN (?)`,
-      [entityId, kinds]
+      [updatedBy, entityId, kinds]
     )
   } else {
     await conn.query(
-      `UPDATE setes_central.tb_address SET deleted = 'S', updated_at = NOW() WHERE id = ?`,
-      [entityId]
+      `UPDATE setes_central.tb_address SET deleted = 'S', updated_at = NOW(), updated_by = ? WHERE id = ?`,
+      [updatedBy, entityId]
     )
   }
 }

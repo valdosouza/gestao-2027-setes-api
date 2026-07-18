@@ -39,7 +39,7 @@ function dupEntryTo409(err: any): never {
  *    permanece active='N' e o erro volta ao app.
  */
 export async function createInstitution(
-  input: InstitutionInput, schemaName: string
+  input: InstitutionInput, schemaName: string, updatedBy: number | null = null
 ): Promise<{ id: number; schemaName: string; active: 'S' | 'N' }> {
   if (await schemaNameExists(schemaName)) {
     throw new HttpError(409, `Schema "${schemaName}" já está em uso`)
@@ -47,7 +47,7 @@ export async function createInstitution(
 
   let id: number
   try {
-    id = await insertInstitutionCascade(input, schemaName)
+    id = await insertInstitutionCascade(input, schemaName, updatedBy)
   } catch (err) {
     dupEntryTo409(err)
   }
@@ -69,12 +69,14 @@ export async function createInstitution(
   return { id, schemaName, active: 'S' }
 }
 
-export async function editInstitution(id: number, input: InstitutionInput): Promise<void> {
+export async function editInstitution(
+  id: number, input: InstitutionInput, updatedBy: number | null = null
+): Promise<void> {
   if (!(await institutionExists(id))) {
     throw new HttpError(404, `Estabelecimento ${id} não encontrado`)
   }
   try {
-    await updateInstitutionCascade(id, input)
+    await updateInstitutionCascade(id, input, updatedBy)
   } catch (err) {
     dupEntryTo409(err)
   }

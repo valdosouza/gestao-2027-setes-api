@@ -11,28 +11,29 @@ import { SocialMediaInput, SocialMediaRow } from './social-media.types'
 
 /** Diff por kind: upsert dos enviados, deleted='S' nos ausentes (nunca DELETE). */
 export async function syncSocialMedia(
-  conn: PoolConnection, entityId: number, socialMedia: SocialMediaInput[]
+  conn: PoolConnection, entityId: number, socialMedia: SocialMediaInput[],
+  updatedBy: number | null = null
 ): Promise<void> {
   for (const s of socialMedia) {
     await conn.query(
-      `INSERT INTO setes_central.tb_social_media (id, kind, link, created_at, updated_at)
-       VALUES (?, ?, ?, NOW(), NOW())
+      `INSERT INTO setes_central.tb_social_media (id, kind, link, created_at, updated_at, updated_by)
+       VALUES (?, ?, ?, NOW(), NOW(), ?)
        ON DUPLICATE KEY UPDATE
-         link = VALUES(link), deleted = 'N', updated_at = NOW()`,
-      [entityId, s.kind, s.link ?? null]
+         link = VALUES(link), deleted = 'N', updated_at = NOW(), updated_by = VALUES(updated_by)`,
+      [entityId, s.kind, s.link ?? null, updatedBy]
     )
   }
   const kinds = socialMedia.map(s => s.kind)
   if (kinds.length > 0) {
     await conn.query(
-      `UPDATE setes_central.tb_social_media SET deleted = 'S', updated_at = NOW()
+      `UPDATE setes_central.tb_social_media SET deleted = 'S', updated_at = NOW(), updated_by = ?
        WHERE id = ? AND kind NOT IN (?)`,
-      [entityId, kinds]
+      [updatedBy, entityId, kinds]
     )
   } else {
     await conn.query(
-      `UPDATE setes_central.tb_social_media SET deleted = 'S', updated_at = NOW() WHERE id = ?`,
-      [entityId]
+      `UPDATE setes_central.tb_social_media SET deleted = 'S', updated_at = NOW(), updated_by = ? WHERE id = ?`,
+      [updatedBy, entityId]
     )
   }
 }

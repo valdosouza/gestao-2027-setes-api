@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { InterfaceRow, InterfaceInput } from './interfaces.interface'
+import { InterfaceRow, InterfaceInput, InterfaceConfigInput } from './interfaces.interface'
 
 // =====================================================================
 // tb_interface + tb_interface_has_privilege
@@ -86,7 +86,7 @@ export async function insertInterface(input: InterfaceInput): Promise<number> {
       input.groupDefault ?? null,
       input.i18nKey      ?? null,
       input.description,
-      input.kind         ?? null,
+      input.kind         ?? 'T',   // coluna NOT NULL (decisão 13)
       input.position     ?? null,
     ]
   )
@@ -104,10 +104,59 @@ export async function updateInterface(id: number, input: InterfaceInput): Promis
       input.groupDefault ?? null,
       input.i18nKey      ?? null,
       input.description,
-      input.kind         ?? null,
+      input.kind         ?? 'T',   // coluna NOT NULL (decisão 13)
       input.position     ?? null,
       id,
     ]
+  )
+}
+
+/**
+ * Upsert de UMA configuração do catálogo (tb_interface_has_config — seção
+ * "Configurações" da tela de Interfaces; ressuscita soft-deleted).
+ */
+export async function upsertInterfaceConfig(
+  interfaceId: number, name: string, input: InterfaceConfigInput
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO setes_central.tb_interface_has_config
+       (tb_interface_id, name, description, kind, options,
+        default_content, scope, created_at, updated_at, deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+     ON DUPLICATE KEY UPDATE
+       description     = VALUES(description),
+       kind            = VALUES(kind),
+       options         = VALUES(options),
+       default_content = VALUES(default_content),
+       scope           = VALUES(scope),
+       deleted         = 'N',
+       updated_at      = NOW()`,
+    [interfaceId, name, input.description, input.kind,
+     input.options ?? null, input.defaultContent, input.scope]
+  )
+}
+
+/** Existe a configuração (não deletada) no catálogo da interface? */
+export async function interfaceConfigExists(
+  interfaceId: number, name: string
+): Promise<boolean> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT 1 FROM setes_central.tb_interface_has_config
+      WHERE tb_interface_id = ? AND name = ? AND deleted = 'N'`,
+    [interfaceId, name]
+  )
+  return rows.length > 0
+}
+
+/** Remove (soft) uma configuração do catálogo. */
+export async function softDeleteInterfaceConfig(
+  interfaceId: number, name: string
+): Promise<void> {
+  await pool.query(
+    `UPDATE setes_central.tb_interface_has_config
+        SET deleted = 'S', updated_at = NOW()
+      WHERE tb_interface_id = ? AND name = ?`,
+    [interfaceId, name]
   )
 }
 

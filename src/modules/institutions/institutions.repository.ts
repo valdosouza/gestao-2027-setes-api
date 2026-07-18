@@ -1,4 +1,6 @@
 import pool from '@shared/db/connection'
+import { HttpError } from '@shared/errors/http-error'
+import { SETES_INSTITUTION_ID, SETES_SCHEMA } from '@shared/auth/roles'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import {
   InstitutionInput, InstitutionListRow, InstitutionFull,
@@ -78,18 +80,44 @@ export async function institutionExists(id: number): Promise<boolean> {
  * do schema, DEPOIS do commit (DDL não tem rollback).
  */
 export async function insertInstitutionCascade(
-  input: InstitutionInput, schemaName: string
+  input: InstitutionInput, schemaName: string, updatedBy: number | null = null
 ): Promise<number> {
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    const id = await saveEntityFiscalChain(conn, null, input)
+    // Fase 3 (decisões 1 e 9): a cadeia resolve reuso pelo documento.
+    const { id } = await saveEntityFiscalChain(conn, null, input, updatedBy)
+
+    // Papel duplicado (decisão 2): 409 com o id no payload — o app oferece
+    // abrir em edição. Vale mesmo deleted='S' (schema nunca é reaproveitado).
+    const [existing] = await conn.query<any[]>(
+      'SELECT 1 FROM setes_central.tb_institution WHERE id = ? FOR UPDATE',
+      [id]
+    )
+    if (existing.length > 0) {
+      throw new HttpError(409,
+        `Esta entidade já está cadastrada como estabelecimento (id ${id})`,
+        [{ field: 'id', message: String(id) }])
+    }
 
     await conn.query(
       `INSERT INTO setes_central.tb_institution (id, schema_name, active, created_at, updated_at)
        VALUES (?, ?, 'N', NOW(), NOW())`,
       [id, schemaName]
+    )
+
+    // Decisão 13 da Fase 3 (Valdo, 2026-07-16): todo institution nasce também
+    // CLIENTE DA SETES (tb_customer em setes_setes, institution 1) para a
+    // administração do contrato — "clientes de verdade são os que não são a
+    // própria Setes". Idempotente: se a entity já era cliente da Setes,
+    // revive/mantém (não é papel duplicado — é o vínculo comercial esperado).
+    await conn.query(
+      `INSERT INTO ??
+         (id, tb_institution_id, active, created_at, updated_at)
+       VALUES (?, ?, 'S', NOW(), NOW())
+       ON DUPLICATE KEY UPDATE deleted = 'N', active = 'S', updated_at = NOW()`,
+      [`${SETES_SCHEMA}.tb_customer`, id, SETES_INSTITUTION_ID]
     )
 
     await conn.commit()
@@ -104,13 +132,13 @@ export async function insertInstitutionCascade(
 
 /** PUT: mesma cascade em transação única. schema_name é IMUTÁVEL. */
 export async function updateInstitutionCascade(
-  id: number, input: InstitutionInput
+  id: number, input: InstitutionInput, updatedBy: number | null = null
 ): Promise<void> {
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    await saveEntityFiscalChain(conn, id, input)
+    await saveEntityFiscalChain(conn, id, input, updatedBy)
 
     if (input.active !== undefined) {
       await conn.query(
@@ -149,7 +177,10 @@ export async function deleteInstitution(id: number): Promise<void> {
  * (decisão do Valdo, 2026-07-11).
  */
 export async function insertDefaultFlags(institutionId: number): Promise<void> {
-  const defaultModules = ['core']
+  // 'customers' liberado por padrão desde a Fase 3; 'collaborators' desde a
+  // onda 2 (gate técnico — o comercial por tela continua em
+  // tb_institution_has_interface, decisão 17).
+  const defaultModules = ['core', 'customers', 'collaborators']
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()

@@ -16,3 +16,18 @@ export function superGuard(req: Request, res: Response, next: NextFunction): voi
   }
   next()
 }
+
+/**
+ * Guard "leitura aberta, escrita Super" (fix 2026-07-18): os cadastros
+ * GEOGRÁFICOS (countries/states/cities) são dados de REFERÊNCIA lidos pelos
+ * lookups de endereço de TODO cadastro de cliente (aba Endereços da cadeia
+ * fiscal) — o GET precisa funcionar para qualquer usuário autenticado; só a
+ * manutenção (POST/PUT/DELETE) continua restrita ao Super.
+ */
+export function superWriteGuard(req: Request, res: Response, next: NextFunction): void {
+  if (req.method === 'GET') {
+    next()
+    return
+  }
+  superGuard(req, res, next)
+}

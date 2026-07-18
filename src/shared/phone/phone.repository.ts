@@ -11,29 +11,30 @@ import { PhoneInput, PhoneRow } from './phone.types'
 
 /** Diff por kind: upsert dos enviados, deleted='S' nos ausentes (nunca DELETE). */
 export async function syncPhones(
-  conn: PoolConnection, entityId: number, phones: PhoneInput[]
+  conn: PoolConnection, entityId: number, phones: PhoneInput[],
+  updatedBy: number | null = null
 ): Promise<void> {
   for (const p of phones) {
     await conn.query(
-      `INSERT INTO setes_central.tb_phone (id, kind, contact, number, created_at, updated_at)
-       VALUES (?, ?, ?, ?, NOW(), NOW())
+      `INSERT INTO setes_central.tb_phone (id, kind, contact, number, created_at, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, NOW(), NOW(), ?)
        ON DUPLICATE KEY UPDATE
          contact = VALUES(contact), number = VALUES(number),
-         deleted = 'N', updated_at = NOW()`,
-      [entityId, p.kind, p.contact ?? null, p.number ?? null]
+         deleted = 'N', updated_at = NOW(), updated_by = VALUES(updated_by)`,
+      [entityId, p.kind, p.contact ?? null, p.number ?? null, updatedBy]
     )
   }
   const kinds = phones.map(p => p.kind)
   if (kinds.length > 0) {
     await conn.query(
-      `UPDATE setes_central.tb_phone SET deleted = 'S', updated_at = NOW()
+      `UPDATE setes_central.tb_phone SET deleted = 'S', updated_at = NOW(), updated_by = ?
        WHERE id = ? AND kind NOT IN (?)`,
-      [entityId, kinds]
+      [updatedBy, entityId, kinds]
     )
   } else {
     await conn.query(
-      `UPDATE setes_central.tb_phone SET deleted = 'S', updated_at = NOW() WHERE id = ?`,
-      [entityId]
+      `UPDATE setes_central.tb_phone SET deleted = 'S', updated_at = NOW(), updated_by = ? WHERE id = ?`,
+      [updatedBy, entityId]
     )
   }
 }

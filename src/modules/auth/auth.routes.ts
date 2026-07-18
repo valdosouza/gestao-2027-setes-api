@@ -82,7 +82,9 @@ router.post('/login', async (req: Request, res: Response) => {
   try {
     const result = await login(email, password)
     if (result.status === 'ok') {
-      res.json({ ok: true, token: result.token })
+      // context = estado de sessão derivado (decisão 17) — UX do app;
+      // enforcement continua na API.
+      res.json({ ok: true, token: result.token, context: result.context })
     } else {
       // N institutions: UI mostra "Escolha a empresa" e chama /auth/select-institution
       res.json({ ok: true, select: true, selectionToken: result.token, institutions: result.institutions })
@@ -145,8 +147,8 @@ router.post('/select-institution', async (req: Request, res: Response) => {
     return
   }
   try {
-    const token = await selectInstitution(header.split(' ')[1], Number(institutionId))
-    res.json({ ok: true, token })
+    const issued = await selectInstitution(header.split(' ')[1], Number(institutionId))
+    res.json({ ok: true, token: issued.token, context: issued.context })
   } catch (err) {
     fail(res, err, 'select-institution')
   }
@@ -305,8 +307,8 @@ router.post('/switch-institution', authMiddleware, async (req: Request, res: Res
     return
   }
   try {
-    const token = await switchInstitution(req.institution!.userId, Number(institutionId))
-    res.json({ ok: true, token })
+    const issued = await switchInstitution(req.institution!.userId, Number(institutionId))
+    res.json({ ok: true, token: issued.token, context: issued.context })
   } catch (err) {
     fail(res, err, 'switch-institution')
   }

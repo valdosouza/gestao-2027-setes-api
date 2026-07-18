@@ -3,11 +3,11 @@ import { HttpError } from '@shared/errors/http-error'
 import {
   getResolvedFields, invalidateFieldConfig, findInterfaceIdByKey, ResolvedField,
 } from '@shared/field-config'
-import { InterfaceVitrineRow, FieldConfigInput } from './interface-fields.interface'
 import {
-  listVitrine, interfaceExists, isInterfaceAcquired,
-  getCatalogFieldRequired, upsertFieldConfig,
-} from './interface-fields.repository'
+  InterfaceVitrineRow, listVitrine, interfaceExists, isInterfaceAcquired,
+} from '@shared/interface-vitrine'
+import { FieldConfigInput } from './interface-fields.interface'
+import { getCatalogFieldRequired, upsertFieldConfig } from './interface-fields.repository'
 
 /**
  * Regra do painel de campos configuráveis (decisões 2, 3 e 6 da Fase 2):

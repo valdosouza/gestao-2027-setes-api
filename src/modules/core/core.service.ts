@@ -11,6 +11,7 @@ import {
 } from './core.repository'
 import { InstitutionPayload } from '@shared/types/express'
 import { isSuper } from '@shared/auth/roles'
+import { SessionContext, getSessionContext } from '@shared/session-context'
 import { HttpError } from '@shared/errors/http-error'
 
 export async function getInstitutionData(schemaName: string) {
@@ -26,12 +27,16 @@ export interface SessionInfo {
   role:            string
   institutionId:   number
   institutionName: string | null
+  /** Estado de sessão derivado (decisão 17) — re-hidrata o SessionContext
+   *  do app no refresh (o bloco do login não sobrevive ao F5). */
+  context:         SessionContext
 }
 
 export async function getSessionInfo(payload: InstitutionPayload): Promise<SessionInfo> {
-  const [userName, institution] = await Promise.all([
+  const [userName, institution, context] = await Promise.all([
     getUserName(payload.userId),
     getInstitutionInfo(payload.schemaName),
+    getSessionContext(payload),
   ])
   return {
     userId:          payload.userId,
@@ -39,6 +44,7 @@ export async function getSessionInfo(payload: InstitutionPayload): Promise<Sessi
     role:            payload.role,
     institutionId:   payload.institutionId,
     institutionName: institution?.name ?? null,
+    context,
   }
 }
 

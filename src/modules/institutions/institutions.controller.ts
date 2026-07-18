@@ -67,7 +67,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   if (body === null) return
   try {
     const { schemaName, ...input } = body
-    const result = await createInstitution(input, schemaName)
+    const result = await createInstitution(input, schemaName, req.institution?.userId ?? null)
     logger.info('Estabelecimento criado e provisionado', result)
     res.status(201).json({ ok: true, data: result })
   } catch (err) {
@@ -81,7 +81,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const body = parseBody(institutionUpdateDto, req, res)
   if (body === null) return
   try {
-    await editInstitution(id, body)
+    await editInstitution(id, body, req.institution?.userId ?? null)
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'institutions/:id PUT')

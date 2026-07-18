@@ -6,6 +6,7 @@ import {
 } from './auth.repository'
 import { InstitutionPayload } from '@shared/types/express'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { SessionContext, getSessionContext } from '@shared/session-context'
 import { md5Password } from '@shared/auth/password'
 import { HttpError } from '@shared/errors/http-error'
 import { sendMail, isMailerConfigured } from '@shared/mailer/mailer'
@@ -24,6 +25,15 @@ export interface LoginResult {
   status:        'ok' | 'select'
   token:         string
   institutions?: UserInstitution[]
+  /** Estado de sessão derivado (decisão 17) — só acompanha o token FINAL. */
+  context?:      SessionContext
+}
+
+/** Token final + bloco context (decisão 17): toda emissão de JWT final
+ *  devolve também os fatos derivados de sessão para o app. */
+export interface IssuedSession {
+  token:   string
+  context: SessionContext
 }
 
 // MD5 aplicado no backend, nunca na query (decisão 2) — função compartilhada
@@ -41,14 +51,18 @@ function resolveRole(link: UserInstitution): string {
   return kind
 }
 
-function signFinalToken(userId: number, link: UserInstitution): string {
+async function signFinalToken(userId: number, link: UserInstitution): Promise<IssuedSession> {
   const payload: InstitutionPayload = {
     institutionId: link.institutionId,
     userId,
     role:          resolveRole(link),
     schemaName:    link.schemaName,
   }
-  return jwt.sign(payload, secret(), { expiresIn: FINAL_TOKEN_TTL })
+  // JWT segue IDENTIDADE MÍNIMA (invariante da Fase 2); fatos derivados vão
+  // FORA do token, no bloco context (decisão 17 — fim das GB_* do Delphi).
+  const token   = jwt.sign(payload, secret(), { expiresIn: FINAL_TOKEN_TTL })
+  const context = await getSessionContext(payload)
+  return { token, context }
 }
 
 // Passo 1-3 do fluxo: autentica e decide pela quantidade de institutions
@@ -66,7 +80,8 @@ export async function login(email: string, password: string): Promise<LoginResul
   }
 
   if (institutions.length === 1) {
-    return { status: 'ok', token: signFinalToken(user.id, institutions[0]) }
+    const issued = await signFinalToken(user.id, institutions[0])
+    return { status: 'ok', token: issued.token, context: issued.context }
   }
 
   const selection: SelectionPayload = { userId: user.id, scope: SELECTION_SCOPE }
@@ -75,7 +90,7 @@ export async function login(email: string, password: string): Promise<LoginResul
 }
 
 // Passo 4: valida o token de seleção e o vínculo antes de emitir o JWT final
-export async function selectInstitution(selectionToken: string, institutionId: number): Promise<string> {
+export async function selectInstitution(selectionToken: string, institutionId: number): Promise<IssuedSession> {
   let payload: SelectionPayload
   try {
     payload = jwt.verify(selectionToken, secret()) as SelectionPayload
@@ -89,12 +104,12 @@ export async function selectInstitution(selectionToken: string, institutionId: n
 }
 
 // Passo 5: troca de institution com JWT final válido
-export async function switchInstitution(userId: number, institutionId: number): Promise<string> {
+export async function switchInstitution(userId: number, institutionId: number): Promise<IssuedSession> {
   return issueForInstitution(userId, institutionId)
 }
 
 // Nunca confia no body: revalida o vínculo no banco
-async function issueForInstitution(userId: number, institutionId: number): Promise<string> {
+async function issueForInstitution(userId: number, institutionId: number): Promise<IssuedSession> {
   const institutions = await getInstitutionsForUser(userId)
   const link = institutions.find(i => i.institutionId === institutionId)
   if (!link) throw new HttpError(403, 'Usuário sem vínculo ativo com esta institution')

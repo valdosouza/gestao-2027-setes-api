@@ -119,6 +119,11 @@ function assertSchema(schemaName: string): string {
 const SUPER_MENU_GROUP = 'Super'
 const NOT_SUPER_GROUP  = `AND COALESCE(i.group_default, '') <> '${SUPER_MENU_GROUP}'`
 
+// Framework de Configurações (decisão 13): só interface-TELA vai a menu.
+// kind 'R' = recurso/aba vendável — a tela pai consulta o contrato para
+// montar/omitir; NUNCA aparece no menu, em NENHUM perfil (nem super).
+const ONLY_SCREEN_KIND = `AND i.kind = 'T'`
+
 export interface MenuInterfaceRow {
   moduleId:             number | null
   moduleDescription:    string | null
@@ -159,7 +164,7 @@ export async function getModuleInterfaces(
        ON (ihi.tb_interface_id = mhi.tb_interface_id AND ihi.active = 'S' AND ihi.deleted = 'N')
      INNER JOIN setes_central.tb_interface i
        ON (i.id = mhi.tb_interface_id AND i.deleted = 'N')
-     WHERE m.deleted = 'N' ${NOT_SUPER_GROUP}${privilegeFilter}
+     WHERE m.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}${privilegeFilter}
      ORDER BY m.description, i.description`,
     params
   )
@@ -189,7 +194,7 @@ export async function getUngroupedInterfaces(
      FROM \`${s}\`.tb_institution_has_interface ihi
      INNER JOIN setes_central.tb_interface i
        ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-     WHERE ihi.active = 'S' AND ihi.deleted = 'N' ${NOT_SUPER_GROUP}
+     WHERE ihi.active = 'S' AND ihi.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}
        AND NOT EXISTS (SELECT 1 FROM \`${s}\`.tb_module_has_interface mhi
                        WHERE mhi.tb_interface_id = i.id
                          AND mhi.active = 'S' AND mhi.deleted = 'N')${privilegeFilter}
@@ -246,7 +251,7 @@ export async function getAllCentralInterfaces(): Promise<MenuInterfaceRow[]> {
             NULL            AS buttonAction,
             NULL            AS imgIndex
      FROM setes_central.tb_interface i
-     WHERE i.deleted = 'N'
+     WHERE i.deleted = 'N' ${ONLY_SCREEN_KIND}
      ORDER BY i.group_default, i.position, i.description`
   )
   return rows

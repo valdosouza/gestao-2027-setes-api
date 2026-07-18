@@ -1,12 +1,16 @@
 /// <reference types="jest" />
 import jwt from 'jsonwebtoken'
 import * as authRepo from '../modules/auth/auth.repository'
+import * as sessionRepo from '../shared/session-context/session-context.repository'
 import { login, selectInstitution, switchInstitution } from '../modules/auth/auth.service'
 
 jest.mock('../modules/auth/auth.repository')
+jest.mock('../shared/session-context/session-context.repository')
 
 const mockFindUser         = authRepo.findUserByEmail        as jest.Mock
 const mockGetInstitutions  = authRepo.getInstitutionsForUser as jest.Mock
+const mockExistsSalesman   = sessionRepo.existsSalesman      as jest.Mock
+mockExistsSalesman.mockResolvedValue(false)
 
 const SECRET = process.env.JWT_SECRET ?? 'sua_chave_secreta_aqui'
 process.env.JWT_SECRET = SECRET
@@ -47,6 +51,9 @@ describe('auth.service — login', () => {
     expect(payload.userId).toBe(1)
     expect(payload.role).toBe('super')
     expect(payload.schemaName).toBe('setes_setes')
+    // decisão 17: bloco context acompanha o token final — e NÃO entra no JWT
+    expect(result.context).toEqual({ isSalesman: false })
+    expect(payload.isSalesman).toBeUndefined()
   })
 
   it('N institutions: retorna lista + token de seleção (sem institutionId)', async () => {
@@ -80,12 +87,13 @@ describe('auth.service — select/switch institution', () => {
     return jwt.sign({ userId, scope: 'select-institution' }, SECRET, { expiresIn: '5m' })
   }
 
-  it('seleção com vínculo válido emite JWT final', async () => {
-    const token = await selectInstitution(makeSelectionToken(), 2)
-    const payload = jwt.verify(token, SECRET) as any
+  it('seleção com vínculo válido emite JWT final (+ context — decisão 17)', async () => {
+    const issued = await selectInstitution(makeSelectionToken(), 2)
+    const payload = jwt.verify(issued.token, SECRET) as any
     expect(payload.institutionId).toBe(2)
     expect(payload.schemaName).toBe('setes_alpha')
     expect(payload.role).toBe('admin')
+    expect(issued.context).toEqual({ isSalesman: false })
   })
 
   it('seleção de institution sem vínculo retorna 403', async () => {
@@ -102,8 +110,8 @@ describe('auth.service — select/switch institution', () => {
   })
 
   it('switch-institution revalida o vínculo no banco', async () => {
-    const token = await switchInstitution(1, 2)
-    const payload = jwt.verify(token, SECRET) as any
+    const issued = await switchInstitution(1, 2)
+    const payload = jwt.verify(issued.token, SECRET) as any
     expect(payload.institutionId).toBe(2)
 
     await expect(switchInstitution(1, 99)).rejects.toMatchObject({ statusCode: 403 })

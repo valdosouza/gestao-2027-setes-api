@@ -5,8 +5,17 @@ import logger from '@shared/logger/logger'
 
 // Módulos fora do gate tb_feature_flag: todo cliente autenticado precisa deles
 // para o app sequer carregar ('core' serve o menu em /api/core/menus;
-// 'interface-fields' serve a config resolvida que monta TODA tela — Fase 2).
-const FLAG_EXEMPT_MODULES = new Set(['core', 'interface-fields'])
+// 'interface-fields' serve a config resolvida que monta TODA tela — Fase 2;
+// 'entities' serve o prefill by-document dos cadastros da cadeia fiscal —
+// Fase 3, decisão 10: aberto a qualquer usuário autenticado;
+// 'interface-configs' serve a config resolvida por módulo — Framework de
+// Configurações: mesmo papel de infraestrutura do interface-fields;
+// 'countries'/'states'/'cities' são referência geográfica dos lookups de
+// endereço de qualquer cadastro da cadeia fiscal — fix 2026-07-18).
+const FLAG_EXEMPT_MODULES = new Set([
+  'core', 'interface-fields', 'entities', 'interface-configs',
+  'countries', 'states', 'cities',
+])
 
 export function featureFlagMiddleware(req: Request, res: Response, next: NextFunction) {
   // Montado em app.use('/api', ...): o Express remove o prefixo do mount,

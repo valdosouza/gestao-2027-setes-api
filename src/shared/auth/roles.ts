@@ -3,6 +3,10 @@ import { InstitutionPayload } from '@shared/types/express'
 // Institution da Setes — hard coded (Fase 2, decisão 14)
 export const SETES_INSTITUTION_ID = 1
 
+// Schema da própria Setes (PADROES_BANCO §1) — setes_central e setes_setes
+// "nascem casados": são a estrutura para criar os clientes de verdade.
+export const SETES_SCHEMA = 'setes_setes'
+
 // 'super' só é reconhecido no vínculo com a institution da Setes (id 1).
 // Em qualquer outra institution, role 'super' é ignorado.
 export function isSuper(payload?: InstitutionPayload): boolean {

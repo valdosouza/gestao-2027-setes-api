@@ -17,24 +17,26 @@ export async function nextEntityId(conn: PoolConnection): Promise<number> {
 }
 
 export async function insertEntity(
-  conn: PoolConnection, id: number, input: EntityInput
+  conn: PoolConnection, id: number, input: EntityInput,
+  updatedBy: number | null = null
 ): Promise<void> {
   await conn.query(
     `INSERT INTO setes_central.tb_entity
-       (id, name_company, nick_trade, aniversary, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NOW(), NOW())`,
-    [id, input.nameCompany, input.nickTrade, input.aniversary ?? null]
+       (id, name_company, nick_trade, aniversary, created_at, updated_at, updated_by)
+     VALUES (?, ?, ?, ?, NOW(), NOW(), ?)`,
+    [id, input.nameCompany, input.nickTrade, input.aniversary ?? null, updatedBy]
   )
 }
 
 export async function updateEntity(
-  conn: PoolConnection, id: number, input: EntityInput
+  conn: PoolConnection, id: number, input: EntityInput,
+  updatedBy: number | null = null
 ): Promise<void> {
   await conn.query(
     `UPDATE setes_central.tb_entity
-     SET name_company = ?, nick_trade = ?, aniversary = ?, updated_at = NOW()
+     SET name_company = ?, nick_trade = ?, aniversary = ?, updated_at = NOW(), updated_by = ?
      WHERE id = ?`,
-    [input.nameCompany, input.nickTrade, input.aniversary ?? null, id]
+    [input.nameCompany, input.nickTrade, input.aniversary ?? null, updatedBy, id]
   )
 }
 
