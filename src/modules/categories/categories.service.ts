@@ -2,7 +2,7 @@ import { HttpError } from '@shared/errors/http-error'
 import {
   CategoryRow, CategoryCreateInput, CategoryUpdateInput,
 } from './categories.interface'
-import { childPath, parentIdFromPath, isSelfOrDescendant } from './categories.path'
+import { childPath, parentIdFromPath, isSelfOrDescendant } from '@shared/tree-path'
 import {
   listCategories, getCategory, hasChildren,
   insertCategory, updateCategoryTree, deleteCategory,

@@ -1,8 +1,9 @@
 /**
- * Matemática do CAMINHO MATERIALIZADO da árvore de categorias (porta do
- * Delphi reg_category.pas — Pc_DefineNivel/Fc_NivelHierarquico): cada
- * segmento do posit_level é o próprio código com 3 dígitos; profundidade =
- * nº de pontos. Funções PURAS — testadas em categories-tree.test.ts.
+ * Matemática do CAMINHO MATERIALIZADO dos cadastros em ÁRVORE (porta do
+ * Delphi Pc_DefineNivel/Fc_NivelHierarquico): cada segmento do posit_level
+ * é o próprio código com 3 dígitos; profundidade = nº de pontos.
+ * PROMOVIDA de modules/categories quando o plano de contas virou o 2º
+ * consumidor (regra de promoção). Funções PURAS — categories-tree.test.ts.
  */
 
 /** Código → segmento ('7' → '007'; acima de 999 imprime inteiro). */

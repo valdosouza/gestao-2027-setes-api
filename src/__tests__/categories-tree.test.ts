@@ -4,7 +4,7 @@
 // (ciclo proibido) e exclusão bloqueada com subníveis.
 import {
   pathSegment, childPath, parentIdFromPath, isSelfOrDescendant,
-} from '../modules/categories/categories.path'
+} from '../shared/tree-path/tree-path'
 import { resolveMovedPath, removeCategory } from '../modules/categories/categories.service'
 import * as repo from '../modules/categories/categories.repository'
 
