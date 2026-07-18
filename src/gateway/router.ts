@@ -8,6 +8,7 @@ import statesRoutes     from '@modules/states/states.routes'
 import citiesRoutes     from '@modules/cities/cities.routes'
 import interfacesRoutes from '@modules/interfaces/interfaces.routes'
 import privilegesRoutes from '@modules/privileges/privileges.routes'
+import cfopRoutes from '@modules/cfop/cfop.routes'
 import interfaceFieldsRoutes from '@modules/interface-fields/interface-fields.routes'
 import interfaceConfigsRoutes from '@modules/interface-configs/interface-configs.routes'
 import usersRoutes from '@modules/users/users.routes'
@@ -37,6 +38,8 @@ router.use('/states',     superWriteGuard, statesRoutes)
 router.use('/cities',     superWriteGuard, citiesRoutes)
 router.use('/interfaces', superGuard, interfacesRoutes)
 router.use('/privileges', superGuard, privilegesRoutes)
+// CFOP (2026-07-18): referência fiscal do catálogo CENTRAL — módulo Super.
+router.use('/cfop',       superGuard, cfopRoutes)
 router.use('/institutions', superGuard, institutionsRoutes)
 // Usuários (workflow 2026-07-12): super gerencia qualquer institution
 // (aba Usuários do Estabelecimento); ADMIN do cliente gerencia os do
