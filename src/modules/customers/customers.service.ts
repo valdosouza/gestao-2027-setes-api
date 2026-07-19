@@ -43,7 +43,8 @@ async function restrictedSalesmanId(scope: CustomerScope): Promise<number | null
 /** Corrida no INSERT (UNIQUE de cpf/cnpj ou PK do papel) vira 409 legível. */
 function dupEntryTo409(err: any): never {
   if (err?.code === 'ER_DUP_ENTRY') {
-    throw new HttpError(409, 'Registro em conflito — tente novamente (cadastro simultâneo detectado)')
+    throw new HttpError(409, 'Registro em conflito — tente novamente (cadastro simultâneo detectado)',
+      undefined, 'CONFLICT_RETRY')
   }
   throw err
 }
@@ -128,7 +129,8 @@ export async function saveCustomerPartnership(
     .reduce((sum, p) => sum + p.rate, 0)
   if (total > 90) {
     throw new HttpError(400, 'A soma dos percentuais ativos não pode passar de 90%',
-      [{ field: 'partners', message: `Soma atual: ${total}%` }])
+      [{ field: 'partners', message: `Soma atual: ${total}%` }],
+      'RATE_SUM_EXCEEDED')
   }
   await fetchCustomer(customerId, scope)  // 404 + filtro de carteira
   await setCustomerPartnership(customerId, partners,

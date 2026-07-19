@@ -62,7 +62,8 @@ async function assertBank(conn: any, bankId: number): Promise<void> {
   )
   if (rows.length === 0) {
     throw new HttpError(400, 'Banco inexistente no catálogo',
-      [{ field: 'bankId', message: 'Banco não encontrado' }])
+      [{ field: 'bankId', message: 'Banco não encontrado' }],
+      'BANK_NOT_FOUND')
   }
 }
 

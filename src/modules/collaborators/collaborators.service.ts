@@ -25,7 +25,8 @@ export interface CollaboratorScope {
 /** Corrida no INSERT (UNIQUE de cpf/cnpj ou PK do papel) vira 409 legível. */
 function dupEntryTo409(err: any): never {
   if (err?.code === 'ER_DUP_ENTRY') {
-    throw new HttpError(409, 'Registro em conflito — tente novamente (cadastro simultâneo detectado)')
+    throw new HttpError(409, 'Registro em conflito — tente novamente (cadastro simultâneo detectado)',
+      undefined, 'CONFLICT_RETRY')
   }
   throw err
 }

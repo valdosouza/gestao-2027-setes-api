@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import { settleBatchDto, reversalDto } from './settlements.dto'
 import {
   SettlementScope, fetchBills, settle, fetchSettled, reverse,
@@ -29,6 +30,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   const body = parseBody(settleBatchDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'settlements', body)
     const result = await settle(body, scopeOf(req))
     logger.info('Baixa registrada', {
       institutionId: req.institution!.institutionId, ...result,

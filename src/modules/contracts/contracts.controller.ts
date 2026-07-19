@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import { contractDto } from './contracts.dto'
 import {
   ContractScope, fetchContracts, fetchContract, createContract,
@@ -36,6 +37,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   const body = parseBody(contractDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'contracts', body)
     const id = await createContract(body, scopeOf(req))
     logger.info('Contrato criado', {
       institutionId: req.institution!.institutionId, id,
@@ -52,6 +54,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const body = parseBody(contractDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'contracts', body)
     await editContract(id, body, scopeOf(req))
     res.json({ ok: true })
   } catch (err) {

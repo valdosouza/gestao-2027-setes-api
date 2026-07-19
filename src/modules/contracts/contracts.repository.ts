@@ -83,7 +83,8 @@ async function assertCustomerRole(
   )
   if (rows.length === 0) {
     throw new HttpError(400, 'Cliente não encontrado nesta institution',
-      [{ field: 'customerId', message: 'Cliente inexistente' }])
+      [{ field: 'customerId', message: 'Cliente inexistente' }],
+      'ROLE_MISSING')
   }
 }
 

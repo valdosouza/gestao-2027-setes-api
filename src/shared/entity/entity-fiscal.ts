@@ -182,13 +182,15 @@ async function assertDocFreeForEntity(
     const owner = await findEntityIdByCpf(input.person!.cpf, conn, true)
     if (owner !== null && owner !== id) {
       throw new HttpError(409, 'CPF já cadastrado em outro registro',
-        [{ field: 'cpf', message: 'CPF já cadastrado em outro registro' }])
+        [{ field: 'cpf', message: 'CPF já cadastrado em outro registro' }],
+        'DUP_DOCUMENT')
     }
   } else if (input.personType === 'J') {
     const owner = await findEntityIdByCnpj(input.company!.cnpj, conn, true)
     if (owner !== null && owner !== id) {
       throw new HttpError(409, 'CNPJ já cadastrado em outro registro',
-        [{ field: 'cnpj', message: 'CNPJ já cadastrado em outro registro' }])
+        [{ field: 'cnpj', message: 'CNPJ já cadastrado em outro registro' }],
+        'DUP_DOCUMENT')
     }
   }
 }

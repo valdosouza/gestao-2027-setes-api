@@ -149,7 +149,7 @@ export async function insertCustomerCascade(
     if (existing.length > 0 && existing[0].deleted === 'N') {
       throw new HttpError(409,
         `Esta entidade já está cadastrada como cliente deste estabelecimento (id ${id})`,
-        [{ field: 'id', message: String(id) }])
+        [{ field: 'id', message: String(id) }], 'DUP_ROLE')
     }
 
     const paymentTypesId =
@@ -312,7 +312,8 @@ export async function setCustomerPartnership(
         const missing = ids.filter(i => !found.has(i))
         throw new HttpError(400,
           `Colaborador(es) inexistente(s) nesta institution: ${missing.join(', ')}`,
-          [{ field: 'partners', message: 'Colaborador sem o papel na institution' }])
+          [{ field: 'partners', message: 'Colaborador sem o papel na institution' }],
+          'ROLE_MISSING')
       }
     }
 

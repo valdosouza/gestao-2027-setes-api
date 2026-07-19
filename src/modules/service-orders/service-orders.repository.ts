@@ -177,7 +177,8 @@ async function lockOpenOrder(
   )
   if (!rows[0]) throw new HttpError(404, `Ordem de serviço ${orderId} não encontrada`)
   if (rows[0].status !== 'A') {
-    throw new HttpError(409, 'Ordem já faturada — alterações só via financeiro')
+    throw new HttpError(409, 'Ordem já faturada — alterações só via financeiro',
+      undefined, 'ORDER_INVOICED')
   }
 }
 
@@ -258,7 +259,8 @@ export async function openOrder(
     )
     if (role.length === 0) {
       throw new HttpError(400, 'Cliente não encontrado nesta institution',
-        [{ field: 'customerId', message: 'Cliente inexistente' }])
+        [{ field: 'customerId', message: 'Cliente inexistente' }],
+        'ROLE_MISSING')
     }
 
     const [open] = await conn.query<any[]>(
@@ -269,7 +271,8 @@ export async function openOrder(
     )
     if (open[0]) {
       throw new HttpError(409,
-        `Cliente já tem a ordem ${open[0].id} aberta (máx. 1 por cliente — D5)`)
+        `Cliente já tem a ordem ${open[0].id} aberta (máx. 1 por cliente — D5)`,
+        undefined, 'ORDER_OPEN_EXISTS')
     }
 
     const id = await createOpenOrder(conn, schemaName, institutionId,
@@ -302,7 +305,8 @@ export async function addItem(
     )
     if (prod.length === 0) {
       throw new HttpError(400, 'Produto/serviço inexistente',
-        [{ field: 'productId', message: 'Produto não encontrado' }])
+        [{ field: 'productId', message: 'Produto não encontrado' }],
+        'ROLE_MISSING')
     }
 
     const itemId = await insertServiceItem(conn, schemaName, institutionId, orderId, input)
@@ -534,7 +538,8 @@ export async function generateInvoice(
     )
     if (pt.length === 0) {
       throw new HttpError(400, 'Forma de pagamento não vinculada/habilitada',
-        [{ field: 'paymentTypeId', message: 'Forma indisponível' }])
+        [{ field: 'paymentTypeId', message: 'Forma indisponível' }],
+        'PAYMENT_TYPE_UNAVAILABLE')
     }
 
     const total = await recalcTotalizer(conn, schemaName, institutionId, orderId)
@@ -546,7 +551,8 @@ export async function generateInvoice(
     )
     if (Number(itemsAlive[0].n) === 0) {
       throw new HttpError(400, 'Ordem sem itens — nada a faturar',
-        [{ field: 'items', message: 'Inclua ao menos um item' }])
+        [{ field: 'items', message: 'Inclua ao menos um item' }],
+        'ORDER_NO_ITEMS')
     }
 
     const [svc] = await conn.query<any[]>(

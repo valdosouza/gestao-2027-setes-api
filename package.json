@@ -6,6 +6,7 @@
     "db:bootstrap": "tsx --require tsconfig-paths/register scripts/bootstrap-db.ts",
     "db:migrate": "tsx --require tsconfig-paths/register scripts/run-migrations.ts",
     "fields:gen": "tsx scripts/gerar-interface-fields.ts",
+    "errors:gen": "tsx scripts/gerar-error-catalog.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "jest --runInBand --forceExit"

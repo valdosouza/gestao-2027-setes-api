@@ -114,7 +114,7 @@ export async function insertCollaboratorCascade(
     if (existing.length > 0 && existing[0].deleted === 'N') {
       throw new HttpError(409,
         `Esta entidade já está cadastrada como colaborador deste estabelecimento (id ${id})`,
-        [{ field: 'id', message: String(id) }])
+        [{ field: 'id', message: String(id) }], 'DUP_ROLE')
     }
 
     if (existing.length > 0) {

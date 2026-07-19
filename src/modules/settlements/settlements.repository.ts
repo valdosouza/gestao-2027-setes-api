@@ -101,7 +101,8 @@ export async function settleBatch(
       )
       if (acc.length === 0) {
         throw new HttpError(400, 'Conta bancária inexistente',
-          [{ field: 'bankAccountId', message: 'Conta não encontrada' }])
+          [{ field: 'bankAccountId', message: 'Conta não encontrada' }],
+          'BANK_NOT_FOUND')
       }
     }
 
@@ -135,7 +136,8 @@ export async function settleBatch(
       )
       if (!fin[0]) {
         throw new HttpError(404,
-          `Título ${title.orderId}/${title.parcel} não encontrado`)
+          `Título ${title.orderId}/${title.parcel} não encontrado`,
+          undefined, 'TITLE_NOT_FOUND')
       }
       if (firstPaymentTypeId === null) {
         firstPaymentTypeId = Number(fin[0].paymentTypeId) || null
@@ -432,7 +434,8 @@ async function reverseOnePayment(
     }
     if (orig[0].status !== 'N') {
       throw new HttpError(409,
-        'Só baixas vigentes (status N) podem ser estornadas')
+        'Só baixas vigentes (status N) podem ser estornadas',
+        undefined, 'REVERSAL_NOT_CURRENT')
     }
     const o = orig[0]
 

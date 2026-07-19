@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import {
   openOrderDto, orderItemDto, monthlyRunDto, invoiceDto,
 } from './service-orders.dto'
@@ -76,6 +77,7 @@ export async function addOrderItem(req: Request, res: Response): Promise<void> {
   const body = parseBody(orderItemDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'service-orders', body)
     const itemId = await createItem(id, body, scopeOf(req))
     res.status(201).json({ ok: true, data: { id: itemId } })
   } catch (err) {
@@ -91,6 +93,7 @@ export async function updateOrderItem(req: Request, res: Response): Promise<void
   const body = parseBody(orderItemDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'service-orders', body)
     await editItem(id, itemId, body, scopeOf(req))
     res.json({ ok: true })
   } catch (err) {

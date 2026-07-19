@@ -103,6 +103,7 @@ export async function assertClientRequired(
     }
   }
   if (missing.length > 0) {
-    throw new HttpError(400, 'Campos obrigatórios não preenchidos', missing)
+    throw new HttpError(400, 'Campos obrigatórios não preenchidos', missing,
+      'REQUIRED_FIELDS')
   }
 }

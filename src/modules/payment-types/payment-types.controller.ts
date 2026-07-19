@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import { paymentTypeLinkDto, paymentTypeLinkUpdateDto } from './payment-types.dto'
 import {
   PaymentTypeScope, fetchLinked, fetchCatalog, saveLink, editLink, removeLink,
@@ -33,6 +34,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   const body = parseBody(paymentTypeLinkDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'payment-types', body)
     const result = await saveLink(body, scopeOf(req))
     logger.info('Forma de pagamento vinculada', {
       institutionId: req.institution!.institutionId, ...result,
@@ -49,6 +51,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const body = parseBody(paymentTypeLinkUpdateDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'payment-types', body)
     await editLink(id, body, scopeOf(req))
     res.json({ ok: true })
   } catch (err) {

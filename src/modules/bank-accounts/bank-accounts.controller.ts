@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { assertClientRequired } from '@shared/field-config'
 import { bankAccountDto } from './bank-accounts.dto'
 import {
   BankAccountScope, fetchBankAccounts, fetchBankAccount, createBankAccount,
@@ -36,6 +37,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   const body = parseBody(bankAccountDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'bank-accounts', body)
     const id = await createBankAccount(body, scopeOf(req))
     logger.info('Conta bancária criada', {
       institutionId: req.institution!.institutionId, id,
@@ -52,6 +54,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   const body = parseBody(bankAccountDto, req, res)
   if (body === null) return
   try {
+    await assertClientRequired(req.institution!, 'bank-accounts', body)
     await editBankAccount(id, body, scopeOf(req))
     res.json({ ok: true })
   } catch (err) {
