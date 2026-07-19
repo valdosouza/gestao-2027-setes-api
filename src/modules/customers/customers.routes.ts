@@ -159,4 +159,67 @@ router.get('/:id', controller.getById)
 router.put('/:id', controller.update)
 router.delete('/:id', controller.remove)
 
+/**
+ * @swagger
+ * /api/customers/{id}/partnership:
+ *   get:
+ *     summary: Parceria do cliente (aba Parceria — angariação, Parceria v2)
+ *     description: >
+ *       tb_partnership FLAT — 1 linha por colaborador envolvido no
+ *       cliente. A baixa de recebimento lê esta tabela para gerar as
+ *       ordens/títulos PA (% × pago). Aba vendável (interface 18 kind 'R').
+ *     tags: [Customers]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data: { partners: [{ collaboratorId, collaboratorName, rate, active }] } }' }
+ *       401: { description: Não autenticado }
+ *       404: { description: Cliente não encontrado }
+ *       500: { description: Erro interno }
+ *   put:
+ *     summary: Grava a parceria do cliente (lista completa — sync por colaborador)
+ *     description: >
+ *       Lista VAZIA remove a parceria. Σ dos percentuais ATIVOS ≤ 90 (os
+ *       10% da Setes são fixos); colaborador único; papéis validados na
+ *       transação.
+ *     tags: [Customers]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [partners]
+ *             properties:
+ *               partners:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required: [collaboratorId, rate]
+ *                   properties:
+ *                     collaboratorId: { type: integer }
+ *                     rate: { type: number, description: 'Percentual do parceiro (> 0, ≤ 90)' }
+ *                     active: { type: string, enum: [S, N], description: 'Suspende o parceiro sem excluir (D7)' }
+ *     responses:
+ *       200: { description: 'Envelope { ok }' }
+ *       400: { description: 'Validação / colaborador inexistente / soma > 90%' }
+ *       401: { description: Não autenticado }
+ *       404: { description: Cliente não encontrado }
+ *       500: { description: Erro interno }
+ */
+router.get('/:id/partnership', controller.getPartnership)
+router.put('/:id/partnership', controller.putPartnership)
+
 export default router

@@ -58,3 +58,23 @@ export interface RoleLookupRow {
   id:   number
   name: string | null
 }
+
+/**
+ * ABA PARCERIA (Parceria v2 — prompt_parceria_v2.md, 2026-07-19): a
+ * parceria é ANGARIAÇÃO — colaborador trouxe o cliente. tb_partnership
+ * FLAT: 1 linha por colaborador envolvido (Σ rate das ativas ≤ 90; os
+ * 10% da Setes são fixos). A baixa de recebimento lê esta tabela para
+ * gerar as ordens PA (rotina de parcerias do settlements).
+ */
+export interface PartnershipPartnerRow {
+  collaboratorId:   number
+  collaboratorName: string | null
+  rate:             number
+  active:           'S' | 'N'
+}
+
+export interface PartnershipPartnerInput {
+  collaboratorId: number
+  rate:           number
+  active:         'S' | 'N'
+}

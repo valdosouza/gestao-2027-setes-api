@@ -30,3 +30,24 @@ export const customerUpdateDto = withFiscalRefinements(customerBase)
 
 export type CustomerCreateDto = z.infer<typeof customerCreateDto>
 export type CustomerUpdateDto = z.infer<typeof customerUpdateDto>
+
+/** Aba Parceria (v2): lista COMPLETA (sync por colaborador; vazia = sem
+ *  parceria); Σ rate das ATIVAS ≤ 90 (os 10% da Setes são fixos). */
+export const customerPartnershipDto = z.object({
+  partners: z.array(z.object({
+    collaboratorId: z.number().int().positive(),
+    rate:           z.number().gt(0).max(90),
+    active:         z.enum(['S', 'N']).default('S'),
+  })),
+}).refine(
+  body => new Set(body.partners.map(p => p.collaboratorId)).size
+          === body.partners.length,
+  { message: 'Colaborador repetido na parceria', path: ['partners'] },
+).refine(
+  body => body.partners.filter(p => p.active === 'S')
+            .reduce((sum, p) => sum + p.rate, 0) <= 90,
+  { message: 'A soma dos percentuais ativos não pode passar de 90% (10% são da Setes)',
+    path: ['partners'] },
+)
+
+export type CustomerPartnershipDto = z.infer<typeof customerPartnershipDto>

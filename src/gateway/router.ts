@@ -18,6 +18,10 @@ import collaboratorsRoutes from '@modules/collaborators/collaborators.routes'
 import categoriesRoutes from '@modules/categories/categories.routes'
 import financialPlansRoutes from '@modules/financial-plans/financial-plans.routes'
 import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
+import contractsRoutes from '@modules/contracts/contracts.routes'
+import bankAccountsRoutes from '@modules/bank-accounts/bank-accounts.routes'
+import serviceOrdersRoutes from '@modules/service-orders/service-orders.routes'
+import settlementsRoutes from '@modules/settlements/settlements.routes'
 import { superGuard, superWriteGuard } from './super.guard'
 import { adminGuard } from './admin.guard'
 
@@ -86,5 +90,27 @@ router.use('/financial-plans', financialPlansRoutes)
 // inicia o cadastro) + vínculo por institution — grupo Financeiro; flag
 // 'payment-types'.
 router.use('/payment-types', paymentTypesRoutes)
+
+// Contratos de serviço (Módulo Software House, 2026-07-18): cadastro de
+// CLIENTE — sem superGuard; escopo por institution no service; flag
+// 'contracts'. Base da rotina mensal de faturamento (ondas futuras).
+router.use('/contracts', contractsRoutes)
+
+// Parcerias (Parceria v2, 2026-07-19): o standalone foi APOSENTADO — a
+// parceria é ANGARIAÇÃO e vive na ABA Parceria do cliente
+// (GET/PUT /api/customers/:id/partnership; tb_partnership FLAT).
+
+// Contas bancárias (Software House, 5.6): cadastro de CLIENTE — grupo
+// Financeiro; catálogo central tb_bank (DP2); flag 'bank-accounts'.
+router.use('/bank-accounts', bankAccountsRoutes)
+
+// Ordens de serviço (Software House, 4.4–4.6): 1ª TELA DE PROCESSO —
+// grupo Serviços; ciclo mensal + Gerar Faturamento; flag 'service-orders'.
+router.use('/service-orders', serviceOrdersRoutes)
+
+// Baixa de títulos/estorno/movimento (Software House, 5.5/Fase 6): tela
+// de PROCESSO do financeiro — imutável (lançamento inverso + N/E/R);
+// flag 'settlements'.
+router.use('/settlements', settlementsRoutes)
 
 export default router

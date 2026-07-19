@@ -6,6 +6,7 @@ import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.rep
 import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
 import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
+  PartnershipPartnerRow, PartnershipPartnerInput,
 } from './customers.interface'
 
 /**
@@ -260,3 +261,94 @@ export const listSalesmanLookup = (filter: string, schemaName: string, instituti
 
 export const listCarrierLookup = (filter: string, schemaName: string, institutionId: number) =>
   roleLookup('tb_carrier', filter, schemaName, institutionId)
+
+// ---------------------------------------------------------------------
+// ABA PARCERIA (Parceria v2 — tb_partnership FLAT; angariação do cliente)
+// ---------------------------------------------------------------------
+
+export async function getCustomerPartnership(
+  customerId: number, schemaName: string, institutionId: number
+): Promise<PartnershipPartnerRow[]> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT p.tb_collaborator_id AS collaboratorId,
+            COALESCE(e.nick_trade, e.name_company) AS collaboratorName,
+            p.rate, p.active
+     FROM \`${schemaName}\`.tb_partnership p
+     INNER JOIN setes_central.tb_entity e ON e.id = p.tb_collaborator_id
+     WHERE p.tb_institution_id = ? AND p.tb_customer_id = ? AND p.deleted = 'N'
+     ORDER BY collaboratorName`,
+    [institutionId, customerId]
+  )
+  return rows
+}
+
+/** Sincroniza a parceria do cliente (soft delete dos ausentes + upsert). */
+export async function setCustomerPartnership(
+  customerId: number, partners: PartnershipPartnerInput[],
+  schemaName: string, institutionId: number
+): Promise<void> {
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    const [cust] = await conn.query<any[]>(
+      `SELECT 1 FROM \`${schemaName}\`.tb_customer
+        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N' FOR UPDATE`,
+      [customerId, institutionId]
+    )
+    if (cust.length === 0) {
+      throw new HttpError(404, `Cliente ${customerId} não encontrado`)
+    }
+
+    if (partners.length > 0) {
+      const ids = partners.map(p => p.collaboratorId)
+      const [rows] = await conn.query<any[]>(
+        `SELECT id FROM \`${schemaName}\`.tb_collaborator
+          WHERE id IN (?) AND tb_institution_id = ? AND deleted = 'N'`,
+        [ids, institutionId]
+      )
+      if (rows.length !== ids.length) {
+        const found = new Set(rows.map((r: any) => Number(r.id)))
+        const missing = ids.filter(i => !found.has(i))
+        throw new HttpError(400,
+          `Colaborador(es) inexistente(s) nesta institution: ${missing.join(', ')}`,
+          [{ field: 'partners', message: 'Colaborador sem o papel na institution' }])
+      }
+    }
+
+    const table = `${schemaName}.tb_partnership`
+    if (partners.length === 0) {
+      await conn.query(
+        `UPDATE ?? SET deleted = 'S', updated_at = NOW()
+          WHERE tb_institution_id = ? AND tb_customer_id = ?`,
+        [table, institutionId, customerId]
+      )
+    } else {
+      await conn.query(
+        `UPDATE ?? SET deleted = 'S', updated_at = NOW()
+          WHERE tb_institution_id = ? AND tb_customer_id = ?
+            AND tb_collaborator_id NOT IN (?)`,
+        [table, institutionId, customerId, partners.map(p => p.collaboratorId)]
+      )
+      for (const partner of partners) {
+        await conn.query(
+          `INSERT INTO ?? (tb_institution_id, tb_customer_id,
+             tb_collaborator_id, rate, active, created_at, updated_at, deleted)
+           VALUES (?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+           ON DUPLICATE KEY UPDATE
+             rate = VALUES(rate), active = VALUES(active),
+             deleted = 'N', updated_at = NOW()`,
+          [table, institutionId, customerId, partner.collaboratorId,
+           partner.rate, partner.active]
+        )
+      }
+    }
+
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}

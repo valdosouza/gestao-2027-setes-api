@@ -182,7 +182,8 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // tb_institution_has_interface, decisão 17).
   const defaultModules = [
     'core', 'customers', 'collaborators', 'categories', 'financial-plans',
-    'payment-types',
+    'payment-types', 'contracts', 'bank-accounts',
+    'service-orders', 'settlements',
   ]
   const conn = await pool.getConnection()
   try {

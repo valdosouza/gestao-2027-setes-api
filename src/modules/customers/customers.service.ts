@@ -3,11 +3,13 @@ import { getConfigContent } from '@shared/interface-config'
 import { getSessionContext } from '@shared/session-context'
 import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
+  PartnershipPartnerRow, PartnershipPartnerInput,
 } from './customers.interface'
 import {
   listCustomers, getCustomer, customerExists,
   insertCustomerCascade, updateCustomerCascade, deleteCustomer,
   listSalesmanLookup, listCarrierLookup,
+  getCustomerPartnership, setCustomerPartnership,
 } from './customers.repository'
 
 /**
@@ -105,4 +107,30 @@ export async function fetchCarrierLookup(
   filter: string, scope: CustomerScope
 ): Promise<RoleLookupRow[]> {
   return listCarrierLookup(filter, scope.schemaName, scope.institutionId)
+}
+
+// ---------------------------------------------------------------------
+// ABA PARCERIA (Parceria v2): a parceria É do cliente (angariação) —
+// escopo do JWT; Σ rate ≤ 90 validada no DTO e re-checada aqui.
+// ---------------------------------------------------------------------
+
+export async function fetchCustomerPartnership(
+  customerId: number, scope: CustomerScope
+): Promise<PartnershipPartnerRow[]> {
+  await fetchCustomer(customerId, scope)  // 404 + filtro de carteira
+  return getCustomerPartnership(customerId, scope.schemaName, scope.institutionId)
+}
+
+export async function saveCustomerPartnership(
+  customerId: number, partners: PartnershipPartnerInput[], scope: CustomerScope
+): Promise<void> {
+  const total = partners.filter(p => p.active === 'S')
+    .reduce((sum, p) => sum + p.rate, 0)
+  if (total > 90) {
+    throw new HttpError(400, 'A soma dos percentuais ativos não pode passar de 90%',
+      [{ field: 'partners', message: `Soma atual: ${total}%` }])
+  }
+  await fetchCustomer(customerId, scope)  // 404 + filtro de carteira
+  await setCustomerPartnership(customerId, partners,
+    scope.schemaName, scope.institutionId)
 }
