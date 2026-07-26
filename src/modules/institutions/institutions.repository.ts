@@ -1,0 +1,214 @@
+import pool from '@shared/db/connection'
+import { HttpError } from '@shared/errors/http-error'
+import { SETES_INSTITUTION_ID, SETES_SCHEMA } from '@shared/auth/roles'
+import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
+import {
+  InstitutionInput, InstitutionListRow, InstitutionFull,
+} from './institutions.interface'
+
+/**
+ * Repositório do CONCRETO Institution — CONSUMIDOR da cadeia de entidade
+ * fiscal compartilhada (@shared/entity/entity.repository — skill
+ * cadastro-entidade-fiscal.md). Responsabilidades daqui:
+ * abrir/fechar a TRANSAÇÃO da cascade, chamar os helpers da cadeia e
+ * cuidar da tabela própria (tb_institution) + feature flags do onboarding.
+ */
+
+// ---------------------------------------------------------------------
+// Consultas
+// ---------------------------------------------------------------------
+
+export async function listInstitutions(filter: string): Promise<InstitutionListRow[]> {
+  const like = filter ? `%${filter}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT i.id,
+            e.nick_trade   AS nickTrade,
+            e.name_company AS nameCompany,
+            i.schema_name  AS schemaName,
+            i.active
+     FROM setes_central.tb_institution i
+     INNER JOIN setes_central.tb_entity e ON e.id = i.id
+     WHERE i.deleted = 'N'
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR i.schema_name LIKE ?)
+     ORDER BY e.nick_trade
+     LIMIT 200`,
+    [like, like, like, like]
+  )
+  return rows
+}
+
+/** Objeto COMPLETO: cadeia compartilhada (shared/entity) + tb_institution. */
+export async function getInstitution(id: number): Promise<InstitutionFull | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT schema_name AS schemaName, active
+     FROM setes_central.tb_institution
+     WHERE id = ? AND deleted = 'N'`,
+    [id]
+  )
+  if (!rows[0]) return null
+
+  const chain = await getEntityFiscalFull(id)
+  if (!chain) return null
+
+  return { ...chain, schemaName: rows[0].schemaName, active: rows[0].active }
+}
+
+/** schema_name é UNIQUE e nunca reaproveitado — verifica INCLUINDO deleted='S'. */
+export async function schemaNameExists(schemaName: string): Promise<boolean> {
+  const [rows] = await pool.query<any[]>(
+    'SELECT schema_name FROM setes_central.tb_institution WHERE schema_name = ?',
+    [schemaName]
+  )
+  return rows.length > 0
+}
+
+export async function institutionExists(id: number): Promise<boolean> {
+  const [rows] = await pool.query<any[]>(
+    "SELECT id FROM setes_central.tb_institution WHERE id = ? AND deleted = 'N'",
+    [id]
+  )
+  return rows.length > 0
+}
+
+// ---------------------------------------------------------------------
+// Cascade (transação única) — a cadeia é do shared; a tb_institution é daqui
+// ---------------------------------------------------------------------
+
+/**
+ * POST: cadeia inteira em transação única (helpers do shared) + INSERT da
+ * tb_institution. A institution nasce active='N' — quem ativa é a migração
+ * do schema, DEPOIS do commit (DDL não tem rollback).
+ */
+export async function insertInstitutionCascade(
+  input: InstitutionInput, schemaName: string, updatedBy: number | null = null
+): Promise<number> {
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    // Fase 3 (decisões 1 e 9): a cadeia resolve reuso pelo documento.
+    const { id } = await saveEntityFiscalChain(conn, null, input, updatedBy)
+
+    // Papel duplicado (decisão 2): 409 com o id no payload — o app oferece
+    // abrir em edição. Vale mesmo deleted='S' (schema nunca é reaproveitado).
+    const [existing] = await conn.query<any[]>(
+      'SELECT 1 FROM setes_central.tb_institution WHERE id = ? FOR UPDATE',
+      [id]
+    )
+    if (existing.length > 0) {
+      throw new HttpError(409,
+        `Esta entidade já está cadastrada como estabelecimento (id ${id})`,
+        [{ field: 'id', message: String(id) }])
+    }
+
+    await conn.query(
+      `INSERT INTO setes_central.tb_institution (id, schema_name, active, created_at, updated_at)
+       VALUES (?, ?, 'N', NOW(), NOW())`,
+      [id, schemaName]
+    )
+
+    // Decisão 13 da Fase 3 (Valdo, 2026-07-16): todo institution nasce também
+    // CLIENTE DA SETES (tb_customer em setes_setes, institution 1) para a
+    // administração do contrato — "clientes de verdade são os que não são a
+    // própria Setes". Idempotente: se a entity já era cliente da Setes,
+    // revive/mantém (não é papel duplicado — é o vínculo comercial esperado).
+    await conn.query(
+      `INSERT INTO ??
+         (id, tb_institution_id, active, created_at, updated_at)
+       VALUES (?, ?, 'S', NOW(), NOW())
+       ON DUPLICATE KEY UPDATE deleted = 'N', active = 'S', updated_at = NOW()`,
+      [`${SETES_SCHEMA}.tb_customer`, id, SETES_INSTITUTION_ID]
+    )
+
+    await conn.commit()
+    return id
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+/** PUT: mesma cascade em transação única. schema_name é IMUTÁVEL. */
+export async function updateInstitutionCascade(
+  id: number, input: InstitutionInput, updatedBy: number | null = null
+): Promise<void> {
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    await saveEntityFiscalChain(conn, id, input, updatedBy)
+
+    if (input.active !== undefined) {
+      await conn.query(
+        `UPDATE setes_central.tb_institution SET active = ?, updated_at = NOW() WHERE id = ?`,
+        [input.active, id]
+      )
+    }
+
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+export async function setInstitutionActive(id: number, active: 'S' | 'N'): Promise<void> {
+  await pool.query(
+    `UPDATE setes_central.tb_institution SET active = ?, updated_at = NOW() WHERE id = ?`,
+    [active, id]
+  )
+}
+
+/** Soft delete da institution — a cadeia entity permanece. */
+export async function deleteInstitution(id: number): Promise<void> {
+  await pool.query(
+    `UPDATE setes_central.tb_institution SET deleted = 'S', updated_at = NOW() WHERE id = ?`,
+    [id]
+  )
+}
+
+/**
+ * Feature flags padrão do onboarding (gate técnico — decisão 17). Veio do
+ * antigo admin.repository quando o cadastro absorveu o onboarding
+ * (decisão do Valdo, 2026-07-11).
+ */
+export async function insertDefaultFlags(institutionId: number): Promise<void> {
+  // 'customers' liberado por padrão desde a Fase 3; 'collaborators' desde a
+  // onda 2 (gate técnico — o comercial por tela continua em
+  // tb_institution_has_interface, decisão 17).
+  const defaultModules = [
+    'core', 'customers', 'collaborators', 'categories', 'financial-plans',
+    'payment-types', 'contracts', 'bank-accounts',
+    'service-orders', 'settlements',
+  ]
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    const [rows] = await conn.query<any[]>(
+      'SELECT COALESCE(MAX(id), 0) AS maxId FROM setes_central.tb_feature_flag FOR UPDATE'
+    )
+    let nextId = Number(rows[0].maxId)
+
+    const now    = new Date()
+    const values = defaultModules.map(mod => [++nextId, institutionId, mod, true, now, now])
+
+    await conn.query(
+      `INSERT INTO setes_central.tb_feature_flag
+         (id, tb_institution_id, module_key, enabled, created_at, updated_at)
+       VALUES ?`,
+      [values]
+    )
+
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}

@@ -9,7 +9,53 @@ const router = Router()
 // Todas as rotas de sync exigem API Key
 router.use(syncAuthMiddleware)
 
-// POST /sync/push
+/**
+ * @swagger
+ * /sync/push:
+ *   post:
+ *     summary: Push de dados para a API (até 5.000 registros por requisição)
+ *     description: Sincronizador enfileira lotes >5.000 para processamento assíncrono
+ *     tags: [Sync]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               table:
+ *                 type: string
+ *               records:
+ *                 type: array
+ *                 minItems: 1
+ *                 maxItems: 5000
+ *     responses:
+ *       200:
+ *         description: Registros processados imediatamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 queued:
+ *                   type: boolean
+ *                   example: false
+ *                 data:
+ *                   type: object
+ *       202:
+ *         description: Lote >5.000 registros enfileirado
+ *       400:
+ *         description: Validação do corpo falhou
+ *       401:
+ *         description: API Key inválida
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/push', async (req: Request, res: Response) => {
   const { table, records } = req.body
   const client = req.syncClient!
@@ -49,7 +95,52 @@ router.post('/push', async (req: Request, res: Response) => {
   }
 })
 
-// GET /sync/pull?table=tb_product&since=2024-01-01T00:00:00&limit=500
+/**
+ * @swagger
+ * /sync/pull:
+ *   get:
+ *     summary: Pull de dados da API (setes_sync)
+ *     description: Retorna registros alterados desde `since`
+ *     tags: [Sync]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - name: table
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: since
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - name: limit
+ *         in: query
+ *         schema:
+ *           type: integer
+ *           default: 500
+ *           maximum: 500
+ *     responses:
+ *       200:
+ *         description: Registros retornados
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *       400:
+ *         description: Parâmetros ausentes ou inválidos
+ *       401:
+ *         description: API Key inválida
+ *       500:
+ *         description: Erro interno
+ */
 router.get('/pull', async (req: Request, res: Response) => {
   const { table, since, limit } = req.query
   const client = req.syncClient!
@@ -83,7 +174,31 @@ router.get('/pull', async (req: Request, res: Response) => {
   }
 })
 
-// GET /sync/status
+/**
+ * @swagger
+ * /sync/status:
+ *   get:
+ *     summary: Status da conexão e fila de processamento
+ *     tags: [Sync]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     responses:
+ *       200:
+ *         description: Status da fila e cliente autenticado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 client:
+ *                   type: object
+ *                 queue:
+ *                   type: object
+ *       401:
+ *         description: API Key inválida
+ */
 router.get('/status', (req: Request, res: Response) => {
   res.json({
     ok:     true,
@@ -92,7 +207,38 @@ router.get('/status', (req: Request, res: Response) => {
   })
 })
 
-// GET /sync/log?limit=20
+/**
+ * @swagger
+ * /sync/log:
+ *   get:
+ *     summary: Histórico de operações de sync
+ *     tags: [Sync]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - name: limit
+ *         in: query
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *           maximum: 100
+ *     responses:
+ *       200:
+ *         description: Lista de operações de sync
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *       401:
+ *         description: API Key inválida
+ *       500:
+ *         description: Erro ao buscar log
+ */
 router.get('/log', async (req: Request, res: Response) => {
   const client = req.syncClient!
   const limit  = Math.min(Number(req.query.limit ?? 20), 100)

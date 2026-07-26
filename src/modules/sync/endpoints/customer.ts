@@ -73,6 +73,36 @@ async function saveFiscalEntity(conn: any, institutionId: number, Fiscal: any, e
   return tbEntityId
 }
 
+/**
+ * @swagger
+ * /sync/customer/sincronize:
+ *   post:
+ *     summary: Sincroniza customer do Sincronizador
+ *     tags: [Sync]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Sincronização bem-sucedida
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *       401:
+ *         description: API Key inválida
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/Customer/sincronize', async (req: Request, res: Response) => {
   const conn = await pool.getConnection()
   try {

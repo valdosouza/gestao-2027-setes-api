@@ -10,6 +10,9 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 20,
+  // DECIMAL como number no JSON (senão o driver devolve string "12.00" e
+  // quebra o fromJson do app). Precisão ok: nossos DECIMAL são (10,2).
+  decimalNumbers: true,
 })
 
 export async function getConnection(schemaName: string) {

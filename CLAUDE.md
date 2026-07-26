@@ -1,5 +1,17 @@
 # CLAUDE.md
 
+## ⚠️ Base de conhecimento central: D:\Gestao2027\Infra-IA
+
+Antes de qualquer tarefa neste projeto, consulte `D:\Gestao2027\Infra-IA\INDICE_CENTRAL.md`
+(documentação, skills, agentes e decisões arquiteturais vigentes). Em especial:
+- Banco de dados: `Infra-IA/database/PADROES_BANCO.md` + skill `revisar-ddl.md` (obrigatório antes de DDL)
+- Decisões vigentes (Fase 2): `Infra-IA/setes-api/prompt_fase2_gerenciamento_central.md` — JWT usa
+  `institutionId` int (nunca `tenantId`), tabelas `tb_institution`/`tb_feature_flag`/`tb_sync_api_key`,
+  schemas `setes_<nome>`.
+Ao concluir tarefa que gere conhecimento novo, siga `Infra-IA/skills-genericas/atualizar-infra-ia.md`.
+
+
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Quick Commands
@@ -56,10 +68,20 @@ src/
 │   ├── auth.middleware.ts          # JWT validation
 │   ├── feature-flag.middleware.ts  # Module access control
 │   ├── rate-limit.middleware.ts    # Per-tenant rate limiting
-│   └── router.ts                   # Routes registration
-├── modules/           # Feature modules
-│   ├── admin/         # Admin operations (repository, service, routes)
-│   ├── core/          # Tenant info & setup
+│   ├── super.guard.ts              # isSuper() — aplicado POR MÓDULO nos cadastros do catálogo central
+│   └── router.ts                   # Routes registration (1 cadastro = /api/<modulo> + guard)
+├── modules/           # Feature modules — 1 CADASTRO = 1 MÓDULO (simetria com o setes-app)
+│   ├── countries/     # countries.{interface,dto,repository,service,controller,routes}.ts
+│   ├── states/        # idem (JOIN devolve countryName)
+│   ├── cities/        # idem (JOIN devolve stateName)
+│   ├── interfaces/    # idem + tb_interface_has_privilege (N:N pertence a este módulo)
+│   ├── privileges/    # idem
+│   ├── institutions/  # cadeia de entidade fiscal (skill cadastro-entidade-fiscal.md):
+│   │                  # cascade em transação única; POST absorveu o onboarding
+│   │                  # (cadeia → runMigrationsForSchema → active='S')
+│   ├── admin/         # Admin operations (POST /institutions APOSENTADO 2026-07-11 —
+│   │                  # onboarding vive no módulo institutions; GET/interfaces/flags ficam)
+│   ├── core/          # Tenant info & setup (GET /api/core/menus lê tb_interface)
 │   ├── erp/           # ERP module stub
 │   └── sync/          # Sync endpoints from Sincronizador
 │       ├── endpoints/         # One file per data type (brand.ts, customer.ts, etc.)
@@ -69,39 +91,41 @@ src/
 │   └── flag.repository.ts   # DB queries
 ├── migrations/        # Database schema management
 ├── shared/
-│   ├── db/connection.ts     # MySQL connection pool (per-schema)
+│   ├── db/connection.ts     # MySQL pool (decimalNumbers: true — NUNCA remover)
+│   ├── address/             # peça independente: tb_address (types/dto/repository —
+│   │                        # syncAddresses/listAddresses; recebe conn + entityId)
+│   ├── phone/               # peça independente: tb_phone (syncPhones/listPhones)
+│   ├── social-media/        # peça independente: tb_social_media
+│   ├── fiscal/              # peça independente: tb_person × tb_company (upsertFiscal,
+│   │                        # getPerson/getCompany)
+│   ├── entity/              # tb_entity + entity-fiscal.ts (COMPOSIÇÃO da cadeia de
+│   │                        # entidade fiscal: saveEntityFiscalChain, getEntityFiscalFull,
+│   │                        # entityFiscalBody+withFiscalRefinements) + index.ts (barrel
+│   │                        # '@shared/entity'); peças NUNCA importam entity/ — só a
+│   │                        # composição importa as peças; concretos consomem o barrel
 │   ├── errors/http-error.ts # Custom HTTP error class
+│   ├── http/controller-utils.ts # handleError + parseId (todo controller usa)
 │   ├── logger/logger.ts     # Simple console logger with timestamps
 │   └── types/express.d.ts   # TypeScript augmentation for req.tenant
 ├── app.ts            # Express app configuration
 └── server.ts         # Server bootstrap
 ```
 
-### Module Pattern (Repository → Service → Routes)
+### Module Pattern (Routes → Controller → Service → Repository)
 
-Each module (admin, core, erp) follows this three-layer pattern:
+**Cadastros seguem o padrão simétrico com o setes-app** — regras completas e
+checklist em `D:\Gestao2027\Infra-IA\setes-api\ARQUITETURA_MODULOS_API.md`
+(LER antes de criar/alterar módulo de cadastro). Resumo:
 
-```typescript
-// admin.repository.ts — Database queries
-export async function getUserById(schemaName: string, userId: string) {
-  const conn = await getConnection(schemaName)
-  const [rows] = await conn.query('SELECT * FROM users WHERE id = ?', [userId])
-  conn.release()
-  return rows[0]
-}
-
-// admin.service.ts — Business logic
-import { getUserById } from './admin.repository'
-export async function fetchUser(schemaName: string, userId: string) {
-  return getUserById(schemaName, userId)
-}
-
-// admin.routes.ts — HTTP endpoints
-router.get('/users/:id', async (req, res) => {
-  const user = await fetchUser(req.tenant!.schemaName, req.params.id)
-  res.json(user)
-})
-```
+- `<m>.interface.ts` tipos Row/Input · `<m>.dto.ts` Zod · `<m>.repository.ts` SQL
+  · `<m>.service.ts` regra (404/409/MAX+1) · `<m>.controller.ts` HTTP ↔ service
+  · `<m>.routes.ts` router fino + Swagger
+- "Super" NÃO é módulo — nem pasta, nem URL: é só agrupador de menu no app. A URL
+  segue o módulo: `/api/<modulo>` espelha `/home/<modulo>` (ex.: /api/countries).
+  Guard POR MÓDULO no gateway: `router.use('/countries', superGuard, countriesRoutes)`
+- Módulo nunca importa módulo; compartilhado vai para `shared/`
+- Módulos legados (admin, core, erp, sync) ainda usam Repository → Service → Routes
+  sem controller/dto separados — migrar quando forem tocados
 
 ## Authentication & Authorization
 

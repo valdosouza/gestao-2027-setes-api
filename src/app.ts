@@ -7,12 +7,27 @@ import { authMiddleware }        from '@gateway/auth.middleware'
 import { featureFlagMiddleware } from '@gateway/feature-flag.middleware'
 import { rateLimitMiddleware }   from '@gateway/rate-limit.middleware'
 import apiRouter                 from '@gateway/router'
+import authRoutes                from '@modules/auth/auth.routes'
 import logger                    from '@shared/logger/logger'
 import { swaggerSpec }           from '@shared/swagger/swagger-config'
 
 const app = express()
 
-app.use(express.json())
+// CORS — o setes-app web roda em origem própria (ex.: localhost:8080).
+// Origem configurável via CORS_ORIGIN; em produção, restrinja ao domínio do app.
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN ?? '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204)
+    return
+  }
+  next()
+})
+
+// Limite elevado para PUT /api/core/theme com logoBase64 (setes-app Fase 1, decisão 16)
+app.use(express.json({ limit: '2mb' }))
 
 // Swagger documentation
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
@@ -39,6 +54,9 @@ app.get('/docs.json', (_, res) => {
  *               $ref: '#/components/schemas/HealthResponse'
  */
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }))
+
+// Login unificado multi-institution (público, rate limit por IP)
+app.use('/auth', rateLimitMiddleware, authRoutes)
 
 // Auth JWT em todas as rotas /api
 app.use('/api', authMiddleware)

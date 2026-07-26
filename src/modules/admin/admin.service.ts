@@ -1,37 +1,41 @@
-import { randomUUID } from 'crypto'
-import { insertTenant, insertDefaultFlags, tenantSchemaExists } from './admin.repository'
-import { runMigrationsForSchema } from '../../migrations/runner'
+import {
+  getInstitutionSchemaName, listInterfacesWithGrant, setInstitutionInterfaces,
+  upsertFeatureFlag, InterfaceGrantRow,
+} from './admin.repository'
 import { HttpError } from '@shared/errors/http-error'
 
-export interface OnboardInput {
-  name:       string
-  schemaName: string
+// O onboarding de institution foi ABSORVIDO pelo cadastro de Estabelecimento
+// (POST /api/institutions — módulo institutions, decisão do Valdo 2026-07-11).
+// O antigo POST /api/admin/institutions foi aposentado.
+
+// ---------------------------------------------------------------------
+// setes-app Fase 1 — licenciamento de interfaces pelo Super (decisão 23):
+// resolve o schema do cliente ALVO via tb_institution.schema_name.
+// ---------------------------------------------------------------------
+
+async function resolveTargetSchema(institutionId: number): Promise<string> {
+  const schemaName = await getInstitutionSchemaName(institutionId)
+  if (!schemaName) throw new HttpError(404, `Institution ${institutionId} não encontrada`)
+  return schemaName
 }
 
-export interface OnboardResult {
-  tenantId:   string
-  name:       string
-  schemaName: string
+export async function getInstitutionInterfaces(institutionId: number): Promise<InterfaceGrantRow[]> {
+  const schemaName = await resolveTargetSchema(institutionId)
+  return listInterfacesWithGrant(schemaName)
 }
 
-export async function onboardTenant(input: OnboardInput): Promise<OnboardResult> {
-  const { name, schemaName } = input
+export async function updateInstitutionInterfaces(
+  institutionId: number, interfaceIds: number[]
+): Promise<void> {
+  const schemaName = await resolveTargetSchema(institutionId)
+  await setInstitutionInterfaces(schemaName, institutionId, interfaceIds)
+}
 
-  // Valida formato e prefixo obrigatorio gestao_
-  if (!/^gestao_[a-z0-9_]+$/.test(schemaName)) {
-    throw new HttpError(400, 'schemaName deve comecar com "gestao_" e conter apenas letras minusculas, numeros e underscores')
-  }
-
-  const exists = await tenantSchemaExists(schemaName)
-  if (exists) {
-    throw new HttpError(409, `Schema "${schemaName}" ja esta em uso`)
-  }
-
-  const tenantId = randomUUID()
-
-  await insertTenant({ id: tenantId, name, schemaName })
-  await insertDefaultFlags(tenantId)
-  await runMigrationsForSchema(schemaName)
-
-  return { tenantId, name, schemaName }
+// Gate técnico (decisão 17): a tela de cliente do Super chama este endpoint
+// para manter tb_feature_flag coerente com o contrato de interfaces.
+export async function updateFeatureFlag(
+  institutionId: number, moduleKey: string, enabled: boolean
+): Promise<void> {
+  await resolveTargetSchema(institutionId) // valida existência
+  await upsertFeatureFlag(institutionId, moduleKey, enabled)
 }

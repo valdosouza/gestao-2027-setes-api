@@ -6,6 +6,7 @@ export const rateLimitMiddleware = rateLimit({
   max:             300,
   standardHeaders: true,
   legacyHeaders:   false,
-  keyGenerator:    (req: Request) => req.tenant?.tenantId ?? req.ip ?? 'anonymous',
+  keyGenerator:    (req: Request) =>
+    req.institution ? String(req.institution.institutionId) : req.ip ?? 'anonymous',
   message:         { error: 'Limite de requisições excedido. Tente novamente em 1 minuto.' },
 })

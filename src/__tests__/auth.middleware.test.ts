@@ -29,7 +29,7 @@ describe('auth.middleware', () => {
 
   it('retorna 401 com token assinado com secret errado', async () => {
     const token = makeToken(
-      { tenantId: 'tenant-001', userId: 'u1', role: 'client_user', schemaName: 'setes_alpha' },
+      { institutionId: 2, userId: 2, role: 'user', schemaName: 'setes_alpha' },
       'secret_errado'
     )
     const res = await request(app)
@@ -40,10 +40,10 @@ describe('auth.middleware', () => {
 
   it('passa com token válido (não testa banco, apenas o middleware)', async () => {
     const token = makeToken({
-      tenantId: 'tenant-001',
-      userId:   'user-001',
-      role:     'client_user',
-      schemaName: 'setes_alpha',
+      institutionId: 2,
+      userId:        2,
+      role:          'user',
+      schemaName:    'setes_alpha',
     })
     // Pode retornar 500 se o banco não estiver acessível no CI,
     // mas não deve retornar 401 — o middleware de auth passou

@@ -1,13 +1,13 @@
 import app from './app'
 import logger from '@shared/logger/logger'
-import { runMigrationsForAllTenants } from './migrations/runner'
+import { runMigrationsForAllInstitutions } from './migrations/runner'
 
 const PORT = process.env.PORT ?? 3000
 
 async function bootstrap() {
   try {
     logger.info('Iniciando migrations...')
-    await runMigrationsForAllTenants()
+    await runMigrationsForAllInstitutions()
     logger.info('Migrations concluidas. Subindo servidor...')
 
     app.listen(PORT, () => {

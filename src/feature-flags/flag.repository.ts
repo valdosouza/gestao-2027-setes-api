@@ -1,15 +1,17 @@
 import pool from '@shared/db/connection'
 
 export interface FeatureFlag {
-  tenantId: string
-  moduleKey: string
-  enabled:  boolean
+  institutionId: number
+  moduleKey:     string
+  enabled:       boolean
 }
 
-export async function getFlagsForTenant(tenantId: string): Promise<FeatureFlag[]> {
+export async function getFlagsForInstitution(institutionId: number): Promise<FeatureFlag[]> {
   const [rows] = await pool.query<any[]>(
-    'SELECT tenant_id as tenantId, module_key as moduleKey, enabled FROM feature_flags WHERE tenant_id = ?',
-    [tenantId]
+    `SELECT tb_institution_id AS institutionId, module_key AS moduleKey, enabled
+     FROM setes_central.tb_feature_flag
+     WHERE tb_institution_id = ? AND deleted = 'N'`,
+    [institutionId]
   )
   return rows
 }

@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
-import { TenantPayload } from '@shared/types/express'
+import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
 
@@ -11,12 +11,12 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 
     const token   = header.split(' ')[1]
     const secret  = process.env.JWT_SECRET!
-    const payload = jwt.verify(token, secret) as TenantPayload
+    const payload = jwt.verify(token, secret) as InstitutionPayload
 
-    if (!payload.tenantId || !payload.role) throw new HttpError(401, 'Token inválido')
+    if (!payload.institutionId || !payload.role) throw new HttpError(401, 'Token inválido')
 
-    req.tenant = payload
-    logger.info('Auth OK', { tenantId: payload.tenantId, path: req.path })
+    req.institution = payload
+    logger.info('Auth OK', { institutionId: payload.institutionId, path: req.path })
     next()
   } catch (err) {
     if (err instanceof HttpError) {

@@ -7,6 +7,36 @@ import logger from '@shared/logger/logger'
 
 const router = Router()
 
+/**
+ * @swagger
+ * /sync/merchandise/sincronize:
+ *   post:
+ *     summary: Sincroniza merchandise do Sincronizador
+ *     tags: [Sync]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Sincronização bem-sucedida
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *       401:
+ *         description: API Key inválida
+ *       500:
+ *         description: Erro interno
+ */
 router.post('/merchandise/sincronize', async (req: Request, res: Response) => {
   const conn = await pool.getConnection()
   try {

@@ -1,52 +1,176 @@
 import { Router, Request, Response } from 'express'
-import { onboardTenant } from './admin.service'
+import { z } from 'zod'
+import {
+  getInstitutionInterfaces, updateInstitutionInterfaces, updateFeatureFlag,
+} from './admin.service'
+import { isSuper } from '@shared/auth/roles'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
 
 const router = Router()
 
-// Middleware local: bloqueia quem não for setes_admin
+// Middleware local: bloqueia quem não for superusuário da Setes (decisão 14)
 router.use((req: Request, res: Response, next) => {
-  if (req.tenant?.role !== 'setes_admin') {
+  if (!isSuper(req.institution)) {
     res.status(403).json({ error: 'Acesso restrito à equipe Setes' })
     return
   }
   next()
 })
 
-// POST /api/admin/tenants
-router.post('/tenants', async (req: Request, res: Response) => {
-  const { name, schemaName } = req.body
+// POST /api/admin/institutions foi APOSENTADO (decisão do Valdo, 2026-07-11):
+// o onboarding foi absorvido pelo cadastro de Estabelecimento —
+// POST /api/institutions (módulo institutions, skill cadastro-entidade-fiscal.md).
 
-  if (!name || !schemaName) {
-    res.status(400).json({ error: 'Os campos "name" e "schemaName" são obrigatórios' })
-    return
-  }
-
+/**
+ * @swagger
+ * /api/admin/institutions:
+ *   get:
+ *     summary: Lista todas as institutions cadastradas
+ *     tags: [Admin]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de institutions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       401:
+ *         description: JWT inválido
+ *       403:
+ *         description: Apenas superusuários da Setes
+ *       500:
+ *         description: Erro interno
+ */
+router.get('/institutions', async (_req: Request, res: Response) => {
+  const pool = (await import('@shared/db/connection')).default
   try {
-    const result = await onboardTenant({ name, schemaName })
-    logger.info('Novo tenant criado', result)
-    res.status(201).json({ ok: true, data: result })
+    const [rows] = await pool.query<any[]>(
+      `SELECT i.id, e.nick_trade AS name, i.schema_name, i.active, i.created_at
+       FROM setes_central.tb_institution i
+       INNER JOIN setes_central.tb_entity e ON (e.id = i.id)
+       WHERE i.deleted = 'N'
+       ORDER BY i.created_at DESC`
+    )
+    res.json({ ok: true, data: rows })
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao listar institutions' })
+  }
+})
+
+// ---------------------------------------------------------------------
+// setes-app Fase 1 — licenciamento de interfaces (decisões 17, 18, 23).
+// O Super informa o institutionId ALVO; o schema é resolvido na central.
+// ---------------------------------------------------------------------
+
+function parseInstitutionId(req: Request, res: Response): number | null {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'institutionId inválido' })
+    return null
+  }
+  return id
+}
+
+/**
+ * @swagger
+ * /api/admin/institutions/{id}/interfaces:
+ *   get:
+ *     summary: Catálogo de interfaces + situação do contrato do cliente alvo
+ *     tags: [Admin]
+ */
+router.get('/institutions/:id/interfaces', async (req: Request, res: Response) => {
+  const institutionId = parseInstitutionId(req, res)
+  if (institutionId === null) return
+  try {
+    const data = await getInstitutionInterfaces(institutionId)
+    res.json({ ok: true, data })
   } catch (err) {
     if (err instanceof HttpError) {
       res.status(err.statusCode).json({ error: err.message })
       return
     }
-    logger.error('Erro ao criar tenant', { err })
-    res.status(500).json({ error: 'Erro interno ao criar tenant' })
+    logger.error('Erro ao listar interfaces do cliente', { err })
+    res.status(500).json({ error: 'Erro interno' })
   }
 })
 
-// GET /api/admin/tenants
-router.get('/tenants', async (_req: Request, res: Response) => {
-  const pool = (await import('@shared/db/connection')).default
+const interfacesSchema = z.object({
+  interfaceIds: z.array(z.number().int().positive()),
+})
+
+/**
+ * @swagger
+ * /api/admin/institutions/{id}/interfaces:
+ *   put:
+ *     summary: Sincroniza o contrato comercial (concede a lista, revoga as demais)
+ *     tags: [Admin]
+ */
+router.put('/institutions/:id/interfaces', async (req: Request, res: Response) => {
+  const institutionId = parseInstitutionId(req, res)
+  if (institutionId === null) return
+
+  const parsed = interfacesSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Body inválido: esperado { interfaceIds: number[] }' })
+    return
+  }
   try {
-    const [rows] = await pool.query<any[]>(
-      'SELECT id, name, schema_name, active, created_at FROM setes_central.tenants ORDER BY created_at DESC'
-    )
-    res.json({ ok: true, data: rows })
+    await updateInstitutionInterfaces(institutionId, parsed.data.interfaceIds)
+    logger.info('Contrato de interfaces atualizado', { institutionId, total: parsed.data.interfaceIds.length })
+    res.json({ ok: true })
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao listar tenants' })
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message })
+      return
+    }
+    logger.error('Erro ao atualizar interfaces do cliente', { err })
+    res.status(500).json({ error: 'Erro interno' })
+  }
+})
+
+const flagSchema = z.object({
+  moduleKey: z.string().min(1).max(100).regex(/^[a-z0-9_-]+$/i),
+  enabled:   z.boolean(),
+})
+
+/**
+ * @swagger
+ * /api/admin/institutions/{id}/feature-flags:
+ *   put:
+ *     summary: Gate técnico de módulo da API (mantido coerente com o contrato — decisão 17)
+ *     tags: [Admin]
+ */
+router.put('/institutions/:id/feature-flags', async (req: Request, res: Response) => {
+  const institutionId = parseInstitutionId(req, res)
+  if (institutionId === null) return
+
+  const parsed = flagSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Body inválido: esperado { moduleKey: string, enabled: boolean }' })
+    return
+  }
+  try {
+    await updateFeatureFlag(institutionId, parsed.data.moduleKey, parsed.data.enabled)
+    logger.info('Feature flag atualizada', { institutionId, ...parsed.data })
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message })
+      return
+    }
+    logger.error('Erro ao atualizar feature flag', { err })
+    res.status(500).json({ error: 'Erro interno' })
   }
 })
 
