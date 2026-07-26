@@ -1,13 +1,15 @@
+import crypto from 'crypto'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
 import { runMigrationsForSchema } from '../../migrations/runner'
 import {
-  InstitutionInput, InstitutionListRow, InstitutionFull,
+  InstitutionInput, InstitutionListRow, InstitutionFull, SyncApiKeyRow,
 } from './institutions.interface'
 import {
   listInstitutions, getInstitution, schemaNameExists, institutionExists,
   insertInstitutionCascade, updateInstitutionCascade,
   setInstitutionActive, deleteInstitution, insertDefaultFlags,
+  getSyncApiKey, insertSyncApiKey,
 } from './institutions.repository'
 
 export async function fetchInstitutions(filter: string): Promise<InstitutionListRow[]> {
@@ -87,4 +89,40 @@ export async function removeInstitution(id: number): Promise<void> {
     throw new HttpError(404, `Estabelecimento ${id} não encontrado`)
   }
   await deleteInstitution(id)
+}
+
+// ---------------------------------------------------------------------
+// Chave de sincronização (tb_sync_api_key — D12: uma chave por
+// estabelecimento, a MESMA em todos os terminais dele; o Sincronizador a
+// envia no header X-Api-Key e a setes-sync resolve institution + schema)
+// ---------------------------------------------------------------------
+
+export async function fetchSyncApiKey(id: number): Promise<SyncApiKeyRow | null> {
+  if (!(await institutionExists(id))) {
+    throw new HttpError(404, `Estabelecimento ${id} não encontrado`)
+  }
+  return getSyncApiKey(id)
+}
+
+/**
+ * Gera a chave quando NÃO existe (crypto, 48 hex). Regenerar de propósito
+ * não tem endpoint: trocaria a chave de uma instalação em produção —
+ * intervenção manual consciente no banco se um dia for preciso.
+ */
+export async function generateSyncApiKey(id: number): Promise<SyncApiKeyRow> {
+  const institution = await getInstitution(id)
+  if (!institution) {
+    throw new HttpError(404, `Estabelecimento ${id} não encontrado`)
+  }
+  const existing = await getSyncApiKey(id)
+  if (existing) {
+    throw new HttpError(409,
+      'Este estabelecimento já possui uma chave de sincronização',
+      [{ field: 'apiKey', message: 'chave já gerada — trocar exige intervenção manual' }])
+  }
+  const apiKey = crypto.randomBytes(24).toString('hex')
+  const establishmentCode = institution.schemaName.toUpperCase()
+  await insertSyncApiKey(id, apiKey, establishmentCode)
+  logger.info('Chave de sincronização gerada', { institutionId: id, establishmentCode })
+  return { apiKey, establishmentCode, active: 'S' }
 }

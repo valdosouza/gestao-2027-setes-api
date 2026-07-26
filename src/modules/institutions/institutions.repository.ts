@@ -3,7 +3,7 @@ import { HttpError } from '@shared/errors/http-error'
 import { SETES_INSTITUTION_ID, SETES_SCHEMA } from '@shared/auth/roles'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import {
-  InstitutionInput, InstitutionListRow, InstitutionFull,
+  InstitutionInput, InstitutionListRow, InstitutionFull, SyncApiKeyRow,
 } from './institutions.interface'
 
 /**
@@ -204,6 +204,47 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
       [values]
     )
 
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+// ---------------------------------------------------------------------
+// Chave de sincronização (tb_sync_api_key — D12 da revisão do sincronizador)
+// ---------------------------------------------------------------------
+
+export async function getSyncApiKey(institutionId: number): Promise<SyncApiKeyRow | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT api_key AS apiKey, establishment_code AS establishmentCode, active
+     FROM setes_central.tb_sync_api_key
+     WHERE tb_institution_id = ? AND deleted = 'N'
+     ORDER BY id
+     LIMIT 1`,
+    [institutionId]
+  )
+  return rows[0] ?? null
+}
+
+/** Uma chave por estabelecimento; id sem auto_increment → MAX+1 na transação. */
+export async function insertSyncApiKey(
+  institutionId: number, apiKey: string, establishmentCode: string
+): Promise<void> {
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [rows] = await conn.query<any[]>(
+      'SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM setes_central.tb_sync_api_key FOR UPDATE'
+    )
+    await conn.query(
+      `INSERT INTO setes_central.tb_sync_api_key
+         (id, api_key, tb_institution_id, establishment_code, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'S', NOW(), NOW())`,
+      [Number(rows[0].nextId), apiKey, institutionId, establishmentCode]
+    )
     await conn.commit()
   } catch (err) {
     await conn.rollback()

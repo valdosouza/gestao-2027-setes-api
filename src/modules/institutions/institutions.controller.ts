@@ -7,6 +7,7 @@ import { institutionCreateDto, institutionUpdateDto } from './institutions.dto'
 import {
   fetchInstitutions, fetchInstitution, createInstitution,
   editInstitution, removeInstitution,
+  fetchSyncApiKey, generateSyncApiKey,
 } from './institutions.service'
 
 /**
@@ -96,5 +97,25 @@ export async function remove(req: Request, res: Response): Promise<void> {
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'institutions/:id DELETE')
+  }
+}
+
+export async function getSyncKey(req: Request, res: Response): Promise<void> {
+  const id = parseId(req, res)
+  if (id === null) return
+  try {
+    res.json({ ok: true, data: await fetchSyncApiKey(id) })
+  } catch (err) {
+    handleError(res, err, 'institutions/:id/sync-api-key GET')
+  }
+}
+
+export async function createSyncKey(req: Request, res: Response): Promise<void> {
+  const id = parseId(req, res)
+  if (id === null) return
+  try {
+    res.status(201).json({ ok: true, data: await generateSyncApiKey(id) })
+  } catch (err) {
+    handleError(res, err, 'institutions/:id/sync-api-key POST')
   }
 }

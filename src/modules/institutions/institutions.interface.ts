@@ -27,3 +27,14 @@ export interface InstitutionFull extends EntityFiscalFull {
   schemaName: string
   active:     'S' | 'N' | null
 }
+
+/**
+ * Chave de sincronização da institution (tb_sync_api_key — D12 da revisão
+ * do sincronizador: uma chave por estabelecimento, header X-Api-Key).
+ * GET/POST /api/institutions/:id/sync-api-key.
+ */
+export interface SyncApiKeyRow {
+  apiKey:            string
+  establishmentCode: string
+  active:            'S' | 'N'
+}

@@ -83,4 +83,44 @@ router.put('/:id', controller.update)
  */
 router.delete('/:id', controller.remove)
 
+/**
+ * @swagger
+ * /api/institutions/{id}/sync-api-key:
+ *   get:
+ *     summary: Chave de sincronização do estabelecimento (tb_sync_api_key — X-Api-Key do Sincronizador)
+ *     tags: [Institutions]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: '{ ok: true, data: { apiKey, establishmentCode, active } | null }'
+ *       404:
+ *         description: Estabelecimento não encontrado
+ */
+router.get('/:id/sync-api-key', controller.getSyncKey)
+
+/**
+ * @swagger
+ * /api/institutions/{id}/sync-api-key:
+ *   post:
+ *     summary: Gera a chave de sincronização (só quando não existe — 409 se já houver; troca é intervenção manual)
+ *     tags: [Institutions]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       201:
+ *         description: '{ ok: true, data: { apiKey, establishmentCode, active } }'
+ *       404:
+ *         description: Estabelecimento não encontrado
+ *       409:
+ *         description: Chave já existe
+ */
+router.post('/:id/sync-api-key', controller.createSyncKey)
+
 export default router
