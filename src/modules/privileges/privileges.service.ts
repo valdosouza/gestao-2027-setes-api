@@ -1,11 +1,12 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { PrivilegeRow } from './privileges.interface'
 import {
   listPrivileges, getPrivilege, insertPrivilege, updatePrivilege, deletePrivilege,
 } from './privileges.repository'
 
-export async function fetchPrivileges(filter: string): Promise<PrivilegeRow[]> {
-  return listPrivileges(filter)
+export async function fetchPrivileges(query: ListQuery): Promise<PagedRows<PrivilegeRow>> {
+  return listPrivileges(query)
 }
 
 export async function fetchPrivilege(id: number): Promise<PrivilegeRow> {

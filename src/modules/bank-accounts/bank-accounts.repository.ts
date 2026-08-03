@@ -1,6 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   BankAccountListRow, BankAccountFull, BankAccountInput, BankLookupRow,
 } from './bank-accounts.interface'
@@ -19,22 +20,33 @@ const LIST_FIELDS = `a.id,
             a.number, a.number_dv AS numberDv,
             a.manager, a.limit_value AS limitValue`
 
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Desempate por a.id (D8) mantém o OFFSET estável.
+ */
 export async function listBankAccounts(
-  filter: string, schemaName: string, institutionId: number
-): Promise<BankAccountListRow[]> {
+  query: ListQuery, schemaName: string, institutionId: number
+): Promise<PagedRows<BankAccountListRow>> {
   assertSchemaName(schemaName)
-  const like = filter ? `%${filter}%` : null
-  const [rows] = await pool.query<any[]>(
-    `SELECT ${LIST_FIELDS}
-     FROM \`${schemaName}\`.tb_bank_account a
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM \`${schemaName}\`.tb_bank_account a
      LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id
      WHERE a.tb_institution_id = ? AND a.deleted = 'N'
-       AND (? IS NULL OR b.description LIKE ? OR b.number LIKE ? OR a.number LIKE ?)
-     ORDER BY b.description, a.agency, a.number
-     LIMIT 200`,
-    [institutionId, like, like, like, like]
+       AND (? IS NULL OR b.description LIKE ? OR b.number LIKE ? OR a.number LIKE ?)`
+  const params = [institutionId, like, like, like, like]
+
+  const [rows] = await pool.query<any[]>(
+    `SELECT ${LIST_FIELDS}
+     ${where}
+     ORDER BY b.description, a.agency, a.number, a.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getBankAccount(

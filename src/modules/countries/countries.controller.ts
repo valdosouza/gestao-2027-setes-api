@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { countryCreateDto, countryUpdateDto } from './countries.dto'
 import {
@@ -14,8 +15,8 @@ import {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchCountries(filter) })
+    const query = await parseListQuery(req, 'countries')
+    res.json(pagedEnvelope(query, await fetchCountries(query)))
   } catch (err) {
     handleError(res, err, 'countries GET')
   }

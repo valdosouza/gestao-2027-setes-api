@@ -13,8 +13,28 @@ const router = Router()
  * @swagger
  * /api/interfaces:
  *   get:
- *     summary: Lista interfaces (filter?= description/i18n_key/group_default, máx. 200) com privilegeIds
+ *     summary: Lista interfaces (com privilegeIds)
  *     tags: [Interfaces]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por description, i18n_key ou group_default
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *     responses:
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, groupDefault, i18nKey, description, kind, position, privilegeIds }' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Restrito à equipe Setes }
+ *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
 

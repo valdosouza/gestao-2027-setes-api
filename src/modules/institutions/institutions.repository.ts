@@ -1,5 +1,6 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { SETES_INSTITUTION_ID, SETES_SCHEMA } from '@shared/auth/roles'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import {
@@ -18,23 +19,34 @@ import {
 // Consultas
 // ---------------------------------------------------------------------
 
-export async function listInstitutions(filter: string): Promise<InstitutionListRow[]> {
-  const like = filter ? `%${filter}%` : null
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Desempate por i.id (D8) mantém o OFFSET estável.
+ */
+export async function listInstitutions(query: ListQuery): Promise<PagedRows<InstitutionListRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM setes_central.tb_institution i
+     INNER JOIN setes_central.tb_entity e ON e.id = i.id
+     WHERE i.deleted = 'N'
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR i.schema_name LIKE ?)`
+  const params = [like, like, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT i.id,
             e.nick_trade   AS nickTrade,
             e.name_company AS nameCompany,
             i.schema_name  AS schemaName,
             i.active
-     FROM setes_central.tb_institution i
-     INNER JOIN setes_central.tb_entity e ON e.id = i.id
-     WHERE i.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR i.schema_name LIKE ?)
-     ORDER BY e.nick_trade
-     LIMIT 200`,
-    [like, like, like, like]
+     ${where}
+     ORDER BY e.nick_trade, i.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 /** Objeto COMPLETO: cadeia compartilhada (shared/entity) + tb_institution. */

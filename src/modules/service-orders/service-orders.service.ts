@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   ServiceOrderListRow, ServiceOrderFull, OpenOrderInput, OrderItemInput,
   MonthlyRunInput, MonthlyRunReport, InvoiceInput, InvoiceResult,
@@ -24,9 +25,9 @@ export interface ServiceOrderScope {
 }
 
 export async function fetchOrders(
-  status: 'A' | 'F' | '', filter: string, scope: ServiceOrderScope
-): Promise<ServiceOrderListRow[]> {
-  return listOrders(status, filter, scope.schemaName, scope.institutionId)
+  status: 'A' | 'F' | '', query: ListQuery, scope: ServiceOrderScope
+): Promise<PagedRows<ServiceOrderListRow>> {
+  return listOrders(status, query, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchOrder(

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { collaboratorCreateDto, collaboratorUpdateDto } from './collaborators.dto'
 import {
   CollaboratorScope, fetchCollaborators, fetchCollaborator,
@@ -14,8 +15,8 @@ function scopeOf(req: Request): CollaboratorScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchCollaborators(filter, scopeOf(req)) })
+    const query = await parseListQuery(req, 'collaborators')
+    res.json(pagedEnvelope(query, await fetchCollaborators(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'collaborators GET')
   }

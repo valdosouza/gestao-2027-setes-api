@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { isSuper } from '@shared/auth/roles'
 import { UserScope } from './users.interface'
@@ -24,10 +25,10 @@ function scopeOf(req: Request): UserScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
+    const query = await parseListQuery(req, 'users')
     const institutionId =
       req.query.institutionId ? Number(req.query.institutionId) : null
-    res.json({ ok: true, data: await fetchUsers(scopeOf(req), filter, institutionId) })
+    res.json(pagedEnvelope(query, await fetchUsers(scopeOf(req), query, institutionId)))
   } catch (err) {
     handleError(res, err, 'users GET')
   }

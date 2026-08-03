@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { stateCreateDto, stateUpdateDto } from './states.dto'
 import {
@@ -9,9 +10,9 @@ import {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter    = String(req.query.filter ?? '')
+    const query     = await parseListQuery(req, 'states')
     const countryId = req.query.countryId ? Number(req.query.countryId) : undefined
-    res.json({ ok: true, data: await fetchStates(filter, countryId) })
+    res.json(pagedEnvelope(query, await fetchStates(query, countryId)))
   } catch (err) {
     handleError(res, err, 'states GET')
   }

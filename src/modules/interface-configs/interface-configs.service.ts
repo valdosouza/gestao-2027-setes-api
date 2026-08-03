@@ -1,6 +1,8 @@
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { isAdmin } from '@shared/auth/roles'
+import { findInterfaceIdByKey } from '@shared/field-config'
 import {
   ResolvedConfig, getResolvedConfigs, getResolvedConfigsByKey,
   invalidateInterfaceConfig, validateConfigContent, listCatalogConfigs,
@@ -22,9 +24,9 @@ import {
  */
 
 export async function fetchVitrine(
-  institution: InstitutionPayload, filter: string
-): Promise<InterfaceVitrineRow[]> {
-  return listVitrine(institution.schemaName, institution.institutionId, filter)
+  institution: InstitutionPayload, query: ListQuery
+): Promise<PagedRows<InterfaceVitrineRow>> {
+  return listVitrine(query, institution.schemaName, institution.institutionId)
 }
 
 export async function fetchResolvedConfigs(
@@ -46,6 +48,22 @@ export async function fetchResolvedConfigsByKey(
   institution: InstitutionPayload, moduleKey: string
 ): Promise<ResolvedConfig[]> {
   return getResolvedConfigsByKey(institution, moduleKey)
+}
+
+/**
+ * Gravação pela CHAVE do módulo (paginação D4): o app conhece o moduleKey
+ * (configModuleKey da fábrica), não o id da interface — ex.: o seletor de
+ * itens/página persiste o override do usuário sem abrir o painel.
+ */
+export async function saveConfigValueByKey(
+  institution: InstitutionPayload, moduleKey: string,
+  name: string, input: ConfigValueInput
+): Promise<void> {
+  const interfaceId = await findInterfaceIdByKey(moduleKey)
+  if (interfaceId === null) {
+    throw new HttpError(404, 'Interface não encontrada para este módulo')
+  }
+  await saveConfigValue(institution, interfaceId, name, input)
 }
 
 export async function saveConfigValue(

@@ -12,8 +12,28 @@ const router = Router()
  * @swagger
  * /api/privileges:
  *   get:
- *     summary: Lista privilégios (filter?= description) — cadastro e checkboxes da tela de Interfaces
+ *     summary: Lista privilégios — cadastro e checkboxes da tela de Interfaces
  *     tags: [Privileges]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por description
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *     responses:
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, description }' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Restrito à equipe Setes }
+ *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
 

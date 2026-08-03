@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { paymentTypeLinkDto, paymentTypeLinkUpdateDto } from './payment-types.dto'
 import {
@@ -15,7 +16,8 @@ function scopeOf(req: Request): PaymentTypeScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ ok: true, data: await fetchLinked(scopeOf(req)) })
+    const query = await parseListQuery(req, 'payment-types')
+    res.json(pagedEnvelope(query, await fetchLinked(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'payment-types GET')
   }

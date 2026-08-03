@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import logger from '@shared/logger/logger'
 import { runMigrationsForSchema } from '../../migrations/runner'
 import {
@@ -12,8 +13,8 @@ import {
   getSyncApiKey, insertSyncApiKey,
 } from './institutions.repository'
 
-export async function fetchInstitutions(filter: string): Promise<InstitutionListRow[]> {
-  return listInstitutions(filter)
+export async function fetchInstitutions(query: ListQuery): Promise<PagedRows<InstitutionListRow>> {
+  return listInstitutions(query)
 }
 
 export async function fetchInstitution(id: number): Promise<InstitutionFull> {

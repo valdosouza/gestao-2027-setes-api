@@ -1,18 +1,30 @@
 import pool from '@shared/db/connection'
+import { ListQuery, PagedRows } from '@shared/list'
 import { CountryRow } from './countries.interface'
 
-export async function listCountries(filter: string): Promise<CountryRow[]> {
-  const like = filter ? `%${filter}%` : null
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Desempate por id (D8) mantém o OFFSET estável.
+ */
+export async function listCountries(query: ListQuery): Promise<PagedRows<CountryRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM setes_central.tb_country
+     WHERE deleted = 'N'
+       AND (? IS NULL OR name LIKE ?)`
+  const params = [like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT id, name
-     FROM setes_central.tb_country
-     WHERE deleted = 'N'
-       AND (? IS NULL OR name LIKE ?)
-     ORDER BY name
-     LIMIT 200`,
-    [like, like]
+     ${where}
+     ORDER BY name, id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getCountry(id: number): Promise<CountryRow | null> {

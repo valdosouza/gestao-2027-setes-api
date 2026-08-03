@@ -38,9 +38,12 @@ const input: UserCreateInput = {
   active:      'S',
 }
 
+/** Query paginada padrão (paginação D3/D5) usada nos cenários de lista. */
+const listQuery = { filter: '', page: 1, pageSize: 25, offset: 0 }
+
 beforeEach(() => {
   jest.clearAllMocks()
-  mockList.mockResolvedValue([])
+  mockList.mockResolvedValue({ rows: [], total: 0 })
   mockFindOwner.mockResolvedValue(null)
   mockInsert.mockResolvedValue(9)
   mockExists.mockResolvedValue(true)
@@ -90,17 +93,17 @@ describe('createUser', () => {
 
 describe('fetchUsers (escopo)', () => {
   it('super sem institutionId lista todos; com institutionId filtra', async () => {
-    await fetchUsers(superScope, '', null)
-    expect(mockList).toHaveBeenCalledWith('', null)
+    await fetchUsers(superScope, listQuery, null)
+    expect(mockList).toHaveBeenCalledWith(listQuery, null)
 
-    await fetchUsers(superScope, '', 7)
-    expect(mockList).toHaveBeenCalledWith('', 7)
+    await fetchUsers(superScope, listQuery, 7)
+    expect(mockList).toHaveBeenCalledWith(listQuery, 7)
   })
 
   it('admin do cliente é sempre limitado à própria institution', async () => {
-    await fetchUsers(adminScope, '', 999)
+    await fetchUsers(adminScope, listQuery, 999)
 
-    expect(mockList).toHaveBeenCalledWith('', 5)
+    expect(mockList).toHaveBeenCalledWith(listQuery, 5)
   })
 })
 

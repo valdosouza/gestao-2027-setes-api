@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   LinkedPaymentTypeRow, PaymentTypeCatalogRow, PaymentTypeLinkInput,
   PaymentTypeLinkUpdate,
@@ -23,9 +24,9 @@ export interface PaymentTypeScope {
 }
 
 export async function fetchLinked(
-  scope: PaymentTypeScope
-): Promise<LinkedPaymentTypeRow[]> {
-  return listLinked(scope.schemaName, scope.institutionId)
+  query: ListQuery, scope: PaymentTypeScope
+): Promise<PagedRows<LinkedPaymentTypeRow>> {
+  return listLinked(query, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchCatalog(

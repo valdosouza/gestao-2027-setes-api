@@ -1,5 +1,6 @@
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   getResolvedFields, invalidateFieldConfig, findInterfaceIdByKey, ResolvedField,
 } from '@shared/field-config'
@@ -16,9 +17,9 @@ import { getCatalogFieldRequired, upsertFieldConfig } from './interface-fields.r
  */
 
 export async function fetchVitrine(
-  institution: InstitutionPayload, filter: string
-): Promise<InterfaceVitrineRow[]> {
-  return listVitrine(institution.schemaName, institution.institutionId, filter)
+  institution: InstitutionPayload, query: ListQuery
+): Promise<PagedRows<InterfaceVitrineRow>> {
+  return listVitrine(query, institution.schemaName, institution.institutionId)
 }
 
 export async function fetchResolvedFields(

@@ -1,11 +1,27 @@
 import pool from '@shared/db/connection'
+import { ListQuery, PagedRows } from '@shared/list'
 import { CityRow, CityInput, CityCreateInput } from './cities.interface'
 
 // O JOIN em tb_state é relação de BANCO (stateName para exibição no app) —
 // não cria acoplamento de código com o módulo states.
 
-export async function listCities(filter: string, stateId?: number): Promise<CityRow[]> {
-  const like = filter ? `%${filter}%` : null
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2) — o filtro por estado (stateId) vale para os dois SELECTs por
+ * construção. Desempate por c.id (D8) mantém o OFFSET estável.
+ */
+export async function listCities(
+  query: ListQuery, stateId?: number
+): Promise<PagedRows<CityRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM setes_central.tb_city c
+     LEFT JOIN setes_central.tb_state s ON s.id = c.tb_state_id
+     WHERE c.deleted = 'N'
+       AND (? IS NULL OR c.name LIKE ?)
+       AND (? IS NULL OR c.tb_state_id = ?)`
+  const params = [like, like, stateId ?? null, stateId ?? null]
+
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
             c.tb_state_id  AS tbStateId,
@@ -16,16 +32,15 @@ export async function listCities(filter: string, stateId?: number): Promise<City
             c.density,
             c.area,
             s.name         AS stateName
-     FROM setes_central.tb_city c
-     LEFT JOIN setes_central.tb_state s ON s.id = c.tb_state_id
-     WHERE c.deleted = 'N'
-       AND (? IS NULL OR c.name LIKE ?)
-       AND (? IS NULL OR c.tb_state_id = ?)
-     ORDER BY c.name
-     LIMIT 200`,
-    [like, like, stateId ?? null, stateId ?? null]
+     ${where}
+     ORDER BY c.name, c.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getCity(id: number): Promise<CityRow | null> {

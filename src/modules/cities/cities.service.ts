@@ -1,12 +1,15 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { CityRow, CityInput, CityCreateInput } from './cities.interface'
 import {
   listCities, getCity, cityIdExists,
   insertCity, updateCity, deleteCity,
 } from './cities.repository'
 
-export async function fetchCities(filter: string, stateId?: number): Promise<CityRow[]> {
-  return listCities(filter, stateId)
+export async function fetchCities(
+  query: ListQuery, stateId?: number
+): Promise<PagedRows<CityRow>> {
+  return listCities(query, stateId)
 }
 
 export async function fetchCity(id: number): Promise<CityRow> {

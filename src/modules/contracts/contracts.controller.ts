@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { contractDto } from './contracts.dto'
 import {
@@ -16,8 +17,8 @@ function scopeOf(req: Request): ContractScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchContracts(filter, scopeOf(req)) })
+    const query = await parseListQuery(req, 'contracts')
+    res.json(pagedEnvelope(query, await fetchContracts(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'contracts GET')
   }

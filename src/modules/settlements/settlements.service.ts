@@ -1,3 +1,4 @@
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   BillRow, SettleBatchInput, SettleBatchResult, SettledRow,
   ReversalInput, ReversalResult, StatementReport,
@@ -19,10 +20,10 @@ export interface SettlementScope {
 }
 
 export async function fetchBills(
-  status: 'open' | 'settled' | '', kind: string, filter: string,
+  status: 'open' | 'settled' | '', kind: string, query: ListQuery,
   scope: SettlementScope
-): Promise<BillRow[]> {
-  return listBills(status, kind, filter, scope.schemaName, scope.institutionId)
+): Promise<PagedRows<BillRow>> {
+  return listBills(status, kind, query, scope.schemaName, scope.institutionId)
 }
 
 export async function settle(
@@ -32,9 +33,9 @@ export async function settle(
 }
 
 export async function fetchSettled(
-  filter: string, scope: SettlementScope
-): Promise<SettledRow[]> {
-  return listSettled(filter, scope.schemaName, scope.institutionId)
+  query: ListQuery, scope: SettlementScope
+): Promise<PagedRows<SettledRow>> {
+  return listSettled(query, scope.schemaName, scope.institutionId)
 }
 
 export async function reverse(

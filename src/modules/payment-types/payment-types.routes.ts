@@ -17,8 +17,21 @@ const router = Router()
  *     tags: [PaymentTypes]
  *     security:
  *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por descrição da forma
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
- *       200: { description: 'Envelope { ok, data } — lista { id, description, idNfce, enable, appMobile, blockForCustomerBlocked, blockForCustomerNoLimit, maxParcels, tef, financialPlansIdCre, financialPlansIdDeb, usagePreference, financialPlanCreDescription, financialPlanDebDescription }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, description, idNfce, enable, appMobile, blockForCustomerBlocked, blockForCustomerNoLimit, maxParcels, tef, financialPlansIdCre, financialPlansIdDeb, usagePreference, financialPlanCreDescription, financialPlanDebDescription }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  *   post:

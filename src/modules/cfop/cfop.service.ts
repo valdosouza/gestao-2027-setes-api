@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { CfopRow, CfopInput } from './cfop.interface'
 import {
   listCfop, getCfop, cfopCodeExists, insertCfop, updateCfop, deleteCfop,
@@ -10,8 +11,8 @@ import {
  * deleted='S'; imutável na edição.
  */
 
-export async function fetchCfopList(filter: string): Promise<CfopRow[]> {
-  return listCfop(filter)
+export async function fetchCfopList(query: ListQuery): Promise<PagedRows<CfopRow>> {
+  return listCfop(query)
 }
 
 export async function fetchCfop(id: string): Promise<CfopRow> {

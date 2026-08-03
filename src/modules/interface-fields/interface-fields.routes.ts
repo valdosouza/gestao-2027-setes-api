@@ -23,9 +23,17 @@ const router = Router()
  *         name: filter
  *         schema: { type: string }
  *         description: Filtro por nome da interface
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
  *       200:
- *         description: '{ ok, data: [{ id, description, i18nKey, acquired, moduleNames }] }'
+ *         description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, description, i18nKey, acquired, moduleNames }'
  */
 router.get('/', controller.list)
 

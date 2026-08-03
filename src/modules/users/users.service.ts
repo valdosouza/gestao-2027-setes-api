@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { md5Password } from '@shared/auth/password'
 import {
   UserListRow, UserRow, UserInput, UserCreateInput, UserScope,
@@ -37,9 +38,9 @@ async function assertInScope(scope: UserScope, userId: number): Promise<void> {
 }
 
 export async function fetchUsers(
-  scope: UserScope, filter: string, institutionId: number | null
-): Promise<UserListRow[]> {
-  return listUsers(filter, scopeInstitution(scope, institutionId))
+  scope: UserScope, query: ListQuery, institutionId: number | null
+): Promise<PagedRows<UserListRow>> {
+  return listUsers(query, scopeInstitution(scope, institutionId))
 }
 
 export async function fetchUser(scope: UserScope, id: number): Promise<UserRow> {

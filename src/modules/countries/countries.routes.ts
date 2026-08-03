@@ -12,8 +12,27 @@ const router = Router()
  * @swagger
  * /api/countries:
  *   get:
- *     summary: Lista países (filter?= busca por nome, máx. 200)
+ *     summary: Lista países da base central
  *     tags: [Countries]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *     responses:
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, name }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
 

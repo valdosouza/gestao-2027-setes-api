@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { interfaceDto, interfaceConfigDto } from './interfaces.dto'
 import {
@@ -12,8 +13,8 @@ const CONFIG_NAME_RE = /^[a-z][a-z0-9_]{0,49}$/
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchInterfaces(filter) })
+    const query = await parseListQuery(req, 'interfaces')
+    res.json(pagedEnvelope(query, await fetchInterfaces(query)))
   } catch (err) {
     handleError(res, err, 'interfaces GET')
   }

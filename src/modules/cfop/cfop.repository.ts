@@ -1,4 +1,5 @@
 import pool from '@shared/db/connection'
+import { ListQuery, PagedRows } from '@shared/list'
 import { CfopRow, CfopInput } from './cfop.interface'
 
 /**
@@ -16,19 +17,30 @@ const CFOP_FIELDS = (input: CfopInput) => [
   input.active ?? 'S',
 ]
 
-export async function listCfop(filter: string): Promise<CfopRow[]> {
-  const like = filter ? `%${filter}%` : null
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Ordenação já é pelo id (código fiscal) — sem desempate extra (D8).
+ */
+export async function listCfop(query: ListQuery): Promise<PagedRows<CfopRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM setes_central.tb_cfop c
+     WHERE c.deleted = 'N'
+       AND (? IS NULL OR c.id LIKE ? OR c.description LIKE ? OR c.concise LIKE ?)`
+  const params = [like, like, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT c.id, c.description, c.concise, c.register, c.way,
             c.jurisdiction, CAST(c.note AS CHAR) AS note, c.active
-     FROM setes_central.tb_cfop c
-     WHERE c.deleted = 'N'
-       AND (? IS NULL OR c.id LIKE ? OR c.description LIKE ? OR c.concise LIKE ?)
+     ${where}
      ORDER BY c.id
-     LIMIT 200`,
-    [like, like, like, like]
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getCfop(id: string): Promise<CfopRow | null> {

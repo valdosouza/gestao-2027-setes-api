@@ -2,6 +2,7 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   prorataValue, parcelQuotas, firstDayOfMonth, lastDayOfMonth,
 } from './service-orders.calc'
@@ -27,13 +28,33 @@ const SERVICE_KIND = 'Service'
 // Leitura
 // ---------------------------------------------------------------------
 
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). O subselect itemsCount fica SÓ no SELECT da página (não pesa o
+ * COUNT); ORDER BY já tem desempate composto (number DESC, id DESC) —
+ * OFFSET estável (D8).
+ */
 export async function listOrders(
-  status: 'A' | 'F' | '', filter: string,
+  status: 'A' | 'F' | '', query: ListQuery,
   schemaName: string, institutionId: number
-): Promise<ServiceOrderListRow[]> {
+): Promise<PagedRows<ServiceOrderListRow>> {
   assertSchemaName(schemaName)
-  const like = filter ? `%${filter}%` : null
+  const like = query.filter ? `%${query.filter}%` : null
   const statusFilter = status || null
+  const where =
+    `FROM \`${schemaName}\`.tb_order_service s
+     INNER JOIN \`${schemaName}\`.tb_order o
+        ON o.id = s.id AND o.tb_institution_id = s.tb_institution_id
+       AND o.terminal = s.terminal AND o.deleted = 'N'
+     INNER JOIN setes_central.tb_entity e ON e.id = s.tb_customer_id
+     LEFT JOIN \`${schemaName}\`.tb_order_totalizer t
+        ON t.id = s.id AND t.tb_institution_id = s.tb_institution_id
+       AND t.terminal = s.terminal AND t.deleted = 'N'
+     WHERE s.tb_institution_id = ? AND s.deleted = 'N'
+       AND (? IS NULL OR o.status = ?)
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)`
+  const params = [institutionId, statusFilter, statusFilter, like, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT s.id,
             s.number,
@@ -45,22 +66,15 @@ export async function listOrders(
               WHERE i.tb_order_id = s.id AND i.tb_institution_id = s.tb_institution_id
                 AND i.terminal = s.terminal AND i.deleted = 'N') AS itemsCount,
             COALESCE(t.total_value, 0) AS totalValue
-     FROM \`${schemaName}\`.tb_order_service s
-     INNER JOIN \`${schemaName}\`.tb_order o
-        ON o.id = s.id AND o.tb_institution_id = s.tb_institution_id
-       AND o.terminal = s.terminal AND o.deleted = 'N'
-     INNER JOIN setes_central.tb_entity e ON e.id = s.tb_customer_id
-     LEFT JOIN \`${schemaName}\`.tb_order_totalizer t
-        ON t.id = s.id AND t.tb_institution_id = s.tb_institution_id
-       AND t.terminal = s.terminal AND t.deleted = 'N'
-     WHERE s.tb_institution_id = ? AND s.deleted = 'N'
-       AND (? IS NULL OR o.status = ?)
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+     ${where}
      ORDER BY o.status, s.number DESC, s.id DESC
-     LIMIT 200`,
-    [institutionId, statusFilter, statusFilter, like, like, like]
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getOrder(
@@ -115,10 +129,12 @@ export async function listProductsLookup(
 ): Promise<ServiceProductLookupRow[]> {
   assertSchemaName(schemaName)
   const like = filter ? `%${filter}%` : null
+  // Ordem de Serviço lista SERVIÇOS (tb_product.kind='S' — D2 do
+  // prompt_notas_mercadoria_servico.md); mercadorias entram pela tela de venda.
   const [rows] = await pool.query<any[]>(
     `SELECT p.id, p.description
      FROM \`${schemaName}\`.tb_product p
-     WHERE p.tb_institution_id = ? AND p.deleted = 'N' AND p.active = 'S'
+     WHERE p.tb_institution_id = ? AND p.deleted = 'N' AND p.active = 'S' AND p.kind = 'S'
        AND (? IS NULL OR p.description LIKE ?)
      ORDER BY p.description
      LIMIT 100`,

@@ -1,12 +1,15 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { StateRow, StateInput } from './states.interface'
 import {
   listStates, getState, stateIdExists,
   insertState, updateState, deleteState,
 } from './states.repository'
 
-export async function fetchStates(filter: string, countryId?: number): Promise<StateRow[]> {
-  return listStates(filter, countryId)
+export async function fetchStates(
+  query: ListQuery, countryId?: number
+): Promise<PagedRows<StateRow>> {
+  return listStates(query, countryId)
 }
 
 export async function fetchState(id: number): Promise<StateRow> {

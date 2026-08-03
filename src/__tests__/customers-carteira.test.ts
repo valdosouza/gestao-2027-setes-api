@@ -38,12 +38,15 @@ function setRestriction(on: boolean) {
   )
 }
 
+/** Query paginada padrão (paginação D3/D5) usada nos cenários de lista. */
+const listQuery = { filter: '', page: 1, pageSize: 25, offset: 0 }
+
 beforeEach(() => {
   jest.clearAllMocks()
   invalidateInterfaceConfig(7, 9)
   invalidateSessionContext(7, 42)
   mockFindByKey.mockResolvedValue(9)
-  mockList.mockResolvedValue([])
+  mockList.mockResolvedValue({ rows: [], total: 0 })
 })
 
 describe('filtro de carteira (decisão 15)', () => {
@@ -51,24 +54,24 @@ describe('filtro de carteira (decisão 15)', () => {
     setRestriction(false)
     mockIsSalesman.mockResolvedValue(true)
 
-    await fetchCustomers('', scope)
-    expect(mockList).toHaveBeenCalledWith('', 'setes_acme', 7, null)
+    await fetchCustomers(listQuery, scope)
+    expect(mockList).toHaveBeenCalledWith(listQuery, 'setes_acme', 7, null)
   })
 
   it('config ligada + usuário-vendedor: lista PRESA à carteira (salesmanId = userId)', async () => {
     setRestriction(true)
     mockIsSalesman.mockResolvedValue(true)
 
-    await fetchCustomers('', scope)
-    expect(mockList).toHaveBeenCalledWith('', 'setes_acme', 7, 42)
+    await fetchCustomers(listQuery, scope)
+    expect(mockList).toHaveBeenCalledWith(listQuery, 'setes_acme', 7, 42)
   })
 
   it('config ligada + usuário NÃO vendedor: sem restrição', async () => {
     setRestriction(true)
     mockIsSalesman.mockResolvedValue(false)
 
-    await fetchCustomers('', scope)
-    expect(mockList).toHaveBeenCalledWith('', 'setes_acme', 7, null)
+    await fetchCustomers(listQuery, scope)
+    expect(mockList).toHaveBeenCalledWith(listQuery, 'setes_acme', 7, null)
   })
 
   it('GET :id fora da carteira devolve 404 (não vaza existência)', async () => {

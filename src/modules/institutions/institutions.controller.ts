@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { findEntityIdByCpf, findEntityIdByCnpj } from '@shared/fiscal/fiscal.repository'
 import { isValidCpf, isValidCnpj } from '@shared/validation'
 import { institutionCreateDto, institutionUpdateDto } from './institutions.dto'
@@ -46,8 +47,8 @@ export async function fiscalExists(req: Request, res: Response): Promise<void> {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchInstitutions(filter) })
+    const query = await parseListQuery(req, 'institutions')
+    res.json(pagedEnvelope(query, await fetchInstitutions(query)))
   } catch (err) {
     handleError(res, err, 'institutions GET')
   }

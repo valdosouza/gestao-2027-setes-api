@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   ContractListRow, ContractFull, ContractInput, ProductLookupRow,
 } from './contracts.interface'
@@ -20,9 +21,9 @@ export interface ContractScope {
 }
 
 export async function fetchContracts(
-  filter: string, scope: ContractScope
-): Promise<ContractListRow[]> {
-  return listContracts(filter, scope.schemaName, scope.institutionId)
+  query: ListQuery, scope: ContractScope
+): Promise<PagedRows<ContractListRow>> {
+  return listContracts(query, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchContract(

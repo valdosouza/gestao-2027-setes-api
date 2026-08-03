@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { settleBatchDto, reversalDto } from './settlements.dto'
 import {
@@ -19,8 +20,8 @@ export async function bills(req: Request, res: Response): Promise<void> {
     const statusRaw = String(req.query.status ?? '')
     const status = statusRaw === 'open' || statusRaw === 'settled' ? statusRaw : ''
     const kind   = String(req.query.kind ?? '')
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchBills(status, kind, filter, scopeOf(req)) })
+    const query  = await parseListQuery(req, 'settlements')
+    res.json(pagedEnvelope(query, await fetchBills(status, kind, query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'settlements/bills GET')
   }
@@ -43,8 +44,8 @@ export async function create(req: Request, res: Response): Promise<void> {
 
 export async function settled(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchSettled(filter, scopeOf(req)) })
+    const query = await parseListQuery(req, 'settlements')
+    res.json(pagedEnvelope(query, await fetchSettled(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'settlements/settled GET')
   }

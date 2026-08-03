@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   CatalogConfigRow, listCatalogConfigs, validateConfigContent,
   invalidateInterfaceConfigCatalog,
@@ -10,8 +11,8 @@ import {
   upsertInterfaceConfig, interfaceConfigExists, softDeleteInterfaceConfig,
 } from './interfaces.repository'
 
-export async function fetchInterfaces(filter: string): Promise<InterfaceRow[]> {
-  return listInterfaces(filter)
+export async function fetchInterfaces(query: ListQuery): Promise<PagedRows<InterfaceRow>> {
+  return listInterfaces(query)
 }
 
 export async function fetchInterface(id: number): Promise<InterfaceRow> {

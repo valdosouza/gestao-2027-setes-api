@@ -1,6 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
+import { ListQuery, PagedRows } from '@shared/list'
 import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
 import {
   LinkedPaymentTypeRow, PaymentTypeCatalogRow, PaymentTypeLinkInput,
@@ -15,11 +16,28 @@ import {
  */
 
 /** Formas VINCULADAS à institution (lista da tela) — atributos do vínculo
- *  + descrições dos Planos de Conta (LEFT JOIN, 0 = não definido). */
+ *  + descrições dos Planos de Conta (LEFT JOIN, 0 = não definido).
+ *  PAGINADA (shared/list, D7): filtro por descrição + página + COUNT com a
+ *  MESMA cláusula WHERE (D2); desempate por pt.id (D8). */
 export async function listLinked(
-  schemaName: string, institutionId: number
-): Promise<LinkedPaymentTypeRow[]> {
+  query: ListQuery, schemaName: string, institutionId: number
+): Promise<PagedRows<LinkedPaymentTypeRow>> {
   assertSchemaName(schemaName)
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM \`${schemaName}\`.tb_institution_has_payment_types h
+     INNER JOIN setes_central.tb_payment_types pt
+        ON pt.id = h.tb_payment_types_id AND pt.deleted = 'N'
+     LEFT JOIN \`${schemaName}\`.tb_financial_plans fpc
+        ON fpc.id = h.tb_financial_plans_id_cre
+       AND fpc.tb_institution_id = h.tb_institution_id AND fpc.deleted = 'N'
+     LEFT JOIN \`${schemaName}\`.tb_financial_plans fpd
+        ON fpd.id = h.tb_financial_plans_id_deb
+       AND fpd.tb_institution_id = h.tb_institution_id AND fpd.deleted = 'N'
+     WHERE h.tb_institution_id = ? AND h.deleted = 'N'
+       AND (? IS NULL OR pt.description LIKE ?)`
+  const params = [institutionId, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT pt.id,
             pt.description,
@@ -35,20 +53,15 @@ export async function listLinked(
             h.usage_preference            AS usagePreference,
             fpc.description   AS financialPlanCreDescription,
             fpd.description   AS financialPlanDebDescription
-     FROM \`${schemaName}\`.tb_institution_has_payment_types h
-     INNER JOIN setes_central.tb_payment_types pt
-        ON pt.id = h.tb_payment_types_id AND pt.deleted = 'N'
-     LEFT JOIN \`${schemaName}\`.tb_financial_plans fpc
-        ON fpc.id = h.tb_financial_plans_id_cre
-       AND fpc.tb_institution_id = h.tb_institution_id AND fpc.deleted = 'N'
-     LEFT JOIN \`${schemaName}\`.tb_financial_plans fpd
-        ON fpd.id = h.tb_financial_plans_id_deb
-       AND fpd.tb_institution_id = h.tb_institution_id AND fpd.deleted = 'N'
-     WHERE h.tb_institution_id = ? AND h.deleted = 'N'
-     ORDER BY pt.description`,
-    [institutionId]
+     ${where}
+     ORDER BY pt.description, pt.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 /** Catálogo central com marcação das já vinculadas (lookup do form). */

@@ -1,5 +1,6 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import {
   CollaboratorInput, CollaboratorListRow, CollaboratorFull,
@@ -18,24 +19,35 @@ import {
 // Consultas
 // ---------------------------------------------------------------------
 
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Desempate por c.id (D8) mantém o OFFSET estável.
+ */
 export async function listCollaborators(
-  filter: string, schemaName: string, institutionId: number
-): Promise<CollaboratorListRow[]> {
-  const like = filter ? `%${filter}%` : null
+  query: ListQuery, schemaName: string, institutionId: number
+): Promise<PagedRows<CollaboratorListRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM ?? c
+     INNER JOIN setes_central.tb_entity e ON e.id = c.id
+     WHERE c.tb_institution_id = ? AND c.deleted = 'N'
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)`
+  const params = [`${schemaName}.tb_collaborator`, institutionId, like, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
             e.nick_trade   AS nickTrade,
             e.name_company AS nameCompany,
             c.active
-     FROM ?? c
-     INNER JOIN setes_central.tb_entity e ON e.id = c.id
-     WHERE c.tb_institution_id = ? AND c.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
-     ORDER BY e.nick_trade
-     LIMIT 200`,
-    [`${schemaName}.tb_collaborator`, institutionId, like, like, like]
+     ${where}
+     ORDER BY e.nick_trade, c.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 /** Objeto COMPLETO: cadeia compartilhada + tb_collaborator.

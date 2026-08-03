@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   CollaboratorInput, CollaboratorListRow, CollaboratorFull,
 } from './collaborators.interface'
@@ -32,9 +33,9 @@ function dupEntryTo409(err: any): never {
 }
 
 export async function fetchCollaborators(
-  filter: string, scope: CollaboratorScope
-): Promise<CollaboratorListRow[]> {
-  return listCollaborators(filter, scope.schemaName, scope.institutionId)
+  query: ListQuery, scope: CollaboratorScope
+): Promise<PagedRows<CollaboratorListRow>> {
+  return listCollaborators(query, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchCollaborator(

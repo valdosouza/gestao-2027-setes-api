@@ -29,8 +29,16 @@ const router = Router()
  *         name: filter
  *         schema: { type: string }
  *         description: Filtra por entidade (da CADEIA DA ORDEM — DP10) ou nº do título
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
- *       200: { description: 'Envelope { ok, data } — lista { orderId, parcel, number, kind, situation, operation, stage, dtExpiration, tagValue, paidValue, balance, entityName, paymentTypeId, paymentTypeDescription }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { orderId, parcel, number, kind, situation, operation, stage, dtExpiration, tagValue, paidValue, balance, entityName, paymentTypeId, paymentTypeDescription }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */
@@ -99,8 +107,16 @@ router.post('/', controller.create)
  *       - in: query
  *         name: filter
  *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
- *       200: { description: 'Envelope { ok, data } — lista { orderId, parcel, event, number, kind, entityName, paidValue, dtPayment, dtRealPayment, settledCode, status, originEvent, reversalReason }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { orderId, parcel, event, number, kind, entityName, paidValue, dtPayment, dtRealPayment, settledCode, status, originEvent, reversalReason }' }
  *       401: { description: Não autenticado }
  */
 router.get('/settled', controller.settled)

@@ -1,21 +1,33 @@
 import pool from '@shared/db/connection'
+import { ListQuery, PagedRows } from '@shared/list'
 import { PrivilegeRow } from './privileges.interface'
 
 // A lista também alimenta os checkboxes da tela de Interfaces
 // (tb_interface_has_privilege — labels = description direto do banco).
 
-export async function listPrivileges(filter: string): Promise<PrivilegeRow[]> {
-  const like = filter ? `%${filter}%` : null
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Ordenação já é pelo id — sem desempate extra (D8).
+ */
+export async function listPrivileges(query: ListQuery): Promise<PagedRows<PrivilegeRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM setes_central.tb_privilege
+     WHERE deleted = 'N'
+       AND (? IS NULL OR description LIKE ?)`
+  const params = [like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT id, description
-     FROM setes_central.tb_privilege
-     WHERE deleted = 'N'
-       AND (? IS NULL OR description LIKE ?)
+     ${where}
      ORDER BY id
-     LIMIT 200`,
-    [like, like]
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getPrivilege(id: number): Promise<PrivilegeRow | null> {

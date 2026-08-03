@@ -1,4 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   BankAccountListRow, BankAccountFull, BankAccountInput, BankLookupRow,
 } from './bank-accounts.interface'
@@ -19,9 +20,9 @@ export interface BankAccountScope {
 }
 
 export async function fetchBankAccounts(
-  filter: string, scope: BankAccountScope
-): Promise<BankAccountListRow[]> {
-  return listBankAccounts(filter, scope.schemaName, scope.institutionId)
+  query: ListQuery, scope: BankAccountScope
+): Promise<PagedRows<BankAccountListRow>> {
+  return listBankAccounts(query, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchBankAccount(

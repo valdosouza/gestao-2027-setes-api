@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import {
   openOrderDto, orderItemDto, monthlyRunDto, invoiceDto,
@@ -30,9 +31,9 @@ function parseItemId(req: Request, res: Response): number | null {
 export async function list(req: Request, res: Response): Promise<void> {
   try {
     const status = String(req.query.status ?? '')
-    const filter = String(req.query.filter ?? '')
     const parsed = status === 'A' || status === 'F' ? status : ''
-    res.json({ ok: true, data: await fetchOrders(parsed, filter, scopeOf(req)) })
+    const query = await parseListQuery(req, 'service-orders')
+    res.json(pagedEnvelope(query, await fetchOrders(parsed, query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'service-orders GET')
   }

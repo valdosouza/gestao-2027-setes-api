@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { privilegeDto } from './privileges.dto'
 import {
@@ -9,8 +10,8 @@ import {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchPrivileges(filter) })
+    const query = await parseListQuery(req, 'privileges')
+    res.json(pagedEnvelope(query, await fetchPrivileges(query)))
   } catch (err) {
     handleError(res, err, 'privileges GET')
   }

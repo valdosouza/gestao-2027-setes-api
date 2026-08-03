@@ -1,11 +1,27 @@
 import pool from '@shared/db/connection'
+import { ListQuery, PagedRows } from '@shared/list'
 import { StateRow, StateInput } from './states.interface'
 
 // O JOIN em tb_country é relação de BANCO (countryName para exibição no
 // app) — não cria acoplamento de código com o módulo countries.
 
-export async function listStates(filter: string, countryId?: number): Promise<StateRow[]> {
-  const like = filter ? `%${filter}%` : null
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2) — o filtro por país (countryId) vale para os dois SELECTs por
+ * construção. Desempate por s.id (D8) mantém o OFFSET estável.
+ */
+export async function listStates(
+  query: ListQuery, countryId?: number
+): Promise<PagedRows<StateRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM setes_central.tb_state s
+     LEFT JOIN setes_central.tb_country c ON c.id = s.tb_country_id
+     WHERE s.deleted = 'N'
+       AND (? IS NULL OR s.name LIKE ? OR s.abbreviation LIKE ?)
+       AND (? IS NULL OR s.tb_country_id = ?)`
+  const params = [like, like, like, countryId ?? null, countryId ?? null]
+
   const [rows] = await pool.query<any[]>(
     `SELECT s.id,
             s.tb_country_id AS tbCountryId,
@@ -13,16 +29,15 @@ export async function listStates(filter: string, countryId?: number): Promise<St
             s.name,
             s.aliquota,
             c.name          AS countryName
-     FROM setes_central.tb_state s
-     LEFT JOIN setes_central.tb_country c ON c.id = s.tb_country_id
-     WHERE s.deleted = 'N'
-       AND (? IS NULL OR s.name LIKE ? OR s.abbreviation LIKE ?)
-       AND (? IS NULL OR s.tb_country_id = ?)
-     ORDER BY s.name
-     LIMIT 200`,
-    [like, like, like, countryId ?? null, countryId ?? null]
+     ${where}
+     ORDER BY s.name, s.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getState(id: number): Promise<StateRow | null> {

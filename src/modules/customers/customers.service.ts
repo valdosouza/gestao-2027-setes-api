@@ -1,6 +1,7 @@
 import { HttpError } from '@shared/errors/http-error'
 import { getConfigContent } from '@shared/interface-config'
 import { getSessionContext } from '@shared/session-context'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
   PartnershipPartnerRow, PartnershipPartnerInput,
@@ -50,10 +51,10 @@ function dupEntryTo409(err: any): never {
 }
 
 export async function fetchCustomers(
-  filter: string, scope: CustomerScope
-): Promise<CustomerListRow[]> {
+  query: ListQuery, scope: CustomerScope
+): Promise<PagedRows<CustomerListRow>> {
   const salesmanId = await restrictedSalesmanId(scope)
-  return listCustomers(filter, scope.schemaName, scope.institutionId, salesmanId)
+  return listCustomers(query, scope.schemaName, scope.institutionId, salesmanId)
 }
 
 export async function fetchCustomer(id: number, scope: CustomerScope): Promise<CustomerFull> {

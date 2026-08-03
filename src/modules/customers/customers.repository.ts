@@ -1,6 +1,7 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
+import { ListQuery, PagedRows } from '@shared/list'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
@@ -22,26 +23,39 @@ import {
 // Consultas
 // ---------------------------------------------------------------------
 
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2) — o filtro de carteira (salesmanId) vale para os dois SELECTs por
+ * construção. Desempate por c.id (D8) mantém o OFFSET estável.
+ */
 export async function listCustomers(
-  filter: string, schemaName: string, institutionId: number,
+  query: ListQuery, schemaName: string, institutionId: number,
   salesmanId: number | null = null
-): Promise<CustomerListRow[]> {
-  const like = filter ? `%${filter}%` : null
+): Promise<PagedRows<CustomerListRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const table = `${schemaName}.tb_customer`
+  const where =
+    `FROM ?? c
+     INNER JOIN setes_central.tb_entity e ON e.id = c.id
+     WHERE c.tb_institution_id = ? AND c.deleted = 'N'
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+       AND (? IS NULL OR c.tb_salesman_id = ?)`
+  const params = [table, institutionId, like, like, like, salesmanId, salesmanId]
+
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
             e.nick_trade   AS nickTrade,
             e.name_company AS nameCompany,
             c.active
-     FROM ?? c
-     INNER JOIN setes_central.tb_entity e ON e.id = c.id
-     WHERE c.tb_institution_id = ? AND c.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
-       AND (? IS NULL OR c.tb_salesman_id = ?)
-     ORDER BY e.nick_trade
-     LIMIT 200`,
-    [`${schemaName}.tb_customer`, institutionId, like, like, like, salesmanId, salesmanId]
+     ${where}
+     ORDER BY e.nick_trade, c.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 /** Objeto COMPLETO: cadeia compartilhada + tb_customer + nomes dos FKs +

@@ -2,6 +2,7 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
+import { ListQuery, PagedRows } from '@shared/list'
 import { round2, addDays, partnerShare } from './settlements.calc'
 import {
   BillRow, SettleBatchInput, SettleBatchResult, SettledRow,
@@ -42,15 +43,36 @@ const PAID_SUM = (schema: string) => `
 // Carteira de títulos
 // ---------------------------------------------------------------------
 
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). O status open/settled é HAVING sobre aliases DERIVADOS
+ * (balance/paidValue) — o COUNT não pode ser um COUNT(*) simples: envolve
+ * o SELECT interno (reduzido ao mínimo que o HAVING precisa) numa
+ * subquery e conta as linhas dela. ORDER BY já tem desempate composto
+ * (dt_expiration, orderId, parcel) — OFFSET estável (D8).
+ */
 export async function listBills(
-  status: 'open' | 'settled' | '', kind: string, filter: string,
+  status: 'open' | 'settled' | '', kind: string, query: ListQuery,
   schemaName: string, institutionId: number
-): Promise<BillRow[]> {
+): Promise<PagedRows<BillRow>> {
   assertSchemaName(schemaName)
-  const like = filter ? `%${filter}%` : null
+  const like = query.filter ? `%${query.filter}%` : null
   const kindFilter = kind || null
   const having = status === 'open' ? 'HAVING balance > 0'
                : status === 'settled' ? 'HAVING paidValue > 0' : ''
+  const where =
+    `FROM \`${schemaName}\`.tb_financial f
+     INNER JOIN \`${schemaName}\`.tb_financial_bills b
+        ON b.tb_institution_id = f.tb_institution_id
+       AND b.tb_order_id = f.tb_order_id AND b.terminal = f.terminal
+       AND b.parcel = f.parcel AND b.deleted = 'N'
+     ${ENTITY_JOINS(schemaName)}
+     LEFT JOIN setes_central.tb_payment_types pt ON pt.id = f.tb_payment_types_id
+     WHERE f.tb_institution_id = ? AND f.deleted = 'N'
+       AND (? IS NULL OR b.kind = ?)
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)`
+  const params = [institutionId, kindFilter, kindFilter, like, like, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT f.tb_order_id AS orderId,
             f.parcel,
@@ -62,22 +84,22 @@ export async function listBills(
             COALESCE(e.nick_trade, e.name_company) AS entityName,
             f.tb_payment_types_id AS paymentTypeId,
             pt.description AS paymentTypeDescription
-     FROM \`${schemaName}\`.tb_financial f
-     INNER JOIN \`${schemaName}\`.tb_financial_bills b
-        ON b.tb_institution_id = f.tb_institution_id
-       AND b.tb_order_id = f.tb_order_id AND b.terminal = f.terminal
-       AND b.parcel = f.parcel AND b.deleted = 'N'
-     ${ENTITY_JOINS(schemaName)}
-     LEFT JOIN setes_central.tb_payment_types pt ON pt.id = f.tb_payment_types_id
-     WHERE f.tb_institution_id = ? AND f.deleted = 'N'
-       AND (? IS NULL OR b.kind = ?)
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)
+     ${where}
      ${having}
      ORDER BY f.dt_expiration, f.tb_order_id, f.parcel
-     LIMIT 300`,
-    [institutionId, kindFilter, kindFilter, like, like, like, like]
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total FROM (
+       SELECT ${PAID_SUM(schemaName)} AS paidValue,
+              GREATEST(f.tag_value - ${PAID_SUM(schemaName)}, 0) AS balance
+       ${where}
+       ${having}
+     ) t`,
+    params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 // ---------------------------------------------------------------------
@@ -365,22 +387,19 @@ async function createPaCompensation(
 // Baixados (eventos) e Estorno (5.5 — imutável)
 // ---------------------------------------------------------------------
 
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2 — sem HAVING aqui: padrão puro do piloto). ORDER BY já tem
+ * desempate composto (created_at DESC, orderId, parcel, event) — OFFSET
+ * estável (D8).
+ */
 export async function listSettled(
-  filter: string, schemaName: string, institutionId: number
-): Promise<SettledRow[]> {
+  query: ListQuery, schemaName: string, institutionId: number
+): Promise<PagedRows<SettledRow>> {
   assertSchemaName(schemaName)
-  const like = filter ? `%${filter}%` : null
-  const [rows] = await pool.query<any[]>(
-    `SELECT p.tb_order_id AS orderId, p.parcel, p.event,
-            b.number, b.kind,
-            COALESCE(e.nick_trade, e.name_company) AS entityName,
-            p.paid_value AS paidValue,
-            DATE_FORMAT(p.dt_payment, '%Y-%m-%d')      AS dtPayment,
-            DATE_FORMAT(p.dt_real_payment, '%Y-%m-%d') AS dtRealPayment,
-            p.settled_code AS settledCode,
-            p.status, p.origin_event AS originEvent,
-            p.reversal_reason AS reversalReason
-     FROM \`${schemaName}\`.tb_financial_payment p
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM \`${schemaName}\`.tb_financial_payment p
      INNER JOIN \`${schemaName}\`.tb_financial f
         ON f.tb_institution_id = p.tb_institution_id
        AND f.tb_order_id = p.tb_order_id AND f.terminal = p.terminal
@@ -391,12 +410,28 @@ export async function listSettled(
        AND b.parcel = p.parcel AND b.deleted = 'N'
      ${ENTITY_JOINS(schemaName)}
      WHERE p.tb_institution_id = ? AND p.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)`
+  const params = [institutionId, like, like, like, like]
+
+  const [rows] = await pool.query<any[]>(
+    `SELECT p.tb_order_id AS orderId, p.parcel, p.event,
+            b.number, b.kind,
+            COALESCE(e.nick_trade, e.name_company) AS entityName,
+            p.paid_value AS paidValue,
+            DATE_FORMAT(p.dt_payment, '%Y-%m-%d')      AS dtPayment,
+            DATE_FORMAT(p.dt_real_payment, '%Y-%m-%d') AS dtRealPayment,
+            p.settled_code AS settledCode,
+            p.status, p.origin_event AS originEvent,
+            p.reversal_reason AS reversalReason
+     ${where}
      ORDER BY p.created_at DESC, p.tb_order_id, p.parcel, p.event
-     LIMIT 300`,
-    [institutionId, like, like, like, like]
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 interface ReversalCore {

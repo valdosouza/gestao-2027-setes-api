@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import {
   customerCreateDto, customerUpdateDto, customerPartnershipDto,
 } from './customers.dto'
@@ -17,8 +18,8 @@ function scopeOf(req: Request): CustomerScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchCustomers(filter, scopeOf(req)) })
+    const query = await parseListQuery(req, 'customers')
+    res.json(pagedEnvelope(query, await fetchCustomers(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'customers GET')
   }

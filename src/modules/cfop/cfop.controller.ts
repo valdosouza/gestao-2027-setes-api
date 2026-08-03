@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { cfopCreateDto, cfopUpdateDto, CFOP_CODE_RE } from './cfop.dto'
 import {
@@ -19,8 +20,8 @@ function parseCode(req: Request, res: Response): string | null {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchCfopList(filter) })
+    const query = await parseListQuery(req, 'cfop')
+    res.json(pagedEnvelope(query, await fetchCfopList(query)))
   } catch (err) {
     handleError(res, err, 'cfop GET')
   }

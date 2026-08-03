@@ -28,9 +28,17 @@ const router = Router()
  *         name: filter
  *         schema: { type: string }
  *         description: Filtro por nome da interface
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
  *       200:
- *         description: '{ ok, data: [{ id, description, i18nKey, acquired, moduleNames }] }'
+ *         description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, description, i18nKey, acquired, moduleNames }'
  */
 router.get('/', controller.list)
 
@@ -51,6 +59,39 @@ router.get('/', controller.list)
  *         description: 'Lista resolvida usuário → institution → default ([] sem catálogo)'
  */
 router.get('/key/:moduleKey', controller.getConfigsByKey)
+
+/**
+ * @swagger
+ * /api/interface-configs/key/{moduleKey}/{name}:
+ *   put:
+ *     summary: Salva o valor de uma configuração pela CHAVE do módulo (paginação D4 — seletor de itens/página)
+ *     tags: [InterfaceConfigs]
+ *     parameters:
+ *       - in: path
+ *         name: moduleKey
+ *         required: true
+ *         schema: { type: string }
+ *         description: i18n_key da interface = nome do módulo (ex. customers)
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [content, target]
+ *             properties:
+ *               content: { type: string, nullable: true, description: 'null volta a herdar (institution → default)' }
+ *               target: { type: string, enum: [I, U] }
+ *     responses:
+ *       200: { description: 'Valor salvo' }
+ *       400: { description: 'Valor incompatível com o kind do catálogo' }
+ *       403: { description: 'Interface não adquirida / sem permissão para o target' }
+ *       404: { description: 'Interface ou configuração inexistente' }
+ */
+router.put('/key/:moduleKey/:name', controller.putValueByKey)
 
 /**
  * @swagger

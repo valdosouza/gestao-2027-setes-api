@@ -1,5 +1,6 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
+import { ListQuery, PagedRows } from '@shared/list'
 import { nextEntityId, insertEntity, updateEntity } from '@shared/entity/entity.repository'
 import {
   UserListRow, UserRow, UserInput, UserInstitutionGrant, UserInstitutionLink,
@@ -22,20 +23,18 @@ function assertSchema(schemaName: string): string {
 
 const LOGIN_GROUP_ID = 2 // tb_mailing_group 'sistema' (auth.repository)
 
-/** [institutionId] null = todos (super); informado = só os vinculados. */
+/**
+ * [institutionId] null = todos (super); informado = só os vinculados.
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2) — o escopo por institution vale para os dois SELECTs por construção.
+ * Desempate por u.id (D8) mantém o OFFSET estável.
+ */
 export async function listUsers(
-  filter: string, institutionId: number | null
-): Promise<UserListRow[]> {
-  const like = `%${filter}%`
-  const [rows] = await pool.query<any[]>(
-    `SELECT u.id,
-            COALESCE(e.nick_trade, e.name_company) AS name,
-            m.email,
-            u.active,
-            (SELECT ihu.kind FROM setes_central.tb_institution_has_user ihu
-              WHERE ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
-                AND ihu.active = 'S' AND ihu.deleted = 'N') AS kind
-     FROM setes_central.tb_user u
+  query: ListQuery, institutionId: number | null
+): Promise<PagedRows<UserListRow>> {
+  const like = `%${query.filter}%`
+  const where =
+    `FROM setes_central.tb_user u
        INNER JOIN setes_central.tb_entity e ON e.id = u.id
        LEFT JOIN setes_central.tb_entity_has_mailing ehm
          ON ehm.tb_entity_id = u.id
@@ -48,11 +47,26 @@ export async function listUsers(
        AND (? IS NULL OR EXISTS (
              SELECT 1 FROM setes_central.tb_institution_has_user ihu
              WHERE ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
-               AND ihu.active = 'S' AND ihu.deleted = 'N'))
-     ORDER BY name`,
-    [institutionId, filter, like, like, like, institutionId, institutionId]
+               AND ihu.active = 'S' AND ihu.deleted = 'N'))`
+  const params = [query.filter, like, like, like, institutionId, institutionId]
+
+  const [rows] = await pool.query<any[]>(
+    `SELECT u.id,
+            COALESCE(e.nick_trade, e.name_company) AS name,
+            m.email,
+            u.active,
+            (SELECT ihu.kind FROM setes_central.tb_institution_has_user ihu
+              WHERE ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
+                AND ihu.active = 'S' AND ihu.deleted = 'N') AS kind
+     ${where}
+     ORDER BY name, u.id
+     LIMIT ? OFFSET ?`,
+    [institutionId, ...params, query.pageSize, query.offset]
   )
-  return rows as UserListRow[]
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows: rows as UserListRow[], total: Number(count[0].total) }
 }
 
 /** Usuário tem vínculo ATIVO com a institution? (escopo do admin) */

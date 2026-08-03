@@ -1,6 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
+import { ListQuery, PagedRows } from '@shared/list'
 import {
   ContractListRow, ContractFull, ContractInput, ProductLookupRow,
 } from './contracts.interface'
@@ -12,11 +13,22 @@ import {
  * productId (soft delete dos ausentes + upsert dos enviados).
  */
 
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Ordenação por customerName já tinha desempate por c.id (D8).
+ */
 export async function listContracts(
-  filter: string, schemaName: string, institutionId: number
-): Promise<ContractListRow[]> {
+  query: ListQuery, schemaName: string, institutionId: number
+): Promise<PagedRows<ContractListRow>> {
   assertSchemaName(schemaName)
-  const like = filter ? `%${filter}%` : null
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM \`${schemaName}\`.tb_contract c
+     INNER JOIN setes_central.tb_entity e ON e.id = c.tb_customer_id
+     WHERE c.tb_institution_id = ? AND c.deleted = 'N'
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)`
+  const params = [institutionId, like, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
             c.tb_customer_id AS customerId,
@@ -28,15 +40,15 @@ export async function listContracts(
                          AND i.tb_institution_id = c.tb_institution_id
                          AND i.deleted = 'N'), 0) AS monthlyValue,
             c.active
-     FROM \`${schemaName}\`.tb_contract c
-     INNER JOIN setes_central.tb_entity e ON e.id = c.tb_customer_id
-     WHERE c.tb_institution_id = ? AND c.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+     ${where}
      ORDER BY customerName, c.id
-     LIMIT 200`,
-    [institutionId, like, like, like]
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows, total: Number(count[0].total) }
 }
 
 export async function getContract(
@@ -201,16 +213,18 @@ export async function softDeleteContract(
   return result.affectedRows > 0
 }
 
-/** Lookup de produtos/serviços ATIVOS da institution (form de itens). */
+/** Lookup de SERVIÇOS ativos da institution (form de itens do contrato). */
 export async function listProductsLookup(
   filter: string, schemaName: string, institutionId: number
 ): Promise<ProductLookupRow[]> {
   assertSchemaName(schemaName)
   const like = filter ? `%${filter}%` : null
+  // Contrato (Software House) vende SERVIÇOS: tb_product.kind='S' (D2 do
+  // prompt_notas_mercadoria_servico.md).
   const [rows] = await pool.query<any[]>(
     `SELECT p.id, p.description
      FROM \`${schemaName}\`.tb_product p
-     WHERE p.tb_institution_id = ? AND p.deleted = 'N' AND p.active = 'S'
+     WHERE p.tb_institution_id = ? AND p.deleted = 'N' AND p.active = 'S' AND p.kind = 'S'
        AND (? IS NULL OR p.description LIKE ?)
      ORDER BY p.description
      LIMIT 100`,

@@ -22,8 +22,16 @@ const router = Router()
  *         name: filter
  *         schema: { type: string }
  *         description: Filtra por banco (nome/número) ou nº da conta
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *         description: Página (1-based)
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
+ *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
- *       200: { description: 'Envelope { ok, data } — lista { id, bankId, bankNumber, bankDescription, agency, agencyDv, number, numberDv, manager, limitValue }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, bankId, bankNumber, bankDescription, agency, agencyDv, number, numberDv, manager, limitValue }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  *   post:

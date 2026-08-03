@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { fieldConfigDto } from './interface-fields.dto'
 import {
   fetchVitrine, fetchResolvedFields, fetchResolvedFieldsByKey, saveFieldConfig,
@@ -11,8 +12,8 @@ const MODULE_KEY_RE  = /^[a-z][a-z0-9_-]{0,99}$/
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const filter = String(req.query.filter ?? '')
-    res.json({ ok: true, data: await fetchVitrine(req.institution!, filter) })
+    const query = await parseListQuery(req, 'interface-fields')
+    res.json(pagedEnvelope(query, await fetchVitrine(req.institution!, query)))
   } catch (err) {
     handleError(res, err, 'interface-fields GET')
   }

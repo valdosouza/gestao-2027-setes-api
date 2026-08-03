@@ -1,5 +1,6 @@
 import pool from '@shared/db/connection'
 import { assertSchemaName } from '@shared/field-config'
+import { ListQuery, PagedRows } from '@shared/list'
 import { InterfaceVitrineRow } from './interface-vitrine.types'
 
 /**
@@ -11,12 +12,25 @@ import { InterfaceVitrineRow } from './interface-vitrine.types'
 /**
  * Vitrine: TODAS as interfaces do produto, marcando as adquiridas e os
  * módulos do cliente que as contêm (filtros por nome/módulo).
+ * PAGINADA (shared/list) UMA vez aqui para os DOIS consumidores
+ * (interface-fields e interface-configs): página + COUNT com a MESMA
+ * cláusula WHERE (D2); desempate por i.id (D8).
  */
 export async function listVitrine(
-  schemaName: string, institutionId: number, filter: string
-): Promise<InterfaceVitrineRow[]> {
+  query: ListQuery, schemaName: string, institutionId: number
+): Promise<PagedRows<InterfaceVitrineRow>> {
   assertSchemaName(schemaName)
-  const like = `%${filter}%`
+  const like = `%${query.filter}%`
+  const where =
+    `FROM setes_central.tb_interface i
+     LEFT JOIN \`${schemaName}\`.tb_institution_has_interface ihi
+       ON ihi.tb_interface_id = i.id
+      AND ihi.tb_institution_id = ?
+      AND ihi.active = 'S' AND ihi.deleted = 'N'
+     WHERE i.deleted = 'N'
+       AND (? = '' OR i.description LIKE ?)`
+  const params = [institutionId, query.filter, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT i.id,
             i.description,
@@ -28,17 +42,15 @@ export async function listVitrine(
                  ON m.id = mhi.tb_module_id AND m.deleted = 'N'
               WHERE mhi.tb_interface_id = i.id
                 AND mhi.deleted = 'N' AND mhi.active = 'S') AS moduleNames
-       FROM setes_central.tb_interface i
-       LEFT JOIN \`${schemaName}\`.tb_institution_has_interface ihi
-         ON ihi.tb_interface_id = i.id
-        AND ihi.tb_institution_id = ?
-        AND ihi.active = 'S' AND ihi.deleted = 'N'
-      WHERE i.deleted = 'N'
-        AND (? = '' OR i.description LIKE ?)
-      ORDER BY i.description`,
-    [institutionId, filter, like]
+     ${where}
+     ORDER BY i.description, i.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
   )
-  return rows as InterfaceVitrineRow[]
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
+  )
+  return { rows: rows as InterfaceVitrineRow[], total: Number(count[0].total) }
 }
 
 export async function interfaceExists(interfaceId: number): Promise<boolean> {

@@ -1,4 +1,5 @@
 import pool from '@shared/db/connection'
+import { ListQuery, PagedRows } from '@shared/list'
 import { InterfaceRow, InterfaceInput, InterfaceConfigInput } from './interfaces.interface'
 
 // =====================================================================
@@ -29,8 +30,19 @@ async function privilegeIdsByInterface(interfaceIds: number[]): Promise<Map<numb
   return map
 }
 
-export async function listInterfaces(filter: string): Promise<InterfaceRow[]> {
-  const like = filter ? `%${filter}%` : null
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
+ * (D2). Desempate por i.id (D8) mantém o OFFSET estável. Os privilegeIds
+ * são agregados só para as linhas da página.
+ */
+export async function listInterfaces(query: ListQuery): Promise<PagedRows<InterfaceRow>> {
+  const like = query.filter ? `%${query.filter}%` : null
+  const where =
+    `FROM setes_central.tb_interface i
+     WHERE i.deleted = 'N'
+       AND (? IS NULL OR i.description LIKE ? OR i.i18n_key LIKE ? OR i.group_default LIKE ?)`
+  const params = [like, like, like, like]
+
   const [rows] = await pool.query<any[]>(
     `SELECT i.id,
             i.group_default AS groupDefault,
@@ -38,15 +50,19 @@ export async function listInterfaces(filter: string): Promise<InterfaceRow[]> {
             i.description,
             i.kind,
             i.\`position\`
-     FROM setes_central.tb_interface i
-     WHERE i.deleted = 'N'
-       AND (? IS NULL OR i.description LIKE ? OR i.i18n_key LIKE ? OR i.group_default LIKE ?)
-     ORDER BY i.description
-     LIMIT 200`,
-    [like, like, like, like]
+     ${where}
+     ORDER BY i.description, i.id
+     LIMIT ? OFFSET ?`,
+    [...params, query.pageSize, query.offset]
+  )
+  const [count] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total ${where}`, params
   )
   const privileges = await privilegeIdsByInterface(rows.map((r) => r.id))
-  return rows.map((row) => ({ ...row, privilegeIds: privileges.get(row.id) ?? [] }))
+  return {
+    rows:  rows.map((row) => ({ ...row, privilegeIds: privileges.get(row.id) ?? [] })),
+    total: Number(count[0].total),
+  }
 }
 
 export async function getInterface(id: number): Promise<InterfaceRow | null> {
