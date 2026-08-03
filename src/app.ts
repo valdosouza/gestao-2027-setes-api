@@ -3,6 +3,10 @@ import swaggerUi from 'swagger-ui-express'
 import dotenv from 'dotenv'
 dotenv.config()
 
+// Mensagens PT-BR objetivas no fields[] dos 400 (efeito global no Zod —
+// precisa rodar antes de qualquer parse; ver zod-pt.ts).
+import '@shared/validation/zod-pt'
+
 import { authMiddleware }        from '@gateway/auth.middleware'
 import { featureFlagMiddleware } from '@gateway/feature-flag.middleware'
 import { rateLimitMiddleware }   from '@gateway/rate-limit.middleware'
