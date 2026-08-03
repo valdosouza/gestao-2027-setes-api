@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "tsx watch --require tsconfig-paths/register src/server.ts",
+    "start:dev": "npm run dev",
     "db:bootstrap": "tsx --require tsconfig-paths/register scripts/bootstrap-db.ts",
     "db:migrate": "tsx --require tsconfig-paths/register scripts/run-migrations.ts",
     "fields:gen": "tsx scripts/gerar-interface-fields.ts",
