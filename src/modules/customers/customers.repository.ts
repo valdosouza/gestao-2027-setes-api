@@ -253,6 +253,9 @@ export async function deleteCustomer(
 // os CADASTROS deles ficam para a onda 2)
 // ---------------------------------------------------------------------
 
+/** Refino D3 da Onda 2 (2026-08-03): o lookup de atribuição só oferece
+ *  papéis ATIVOS — vendedor/transportadora desativados ou excluídos (D4)
+ *  saem da lista, mas o vínculo histórico do cliente permanece. */
 async function roleLookup(
   table: string, filter: string, schemaName: string, institutionId: number
 ): Promise<RoleLookupRow[]> {
@@ -261,7 +264,7 @@ async function roleLookup(
     `SELECT r.id, COALESCE(e.nick_trade, e.name_company) AS name
      FROM ?? r
      INNER JOIN setes_central.tb_entity e ON e.id = r.id
-     WHERE r.tb_institution_id = ? AND r.deleted = 'N'
+     WHERE r.tb_institution_id = ? AND r.deleted = 'N' AND r.active = 'S'
        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
      ORDER BY name
      LIMIT 50`,

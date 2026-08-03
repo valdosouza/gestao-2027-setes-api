@@ -15,6 +15,8 @@ import usersRoutes from '@modules/users/users.routes'
 import entitiesRoutes from '@modules/entities/entities.routes'
 import customersRoutes from '@modules/customers/customers.routes'
 import collaboratorsRoutes from '@modules/collaborators/collaborators.routes'
+import salesmenRoutes from '@modules/salesmen/salesmen.routes'
+import carriersRoutes from '@modules/carriers/carriers.routes'
 import categoriesRoutes from '@modules/categories/categories.routes'
 import financialPlansRoutes from '@modules/financial-plans/financial-plans.routes'
 import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
@@ -77,6 +79,15 @@ router.use('/customers', customersRoutes)
 // 16): mesmo desenho do customers — sem superGuard (privilégio da tela é do
 // app); escopo por institution no service; gate técnico = flag 'collaborators'.
 router.use('/collaborators', collaboratorsRoutes)
+
+// Vendedores (Onda 2 — prompt_onda2_salesman_carrier.md, D1/D5): PROMOÇÃO de
+// colaborador (precedência por construção — o novo nasce do
+// collaborator-lookup); mesmo desenho do customers; flag 'salesmen'.
+router.use('/salesmen', salesmenRoutes)
+
+// Transportadoras (Onda 2 — D2): cadeia fiscal completa + aba Tributação;
+// mesmo desenho do customers; flag 'carriers'.
+router.use('/carriers', carriersRoutes)
 
 // Categorias de produtos/serviços (2026-07-18): cadastro de CLIENTE — sem
 // superGuard; escopo por institution no service; flag 'categories'.

@@ -190,10 +190,12 @@ export async function deleteInstitution(id: number): Promise<void> {
  */
 export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // 'customers' liberado por padrão desde a Fase 3; 'collaborators' desde a
-  // onda 2 (gate técnico — o comercial por tela continua em
-  // tb_institution_has_interface, decisão 17).
+  // onda 2; 'salesmen'/'carriers' desde a Onda 2 salesman/carrier (gate
+  // técnico — o comercial por tela continua em tb_institution_has_interface,
+  // decisão 17).
   const defaultModules = [
-    'core', 'customers', 'collaborators', 'categories', 'financial-plans',
+    'core', 'customers', 'collaborators', 'salesmen', 'carriers',
+    'categories', 'financial-plans',
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements',
   ]
