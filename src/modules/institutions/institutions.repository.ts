@@ -195,7 +195,7 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // decisão 17).
   const defaultModules = [
     'core', 'customers', 'collaborators', 'salesmen', 'carriers',
-    'categories', 'financial-plans',
+    'providers', 'categories', 'financial-plans',
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements',
   ]

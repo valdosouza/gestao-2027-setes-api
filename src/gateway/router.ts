@@ -17,6 +17,7 @@ import customersRoutes from '@modules/customers/customers.routes'
 import collaboratorsRoutes from '@modules/collaborators/collaborators.routes'
 import salesmenRoutes from '@modules/salesmen/salesmen.routes'
 import carriersRoutes from '@modules/carriers/carriers.routes'
+import providersRoutes from '@modules/providers/providers.routes'
 import categoriesRoutes from '@modules/categories/categories.routes'
 import financialPlansRoutes from '@modules/financial-plans/financial-plans.routes'
 import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
@@ -88,6 +89,10 @@ router.use('/salesmen', salesmenRoutes)
 // Transportadoras (Onda 2 — D2): cadeia fiscal completa + aba Tributação;
 // mesmo desenho do customers; flag 'carriers'.
 router.use('/carriers', carriersRoutes)
+
+// Fornecedores (Onda 3 — prompt_onda3_provider.md, D1): cadeia fiscal
+// completa + aba Tributação; mesmo desenho do carriers; flag 'providers'.
+router.use('/providers', providersRoutes)
 
 // Categorias de produtos/serviços (2026-07-18): cadastro de CLIENTE — sem
 // superGuard; escopo por institution no service; flag 'categories'.
