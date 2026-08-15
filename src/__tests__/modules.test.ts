@@ -172,6 +172,45 @@ describe('modules service', () => {
     spy.mockRestore()
   })
 
+  // Q5 (Valdo, 2026-08-15): contrato revogado DEPOIS do vínculo não pode
+  // travar a edição do módulo — o 422 é só para o que o admin adiciona agora.
+  it('PUT preserva id JÁ vinculado que perdeu a elegibilidade (só o NOVO é checado)', async () => {
+    const spyGet = jest.spyOn(repo, 'getModule')
+      .mockResolvedValue({ id: 3, description: 'R', position: 1, imageIcon: null, interfaceIds: [4, 12] })
+    const spyInvalid = jest.spyOn(repo, 'findIneligibleInterfaceIds').mockResolvedValue([])
+    const spyUpdate = jest.spyOn(repo, 'updateModuleCascade').mockResolvedValue()
+
+    // 4 = vinculada e hoje inelegível (contrato revogado); 7 = tela nova
+    await editModule(SCHEMA, 3, { description: 'R', interfaceIds: [4, 12, 7] } as any)
+
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [7])
+    expect(spyUpdate).toHaveBeenCalledWith(SCHEMA, 3,
+      expect.objectContaining({ interfaceIds: [4, 12, 7] }))
+    spyGet.mockRestore(); spyInvalid.mockRestore(); spyUpdate.mockRestore()
+  })
+
+  it('PUT ainda dá 422 quando o id NOVO é inelegível', async () => {
+    const spyGet = jest.spyOn(repo, 'getModule')
+      .mockResolvedValue({ id: 3, description: 'R', position: 1, imageIcon: null, interfaceIds: [4] })
+    const spyInvalid = jest.spyOn(repo, 'findIneligibleInterfaceIds').mockResolvedValue([7])
+    const spyUpdate = jest.spyOn(repo, 'updateModuleCascade').mockResolvedValue()
+
+    await expect(editModule(SCHEMA, 3, { description: 'R', interfaceIds: [4, 7] } as any))
+      .rejects.toMatchObject({ statusCode: 422, fields: [{ field: 'interfaceIds', message: '7' }] })
+    expect(spyUpdate).not.toHaveBeenCalled()
+    spyGet.mockRestore(); spyInvalid.mockRestore(); spyUpdate.mockRestore()
+  })
+
+  it('POST não herda nada: módulo novo checa TODOS os ids', async () => {
+    const spyInvalid = jest.spyOn(repo, 'findIneligibleInterfaceIds').mockResolvedValue([])
+    const spyInsert = jest.spyOn(repo, 'insertModuleCascade').mockResolvedValue(9)
+
+    await createModule(SCHEMA, { description: 'N', interfaceIds: [4, 12] } as any)
+
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [4, 12])
+    spyInvalid.mockRestore(); spyInsert.mockRestore()
+  })
+
   it('GET :id inexistente → 404', async () => {
     const spy = jest.spyOn(repo, 'getModule').mockResolvedValue(null)
     await expect(fetchModule(SCHEMA, 77)).rejects.toMatchObject({ statusCode: 404 })

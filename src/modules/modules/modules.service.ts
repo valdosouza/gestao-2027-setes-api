@@ -33,8 +33,19 @@ export async function fetchEligibleInterfaces(
   return listEligibleInterfaces(schemaName)
 }
 
-async function assertEligible(schemaName: string, interfaceIds: number[]): Promise<void> {
-  const invalid = await findIneligibleInterfaceIds(schemaName, interfaceIds)
+/**
+ * Q5 (decisão do Valdo, 2026-08-15): a elegibilidade barra o que o ADMIN faz,
+ * não o que o Super fez pelas costas dele. Id inelegível que JÁ estava vinculado
+ * ao módulo (contrato revogado depois do vínculo) é preservado com sua posição —
+ * o menu não o expõe (getMenus faz INNER JOIN com o contrato) e a recontratação
+ * devolve a tela ao módulo certo sozinha. O 422 fica só para id NOVO no array.
+ */
+async function assertEligible(
+  schemaName: string, interfaceIds: number[], alreadyLinked: number[] = []
+): Promise<void> {
+  const grandfathered = new Set(alreadyLinked)
+  const candidates = interfaceIds.filter(id => !grandfathered.has(id))
+  const invalid = await findIneligibleInterfaceIds(schemaName, candidates)
   if (invalid.length > 0) {
     throw new HttpError(422,
       `Interface(s) não elegível(is) ao menu (não contratada, não-tela ou do grupo Super): ${invalid.join(', ')}`,
@@ -54,8 +65,8 @@ export async function createModule(
 export async function editModule(
   schemaName: string, id: number, input: ModuleBodyDto
 ): Promise<void> {
-  await fetchModule(schemaName, id)
-  await assertEligible(schemaName, input.interfaceIds)
+  const current = await fetchModule(schemaName, id)
+  await assertEligible(schemaName, input.interfaceIds, current.interfaceIds)
   await updateModuleCascade(schemaName, id, input)
 }
 
