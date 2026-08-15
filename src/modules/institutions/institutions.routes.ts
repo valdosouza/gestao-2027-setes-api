@@ -80,8 +80,36 @@ router.get('/:id', controller.getById)
  * @swagger
  * /api/institutions:
  *   post:
- *     summary: Cria estabelecimento (cadeia em transação única) + provisiona o schema; active='S' só se a migração passar
+ *     summary: Cria estabelecimento (cadeia em transação única) + provisiona o schema + contrata as telas estruturais + cria o admin inicial; active='S' só se tudo passar
  *     tags: [Institutions]
+ *     description: >
+ *       Onboarding completo (A2, 2026-08-15). Além da cadeia fiscal e do
+ *       provisionamento do schema, concede o contrato das telas ESTRUTURAIS
+ *       (Usuários, Módulos de Menu, Configurações das Interfaces — sem elas o
+ *       menu do cliente nasce vazio) e cria o PRIMEIRO ADMIN, com vínculo
+ *       kind='admin'. O bloco `admin` é OBRIGATÓRIO: cliente nunca existe sem
+ *       dono. Qualquer falha pós-commit deixa a institution active='N'.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [entity, personType, schemaName, admin]
+ *             properties:
+ *               schemaName: { type: string, example: setes_alpha, description: 'Padrão setes_<nome>; IMUTÁVEL depois' }
+ *               admin:
+ *                 type: object
+ *                 required: [nameCompany, nickTrade, email, password]
+ *                 properties:
+ *                   nameCompany: { type: string, example: 'Fulano de Tal' }
+ *                   nickTrade:   { type: string, example: 'Fulano' }
+ *                   email:       { type: string, format: email, description: 'Login do admin — ÚNICO no grupo 2' }
+ *                   password:    { type: string, minLength: 5, description: 'Texto puro; o hash MD5 é aplicado no service' }
+ *     responses:
+ *       201: { description: '{ ok, data: { id, schemaName, active, adminUserId } }' }
+ *       409: { description: 'schemaName em uso, CPF/CNPJ duplicado ou e-mail já usado como login' }
+ *       500: { description: 'Provisionamento ou admin falhou — institution permanece INATIVA' }
  */
 router.post('/', controller.create)
 

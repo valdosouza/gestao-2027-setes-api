@@ -3,6 +3,7 @@ import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { SETES_INSTITUTION_ID, SETES_SCHEMA } from '@shared/auth/roles'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
+import { assertSchema } from '@shared/db/schema'
 import {
   InstitutionInput, InstitutionListRow, InstitutionFull, SyncApiKeyRow,
 } from './institutions.interface'
@@ -195,8 +196,10 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // decisão 17).
   // 'modules' (menus do cliente) liberado por padrão desde 2026-08-04
   // (prompt_modulo_menus.md — a tela é do admin via adminGuard).
+  // 'users' desde 2026-08-15 (A2): sem ele o admin do cliente toma 403 ao
+  // gerenciar os próprios usuários — administração, não produto vendável.
   const defaultModules = [
-    'core', 'customers', 'collaborators', 'salesmen', 'carriers',
+    'core', 'users', 'customers', 'collaborators', 'salesmen', 'carriers',
     'providers', 'categories', 'financial-plans',
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements', 'modules',
@@ -227,6 +230,41 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   } finally {
     conn.release()
   }
+}
+
+/**
+ * Telas ESTRUTURAIS do cliente (decisão do Valdo, 2026-08-15 — A2): não são
+ * produto vendável, são o mínimo para o admin se virar sozinho. Todo o resto
+ * do catálogo continua venda explícita do Super (tela de Interfaces do
+ * Estabelecimento). Sem isto o menu de um cliente novo nasce VAZIO — o
+ * getMenus faz INNER JOIN com o contrato.
+ *
+ * Ids resolvidos por i18n_key, nunca literais (lição do seed 25).
+ * Roda DEPOIS das migrations: a tabela vive no schema do cliente.
+ */
+export const STRUCTURAL_INTERFACE_KEYS = ['users', 'modules', 'interface-configs']
+
+export async function grantStructuralInterfaces(
+  schemaName: string, institutionId: number
+): Promise<number> {
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT id FROM setes_central.tb_interface
+      WHERE i18n_key IN (?) AND deleted = 'N'`,
+    [STRUCTURAL_INTERFACE_KEYS]
+  )
+  if (rows.length === 0) return 0
+
+  const now    = new Date()
+  const values = rows.map((r: any) => [institutionId, r.id, 'S', now, now])
+  await pool.query(
+    `INSERT INTO \`${s}\`.tb_institution_has_interface
+       (tb_institution_id, tb_interface_id, active, created_at, updated_at)
+     VALUES ?
+     ON DUPLICATE KEY UPDATE active = 'S', deleted = 'N', updated_at = NOW()`,
+    [values]
+  )
+  return rows.length
 }
 
 // ---------------------------------------------------------------------

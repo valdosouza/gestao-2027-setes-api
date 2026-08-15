@@ -68,8 +68,9 @@ export async function create(req: Request, res: Response): Promise<void> {
   const body = parseBody(institutionCreateDto, req, res)
   if (body === null) return
   try {
-    const { schemaName, ...input } = body
-    const result = await createInstitution(input, schemaName, req.institution?.userId ?? null)
+    const { schemaName, admin, ...input } = body
+    const result = await createInstitution(
+      input, schemaName, admin, req.institution?.userId ?? null)
     logger.info('Estabelecimento criado e provisionado', result)
     res.status(201).json({ ok: true, data: result })
   } catch (err) {

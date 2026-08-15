@@ -29,6 +29,18 @@ export interface InstitutionFull extends EntityFiscalFull {
 }
 
 /**
+ * Primeiro administrador do cliente, criado no PRÓPRIO onboarding (decisão
+ * do Valdo, 2026-08-15 — A2: cliente nunca existe sem dono). Vira um usuário
+ * comum da cadeia central com vínculo kind='admin' nesta institution.
+ */
+export interface InstitutionAdminInput {
+  nameCompany: string
+  nickTrade:   string
+  email:       string
+  password:    string
+}
+
+/**
  * Chave de sincronização da institution (tb_sync_api_key — D12 da revisão
  * do sincronizador: uma chave por estabelecimento, header X-Api-Key).
  * GET/POST /api/institutions/:id/sync-api-key.

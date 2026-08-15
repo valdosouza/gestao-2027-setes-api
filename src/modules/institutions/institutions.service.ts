@@ -6,10 +6,16 @@ import { runMigrationsForSchema } from '../../migrations/runner'
 import {
   InstitutionInput, InstitutionListRow, InstitutionFull, SyncApiKeyRow,
 } from './institutions.interface'
+import { md5Password } from '@shared/auth/password'
+import { findLoginEmailOwner, insertUserCascade } from '@shared/user'
+import {
+  InstitutionAdminInput,
+} from './institutions.interface'
 import {
   listInstitutions, getInstitution, schemaNameExists, institutionExists,
   insertInstitutionCascade, updateInstitutionCascade,
   setInstitutionActive, deleteInstitution, insertDefaultFlags,
+  grantStructuralInterfaces,
   getSyncApiKey, insertSyncApiKey,
 } from './institutions.repository'
 
@@ -34,18 +40,31 @@ function dupEntryTo409(err: any): never {
 /**
  * POST absorve o onboarding (decisão do Valdo, 2026-07-11 — o antigo
  * POST /api/admin/institutions foi aposentado):
- * 1. cadeia inteira em transação única (institution nasce active='N');
- * 2. feature flags padrão (gate técnico — decisão 17);
- * 3. APÓS o commit, provisiona o schema (runMigrationsForSchema) — DDL não
+ * 1. e-mail do admin livre ANTES de qualquer escrita (falhar cedo: a
+ *    institution não pode nascer órfã por causa de um 409 de login);
+ * 2. cadeia inteira em transação única (institution nasce active='N');
+ * 3. feature flags padrão (gate técnico — decisão 17);
+ * 4. APÓS o commit, provisiona o schema (runMigrationsForSchema) — DDL não
  *    tem rollback, então NUNCA dentro da transação;
- * 4. só então marca active='S'. Se a migração falhar, a institution
- *    permanece active='N' e o erro volta ao app.
+ * 5. contrato das telas ESTRUTURAIS (A2 — a tabela vive no schema recém
+ *    provisionado) e o PRIMEIRO ADMIN do cliente;
+ * 6. só então marca active='S'. Se qualquer passo pós-commit falhar, a
+ *    institution permanece active='N' e o erro volta ao app.
+ *
+ * O admin é OBRIGATÓRIO (decisão do Valdo, 2026-08-15 — A2): cliente nunca
+ * existe sem dono. Antes disso o Super tinha de lembrar de criá-lo na aba
+ * Usuários, e um cliente ativo sem nenhum usuário era estado alcançável.
  */
 export async function createInstitution(
-  input: InstitutionInput, schemaName: string, updatedBy: number | null = null
-): Promise<{ id: number; schemaName: string; active: 'S' | 'N' }> {
+  input: InstitutionInput, schemaName: string, admin: InstitutionAdminInput,
+  updatedBy: number | null = null
+): Promise<{ id: number; schemaName: string; active: 'S' | 'N'; adminUserId: number }> {
   if (await schemaNameExists(schemaName)) {
     throw new HttpError(409, `Schema "${schemaName}" já está em uso`)
+  }
+  if (await findLoginEmailOwner(admin.email) !== null) {
+    throw new HttpError(409, 'E-mail já usado como login de outro usuário',
+      [{ field: 'admin.email', message: 'E-mail já usado como login de outro usuário' }])
   }
 
   let id: number
@@ -68,8 +87,26 @@ export async function createInstitution(
       `falhou — ele permanece INATIVO (active='N'). Corrija a causa e reative pela edição.`)
   }
 
+  let adminUserId: number
+  try {
+    await grantStructuralInterfaces(schemaName, id)
+    adminUserId = await insertUserCascade(
+      { nameCompany: admin.nameCompany, nickTrade: admin.nickTrade,
+        email: admin.email, active: 'S' },
+      md5Password(admin.password),
+      { institutionId: id, kind: 'admin' }
+    )
+  } catch (err) {
+    logger.error('Onboarding do admin falhou — institution permanece inativa', {
+      id, schemaName, err,
+    })
+    throw new HttpError(500,
+      `Estabelecimento ${id} foi provisionado, mas o administrador inicial não pôde ser ` +
+      `criado — ele permanece INATIVO (active='N'). Corrija a causa e reative pela edição.`)
+  }
+
   await setInstitutionActive(id, 'S')
-  return { id, schemaName, active: 'S' }
+  return { id, schemaName, active: 'S', adminUserId }
 }
 
 export async function editInstitution(
