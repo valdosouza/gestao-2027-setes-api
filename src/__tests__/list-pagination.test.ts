@@ -5,7 +5,8 @@
 import { Request } from 'express'
 import { getConfigContent } from '../shared/interface-config'
 import {
-  parseListQuery, pagedEnvelope, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
+  parseListQuery, pagedEnvelope, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PAGE,
+  escapeLike,
 } from '../shared/list'
 
 jest.mock('../shared/interface-config', () => ({
@@ -45,6 +46,18 @@ describe('parseListQuery (D3/D5)', () => {
   it('pageSize acima do teto é clampado em MAX_PAGE_SIZE', async () => {
     const q = await parseListQuery(reqWith({ pageSize: '9999' }))
     expect(q.pageSize).toBe(MAX_PAGE_SIZE)
+  })
+
+  it('page gigante (1e21) é clampado em MAX_PAGE — offset nunca vira exponencial no SQL (gate 2026-08-04)', async () => {
+    const q = await parseListQuery(reqWith({ page: '1e21' }))
+    expect(q.page).toBe(MAX_PAGE)
+    expect(Number.isSafeInteger(q.offset)).toBe(true)
+  })
+
+  it('escapeLike neutraliza %, _ e \\ do filtro do usuário (Q3 do gate banks — decisão Valdo 2026-08-04)', () => {
+    expect(escapeLike('50%_a\\b')).toBe('50\\%\\_a\\\\b')
+    expect(escapeLike('0_1')).toBe('0\\_1')   // não casa mais 001/011/021
+    expect(escapeLike('bra')).toBe('bra')     // filtro comum passa intacto
   })
 })
 

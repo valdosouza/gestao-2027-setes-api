@@ -1,7 +1,7 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
@@ -32,7 +32,7 @@ export async function listCustomers(
   query: ListQuery, schemaName: string, institutionId: number,
   salesmanId: number | null = null
 ): Promise<PagedRows<CustomerListRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const table = `${schemaName}.tb_customer`
   const where =
     `FROM ?? c

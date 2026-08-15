@@ -1,5 +1,5 @@
 export {
-  PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
-  parseListQuery, pagedEnvelope,
+  PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PAGE,
+  parseListQuery, pagedEnvelope, escapeLike,
 } from './list-query'
 export type { ListQuery, PagedRows } from './list-query'

@@ -25,6 +25,8 @@ import contractsRoutes from '@modules/contracts/contracts.routes'
 import bankAccountsRoutes from '@modules/bank-accounts/bank-accounts.routes'
 import serviceOrdersRoutes from '@modules/service-orders/service-orders.routes'
 import settlementsRoutes from '@modules/settlements/settlements.routes'
+import banksRoutes from '@modules/banks/banks.routes'
+import modulesRoutes from '@modules/modules/modules.routes'
 import { superGuard, superWriteGuard } from './super.guard'
 import { adminGuard } from './admin.guard'
 
@@ -48,11 +50,19 @@ router.use('/interfaces', superGuard, interfacesRoutes)
 router.use('/privileges', superGuard, privilegesRoutes)
 // CFOP (2026-07-18): referência fiscal do catálogo CENTRAL — módulo Super.
 router.use('/cfop',       superGuard, cfopRoutes)
+// Bancos (2026-08-04, fecho da decisão 8 da Fase 3): catálogo FEBRABAN
+// CENTRAL, cadastro geral SEM cadeia fiscal — manutenção do Super; o
+// consumo pelos clientes segue no lookup /api/bank-accounts/banks.
+router.use('/banks',      superGuard, banksRoutes)
 router.use('/institutions', superGuard, institutionsRoutes)
 // Usuários (workflow 2026-07-12): super gerencia qualquer institution
 // (aba Usuários do Estabelecimento); ADMIN do cliente gerencia os do
 // PRÓPRIO institution (módulo Sistema) — escopo forçado no service.
 router.use('/users',        adminGuard, usersRoutes)
+// Módulos de menu do cliente (prompt_modulo_menus.md D1/D2, 2026-08-04):
+// camada 2 do menu ganha escrita — adminGuard (personalizar o menu é ação
+// administrativa); escopo = schema do JWT; flag 'modules'.
+router.use('/modules',      adminGuard, modulesRoutes)
 
 // Painel de campos configuráveis (Fase 2, decisões 6 e 9): módulo do CLIENTE
 // (sem superGuard — privilégio da tela no app) e isento do gate de flags

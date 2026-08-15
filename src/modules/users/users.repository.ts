@@ -1,18 +1,14 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { nextEntityId, insertEntity, updateEntity } from '@shared/entity/entity.repository'
 import {
   UserListRow, UserRow, UserInput, UserInstitutionGrant, UserInstitutionLink,
   UserInterfacePrivileges, UserPrivilegeGrant,
 } from './users.interface'
 
-const SCHEMA_RE = /^setes_[a-z0-9_]+$/
-
-function assertSchema(schemaName: string): string {
-  if (!SCHEMA_RE.test(schemaName)) throw new Error(`schemaName inválido: ${schemaName}`)
-  return schemaName
-}
+// Peça centralizada em @shared/db/schema (2026-08-04).
+import { assertSchema } from '@shared/db/schema'
 
 /**
  * SQL do cadastro de Usuário — cadeia do LOGIN em setes_central:
@@ -32,7 +28,7 @@ const LOGIN_GROUP_ID = 2 // tb_mailing_group 'sistema' (auth.repository)
 export async function listUsers(
   query: ListQuery, institutionId: number | null
 ): Promise<PagedRows<UserListRow>> {
-  const like = `%${query.filter}%`
+  const like = `%${escapeLike(query.filter)}%`
   const where =
     `FROM setes_central.tb_user u
        INNER JOIN setes_central.tb_entity e ON e.id = u.id

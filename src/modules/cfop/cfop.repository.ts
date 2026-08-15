@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { CfopRow, CfopInput } from './cfop.interface'
 
 /**
@@ -22,7 +22,7 @@ const CFOP_FIELDS = (input: CfopInput) => [
  * (D2). Ordenação já é pelo id (código fiscal) — sem desempate extra (D8).
  */
 export async function listCfop(query: ListQuery): Promise<PagedRows<CfopRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM setes_central.tb_cfop c
      WHERE c.deleted = 'N'

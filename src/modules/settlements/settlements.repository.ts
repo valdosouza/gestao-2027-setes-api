@@ -2,7 +2,7 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { round2, addDays, partnerShare } from './settlements.calc'
 import {
   BillRow, SettleBatchInput, SettleBatchResult, SettledRow,
@@ -56,7 +56,7 @@ export async function listBills(
   schemaName: string, institutionId: number
 ): Promise<PagedRows<BillRow>> {
   assertSchemaName(schemaName)
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const kindFilter = kind || null
   const having = status === 'open' ? 'HAVING balance > 0'
                : status === 'settled' ? 'HAVING paidValue > 0' : ''
@@ -397,7 +397,7 @@ export async function listSettled(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<SettledRow>> {
   assertSchemaName(schemaName)
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM \`${schemaName}\`.tb_financial_payment p
      INNER JOIN \`${schemaName}\`.tb_financial f

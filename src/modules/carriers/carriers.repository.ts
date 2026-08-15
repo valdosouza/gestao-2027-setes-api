@@ -1,6 +1,6 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { CarrierInput, CarrierListRow, CarrierFull } from './carriers.interface'
@@ -25,7 +25,7 @@ import { CarrierInput, CarrierListRow, CarrierFull } from './carriers.interface'
 export async function listCarriers(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<CarrierListRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM ?? c
      INNER JOIN setes_central.tb_entity e ON e.id = c.id

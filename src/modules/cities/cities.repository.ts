@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { CityRow, CityInput, CityCreateInput } from './cities.interface'
 
 // O JOIN em tb_state é relação de BANCO (stateName para exibição no app) —
@@ -13,7 +13,7 @@ import { CityRow, CityInput, CityCreateInput } from './cities.interface'
 export async function listCities(
   query: ListQuery, stateId?: number
 ): Promise<PagedRows<CityRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM setes_central.tb_city c
      LEFT JOIN setes_central.tb_state s ON s.id = c.tb_state_id

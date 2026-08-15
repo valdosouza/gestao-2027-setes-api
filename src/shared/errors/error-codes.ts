@@ -35,6 +35,7 @@ export const ErrorCodes = {
   // Financeiro
   TITLE_NOT_FOUND:     'TITLE_NOT_FOUND',
   BANK_NOT_FOUND:      'BANK_NOT_FOUND',
+  BANK_IN_USE:         'BANK_IN_USE',
   REVERSAL_NOT_CURRENT: 'REVERSAL_NOT_CURRENT',
   // Parcerias
   RATE_SUM_EXCEEDED:   'RATE_SUM_EXCEEDED',
@@ -62,6 +63,7 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   PAYMENT_TYPE_UNAVAILABLE: 'Forma de pagamento não vinculada/habilitada na institution',
   TITLE_NOT_FOUND:     'Título financeiro não encontrado',
   BANK_NOT_FOUND:      'Banco/conta bancária inexistente',
+  BANK_IN_USE:         'Banco do catálogo em uso por conta corrente de cliente — exclusão bloqueada',
   REVERSAL_NOT_CURRENT: 'Só baixas vigentes (status N) podem ser estornadas',
   RATE_SUM_EXCEEDED:   'Soma dos percentuais de parceria passa de 90% (10% são da Setes)',
 }

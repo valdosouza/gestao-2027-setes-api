@@ -8,13 +8,10 @@ import { CatalogFieldRow, FieldConfigRow } from './field-config.types'
  * schemaName vem do JWT e é validado antes de interpolar.
  */
 
-const SCHEMA_RE = /^setes_[a-z0-9_]+$/
-
-export function assertSchemaName(schemaName: string): void {
-  if (!SCHEMA_RE.test(schemaName)) {
-    throw new HttpError(400, `schemaName inválido: ${schemaName}`)
-  }
-}
+// Peça centralizada em @shared/db/schema (2026-08-04) — import + re-export
+// mantém o contrato dos consumidores históricos deste barrel e o uso local.
+import { assertSchemaName } from '@shared/db/schema'
+export { assertSchemaName }
 
 /** Baseline técnico da interface (catálogo central). */
 export async function listCatalogFields(interfaceId: number): Promise<CatalogFieldRow[]> {

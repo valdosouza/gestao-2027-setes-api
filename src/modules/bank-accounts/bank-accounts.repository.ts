@@ -1,7 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import {
   BankAccountListRow, BankAccountFull, BankAccountInput, BankLookupRow,
 } from './bank-accounts.interface'
@@ -28,7 +28,7 @@ export async function listBankAccounts(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<BankAccountListRow>> {
   assertSchemaName(schemaName)
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM \`${schemaName}\`.tb_bank_account a
      LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id

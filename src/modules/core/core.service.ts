@@ -136,7 +136,9 @@ export interface MenuInterface {
 }
 
 export interface MenuModule {
-  module: { id: number | null; description: string | null; icon: number | null }
+  // icon = nome de ícone Material (string) desde o Módulo de Menus
+  // (D4, 2026-08-04 — image_icon INT do legado aposentado).
+  module: { id: number | null; description: string | null; icon: string | null }
   interfaces: MenuInterface[]
 }
 

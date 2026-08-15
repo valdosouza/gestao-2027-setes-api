@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { InterfaceRow, InterfaceInput, InterfaceConfigInput } from './interfaces.interface'
 
 // =====================================================================
@@ -36,7 +36,7 @@ async function privilegeIdsByInterface(interfaceIds: number[]): Promise<Map<numb
  * são agregados só para as linhas da página.
  */
 export async function listInterfaces(query: ListQuery): Promise<PagedRows<InterfaceRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM setes_central.tb_interface i
      WHERE i.deleted = 'N'
@@ -84,29 +84,40 @@ export async function getInterface(id: number): Promise<InterfaceRow | null> {
 }
 
 /**
- * Insere interface com id gerado MAX(id)+1 (COALESCE p/ tabela vazia) —
- * tb_interface NÃO tem auto_increment e não há padrão externo de código
- * (decisão do Valdo, 2026-07-11).
+ * Insere interface com id gerado MAX(id)+1 em TRANSAÇÃO com FOR UPDATE
+ * (padronização decidida pelo Valdo em 2026-08-04, Q2 do gate do módulo
+ * banks — sem o lock, POSTs simultâneos colidem na PK). tb_interface NÃO
+ * tem auto_increment e não há padrão externo de código (Valdo, 2026-07-11).
  */
 export async function insertInterface(input: InterfaceInput): Promise<number> {
-  const [rows] = await pool.query<any[]>(
-    `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM setes_central.tb_interface`
-  )
-  const id: number = rows[0].nextId
-  await pool.query(
-    `INSERT INTO setes_central.tb_interface
-       (id, group_default, i18n_key, description, kind, \`position\`, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-    [
-      id,
-      input.groupDefault ?? null,
-      input.i18nKey      ?? null,
-      input.description,
-      input.kind         ?? 'T',   // coluna NOT NULL (decisão 13)
-      input.position     ?? null,
-    ]
-  )
-  return id
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [rows] = await conn.query(
+      `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM setes_central.tb_interface FOR UPDATE`
+    ) as any[]
+    const id: number = rows[0].nextId
+    await conn.query(
+      `INSERT INTO setes_central.tb_interface
+         (id, group_default, i18n_key, description, kind, \`position\`, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [
+        id,
+        input.groupDefault ?? null,
+        input.i18nKey      ?? null,
+        input.description,
+        input.kind         ?? 'T',   // coluna NOT NULL (decisão 13)
+        input.position     ?? null,
+      ]
+    )
+    await conn.commit()
+    return id
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /** Atualiza a interface — o id nunca muda. */

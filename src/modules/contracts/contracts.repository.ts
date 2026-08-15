@@ -1,7 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import {
   ContractListRow, ContractFull, ContractInput, ProductLookupRow,
 } from './contracts.interface'
@@ -21,7 +21,7 @@ export async function listContracts(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<ContractListRow>> {
   assertSchemaName(schemaName)
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM \`${schemaName}\`.tb_contract c
      INNER JOIN setes_central.tb_entity e ON e.id = c.tb_customer_id

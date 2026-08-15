@@ -2,7 +2,7 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import {
   prorataValue, parcelQuotas, firstDayOfMonth, lastDayOfMonth,
 } from './service-orders.calc'
@@ -39,7 +39,7 @@ export async function listOrders(
   schemaName: string, institutionId: number
 ): Promise<PagedRows<ServiceOrderListRow>> {
   assertSchemaName(schemaName)
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const statusFilter = status || null
   const where =
     `FROM \`${schemaName}\`.tb_order_service s

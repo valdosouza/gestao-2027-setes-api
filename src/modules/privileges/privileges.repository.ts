@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { PrivilegeRow } from './privileges.interface'
 
 // A lista também alimenta os checkboxes da tela de Interfaces
@@ -10,7 +10,7 @@ import { PrivilegeRow } from './privileges.interface'
  * (D2). Ordenação já é pelo id — sem desempate extra (D8).
  */
 export async function listPrivileges(query: ListQuery): Promise<PagedRows<PrivilegeRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM setes_central.tb_privilege
      WHERE deleted = 'N'
@@ -41,21 +41,32 @@ export async function getPrivilege(id: number): Promise<PrivilegeRow | null> {
 }
 
 /**
- * Insere privilégio com id gerado MAX(id)+1 (COALESCE p/ tabela vazia) —
- * tb_privilege NÃO tem auto_increment e não há padrão externo de código
- * (mesma decisão do cadastro de Interfaces — Valdo, 2026-07-11).
+ * Insere privilégio com id gerado MAX(id)+1 em TRANSAÇÃO com FOR UPDATE
+ * (padronização decidida pelo Valdo em 2026-08-04, Q2 do gate do módulo
+ * banks — sem o lock, POSTs simultâneos colidem na PK). tb_privilege NÃO
+ * tem auto_increment e não há padrão externo de código (Valdo, 2026-07-11).
  */
 export async function insertPrivilege(description: string): Promise<number> {
-  const [rows] = await pool.query<any[]>(
-    `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM setes_central.tb_privilege`
-  )
-  const id: number = rows[0].nextId
-  await pool.query(
-    `INSERT INTO setes_central.tb_privilege (id, description, created_at, updated_at)
-     VALUES (?, ?, NOW(), NOW())`,
-    [id, description]
-  )
-  return id
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [rows] = await conn.query(
+      `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM setes_central.tb_privilege FOR UPDATE`
+    ) as any[]
+    const id: number = rows[0].nextId
+    await conn.query(
+      `INSERT INTO setes_central.tb_privilege (id, description, created_at, updated_at)
+       VALUES (?, ?, NOW(), NOW())`,
+      [id, description]
+    )
+    await conn.commit()
+    return id
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /** Atualiza a description — o id nunca muda. */

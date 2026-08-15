@@ -104,12 +104,8 @@ export async function upsertTheme(
 // schemaName vem do JWT assinado — ainda assim validado (defesa em profundidade).
 // ---------------------------------------------------------------------
 
-const SCHEMA_RE = /^setes_[a-z0-9_]+$/
-
-function assertSchema(schemaName: string): string {
-  if (!SCHEMA_RE.test(schemaName)) throw new Error(`schemaName inválido: ${schemaName}`)
-  return schemaName
-}
+// Peça centralizada em @shared/db/schema (2026-08-04).
+import { assertSchema } from '@shared/db/schema'
 
 // Agrupador do catálogo EXCLUSIVO do superusuário (definição por perfil do
 // Valdo, 2026-07-12: admin = tudo EXCETO o módulo Super). Interfaces com
@@ -127,7 +123,7 @@ const ONLY_SCREEN_KIND = `AND i.kind = 'T'`
 export interface MenuInterfaceRow {
   moduleId:             number | null
   moduleDescription:    string | null
-  moduleIcon:           number | null
+  moduleIcon:           string | null // nome de ícone Material (D4 do prompt_modulo_menus.md)
   interfaceId:          number
   interfaceDescription: string | null
   i18nKey:              string | null  // decisão 26: chave de tradução; app faz fallback para description
@@ -165,7 +161,8 @@ export async function getModuleInterfaces(
      INNER JOIN setes_central.tb_interface i
        ON (i.id = mhi.tb_interface_id AND i.deleted = 'N')
      WHERE m.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}${privilegeFilter}
-     ORDER BY m.description, i.description`,
+     ORDER BY COALESCE(m.position, 999999), m.id,
+              COALESCE(mhi.position, 999999), i.description`,
     params
   )
   return rows
@@ -196,6 +193,8 @@ export async function getUngroupedInterfaces(
        ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
      WHERE ihi.active = 'S' AND ihi.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}
        AND NOT EXISTS (SELECT 1 FROM \`${s}\`.tb_module_has_interface mhi
+                       INNER JOIN \`${s}\`.tb_module m2
+                          ON (m2.id = mhi.tb_module_id AND m2.deleted = 'N')
                        WHERE mhi.tb_interface_id = i.id
                          AND mhi.active = 'S' AND mhi.deleted = 'N')${privilegeFilter}
      ORDER BY i.group_default, i.description`,

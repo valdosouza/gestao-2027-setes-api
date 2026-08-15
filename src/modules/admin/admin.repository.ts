@@ -11,12 +11,8 @@ import pool from '@shared/db/connection'
 // (nunca o schemaName do próprio JWT).
 // ---------------------------------------------------------------------
 
-const SCHEMA_RE = /^setes_[a-z0-9_]+$/
-
-function assertSchema(schemaName: string): string {
-  if (!SCHEMA_RE.test(schemaName)) throw new Error(`schemaName inválido: ${schemaName}`)
-  return schemaName
-}
+// Peça centralizada em @shared/db/schema (2026-08-04).
+import { assertSchema } from '@shared/db/schema'
 
 export async function getInstitutionSchemaName(institutionId: number): Promise<string | null> {
   const [rows] = await pool.query<any[]>(

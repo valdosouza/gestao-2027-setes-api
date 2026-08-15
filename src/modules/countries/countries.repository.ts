@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { CountryRow } from './countries.interface'
 
 /**
@@ -7,7 +7,7 @@ import { CountryRow } from './countries.interface'
  * (D2). Desempate por id (D8) mantém o OFFSET estável.
  */
 export async function listCountries(query: ListQuery): Promise<PagedRows<CountryRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM setes_central.tb_country
      WHERE deleted = 'N'

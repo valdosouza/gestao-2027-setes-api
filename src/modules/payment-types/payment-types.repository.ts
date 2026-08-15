@@ -1,7 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
 import {
   LinkedPaymentTypeRow, PaymentTypeCatalogRow, PaymentTypeLinkInput,
@@ -23,7 +23,7 @@ export async function listLinked(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<LinkedPaymentTypeRow>> {
   assertSchemaName(schemaName)
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM \`${schemaName}\`.tb_institution_has_payment_types h
      INNER JOIN setes_central.tb_payment_types pt

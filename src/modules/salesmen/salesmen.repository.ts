@@ -1,6 +1,6 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import {
   SalesmanInput, SalesmanListRow, SalesmanFull, CollaboratorLookupRow,
 } from './salesmen.interface'
@@ -24,7 +24,7 @@ import {
 export async function listSalesmen(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<SalesmanListRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM ?? s
      INNER JOIN setes_central.tb_entity e ON e.id = s.id

@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { StateRow, StateInput } from './states.interface'
 
 // O JOIN em tb_country é relação de BANCO (countryName para exibição no
@@ -13,7 +13,7 @@ import { StateRow, StateInput } from './states.interface'
 export async function listStates(
   query: ListQuery, countryId?: number
 ): Promise<PagedRows<StateRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM setes_central.tb_state s
      LEFT JOIN setes_central.tb_country c ON c.id = s.tb_country_id

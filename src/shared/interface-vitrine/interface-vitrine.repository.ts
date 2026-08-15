@@ -1,6 +1,6 @@
 import pool from '@shared/db/connection'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { InterfaceVitrineRow } from './interface-vitrine.types'
 
 /**
@@ -20,7 +20,7 @@ export async function listVitrine(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<InterfaceVitrineRow>> {
   assertSchemaName(schemaName)
-  const like = `%${query.filter}%`
+  const like = `%${escapeLike(query.filter)}%`
   const where =
     `FROM setes_central.tb_interface i
      LEFT JOIN \`${schemaName}\`.tb_institution_has_interface ihi

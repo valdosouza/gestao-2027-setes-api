@@ -1,6 +1,6 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { SETES_INSTITUTION_ID, SETES_SCHEMA } from '@shared/auth/roles'
 import { saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import {
@@ -24,7 +24,7 @@ import {
  * (D2). Desempate por i.id (D8) mantém o OFFSET estável.
  */
 export async function listInstitutions(query: ListQuery): Promise<PagedRows<InstitutionListRow>> {
-  const like = query.filter ? `%${query.filter}%` : null
+  const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
     `FROM setes_central.tb_institution i
      INNER JOIN setes_central.tb_entity e ON e.id = i.id
@@ -193,11 +193,13 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // onda 2; 'salesmen'/'carriers' desde a Onda 2 salesman/carrier (gate
   // técnico — o comercial por tela continua em tb_institution_has_interface,
   // decisão 17).
+  // 'modules' (menus do cliente) liberado por padrão desde 2026-08-04
+  // (prompt_modulo_menus.md — a tela é do admin via adminGuard).
   const defaultModules = [
     'core', 'customers', 'collaborators', 'salesmen', 'carriers',
     'providers', 'categories', 'financial-plans',
     'payment-types', 'contracts', 'bank-accounts',
-    'service-orders', 'settlements',
+    'service-orders', 'settlements', 'modules',
   ]
   const conn = await pool.getConnection()
   try {

@@ -21,12 +21,26 @@ import { getConfigContent } from '@shared/interface-config'
 export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const
 export const DEFAULT_PAGE_SIZE = 25
 export const MAX_PAGE_SIZE = 200
+// Teto do page (gate adversarial 2026-08-04): sem ele, page=1e21 passa no
+// Number.isInteger e o offset em notação exponencial quebra o LIMIT/OFFSET
+// do MySQL — 500 em qualquer lista paginada. Clamp, nunca rejeita (D5).
+export const MAX_PAGE = 1_000_000
 
 export interface ListQuery {
   filter:   string
   page:     number   // 1-based
   pageSize: number
   offset:   number   // derivado: (page - 1) * pageSize
+}
+
+/**
+ * Escapa os metacaracteres de LIKE (decisão do Valdo 2026-08-04, Q3 do
+ * gate do módulo banks): sem isso, '_' vira coringa de 1 caractere e '%'
+ * casa tudo no filtro digitado pelo usuário. Todo repository que monta
+ * `%${filter}%` usa esta peça — o valor segue viajando em placeholder.
+ */
+export function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, m => `\\${m}`)
 }
 
 function toInt(value: unknown, fallback: number): number {
@@ -41,7 +55,7 @@ function toInt(value: unknown, fallback: number): number {
  */
 export async function parseListQuery(req: Request, moduleKey?: string): Promise<ListQuery> {
   const filter = String(req.query.filter ?? '')
-  const page   = toInt(req.query.page, 1)
+  const page   = Math.min(toInt(req.query.page, 1), MAX_PAGE)
 
   let fallback = DEFAULT_PAGE_SIZE
   if (moduleKey && req.query.pageSize === undefined && req.institution) {
