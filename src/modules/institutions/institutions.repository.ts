@@ -200,7 +200,7 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // gerenciar os próprios usuários — administração, não produto vendável.
   const defaultModules = [
     'core', 'users', 'customers', 'collaborators', 'salesmen', 'carriers',
-    'providers', 'categories', 'financial-plans',
+    'providers', 'categories', 'financial-plans', 'tax-rules',
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements', 'modules',
   ]

@@ -18,6 +18,7 @@ import collaboratorsRoutes from '@modules/collaborators/collaborators.routes'
 import salesmenRoutes from '@modules/salesmen/salesmen.routes'
 import carriersRoutes from '@modules/carriers/carriers.routes'
 import providersRoutes from '@modules/providers/providers.routes'
+import taxRulesRoutes from '@modules/tax-rules/tax-rules.routes'
 import categoriesRoutes from '@modules/categories/categories.routes'
 import financialPlansRoutes from '@modules/financial-plans/financial-plans.routes'
 import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
@@ -103,6 +104,11 @@ router.use('/carriers', carriersRoutes)
 // Fornecedores (Onda 3 — prompt_onda3_provider.md, D1): cadeia fiscal
 // completa + aba Tributação; mesmo desenho do carriers; flag 'providers'.
 router.use('/providers', providersRoutes)
+
+// Regras de Tributação (fase Faturamento Fiscal e Financeiro, decisões
+// 1/23/28): cadastro de CLIENTE — seletor + peças por tributo (presença =
+// incidência); o MATCH vive em @shared/tax-rule. Flag 'tax-rules'.
+router.use('/tax-rules', taxRulesRoutes)
 
 // Categorias de produtos/serviços (2026-07-18): cadastro de CLIENTE — sem
 // superGuard; escopo por institution no service; flag 'categories'.

@@ -58,16 +58,16 @@ router.post('/cashier/sincronize', async (req: Request, res: Response) => {
     if (existing.length === 0) {
       cashierId = await nextId(conn, 'tb_Cashier', institutionId)
       await conn.query(
-        `INSERT INTO tb_Cashier (id, tb_institution_id, terminal, dt_record, tb_userid, hr_begin, hr_end, created_at, updated_at)
+        `INSERT INTO tb_Cashier (id, tb_institution_id, terminal, dt_record, tb_user_id, hr_begin, hr_end, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-        [cashierId, institutionId, b.terminal, dtRecord, b.tb_userid, hrBegin, hrEnd]
+        [cashierId, institutionId, b.terminal, dtRecord, b.tb_user_id, hrBegin, hrEnd]
       )
     } else {
       cashierId = existing[0].id
       await conn.query(
-        `UPDATE tb_Cashier SET tb_userid = ?, hr_begin = ?, hr_end = ?, updated_at = NOW()
+        `UPDATE tb_Cashier SET tb_user_id = ?, hr_begin = ?, hr_end = ?, updated_at = NOW()
          WHERE id = ? AND tb_institution_id = ?`,
-        [b.tb_userid, hrBegin, hrEnd, cashierId, institutionId]
+        [b.tb_user_id, hrBegin, hrEnd, cashierId, institutionId]
       )
     }
 
