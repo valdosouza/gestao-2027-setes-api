@@ -4,4 +4,6 @@
  */
 export * from './types'
 export { findTaxRule, resolveMatchStateId, resolveEffectiveSt, pickRule } from './match'
-export { loadPieces, savePieces, findInvalidCatalogCodes } from './pieces'
+export {
+  loadPieces, savePieces, findInvalidCatalogCodes, findInvalidSelectorRefs,
+} from './pieces'

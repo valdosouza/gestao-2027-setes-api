@@ -235,6 +235,25 @@ describe('findInvalidCatalogCodes (decisão 33 — integridade na peça)', () =>
     expect(invalid).toEqual([])
   })
 
+  it('decisão 38: produto/cliente da especialização precisam existir', async () => {
+    const { findInvalidSelectorRefs } = await import('../shared/tax-rule')
+    mockQuery.mockResolvedValue([[]])   // nada encontrado
+    const invalid = await findInvalidSelectorRefs('setes_setes', 1,
+      { productId: 999, entityId: 888 })
+    expect(invalid.map(i => i.field))
+      .toEqual(['selector.productId', 'selector.entityId'])
+    // produto escopado pela institution (PK composta do tb_product)
+    const productCall = mockQuery.mock.calls.find(
+      call => (call[0] as string).includes('tb_product'))
+    expect(productCall![0]).toContain('tb_institution_id = ?')
+    expect(productCall![1]).toEqual([999, 1])
+
+    jest.clearAllMocks()
+    mockQuery.mockResolvedValue([[{ id: 10 }]])
+    expect(await findInvalidSelectorRefs('setes_setes', 1,
+      { productId: 10, entityId: null })).toEqual([])
+  })
+
   it('decisão 35: CFOP de sentido oposto ou sem way contradiz a regra', async () => {
     mockQuery.mockResolvedValue([[{ id: '5102', way: 'S' }]])
     const opposite = await findInvalidCatalogCodes(

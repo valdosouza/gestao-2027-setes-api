@@ -150,6 +150,41 @@ export async function savePieces(
 }
 
 /**
+ * Valida as REFERÊNCIAS de especialização do seletor (decisão 38 — RA-Q1):
+ * produto/cliente chegam SÓ do cadastro de origem, mas id inexistente
+ * criaria regra morta (produto — sem FK física, PK composta com a
+ * institution) ou 500 de FK (cliente). 422 com fields[] como os catálogos.
+ */
+export async function findInvalidSelectorRefs(
+  schemaName: string, institutionId: number,
+  selector: { productId?: number | null; entityId?: number | null }
+): Promise<{ field: string; message: string }[]> {
+  const s = assertSchema(schemaName)
+  const invalid: { field: string; message: string }[] = []
+  if (selector.productId) {
+    const [rows] = await pool.query<any[]>(
+      `SELECT id FROM \`${s}\`.tb_product
+        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+      [selector.productId, institutionId])
+    if (!rows[0]) {
+      invalid.push({ field: 'selector.productId',
+        message: `Produto ${selector.productId} não existe no estabelecimento` })
+    }
+  }
+  if (selector.entityId) {
+    const [rows] = await pool.query<any[]>(
+      `SELECT id FROM setes_central.tb_entity
+        WHERE id = ? AND deleted = 'N'`,
+      [selector.entityId])
+    if (!rows[0]) {
+      invalid.push({ field: 'selector.entityId',
+        message: `Cliente ${selector.entityId} não existe` })
+    }
+  }
+  return invalid
+}
+
+/**
  * Valida os códigos de CST/modBC/CFOP contra os CATÁLOGOS CENTRAIS
  * (decisão 33: sem FK física em coluna string — a integridade é desta peça).
  * Devolve a lista de campos inválidos (vazia = ok).

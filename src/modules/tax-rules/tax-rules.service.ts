@@ -1,6 +1,6 @@
 import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows } from '@shared/list'
-import { findInvalidCatalogCodes } from '@shared/tax-rule'
+import { findInvalidCatalogCodes, findInvalidSelectorRefs } from '@shared/tax-rule'
 import {
   listTaxRules, getTaxRule, insertTaxRuleCascade, updateTaxRuleCascade,
   deleteTaxRuleCascade, listCatalogs,
@@ -25,10 +25,20 @@ function toPieces(input: TaxRuleBodyDto) {
   }
 }
 
-async function assertCatalogCodes(input: TaxRuleBodyDto): Promise<void> {
-  const invalid = await findInvalidCatalogCodes(
-    toPieces(input) as any,
-    { cfopId: input.selector.cfopId, direction: input.selector.direction })
+async function assertCatalogCodes(
+  schemaName: string, institutionId: number, input: TaxRuleBodyDto
+): Promise<void> {
+  const invalid = [
+    ...await findInvalidCatalogCodes(
+      toPieces(input) as any,
+      { cfopId: input.selector.cfopId, direction: input.selector.direction }),
+    // Decisão 38: produto/cliente da especialização precisam EXISTIR
+    // (vêm do cadastro de origem; typo criaria regra morta ou 500 de FK).
+    ...await findInvalidSelectorRefs(schemaName, institutionId, {
+      productId: input.selector.productId,
+      entityId: input.selector.entityId,
+    }),
+  ]
   if (invalid.length > 0) {
     throw new HttpError(422, 'Código fiscal inexistente no catálogo', invalid)
   }
@@ -51,7 +61,7 @@ export async function fetchTaxRule(
 export async function createTaxRule(
   schemaName: string, institutionId: number, input: TaxRuleBodyDto
 ): Promise<{ id: number }> {
-  await assertCatalogCodes(input)
+  await assertCatalogCodes(schemaName, institutionId, input)
   const id = await insertTaxRuleCascade(schemaName, institutionId, input)
   return { id }
 }
@@ -59,7 +69,7 @@ export async function createTaxRule(
 export async function editTaxRule(
   schemaName: string, institutionId: number, id: number, input: TaxRuleBodyDto
 ): Promise<void> {
-  await assertCatalogCodes(input)
+  await assertCatalogCodes(schemaName, institutionId, input)
   await updateTaxRuleCascade(schemaName, institutionId, id, input)
 }
 
