@@ -74,7 +74,9 @@ router.get('/:id', controller.getById)
  *     description: >-
  *       PRESENÇA = incidência: peça omitida = tributo não definido; regra sem
  *       nenhuma peça é 422. CSTs/modBC validados contra os catálogos centrais
- *       (422 com fields[]). id = MAX+1 no backend.
+ *       (422 com fields[]). id = MAX+1 no backend. selector.direction (E/S) é
+ *       OBRIGATÓRIO — sem coringa de sentido (decisão 35); CFOP informado
+ *       precisa ter way concordante (422).
  *     tags: [tax-rules]
  *     security: [{ BearerAuth: [] }]
  *     requestBody:
@@ -85,7 +87,7 @@ router.get('/:id', controller.getById)
  *             type: object
  *             required: [selector]
  *             properties:
- *               selector: { type: object }
+ *               selector: { type: object, description: "direction (E/S) obrigatório — decisão 35" }
  *               icms: { type: object }
  *               icmsSt: { type: object }
  *               ipi: { type: object }

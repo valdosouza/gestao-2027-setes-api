@@ -155,7 +155,8 @@ export async function savePieces(
  * Devolve a lista de campos inválidos (vazia = ok).
  */
 export async function findInvalidCatalogCodes(
-  p: TaxRulePieces, selector?: { cfopId?: string | null }
+  p: TaxRulePieces,
+  selector?: { cfopId?: string | null; direction?: 'E' | 'S' }
 ): Promise<{ field: string; message: string }[]> {
   const invalid: { field: string; message: string }[] = []
   const check = async (table: string, code: string | null | undefined,
@@ -166,8 +167,24 @@ export async function findInvalidCatalogCodes(
       [code])
     if (!rows[0]) invalid.push({ field, message: `Código '${code}' não existe em ${table}` })
   }
-  if (selector) {
-    await check('tb_cfop', selector.cfopId, 'selector.cfopId')
+  if (selector?.cfopId) {
+    // Decisão 35: CFOP não existe sem way, e o way da natureza tem que
+    // CONCORDAR com o sentido da regra — CFOP do sentido oposto = regra
+    // morta (o motor filtra direction E cfop; nunca casaria).
+    const [rows] = await pool.query<any[]>(
+      `SELECT id, way FROM setes_central.tb_cfop WHERE id = ? AND deleted = 'N'`,
+      [selector.cfopId])
+    if (!rows[0]) {
+      invalid.push({ field: 'selector.cfopId',
+        message: `Código '${selector.cfopId}' não existe em tb_cfop` })
+    } else if (rows[0].way !== 'E' && rows[0].way !== 'S') {
+      invalid.push({ field: 'selector.cfopId',
+        message: `CFOP '${selector.cfopId}' sem sentido (way) no catálogo` })
+    } else if (selector.direction && rows[0].way !== selector.direction) {
+      invalid.push({ field: 'selector.cfopId',
+        message: `CFOP '${selector.cfopId}' é de ${rows[0].way === 'E'
+          ? 'entrada' : 'saída'} — contradiz o sentido da regra` })
+    }
   }
   if (p.icms) {
     await check('tb_tax_icms_nr', p.icms.cstNr, 'icms.cstNr')

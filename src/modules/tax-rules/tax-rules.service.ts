@@ -27,7 +27,8 @@ function toPieces(input: TaxRuleBodyDto) {
 
 async function assertCatalogCodes(input: TaxRuleBodyDto): Promise<void> {
   const invalid = await findInvalidCatalogCodes(
-    toPieces(input) as any, { cfopId: input.selector.cfopId })
+    toPieces(input) as any,
+    { cfopId: input.selector.cfopId, direction: input.selector.direction })
   if (invalid.length > 0) {
     throw new HttpError(422, 'Código fiscal inexistente no catálogo', invalid)
   }

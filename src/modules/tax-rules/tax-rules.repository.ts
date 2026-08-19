@@ -124,7 +124,7 @@ export async function insertTaxRuleCascade(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
       [id, institutionId, sel.productId ?? null, sel.entityId ?? null,
        sel.ncm ?? null, sel.origin, sel.finalConsumer, sel.simples, sel.st,
-       sel.purpose, sel.direction ?? null, sel.cfopId ?? null,
+       sel.purpose, sel.direction, sel.cfopId ?? null,
        sel.stateId ?? null, sel.observationId ?? null, sel.taxesId ?? null]
     )
     await savePieces(conn, s, id, toPieces(input))
@@ -160,7 +160,7 @@ export async function updateTaxRuleCascade(
         WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
       [sel.productId ?? null, sel.entityId ?? null, sel.ncm ?? null,
        sel.origin, sel.finalConsumer, sel.simples, sel.st, sel.purpose,
-       sel.direction ?? null, sel.cfopId ?? null, sel.stateId ?? null,
+       sel.direction, sel.cfopId ?? null, sel.stateId ?? null,
        sel.observationId ?? null, sel.taxesId ?? null, id, institutionId]
     ) as any[]
     if (Number(result?.affectedRows ?? 0) === 0) {

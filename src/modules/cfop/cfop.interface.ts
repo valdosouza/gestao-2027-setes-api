@@ -29,7 +29,9 @@ export interface CfopInput {
   description:   string
   concise?:      string | null
   register?:     number | null
-  way?:          'E' | 'S' | null
+  // Decisão 35: não existe CFOP sem sentido (obrigatório no cadastro; linhas
+  // legadas sem way seguem no Row até revisão).
+  way:           'E' | 'S'
   jurisdiction?: 'E' | 'N' | 'X' | null
   note?:         string | null
   active?:       'S' | 'N'

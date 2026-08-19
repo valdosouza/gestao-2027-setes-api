@@ -17,7 +17,8 @@ export interface TaxRuleSelector {
   simples: 'S' | 'N'
   st: 'S' | 'N'                 // produto sob ST (após override do cliente)
   purpose: string               // finalidade '0'..'7' ('0' = Outras/ajuste)
-  direction: string | null      // E/S — filtro de CADASTRO (lookup de CFOP)
+  direction: 'E' | 'S'          // sentido da regra — SEM coringa (decisão 35:
+                                // paridade com NAT_SENTIDO; "Ambos" não existe)
   cfopId: string | null         // natureza (participa do match só no ajuste)
   stateId: number | null        // UF do destinatário; NULL = coringa interestadual
   observationId: number | null
@@ -91,6 +92,8 @@ export interface TaxRuleMatchCriteria {
   customerIgnoreSt?: 'S' | 'N'  // override do cliente (Q18) — só via combinada
   finalConsumer: 'S' | 'N'
   simples: 'S' | 'N'
+  direction: 'E' | 'S'          // sentido da OPERAÇÃO (way da natureza —
+                                // NAT_SENTIDO = :sentido do legado, decisão 35)
   destinationStateId: number    // UF do destinatário
   emitterStateId: number        // UF do estabelecimento
   presential?: boolean          // IndicaPresenca = 1

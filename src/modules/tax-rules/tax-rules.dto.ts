@@ -17,7 +17,9 @@ const selectorDto = z.object({
   simples:   flagSN,
   st:        flagSN,
   purpose:   z.enum(['0', '1', '2', '3', '4', '5', '6', '7']),
-  direction: z.enum(['E', 'S']).nullish(),
+  // Decisão 35 (Q-G1+RA-Q3): sentido OBRIGATÓRIO — regra nunca vale para os
+  // dois sentidos ("Ambos" não existe; paridade com o legado por construção).
+  direction: z.enum(['E', 'S']),
   cfopId:    z.string().max(10).nullish(),
   stateId:   z.number().int().positive().nullish(),   // null = coringa interestadual
   observationId: z.number().int().positive().nullish(),

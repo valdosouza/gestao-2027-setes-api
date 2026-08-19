@@ -9,6 +9,9 @@ import { TaxRuleMatchCriteria, TaxRuleSelector } from './types'
  *
  * As 6 sutilezas vivem AQUI e em nenhum outro lugar (constraint do parecer
  * setes-conceito — endpoint nenhum reimplementa o match):
+ *  0. Sentido SEMPRE no filtro (NAT_SENTIDO = :sentido — decisão 35): a
+ *     regra declara direction E/S sem coringa; o critério traz o sentido da
+ *     operação (way da natureza)
  *  1. Coringas: tb_product_id/tb_entity_id/ncm NULL casam qualquer valor
  *  2. Precedência por NCM: regra COM ncm vence (ORDER BY ncm DESC — NULL por último)
  *  3. Estado: mesma UF → exige tb_state_id exato; interestadual → aceita coringa
@@ -125,12 +128,14 @@ export async function findTaxRule(
         AND r.final_consumer = ?
         AND r.simples = ?
         AND r.purpose = ?
+        AND r.direction = ?
         ${c.cfopId ? 'AND r.tb_cfop_id = ?' : ''}
         ${stateWhere}
       ORDER BY r.ncm DESC, r.id`,
     [
       c.institutionId, c.productId, c.entityId ?? -1, c.productNcm ?? '',
       c.productOrigin, effectiveSt, c.finalConsumer, c.simples, purpose,
+      c.direction,
       ...(c.cfopId ? [c.cfopId] : []),
       matchState,
     ]

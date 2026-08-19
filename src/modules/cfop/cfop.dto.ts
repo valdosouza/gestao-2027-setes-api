@@ -12,7 +12,9 @@ const cfopBase = z.object({
   description:  z.string().min(1).max(100),
   concise:      z.string().max(60).nullable().optional(),
   register:     z.number().int().nullable().optional(),
-  way:          z.enum(['E', 'S']).nullable().optional(),
+  // Decisão 35: não existe CFOP sem sentido — way obrigatório no cadastro
+  // (o sentido da operação no faturamento deriva daqui).
+  way:          z.enum(['E', 'S']),
   jurisdiction: z.enum(['E', 'N', 'X']).nullable().optional(),
   note:         z.string().max(60000).nullable().optional(),
   active:       z.enum(['S', 'N']).optional(),

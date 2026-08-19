@@ -22,14 +22,14 @@ const mockQuery = (pool as any).query as jest.Mock
 const baseCriteria: TaxRuleMatchCriteria = {
   institutionId: 1, productId: 10, productNcm: '84713012',
   productOrigin: '0', productSt: 'N', purpose: '1', entityId: 55,
-  finalConsumer: 'N', simples: 'N',
+  finalConsumer: 'N', simples: 'N', direction: 'S',
   destinationStateId: 41, emitterStateId: 41,
 }
 
 const sel = (over: Partial<TaxRuleSelector>): TaxRuleSelector => ({
   id: 1, institutionId: 1, productId: null, entityId: null, ncm: null,
   origin: '0', finalConsumer: 'N', simples: 'N', st: 'N', purpose: '1',
-  direction: null, cfopId: null, stateId: null, observationId: null,
+  direction: 'S', cfopId: null, stateId: null, observationId: null,
   taxesId: null, ...over,
 })
 
@@ -107,6 +107,21 @@ describe('tax-rule match engine (paridade com o legado)', () => {
     expect(mockQuery.mock.calls[0][1]).toEqual([77, baseCriteria.institutionId])
   })
 
+  it('decisão 35: o sentido SEMPRE filtra (NAT_SENTIDO = :sentido) e não ' +
+     'tem coringa', async () => {
+    mockQuery.mockResolvedValue([[]])
+    await findTaxRule('setes_setes', baseCriteria)
+    const sql = mockQuery.mock.calls[0][0] as string
+    expect(sql).toContain('AND r.direction = ?')
+    expect(sql).not.toContain('r.direction IS NULL')
+    expect(mockQuery.mock.calls[0][1]).toContain('S')
+
+    jest.clearAllMocks()
+    mockQuery.mockResolvedValue([[]])
+    await findTaxRule('setes_setes', { ...baseCriteria, direction: 'E' })
+    expect(mockQuery.mock.calls[0][1]).toContain('E')
+  })
+
   it('sutilezas 1/2: coringas por NULL e precedência por NCM na ordem', async () => {
     mockQuery.mockResolvedValue([[]])
     await findTaxRule('setes_setes', baseCriteria)
@@ -155,11 +170,22 @@ describe('pickRule (desempate)', () => {
 describe('taxRuleBodyDto', () => {
   const selector = {
     origin: '0', finalConsumer: 'N', simples: 'N', st: 'N', purpose: '1',
+    direction: 'S',
   }
 
   it('regra sem NENHUMA peça é rejeitada', () => {
     const r = taxRuleBodyDto.safeParse({ selector })
     expect(r.success).toBe(false)
+  })
+
+  it('decisão 35: direction é obrigatória — sem "Ambos"', () => {
+    const { direction: _omit, ...noDirection } = selector
+    const r = taxRuleBodyDto.safeParse({ selector: noDirection,
+      icms: { cstNr: '00' } })
+    expect(r.success).toBe(false)
+    const rNull = taxRuleBodyDto.safeParse({
+      selector: { ...selector, direction: null }, icms: { cstNr: '00' } })
+    expect(rNull.success).toBe(false)
   })
 
   it('peça ICMS exige CST ou CSOSN', () => {
@@ -203,10 +229,23 @@ describe('findInvalidCatalogCodes (decisão 33 — integridade na peça)', () =>
   })
 
   it('códigos existentes passam sem achado', async () => {
-    mockQuery.mockResolvedValue([[{ id: '5102' }]])
+    mockQuery.mockResolvedValue([[{ id: '5102', way: 'S' }]])
     const invalid = await findInvalidCatalogCodes(
-      { ipi: { cst: '50' } as any }, { cfopId: '5102' })
+      { ipi: { cst: '50' } as any }, { cfopId: '5102', direction: 'S' })
     expect(invalid).toEqual([])
+  })
+
+  it('decisão 35: CFOP de sentido oposto ou sem way contradiz a regra', async () => {
+    mockQuery.mockResolvedValue([[{ id: '5102', way: 'S' }]])
+    const opposite = await findInvalidCatalogCodes(
+      {}, { cfopId: '5102', direction: 'E' })
+    expect(opposite.map(i => i.field)).toContain('selector.cfopId')
+
+    jest.clearAllMocks()
+    mockQuery.mockResolvedValue([[{ id: '0000', way: null }]])
+    const noWay = await findInvalidCatalogCodes(
+      {}, { cfopId: '0000', direction: 'S' })
+    expect(noWay.map(i => i.field)).toContain('selector.cfopId')
   })
 })
 

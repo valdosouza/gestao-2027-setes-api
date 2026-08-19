@@ -11,7 +11,7 @@ const CFOP_FIELDS = (input: CfopInput) => [
   input.description,
   input.concise ?? null,
   input.register ?? null,
-  input.way ?? null,
+  input.way,
   input.jurisdiction ?? null,
   input.note ?? null,
   input.active ?? 'S',

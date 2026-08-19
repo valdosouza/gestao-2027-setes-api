@@ -55,7 +55,7 @@ const router = Router()
  *               description: { type: string }
  *               concise: { type: string, nullable: true }
  *               register: { type: integer, nullable: true }
- *               way: { type: string, enum: [E, S], nullable: true }
+ *               way: { type: string, enum: [E, S] }
  *               jurisdiction: { type: string, enum: [E, N, X], nullable: true }
  *               note: { type: string, nullable: true }
  *               active: { type: string, enum: [S, N] }
