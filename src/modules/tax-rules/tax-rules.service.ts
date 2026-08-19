@@ -68,6 +68,19 @@ export async function removeTaxRule(
   await deleteTaxRuleCascade(schemaName, institutionId, id)
 }
 
+// Catálogos são centrais e de baixa rotatividade (só o Super mexe):
+// cache TTL em memória no molde do flag.service/field-config.
+const CATALOG_TTL_MS = Number(process.env.TAX_CATALOG_CACHE_TTL_MS ?? 60_000)
+let catalogCache: { expires: number; data: TaxRuleCatalogs } | null = null
+
 export async function fetchCatalogs(): Promise<TaxRuleCatalogs> {
-  return listCatalogs()
+  if (catalogCache && catalogCache.expires > Date.now()) return catalogCache.data
+  const data = await listCatalogs()
+  catalogCache = { expires: Date.now() + CATALOG_TTL_MS, data }
+  return data
+}
+
+/** Invalidação para testes/manutenção futura do catálogo (mesmo processo). */
+export function invalidateCatalogCache(): void {
+  catalogCache = null
 }

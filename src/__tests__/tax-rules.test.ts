@@ -223,6 +223,31 @@ describe('savePieces (invariantes do domínio)', () => {
 // Repositório — lista paginada (D2/D8)
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// /catalogs — cache TTL (ponto aberto dos gates da Onda 1)
+// ---------------------------------------------------------------------
+
+describe('fetchCatalogs (cache TTL)', () => {
+  it('segunda chamada dentro do TTL não volta ao banco; invalidate reabre', async () => {
+    const { fetchCatalogs, invalidateCatalogCache } =
+      await import('../modules/tax-rules/tax-rules.service')
+    invalidateCatalogCache()
+    mockQuery.mockResolvedValue([[{ id: '00', description: 'x' }]])
+
+    await fetchCatalogs()
+    const firstRound = mockQuery.mock.calls.length
+    expect(firstRound).toBe(8)          // 8 catálogos em paralelo
+
+    const again = await fetchCatalogs()
+    expect(mockQuery.mock.calls.length).toBe(firstRound)  // servido do cache
+    expect(again.icmsNr).toEqual([{ id: '00', description: 'x' }])
+
+    invalidateCatalogCache()
+    await fetchCatalogs()
+    expect(mockQuery.mock.calls.length).toBe(firstRound * 2)
+  })
+})
+
 describe('tax-rules repository', () => {
   it('listTaxRules: página e COUNT usam a MESMA where; ordem NCM DESC + id', async () => {
     mockQuery

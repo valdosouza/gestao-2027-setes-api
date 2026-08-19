@@ -216,14 +216,16 @@ export async function listCatalogs(): Promise<TaxRuleCatalogs> {
         WHERE deleted = 'N' ORDER BY id`)
     return rows
   }
-  return {
-    icmsNr:    await fetch('tb_tax_icms_nr'),
-    icmsSn:    await fetch('tb_tax_icms_sn'),
-    modBc:     await fetch('tb_deter_base_tax_icms'),
-    modBcSt:   await fetch('tb_deter_base_tax_icms_st'),
-    discharge: await fetch('tb_discharge_icms'),
-    ipi:       await fetch('tb_tax_ipi'),
-    pis:       await fetch('tb_tax_pis'),
-    cofins:    await fetch('tb_tax_cofins'),
-  }
+  const [icmsNr, icmsSn, modBc, modBcSt, discharge, ipi, pis, cofins] =
+    await Promise.all([
+      fetch('tb_tax_icms_nr'),
+      fetch('tb_tax_icms_sn'),
+      fetch('tb_deter_base_tax_icms'),
+      fetch('tb_deter_base_tax_icms_st'),
+      fetch('tb_discharge_icms'),
+      fetch('tb_tax_ipi'),
+      fetch('tb_tax_pis'),
+      fetch('tb_tax_cofins'),
+    ])
+  return { icmsNr, icmsSn, modBc, modBcSt, discharge, ipi, pis, cofins }
 }
