@@ -39,6 +39,13 @@ export const ErrorCodes = {
   REVERSAL_NOT_CURRENT: 'REVERSAL_NOT_CURRENT',
   // Parcerias
   RATE_SUM_EXCEEDED:   'RATE_SUM_EXCEEDED',
+  // Faturamento (billing — W2 Onda 3)
+  REQUIRES_VALIDATION: 'REQUIRES_VALIDATION',
+  ORDER_NO_BRANCH:     'ORDER_NO_BRANCH',
+  ORDER_NO_BILLING:    'ORDER_NO_BILLING',
+  ADJUST_PARAMS_REQUIRED: 'ADJUST_PARAMS_REQUIRED',
+  INVALID_DEADLINE:    'INVALID_DEADLINE',
+  NEGATIVE_ITEM_VALUE: 'NEGATIVE_ITEM_VALUE',
 } as const
 
 export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
@@ -66,4 +73,10 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   BANK_IN_USE:         'Banco do catálogo em uso por conta corrente de cliente — exclusão bloqueada',
   REVERSAL_NOT_CURRENT: 'Só baixas vigentes (status N) podem ser estornadas',
   RATE_SUM_EXCEEDED:   'Soma dos percentuais de parceria passa de 90% (10% são da Setes)',
+  REQUIRES_VALIDATION: 'Faturamento exige validação prévia (regra por item ausente/morta ou cadastro pendente)',
+  ORDER_NO_BRANCH:     'Ordem sem ramo identificado (venda/compra/ajuste/serviço)',
+  ORDER_NO_BILLING:    'Ordem sem condições de cobrança (forma/prazo) para gerar o financeiro',
+  ADJUST_PARAMS_REQUIRED: 'Ordem de ajuste exige sentido (E/S) e CFOP no faturamento',
+  INVALID_DEADLINE:    'Prazo da negociação inválido para gerar parcelas',
+  NEGATIVE_ITEM_VALUE: 'Item com valor líquido negativo (desconto maior que o total)',
 }

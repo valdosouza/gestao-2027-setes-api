@@ -7,3 +7,10 @@ export { findTaxRule, resolveMatchStateId, resolveEffectiveSt, pickRule } from '
 export {
   loadPieces, savePieces, findInvalidCatalogCodes, findInvalidSelectorRefs,
 } from './pieces'
+export {
+  calcMerchandiseValue, prorateWithResidue,
+  icmsIpiIntegratesBase, calcBaseIcms, calcBaseIcmsSt, calcIcms,
+  calcFcpProprio, calcFcpSt,
+  calcIpi, calcPisCofins, calcIi, calcIssqn,
+  calculateItemTaxes,
+} from './calc'

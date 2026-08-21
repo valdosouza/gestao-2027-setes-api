@@ -198,9 +198,13 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // (prompt_modulo_menus.md — a tela é do admin via adminGuard).
   // 'users' desde 2026-08-15 (A2): sem ele o admin do cliente toma 403 ao
   // gerenciar os próprios usuários — administração, não produto vendável.
+  // 'state-tax-rates' desde 2026-08-20 (W2 Onda 2): catálogo MVA/FCP por
+  // UF×NCM — gate técnico, sem tela no app ainda (Q22).
+  // 'billing' desde 2026-08-20 (W2 Onda 3): faturamento de ordens.
   const defaultModules = [
     'core', 'users', 'customers', 'collaborators', 'salesmen', 'carriers',
     'providers', 'categories', 'financial-plans', 'tax-rules',
+    'state-tax-rates', 'billing',
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements', 'modules',
   ]

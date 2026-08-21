@@ -19,6 +19,8 @@ import salesmenRoutes from '@modules/salesmen/salesmen.routes'
 import carriersRoutes from '@modules/carriers/carriers.routes'
 import providersRoutes from '@modules/providers/providers.routes'
 import taxRulesRoutes from '@modules/tax-rules/tax-rules.routes'
+import stateTaxRatesRoutes from '@modules/state-tax-rates/state-tax-rates.routes'
+import billingRoutes from '@modules/billing/billing.routes'
 import categoriesRoutes from '@modules/categories/categories.routes'
 import financialPlansRoutes from '@modules/financial-plans/financial-plans.routes'
 import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
@@ -109,6 +111,19 @@ router.use('/providers', providersRoutes)
 // 1/23/28): cadastro de CLIENTE — seletor + peças por tributo (presença =
 // incidência); o MATCH vive em @shared/tax-rule. Flag 'tax-rules'.
 router.use('/tax-rules', taxRulesRoutes)
+
+// Catálogo MVA/FCP por UF×NCM (W2 Onda 2, Rodada 3 do prompt de fase): dado
+// FISCAL INTERPRETÁVEL do CLIENTE (decisão Q22 — sem compartilhamento entre
+// institutions). Fonte do ICMS-ST/FCP que o motor @shared/tax-rule/calc.ts
+// consome via resolveMvaAliq/resolveFcpAliq. Sem tela no app ainda (Q22 —
+// onda do app desta fase); flag 'state-tax-rates'.
+router.use('/state-tax-rates', stateTaxRatesRoutes)
+
+// Faturamento de ordens (W2 Onda 3, rodada R4): /validate (lote completo de
+// pendências + grava regra por item origin 'A') e /invoice (fatura consumindo
+// as regras gravadas — impostos por item + nota + financeiro em UMA
+// transação). Flag 'billing'.
+router.use('/billing', billingRoutes)
 
 // Categorias de produtos/serviços (2026-07-18): cadastro de CLIENTE — sem
 // superGuard; escopo por institution no service; flag 'categories'.

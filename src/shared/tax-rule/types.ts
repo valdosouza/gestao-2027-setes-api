@@ -81,6 +81,127 @@ export interface TaxRuleFull {
  * Critérios do MATCH — espelho fiel dos parâmetros do motor legado
  * (tributacao.md §2, Fc_tributacao :857-931).
  */
+/**
+ * ── Cálculo por item (Onda 1 do W2 — prompt_fase_faturamento_financeiro.md) ──
+ * Funções puras (`calc.ts`), sem banco/I-O: recebem os dados já resolvidos
+ * pelo caller (alíquotas de UF×NCM, regime do emitente, contexto do
+ * destinatário) e devolvem base/alíquota/valor por tributo, seguindo a
+ * ordem T1 e a pilha de bases T3 de tributacao.md. A persistência por item
+ * (tabela nova × reuso legado) fica para a próxima onda, após consulta ao
+ * setes-conceito.
+ */
+
+export interface IcmsCalcContext {
+  cst: string                        // P2.5 — despacho por CST (regime normal)
+  aliq: number                       // alíquota interna/interestadual já resolvida
+  aliqReduction: number              // TRB_RD_AQ_ICMS — só CST 00
+  baseReduction: number              // TRB_RD_BS_ICMS (%)
+  deferredAliqPct: number            // TRB_AQ_DIF (%) — só CST 51
+  destinationIsResale: boolean       // TRB_CONSUMIDOR = 'N' (CST 10/70 exigem p/ ST)
+  destinationIsContributor: boolean  // indIEDest = 1 (exceção IPI na base, P2.4)
+  purpose: string                    // finalidade do produto (PRO_TRIBUTACAO)
+  stAliq: number | null              // alíquota do ST (UF destino) — null = sem ST
+  mvaPct: number | null              // MVA (já ajustada ou original — decisão do faturamento)
+  stBaseReduction: number            // TRB_RD_BS_ICMS_ST (%)
+}
+
+export interface IcmsCalcResult {
+  base: number
+  aliq: number
+  value: number
+  operationValue?: number  // vICMSOp — só CST 51
+  deferredValue?: number   // vICMSDif — só CST 51
+  baseSt?: number
+  valueSt?: number
+}
+
+export interface FcpCalcResult {
+  base: number
+  value: number
+}
+
+export interface IpiCalcContext {
+  cst: string   // só 00/49/50/99 calculam (P4)
+  aliq: number
+}
+
+export interface IpiCalcResult {
+  base: number
+  aliq: number
+  value: number
+}
+
+/** Decisão 2/Q24: PIS e COFINS usam a MESMA fórmula — kind só rotula o resultado. */
+export interface PisCofinsCalcContext {
+  kind: 'P' | 'C'
+  cst: string
+  aliq: number
+  quantity?: number    // CST 03 — por quantidade
+  unitAliqValue?: number // CST 03 — ITF_VL_UNIT (valor da alíquota por unidade)
+}
+
+export interface PisCofinsCalcResult {
+  kind: 'P' | 'C'
+  base: number
+  aliq: number
+  value: number
+}
+
+export interface IiCalcContext {
+  iiAliq: number | null
+  irpjAliq: number | null
+  csllAliq: number | null
+  afrmmAliq: number | null
+  siscomexAliq: number | null
+}
+
+export interface IiCalcResult {
+  base: number
+  iiValue: number
+  irpjValue: number
+  csllValue: number
+  afrmmValue: number
+  siscomexValue: number
+}
+
+/** P6.1 — alíquota vem do cadastro da CIDADE do destinatário, NUNCA da regra. */
+export interface IssqnCalcContext {
+  cityAliqPct: number
+  deductionValue: number   // ITF_VL_DESC
+  withheld: boolean        // flag do cliente issretido='S'
+}
+
+export interface IssqnCalcResult {
+  base: number
+  aliq: number
+  value: number
+  withheldValue: number
+}
+
+export interface ItemTaxCalcInput {
+  merchandiseValue: number  // T3 raiz: unit×qtde − desconto incondicional (já calculado)
+  freight: number           // já rateado no item (T2)
+  insurance: number
+  other: number
+  kind: 'P' | 'M' | 'S'
+  icms?: IcmsCalcContext
+  fcp?: { aliqFcp: number | null; aliqFcpSt: number | null }
+  ipi?: IpiCalcContext
+  pisCofins?: PisCofinsCalcContext[]
+  ii?: IiCalcContext
+  issqn?: IssqnCalcContext
+}
+
+export interface ItemTaxCalcResult {
+  ipi?: IpiCalcResult
+  icms?: IcmsCalcResult
+  fcp?: FcpCalcResult
+  fcpSt?: FcpCalcResult
+  ii?: IiCalcResult
+  pisCofins?: PisCofinsCalcResult[]
+  issqn?: IssqnCalcResult
+}
+
 export interface TaxRuleMatchCriteria {
   institutionId: number         // estabelecimento emissor (TRB_CODMHA)
   productId: number
