@@ -61,3 +61,30 @@ export function adjustMva(mvaOriginalPct: number, interAliq: number, intraAliq: 
 export function deriveProductSt(cest: string | null | undefined): 'S' | 'N' {
   return (cest ?? '').trim() !== '' ? 'S' : 'N'
 }
+
+export interface FinancialPolarity {
+  kind: 'RA' | 'PA'
+  operation: 'C' | 'D'
+}
+
+/**
+ * Natureza financeira por ramo (R5-Q1 — evidência em UN_Fatura_Vda/Cpa/
+ * Srv/Ajt.pas): venda e serviço geram RA+C; compra gera PA+D. O AJUSTE
+ * inverte pela DIREÇÃO escolhida na tela de faturamento (mesmo campo que
+ * já resolve a regra fiscal — não é um campo novo): Saída (devolução ao
+ * fornecedor) → PA+C (crédito nosso); Entrada (cliente devolvendo pra nós)
+ * → RA+D (débito nosso). É o oposto do par direção→tipo usado em
+ * venda/compra, por isso não dá pra reaproveitar branch.direction aqui.
+ */
+export function resolveFinancialPolarity(
+  branch: 'sale' | 'purchase' | 'adjust' | 'service',
+  adjustDirection: 'E' | 'S' | null | undefined
+): FinancialPolarity {
+  if (branch === 'purchase') return { kind: 'PA', operation: 'D' }
+  if (branch === 'adjust') {
+    return adjustDirection === 'E'
+      ? { kind: 'RA', operation: 'D' }
+      : { kind: 'PA', operation: 'C' }
+  }
+  return { kind: 'RA', operation: 'C' } // sale | service
+}

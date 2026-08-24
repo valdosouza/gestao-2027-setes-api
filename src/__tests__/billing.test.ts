@@ -30,9 +30,33 @@ jest.mock('../shared/interface-config', () => ({
   getConfigContent: jest.fn().mockResolvedValue(null),
 }))
 
+// isola a baixa automática à vista (W3.2 — testada isoladamente em
+// financial-settlement.test.ts); default = não é espécie/sem baixa.
+jest.mock('../shared/financial-settlement', () => ({
+  tryAutoSettleCash: jest.fn().mockResolvedValue({ settled: false, reason: 'NOT_CASH' }),
+}))
+
+// isola as peças de comissão/devolução (testadas em commission-return.test.ts);
+// defaults = venda sem vendedor resolvível/sem devolução — sequências antigas intactas.
+jest.mock('../shared/order-return', () => ({
+  buildReturnPlan: jest.fn().mockResolvedValue({ issues: [], plan: null }),
+  getSaleOrderInfo: jest.fn().mockResolvedValue(null),
+  getAnchor: jest.fn().mockResolvedValue(null),
+  assertReturnableInTx: jest.fn().mockResolvedValue(undefined),
+  persistReturn: jest.fn().mockResolvedValue(undefined),
+}))
+jest.mock('../shared/commission', () => ({
+  resolveCommissionAliq: jest.fn().mockResolvedValue(0),
+  getPostedItemCommissions: jest.fn().mockResolvedValue([]),
+  insertCommissions: jest.fn().mockResolvedValue([]),
+}))
+
 const mockQuery = (pool as any).query as jest.Mock
 const mockFindTaxRule = (taxRule as any).findTaxRule as jest.Mock
 const mockLoadPieces = (taxRule as any).loadPieces as jest.Mock
+const mockTryAutoSettleCash = (jest.requireMock('../shared/financial-settlement') as any).tryAutoSettleCash as jest.Mock
+const mockOrderReturn = jest.requireMock('../shared/order-return') as any
+const mockCommission = jest.requireMock('../shared/commission') as any
 
 const inst = { institutionId: 1, userId: 7, role: 'admin', schemaName: 'setes_setes' }
 
@@ -213,7 +237,7 @@ describe('validateOrder', () => {
     expect(report.issues).toEqual([])
   })
 
-  it('emitente Simples (CRT 1) gera issue de CSOSN pendente', async () => {
+  it('emitente Simples (CRT 1) NÃO gera issue — CSOSN implementado (P2.9)', async () => {
     mockOrderBase()
     mockBranchSale()
     mockContext({ emitterRegime: '1 - Simples Nacional' })
@@ -221,8 +245,7 @@ describe('validateOrder', () => {
     mockQuery.mockResolvedValueOnce([[]]) // sem links
 
     const report = await validateOrder(inst as any, { orderId: 10 })
-    expect(report.issues.some(i =>
-      i.scope === 'emitter' && i.message.includes('CSOSN'))).toBe(true)
+    expect(report.issues.some(i => i.scope === 'emitter')).toBe(false)
   })
 
   it('ordem de ajuste sem adjustment -> issue de order', async () => {
@@ -286,6 +309,9 @@ describe('invoiceOrder', () => {
       paymentTypeId: 5, deadline: '028/056',
     }]])
     mockQuery.mockResolvedValueOnce([[]])                     // installments vazios
+    mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
+    mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
+    mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
 
     // persistInvoice via conn
     const conn = {
@@ -296,6 +322,7 @@ describe('invoiceOrder', () => {
     conn.query
       .mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
       .mockResolvedValueOnce([{}])                  // icms item
+      .mockResolvedValueOnce([{}])                  // approx_tax_aliq update
       .mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
       .mockResolvedValueOnce([{}])                  // tb_invoice
       .mockResolvedValueOnce([{}])                  // tb_invoice_merchandise
@@ -397,6 +424,7 @@ describe('invoiceOrder', () => {
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
     mockQuery.mockResolvedValueOnce([[]])                 // installments
+    mockQuery.mockResolvedValueOnce([[]])                 // getGeneralObservations
 
     const conn = {
       beginTransaction: jest.fn(), query: jest.fn(),
@@ -430,6 +458,7 @@ describe('invoiceOrder', () => {
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
     mockQuery.mockResolvedValueOnce([[]])                 // installments
+    mockQuery.mockResolvedValueOnce([[]])                 // getGeneralObservations
 
     const conn = {
       beginTransaction: jest.fn(), query: jest.fn(),
@@ -441,5 +470,456 @@ describe('invoiceOrder', () => {
     await expect(invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false }))
       .rejects.toMatchObject({ statusCode: 409, code: 'ORDER_INVOICED' })
     expect(conn.rollback).toHaveBeenCalled()
+  })
+
+  // -------------------------------------------------------------------
+  // Rodada 5 (evidência do legado, 2026-08-21)
+  // -------------------------------------------------------------------
+
+  it('R5-Q3: item de mercadoria sem NCM -> 422 MISSING_NCM (gate revalidado no /invoice)', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, ncm: null })]])
+    mockQuery.mockResolvedValueOnce([[]]) // getItemRuleLinks
+
+    await expect(invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false }))
+      .rejects.toMatchObject({ statusCode: 422, code: 'MISSING_NCM' })
+  })
+
+  it('R5-Q2: parcelamento elaborado diverge do valor atual -> 422 INSTALLMENT_MISMATCH', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])   // itens (100.00)
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 42, cfopId: '5102',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 42 }]])           // findDeadRuleIds
+    mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
+    mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
+    mockLoadPieces.mockResolvedValueOnce({
+      icms: { cstNr: '00', csosn: null, modBc: '3', dischargeId: null,
+        aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
+        deferredAliq: null, highlight: 'N' },
+    })
+    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: '028/056' }]])
+    // elaborado com soma 80 ≠ financialBase 100 (itens editados depois da negociação)
+    mockQuery.mockResolvedValueOnce([[
+      { parcel: 1, dueDate: '2026-09-01', amount: 40, paymentTypeId: 5 },
+      { parcel: 2, dueDate: '2026-10-01', amount: 40, paymentTypeId: 5 },
+    ]])
+
+    await expect(invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false }))
+      .rejects.toMatchObject({ statusCode: 422, code: 'INSTALLMENT_MISMATCH' })
+  })
+
+  function mockPersistTxn(extraInserts: number) {
+    const conn = {
+      beginTransaction: jest.fn(), query: jest.fn(),
+      commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
+    }
+    ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+    conn.query.mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+    conn.query.mockResolvedValueOnce([{}])                  // icms item
+    conn.query.mockResolvedValueOnce([{}])                  // approx_tax_aliq update
+    conn.query.mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
+    conn.query.mockResolvedValueOnce([{}])                  // tb_invoice
+    conn.query.mockResolvedValueOnce([{}])                  // tb_invoice_merchandise
+    for (let i = 0; i < extraInserts; i++) {
+      conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]) // financial + bill
+    }
+    conn.query.mockResolvedValueOnce([{}])                  // status F
+    return conn
+  }
+
+  function mockHappyItemChain(deadline: string | null) {
+    mockQuery.mockResolvedValueOnce([[{ id: 42 }]])           // findDeadRuleIds
+    mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
+    mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
+    mockLoadPieces.mockResolvedValueOnce({
+      icms: { cstNr: '00', csosn: null, modBc: '3', dischargeId: null,
+        aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
+        deferredAliq: null, highlight: 'N' },
+    })
+    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline }]])
+    mockQuery.mockResolvedValueOnce([[]])                     // installments vazios
+    mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
+    mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
+    mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
+  }
+
+  it('R5-Q1: compra (branch purchase) gera financeiro PA + D', async () => {
+    mockOrderBase()
+    mockQuery.mockResolvedValueOnce([[]])                    // tb_order_sale vazio
+    mockQuery.mockResolvedValueOnce([[{ entityId: 90 }]])    // tb_order_purchase
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, kind: 'Purchase' })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Purchase', taxRuleId: 42, cfopId: '1102',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockHappyItemChain(null)
+
+    const conn = mockPersistTxn(1)
+    const result = await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
+    expect(result.parcels).toBe(1)
+
+    const billCalls = conn.query.mock.calls.filter(c => (c[0] as string).includes('tb_financial_bills'))
+    expect(billCalls[0][1]).toContain('PA')
+    expect(billCalls[0][1]).toContain('D')
+  })
+
+  it('R5-Q1: ajuste com direção Entrada (E) gera RA + D — inverso do padrão de venda', async () => {
+    mockOrderBase()
+    mockQuery.mockResolvedValueOnce([[]])                    // sale vazio
+    mockQuery.mockResolvedValueOnce([[]])                    // purchase vazio
+    // direção vem do RAMO (fonte única — parecer 2026-08-24)
+    mockQuery.mockResolvedValueOnce([[{ entityId: 55, direction: 'E' }]])
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, kind: 'Adjust' })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Adjust', taxRuleId: 42, cfopId: '1949',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockHappyItemChain(null)
+
+    const conn = mockPersistTxn(1)
+    await invoiceOrder(inst as any, {
+      orderId: 10, useMvaOriginal: false, adjustment: { cfopId: '1949' },
+    })
+
+    const billCalls = conn.query.mock.calls.filter(c => (c[0] as string).includes('tb_financial_bills'))
+    expect(billCalls[0][1]).toContain('RA')
+    expect(billCalls[0][1]).toContain('D')
+  })
+
+  it('R5-Q1: ajuste com direção Saída (S) gera PA + C', async () => {
+    mockOrderBase()
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[{ entityId: 55, direction: 'S' }]])
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, kind: 'Adjust' })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Adjust', taxRuleId: 42, cfopId: '5949',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockHappyItemChain(null)
+
+    const conn = mockPersistTxn(1)
+    await invoiceOrder(inst as any, {
+      orderId: 10, useMvaOriginal: false, adjustment: { cfopId: '5949' },
+    })
+
+    const billCalls = conn.query.mock.calls.filter(c => (c[0] as string).includes('tb_financial_bills'))
+    expect(billCalls[0][1]).toContain('PA')
+    expect(billCalls[0][1]).toContain('C')
+  })
+
+  it('P2.9: emitente Simples fatura por CSOSN (regra com csosn, sem cstNr)', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext({ emitterRegime: '1 - Simples Nacional' })
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 42, cfopId: '5102',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 42 }]])           // findDeadRuleIds
+    mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
+    mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
+    mockLoadPieces.mockResolvedValueOnce({
+      icms: { cstNr: null, csosn: '900', modBc: '3', dischargeId: null,
+        aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
+        deferredAliq: null, highlight: 'N' },
+    })
+    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
+    mockQuery.mockResolvedValueOnce([[]])                     // installments
+    mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
+    mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
+    mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
+
+    const conn = mockPersistTxn(1)
+    const result = await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
+    expect(result.totalValue).toBe(100)
+
+    const icmsCall = conn.query.mock.calls.find(c => (c[0] as string).includes('tb_order_item_icms'))
+    expect(icmsCall![1]).toContain('900')      // cst gravado com o código CSOSN (fallback)
+  })
+
+  it('W3.2: parcelas em espécie -> tryAutoSettleCash chamado por parcela, autoSettled reflete o resultado', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])   // itens (100.00)
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 42, cfopId: '5102',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockHappyItemChain('028/056')                              // 2 parcelas de 50
+
+    mockTryAutoSettleCash
+      .mockResolvedValueOnce({ settled: true, settledCode: 1, statementId: 1, cashierId: 5 })
+      .mockResolvedValueOnce({ settled: false, reason: 'NO_OPEN_CASHIER' })
+
+    const conn = mockPersistTxn(2)
+    const result = await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
+
+    expect(result.autoSettled).toBe(1)
+    expect(mockTryAutoSettleCash).toHaveBeenCalledTimes(2)
+    expect(mockTryAutoSettleCash).toHaveBeenNthCalledWith(1, conn,
+      'setes_setes', 1, 7,
+      expect.objectContaining({ orderId: 10, parcel: 1, paymentTypeId: 5 }))
+  })
+
+  it('gate socrático 2026-08-22: falha TÉCNICA na baixa automática NÃO derruba a nota (SAVEPOINT isola)', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 42, cfopId: '5102',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockHappyItemChain(null) // 1 parcela
+
+    mockTryAutoSettleCash.mockRejectedValueOnce(new Error('falha técnica inesperada'))
+
+    const conn = mockPersistTxn(1)
+    const result = await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
+
+    // a nota persiste normalmente (commit chamado, nunca rollback)
+    expect(conn.commit).toHaveBeenCalled()
+    expect(conn.rollback).not.toHaveBeenCalled()
+    expect(result.autoSettled).toBe(0)
+
+    // a falha foi isolada por SAVEPOINT, não pelo catch da transação inteira
+    const sqls = conn.query.mock.calls.map(c => c[0] as string)
+    expect(sqls.some(s => s.includes('SAVEPOINT auto_settle'))).toBe(true)
+    expect(sqls.some(s => s.includes('ROLLBACK TO SAVEPOINT auto_settle'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------
+// Comissão por item + Devolução de mercadoria (rodada Q1–Q5, 2026-08-24)
+// ---------------------------------------------------------------------
+
+describe('comissão e devolução', () => {
+  function mockBranchAdjust(entityId = 55, direction: 'E' | 'S' = 'E') {
+    mockQuery.mockResolvedValueOnce([[]])   // sale vazio
+    mockQuery.mockResolvedValueOnce([[]])   // purchase vazio
+    mockQuery.mockResolvedValueOnce([[{ entityId, direction }]])
+  }
+
+  function mockInvoiceChain() {
+    mockQuery.mockResolvedValueOnce([[{ id: 42 }]])           // findDeadRuleIds
+    mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
+    mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
+    mockLoadPieces.mockResolvedValueOnce({
+      icms: { cstNr: '00', csosn: null, modBc: '3', dischargeId: null,
+        aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
+        deferredAliq: null, highlight: 'N' },
+    })
+    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
+    mockQuery.mockResolvedValueOnce([[]])                     // installments vazios
+    mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
+    mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
+    mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
+  }
+
+  function mockTxn() {
+    const conn = {
+      beginTransaction: jest.fn(), query: jest.fn(),
+      commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
+    }
+    ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+    conn.query.mockResolvedValue([{}])
+    conn.query.mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+    conn.query.mockResolvedValueOnce([{}])                  // icms item
+    conn.query.mockResolvedValueOnce([{}])                  // approx_tax_aliq
+    conn.query.mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
+    return conn
+  }
+
+  it('validate: âncora presente com ajuste de SAÍDA vira issue (sem consultar o pedido)', async () => {
+    mockOrderBase()
+    mockBranchAdjust(55, 'S')
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[]]) // itens
+    mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 77 })
+    mockQuery.mockResolvedValueOnce([[]]) // links
+
+    const report = await validateOrder(inst as any, {
+      orderId: 10, adjustment: { cfopId: '5202' },
+    })
+    expect(report.issues.some(i =>
+      i.field === 'adjustment' && i.message.includes('ENTRADA'))).toBe(true)
+    expect(mockOrderReturn.buildReturnPlan).not.toHaveBeenCalled()
+  })
+
+  it('validate: devolução (âncora) propaga as issues do plano (qtde > saldo etc.)', async () => {
+    mockOrderBase()
+    mockBranchAdjust(55, 'E')
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[]]) // itens
+    mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 77 })
+    mockOrderReturn.buildReturnPlan.mockResolvedValueOnce({
+      issues: [{ itemId: 1, field: 'quantity', message: 'saldo insuficiente' }],
+      plan: null,
+    })
+    mockQuery.mockResolvedValueOnce([[]]) // links
+
+    const report = await validateOrder(inst as any, {
+      orderId: 10, adjustment: { cfopId: '1202' },
+    })
+    expect(mockOrderReturn.getAnchor).toHaveBeenCalledWith('setes_setes', 1, 10)
+    expect(mockOrderReturn.buildReturnPlan).toHaveBeenCalledWith(
+      'setes_setes', 1, 77, 55, expect.any(Array))
+    expect(report.issues.some(i =>
+      i.itemId === 1 && i.field === 'quantity' && i.scope === 'item')).toBe(true)
+  })
+
+  it('invoice: devolução inválida -> 422 RETURN_INVALID (gate DURO revalidado)', async () => {
+    mockOrderBase()
+    mockBranchAdjust(55, 'E')
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, kind: 'Adjust' })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Adjust', taxRuleId: 42, cfopId: '1202',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 42 }]]) // regra viva
+    mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 77 })
+    mockOrderReturn.buildReturnPlan.mockResolvedValueOnce({
+      issues: [{ itemId: 1, field: 'quantity', message: 'saldo insuficiente' }],
+      plan: null,
+    })
+
+    await expect(invoiceOrder(inst as any, {
+      orderId: 10, useMvaOriginal: false, adjustment: { cfopId: '1202' },
+    })).rejects.toMatchObject({ statusCode: 422, code: 'RETURN_INVALID' })
+  })
+
+  it('invoice: âncora presente com ajuste de Saída -> 422 RETURN_REQUIRES_ENTRY', async () => {
+    mockOrderBase()
+    mockBranchAdjust(55, 'S')
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, kind: 'Adjust' })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Adjust', taxRuleId: 42, cfopId: '5202',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 42 }]])
+    mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 77 })
+
+    await expect(invoiceOrder(inst as any, {
+      orderId: 10, useMvaOriginal: false, adjustment: { cfopId: '5202' },
+    })).rejects.toMatchObject({ statusCode: 422, code: 'RETURN_REQUIRES_ENTRY' })
+  })
+
+  it('venda gera comissão POSITIVA por item (kind F, base = valor líquido)', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])   // 2 × 50 = 100
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 42, cfopId: '5102',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockInvoiceChain()
+    mockOrderReturn.getSaleOrderInfo.mockResolvedValueOnce(
+      { salesmanId: 9, customerId: 55 })
+    mockCommission.resolveCommissionAliq.mockResolvedValueOnce(5)
+
+    const conn = mockTxn()
+    await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
+
+    expect(mockCommission.insertCommissions).toHaveBeenCalledWith(
+      conn, 'setes_setes', 1, [expect.objectContaining({
+        kind: 'F', orderId: 10, orderItemId: 1, orderItemKind: 'Sale',
+        salesmanId: 9, customerId: 55, baseValue: 100, aliq: 5, value: 5,
+      })])
+  })
+
+  it('venda com alíquota 0 NÃO gera lançamento', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 42, cfopId: '5102',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    mockInvoiceChain()
+    mockOrderReturn.getSaleOrderInfo.mockResolvedValueOnce(
+      { salesmanId: 9, customerId: 55 })
+    mockCommission.resolveCommissionAliq.mockResolvedValueOnce(0)
+
+    const conn0 = mockTxn()
+    await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
+    expect(mockCommission.insertCommissions).toHaveBeenCalledWith(conn0, 'setes_setes', 1, [])
+  })
+
+  it('devolução: comissão NEGATIVA espelha a alíquota POSTADA da venda + persiste os elos', async () => {
+    mockOrderBase()
+    mockBranchAdjust(55, 'E')
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, kind: 'Adjust' })]]) // base 100
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Adjust', taxRuleId: 42, cfopId: '1202',
+      setFinancial: 'S', origin: 'A',
+    }]])
+    const plan = {
+      orderIdOri: 77, salesmanId: 9, customerId: 55,
+      links: [{ itemId: 1, itemKind: 'Adjust', quantity: 2, itemIdOri: 33,
+        kindOri: 'Sale', productId: 100, priceListIdOri: 2 }],
+    }
+    mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 77 })
+    mockOrderReturn.buildReturnPlan.mockResolvedValueOnce({ issues: [], plan })
+    mockInvoiceChain()
+    mockCommission.getPostedItemCommissions.mockResolvedValueOnce([
+      { orderItemId: 33, orderItemKind: 'Sale', salesmanId: 9, customerId: 55, aliq: 10 },
+    ])
+
+    const conn = mockTxn()
+    await invoiceOrder(inst as any, {
+      orderId: 10, useMvaOriginal: false, adjustment: { cfopId: '1202' },
+    })
+
+    // estorno POR ITEM (corrige o achado literal do legado — Q2): -10 sobre 100 a 10%
+    expect(mockCommission.insertCommissions).toHaveBeenCalledWith(
+      conn, 'setes_setes', 1, [expect.objectContaining({
+        kind: 'F', orderItemId: 1, orderItemKind: 'Adjust',
+        salesmanId: 9, baseValue: 100, aliq: 10, value: -10,
+      })])
+    // alíquota veio do lançamento postado — não re-resolve pela fonte atual
+    expect(mockCommission.resolveCommissionAliq).not.toHaveBeenCalled()
+    // saldo REVALIDADO sob lock da origem ANTES de gravar (R2/HIGH dos gates)
+    expect(mockOrderReturn.assertReturnableInTx).toHaveBeenCalledWith(
+      conn, 'setes_setes', 1, 10, plan)
+    expect(mockOrderReturn.persistReturn).toHaveBeenCalledWith(
+      conn, 'setes_setes', 1, 10, plan)
+  })
+
+  it('devolução: item de SERVIÇO fica fora do plano (mercadoria apenas)', async () => {
+    mockOrderBase()
+    mockBranchAdjust(55, 'E')
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[
+      itemRow({ id: 1, kind: 'Adjust' }),
+      itemRow({ id: 2, kind: 'Adjust', productKind: 'S', ncm: null }),
+    ]])
+    mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 77 })
+    mockOrderReturn.buildReturnPlan.mockResolvedValueOnce({ issues: [], plan: null })
+    mockQuery.mockResolvedValueOnce([[]]) // links
+
+    await validateOrder(inst as any, {
+      orderId: 10, adjustment: { cfopId: '1202' },
+    })
+    const passedItems = mockOrderReturn.buildReturnPlan.mock.calls[0][4]
+    expect(passedItems).toHaveLength(1)
+    expect(passedItems[0].id).toBe(1)
   })
 })

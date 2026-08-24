@@ -36,6 +36,14 @@ const router = Router()
  *                 properties:
  *                   direction: { type: string, enum: [E, S] }
  *                   cfopId: { type: string }
+ *                   returnedOrderId:
+ *                     type: integer
+ *                     description: >-
+ *                       Devolução de mercadoria — id do pedido de VENDA
+ *                       original (exige direction E e pedido FATURADO).
+ *                       Valida cliente, itens, saldo devolvível acumulado e
+ *                       valor unitário; o vendedor é DERIVADO do pedido
+ *                       original.
  *     responses:
  *       200: { description: "{ ok, data: { orderId, branch, issues[], rulesResolved, rulesManual } }" }
  *       400: { description: Payload inválido }
@@ -80,6 +88,15 @@ router.post('/validate', controller.validate)
  *                 properties:
  *                   direction: { type: string, enum: [E, S] }
  *                   cfopId: { type: string }
+ *                   returnedOrderId:
+ *                     type: integer
+ *                     description: >-
+ *                       Devolução de mercadoria — id do pedido de VENDA
+ *                       original. Revalidado como gate DURO (422
+ *                       RETURN_INVALID / RETURN_REQUIRES_ENTRY); grava a
+ *                       âncora + elos por item e a comissão NEGATIVA do
+ *                       vendedor derivado. Venda gera comissão POSITIVA por
+ *                       item na mesma transação (kind F).
  *     responses:
  *       201: { description: "{ ok, data: { orderId, invoiceNumber, serie, model, totalValue, parcels } }" }
  *       400: { description: Payload inválido }

@@ -5,7 +5,7 @@
 // do prompt de fase), o teste documenta a divergência esperada.
 import {
   calcMerchandiseValue, prorateWithResidue,
-  icmsIpiIntegratesBase, calcBaseIcms, calcBaseIcmsSt, calcIcms,
+  icmsIpiIntegratesBase, calcBaseIcms, calcBaseIcmsSt, calcIcms, calcIcmsCsosn,
   calcFcpProprio, calcFcpSt,
   calcIpi, calcPisCofins, calcIi, calcIssqn,
   calculateItemTaxes,
@@ -150,15 +150,112 @@ describe('calcIcms — despacho por CST (P2.5)', () => {
   })
 })
 
+describe('calcIcmsCsosn — despacho por grupo CSOSN (P2.9, Simples Nacional)', () => {
+  const baseCtx = {
+    cst: '', aliq: 18, aliqReduction: 0, baseReduction: 0, deferredAliqPct: 0,
+    destinationIsResale: false, destinationIsContributor: false, purpose: '1',
+    stAliq: null as number | null, mvaPct: null as number | null, stBaseReduction: 0,
+    creditAliqPct: 1.5,
+  }
+  // vICMSOp = 1000*18/100 = 180 (sempre presente); crédito = 1000*1.5/100 = 15
+
+  it('101 — crédito (com permissão), sem ST: zera ICMS e ST, mantém crédito e vICMSOp', () => {
+    const r = calcIcmsCsosn({ ...baseCtx, csosn: '101' }, 1000, 0, 0)
+    expect(r).toMatchObject({
+      base: 0, aliq: 0, value: 0, operationValue: 180, deferredValue: 0,
+      baseSt: undefined, valueSt: undefined, creditAliq: 1.5, creditValue: 15,
+    })
+  })
+
+  it('102/103/300 — sem crédito, sem ST: zera tudo, MENOS vICMSOp', () => {
+    for (const csosn of ['102', '103', '300']) {
+      const r = calcIcmsCsosn({ ...baseCtx, csosn }, 1000, 0, 0)
+      expect(r.value).toBe(0)
+      expect(r.operationValue).toBe(180)
+      expect(r.creditAliq).toBeUndefined()
+      expect(r.creditValue).toBeUndefined()
+    }
+  })
+
+  it('400 — achado literal do legado: NÃO zera o ICMS próprio (só o ST e o crédito)', () => {
+    const r = calcIcmsCsosn({ ...baseCtx, csosn: '400' }, 1000, 0, 0)
+    expect(r.base).toBe(1000)
+    expect(r.aliq).toBe(18)
+    expect(r.value).toBe(180)
+    expect(r.creditAliq).toBeUndefined()
+  })
+
+  it('201 — crédito + ST: zera SÓ o ICMS próprio; ST desconta o próprio "por dentro"', () => {
+    const r = calcIcmsCsosn(
+      { ...baseCtx, csosn: '201', stAliq: 25, mvaPct: 40 }, 1000, 0, 0)
+    expect(r.base).toBe(0)
+    expect(r.value).toBe(0)
+    expect(r.baseSt).toBe(1400)       // 1000*1.4
+    expect(r.valueSt).toBe(170)       // 1400*0.25 − 180 (ICMS próprio ANTES do zeramento)
+    expect(r.creditAliq).toBe(1.5)
+  })
+
+  it('202/203 — ST sem crédito', () => {
+    for (const csosn of ['202', '203']) {
+      const r = calcIcmsCsosn(
+        { ...baseCtx, csosn, stAliq: 25, mvaPct: 40 }, 1000, 0, 0)
+      expect(r.valueSt).toBe(170)
+      expect(r.creditAliq).toBeUndefined()
+    }
+  })
+
+  it('500 — achado literal: ST já retido zera ICMS e ST, mas NÃO zera o crédito', () => {
+    const r = calcIcmsCsosn(
+      { ...baseCtx, csosn: '500', stAliq: 25, mvaPct: 40 }, 1000, 0, 0)
+    expect(r.value).toBe(0)
+    expect(r.baseSt).toBeUndefined()
+    expect(r.valueSt).toBeUndefined()
+    expect(r.creditAliq).toBe(1.5)
+    expect(r.creditValue).toBe(15)
+  })
+
+  it('900 — livre: segue a regra como configurada (ICMS + ST se a peça ST existir)', () => {
+    const comSt = calcIcmsCsosn(
+      { ...baseCtx, csosn: '900', stAliq: 25, mvaPct: 40 }, 1000, 0, 0)
+    expect(comSt.value).toBe(180)
+    expect(comSt.valueSt).toBe(170)
+    expect(comSt.creditAliq).toBe(1.5)
+
+    const semSt = calcIcmsCsosn({ ...baseCtx, csosn: '900' }, 1000, 0, 0)
+    expect(semSt.value).toBe(180)
+    expect(semSt.baseSt).toBeUndefined()
+  })
+
+  it('diferimento (TRB_CONSUMIDOR=N -> destinationIsResale) reduz o ICMS próprio', () => {
+    const r = calcIcmsCsosn(
+      { ...baseCtx, csosn: '900', destinationIsResale: true, deferredAliqPct: 50 }, 1000, 0, 0)
+    expect(r.operationValue).toBe(180)
+    expect(r.deferredValue).toBe(90) // 180*0.5
+    expect(r.value).toBe(90)
+  })
+
+  it('base SEMPRE inclui frete (única exceção além do CST 51)', () => {
+    const r = calcIcmsCsosn({ ...baseCtx, csosn: '900' }, 1000, 0, 100)
+    expect(r.base).toBe(1100)
+  })
+})
+
 describe('FCP (P7.3 — decisão 7/Q30: FCP-ST usa a MESMA base do ICMS-ST)', () => {
   it('FCP próprio: base = mercadoria', () => {
     expect(calcFcpProprio('00', 1000, 2)).toEqual({ base: 1000, value: 20 })
   })
-  it('FCP próprio não roda fora dos CSTs do P7.3', () => {
+  it('FCP próprio não roda fora dos CSTs/CSOSNs do P7.3', () => {
     expect(calcFcpProprio('40', 1000, 2)).toBeUndefined()
+    expect(calcFcpProprio('400', 1000, 2)).toBeUndefined()
+  })
+  it('FCP próprio também roda p/ CSOSN 101/102/103/900', () => {
+    expect(calcFcpProprio('101', 1000, 2)).toEqual({ base: 1000, value: 20 })
   })
   it('FCP-ST reusa a base ST recebida (unificada, sem divergência)', () => {
     expect(calcFcpSt('70', 1400, 2)).toEqual({ base: 1400, value: 28 })
+  })
+  it('FCP-ST também roda p/ CSOSN 201/202/203/900', () => {
+    expect(calcFcpSt('201', 1400, 2)).toEqual({ base: 1400, value: 28 })
   })
   it('sem alíquota ou sem base ST -> undefined', () => {
     expect(calcFcpSt('70', undefined, 2)).toBeUndefined()

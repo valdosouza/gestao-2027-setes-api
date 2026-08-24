@@ -93,26 +93,30 @@ export interface TaxRuleFull {
 
 export interface IcmsCalcContext {
   cst: string                        // P2.5 — despacho por CST (regime normal)
+  csosn?: string | null              // P2.9 — despacho por CSOSN (Simples); presente = regime SN
   aliq: number                       // alíquota interna/interestadual já resolvida
   aliqReduction: number              // TRB_RD_AQ_ICMS — só CST 00
   baseReduction: number              // TRB_RD_BS_ICMS (%)
-  deferredAliqPct: number            // TRB_AQ_DIF (%) — só CST 51
-  destinationIsResale: boolean       // TRB_CONSUMIDOR = 'N' (CST 10/70 exigem p/ ST)
+  deferredAliqPct: number            // TRB_AQ_DIF (%) — CST 51 e CSOSN (gate: destinationIsResale)
+  destinationIsResale: boolean       // TRB_CONSUMIDOR = 'N' (CST 10/70 p/ ST; CSOSN p/ diferimento)
   destinationIsContributor: boolean  // indIEDest = 1 (exceção IPI na base, P2.4)
   purpose: string                    // finalidade do produto (PRO_TRIBUTACAO)
   stAliq: number | null              // alíquota do ST (UF destino) — null = sem ST
   mvaPct: number | null              // MVA (já ajustada ou original — decisão do faturamento)
   stBaseReduction: number            // TRB_RD_BS_ICMS_ST (%)
+  creditAliqPct?: number             // P2.9 — alíquota do crédito SN (config da institution, GRL_G_AQ_CRED_ICMS)
 }
 
 export interface IcmsCalcResult {
   base: number
   aliq: number
   value: number
-  operationValue?: number  // vICMSOp — só CST 51
-  deferredValue?: number   // vICMSDif — só CST 51
+  operationValue?: number  // vICMSOp — CST 51 e CSOSN (informativo, nunca zerado pelo grupo)
+  deferredValue?: number   // vICMSDif — CST 51 e CSOSN
   baseSt?: number
   valueSt?: number
+  creditAliq?: number      // pCredSN — CSOSN 101/201/500/900 (P2.9)
+  creditValue?: number     // vCredICMSSN — idem
 }
 
 export interface FcpCalcResult {

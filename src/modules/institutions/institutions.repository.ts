@@ -201,12 +201,17 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // 'state-tax-rates' desde 2026-08-20 (W2 Onda 2): catálogo MVA/FCP por
   // UF×NCM — gate técnico, sem tela no app ainda (Q22).
   // 'billing' desde 2026-08-20 (W2 Onda 3): faturamento de ordens.
+  // 'cashier' desde 2026-08-22 (W3.2): abertura/fechamento de caixa.
+  // 'orders' desde 2026-08-22: pedido de venda/conjugado.
+  // 'order-returns' desde 2026-08-24: devolução de mercadoria (seed 39
+  // cobre as institutions retroativas).
   const defaultModules = [
     'core', 'users', 'customers', 'collaborators', 'salesmen', 'carriers',
     'providers', 'categories', 'financial-plans', 'tax-rules',
     'state-tax-rates', 'billing',
     'payment-types', 'contracts', 'bank-accounts',
-    'service-orders', 'settlements', 'modules',
+    'service-orders', 'settlements', 'modules', 'cashier', 'orders',
+    'order-returns',
   ]
   const conn = await pool.getConnection()
   try {

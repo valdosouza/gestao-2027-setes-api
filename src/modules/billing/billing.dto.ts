@@ -7,8 +7,11 @@ import { z } from 'zod'
  * é validada no service (o DTO não conhece o tipo da ordem).
  */
 
+// Contrato ENCOLHIDO (parecer order-returns 2026-08-24, aprovado pelo
+// Valdo): direction vem do RAMO (tb_order_stock_adjust.direction, gravada
+// na abertura) e o pedido original vem da ÂNCORA — fonte única por
+// construção; só o CFOP pertence de fato à decisão do faturamento.
 const adjustmentDto = z.object({
-  direction: z.enum(['E', 'S']),
   cfopId: z.string().min(1).max(10),
 })
 

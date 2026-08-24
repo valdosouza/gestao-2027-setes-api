@@ -197,23 +197,107 @@ export function calcIcms(
   }
 }
 
+// ── P2.9 — despacho por CSOSN (Simples Nacional) ────────────────────────────
+
+/**
+ * Quem some (base/aliq/valor zerados) e quem sobrevive por grupo CSOSN —
+ * evidência `Pc_RegimeTributarioSimplesNacional` (:2797-2935). `icms` e `st`
+ * controlam o ICMS próprio e o ST calculados ANTES do despacho (mesma base
+ * de CST); `credit` controla se o crédito SN informativo sobrevive. Achados
+ * literais do legado, não "corrigidos": CSOSN 400 NÃO zera o ICMS próprio
+ * (só o ST); CSOSN 500 NÃO zera o crédito (só ZeraValoresICMS/ST rodam lá).
+ */
+const CSOSN_GROUPS: Record<string, { icms: boolean; st: boolean; credit: boolean }> = {
+  '101': { icms: false, st: false, credit: true },
+  '102': { icms: false, st: false, credit: false },
+  '103': { icms: false, st: false, credit: false },
+  '300': { icms: false, st: false, credit: false },
+  '400': { icms: true, st: false, credit: false },
+  '201': { icms: false, st: true, credit: true },
+  '202': { icms: false, st: true, credit: false },
+  '203': { icms: false, st: true, credit: false },
+  '500': { icms: false, st: false, credit: true },
+  '900': { icms: true, st: true, credit: true },
+}
+
+/**
+ * `Pc_RegimeTributarioSimplesNacional` (P2.9). Base SEMPRE inclui IPI (regra
+ * do art. 155 §2º XI, igual ao CST) e frete (a ÚNICA outra exceção além do
+ * CST 51 — `Fn_CalcBaseICMS(pRedBC, vIPI, vFrete)` chamada com frete
+ * incondicional). `vICMSOp` e o crédito SN são calculados ANTES do
+ * despacho e sobrevivem ao zeramento do grupo conforme `CSOSN_GROUPS`.
+ */
+export function calcIcmsCsosn(
+  ctx: IcmsCalcContext,
+  merchandiseValue: number,
+  ipiValue: number,
+  freight: number,
+  insurance = 0,
+  other = 0,
+): IcmsCalcResult {
+  const group = CSOSN_GROUPS[ctx.csosn ?? '']
+  const includeIpi = icmsIpiIntegratesBase({
+    destinationIsContributor: ctx.destinationIsContributor,
+    purpose: ctx.purpose,
+    ipiValue,
+  })
+  const base = calcBaseIcms({
+    merchandiseValue, ipiValue, includeIpi, freight, includeFreight: true,
+    baseReductionPct: ctx.baseReduction,
+  })
+  const operationValue = round2(base * ctx.aliq / 100)
+  const deferredValue = ctx.destinationIsResale
+    ? round2(operationValue * ctx.deferredAliqPct / 100) : 0
+  const value = round2(operationValue - deferredValue)
+
+  const creditAliq = round2(ctx.creditAliqPct ?? 0)
+  const creditValue = round2(merchandiseValue * (ctx.creditAliqPct ?? 0) / 100)
+
+  let baseSt: number | undefined
+  let valueSt: number | undefined
+  if (ctx.stAliq !== null && ctx.mvaPct !== null) {
+    baseSt = calcBaseIcmsSt({
+      merchandiseValue, ipiValue, freight, insurance, other,
+      baseReductionPct: ctx.stBaseReduction, mvaPct: ctx.mvaPct,
+    })
+    valueSt = round2(baseSt * (ctx.stAliq / 100) - value)
+  }
+
+  return {
+    base: group?.icms ? base : 0,
+    aliq: group?.icms ? ctx.aliq : 0,
+    value: group?.icms ? value : 0,
+    operationValue,
+    deferredValue,
+    baseSt: group?.st ? baseSt : undefined,
+    valueSt: group?.st ? valueSt : undefined,
+    creditAliq: group?.credit ? creditAliq : undefined,
+    creditValue: group?.credit ? creditValue : undefined,
+  }
+}
+
 // ── P7.3 — FCP (calculado ANTES do regime; entra na composição do ST) ─────
 
 const FCP_PROPRIO_CSTS = ['00', '10', '20', '51', '70', '90']
 const FCP_ST_CSTS = ['10', '30', '70', '90']
+const FCP_PROPRIO_CSOSN = ['101', '102', '103', '900']
+const FCP_ST_CSOSN = ['201', '202', '203', '900']
 
-/** FCP próprio: `base = mercadoria; valor = base × alíq`. */
-export function calcFcpProprio(cst: string, merchandiseValue: number, aliqFcp: number | null): FcpCalcResult | undefined {
-  if (!aliqFcp || aliqFcp <= 0 || !FCP_PROPRIO_CSTS.includes(cst)) return undefined
+/** FCP próprio: `base = mercadoria; valor = base × alíq`. Aceita CST ou CSOSN. */
+export function calcFcpProprio(regimeCode: string, merchandiseValue: number, aliqFcp: number | null): FcpCalcResult | undefined {
+  const eligible = FCP_PROPRIO_CSTS.includes(regimeCode) || FCP_PROPRIO_CSOSN.includes(regimeCode)
+  if (!aliqFcp || aliqFcp <= 0 || !eligible) return undefined
   return { base: round2(merchandiseValue), value: round2(merchandiseValue * aliqFcp / 100) }
 }
 
 /**
  * FCP-ST: decisão 7/Q30 — usa a MESMA base do ICMS-ST (unificado; o legado
- * divergia comentando seguro/outras — divergência corrigida na web).
+ * divergia comentando seguro/outras — divergência corrigida na web). Aceita
+ * CST ou CSOSN.
  */
-export function calcFcpSt(cst: string, baseIcmsSt: number | undefined, aliqFcpSt: number | null): FcpCalcResult | undefined {
-  if (!aliqFcpSt || aliqFcpSt <= 0 || baseIcmsSt === undefined || !FCP_ST_CSTS.includes(cst)) return undefined
+export function calcFcpSt(regimeCode: string, baseIcmsSt: number | undefined, aliqFcpSt: number | null): FcpCalcResult | undefined {
+  const eligible = FCP_ST_CSTS.includes(regimeCode) || FCP_ST_CSOSN.includes(regimeCode)
+  if (!aliqFcpSt || aliqFcpSt <= 0 || baseIcmsSt === undefined || !eligible) return undefined
   return { base: round2(baseIcmsSt), value: round2(baseIcmsSt * aliqFcpSt / 100) }
 }
 
@@ -308,12 +392,15 @@ export function calculateItemTaxes(input: ItemTaxCalcInput): ItemTaxCalcResult {
   const ipiValue = ipi?.value ?? 0
 
   if (input.icms) {
-    const icms = calcIcms(input.icms, input.merchandiseValue, ipiValue, input.freight, input.insurance, input.other)
+    const icms = input.icms.csosn
+      ? calcIcmsCsosn(input.icms, input.merchandiseValue, ipiValue, input.freight, input.insurance, input.other)
+      : calcIcms(input.icms, input.merchandiseValue, ipiValue, input.freight, input.insurance, input.other)
     result.icms = icms
 
     if (input.fcp) {
-      result.fcp = calcFcpProprio(input.icms.cst, input.merchandiseValue, input.fcp.aliqFcp)
-      result.fcpSt = calcFcpSt(input.icms.cst, icms.baseSt, input.fcp.aliqFcpSt)
+      const regimeCode = input.icms.csosn ?? input.icms.cst
+      result.fcp = calcFcpProprio(regimeCode, input.merchandiseValue, input.fcp.aliqFcp)
+      result.fcpSt = calcFcpSt(regimeCode, icms.baseSt, input.fcp.aliqFcpSt)
     }
   }
 

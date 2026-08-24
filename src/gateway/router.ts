@@ -28,6 +28,9 @@ import contractsRoutes from '@modules/contracts/contracts.routes'
 import bankAccountsRoutes from '@modules/bank-accounts/bank-accounts.routes'
 import serviceOrdersRoutes from '@modules/service-orders/service-orders.routes'
 import settlementsRoutes from '@modules/settlements/settlements.routes'
+import cashierRoutes from '@modules/cashier/cashier.routes'
+import ordersRoutes from '@modules/orders/orders.routes'
+import orderReturnsRoutes from '@modules/order-returns/order-returns.routes'
 import banksRoutes from '@modules/banks/banks.routes'
 import modulesRoutes from '@modules/modules/modules.routes'
 import { superGuard, superWriteGuard } from './super.guard'
@@ -159,5 +162,14 @@ router.use('/service-orders', serviceOrdersRoutes)
 // de PROCESSO do financeiro — imutável (lançamento inverso + N/E/R);
 // flag 'settlements'.
 router.use('/settlements', settlementsRoutes)
+
+// Caixa (W3.2, parecer setes-conceito 2026-08-22): abertura/fechamento por
+// dia+usuário+terminal=0 (web) + retirada/transferência; flag 'cashier'.
+router.use('/cashier', cashierRoutes)
+
+// Pedido de venda/conjugado (2026-08-22): tela de processo — grupo Vendas;
+// flag 'orders'. Faturamento é do módulo billing (/validate + /invoice).
+router.use('/orders', ordersRoutes)
+router.use('/order-returns', orderReturnsRoutes)
 
 export default router

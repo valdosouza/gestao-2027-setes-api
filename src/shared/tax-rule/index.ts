@@ -9,7 +9,7 @@ export {
 } from './pieces'
 export {
   calcMerchandiseValue, prorateWithResidue,
-  icmsIpiIntegratesBase, calcBaseIcms, calcBaseIcmsSt, calcIcms,
+  icmsIpiIntegratesBase, calcBaseIcms, calcBaseIcmsSt, calcIcms, calcIcmsCsosn,
   calcFcpProprio, calcFcpSt,
   calcIpi, calcPisCofins, calcIi, calcIssqn,
   calculateItemTaxes,

@@ -46,6 +46,13 @@ export const ErrorCodes = {
   ADJUST_PARAMS_REQUIRED: 'ADJUST_PARAMS_REQUIRED',
   INVALID_DEADLINE:    'INVALID_DEADLINE',
   NEGATIVE_ITEM_VALUE: 'NEGATIVE_ITEM_VALUE',
+  MISSING_NCM:         'MISSING_NCM',
+  INSTALLMENT_MISMATCH: 'INSTALLMENT_MISMATCH',
+  // Devolução de mercadoria (order-returns, 2026-08-24)
+  RETURN_INVALID:      'RETURN_INVALID',
+  RETURN_REQUIRES_ENTRY: 'RETURN_REQUIRES_ENTRY',
+  ORIGIN_NOT_INVOICED: 'ORIGIN_NOT_INVOICED',
+  NOTHING_RETURNABLE:  'NOTHING_RETURNABLE',
 } as const
 
 export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
@@ -76,7 +83,13 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   REQUIRES_VALIDATION: 'Faturamento exige validação prévia (regra por item ausente/morta ou cadastro pendente)',
   ORDER_NO_BRANCH:     'Ordem sem ramo identificado (venda/compra/ajuste/serviço)',
   ORDER_NO_BILLING:    'Ordem sem condições de cobrança (forma/prazo) para gerar o financeiro',
-  ADJUST_PARAMS_REQUIRED: 'Ordem de ajuste exige sentido (E/S) e CFOP no faturamento',
+  ADJUST_PARAMS_REQUIRED: 'Ordem de ajuste exige CFOP no faturamento (sentido vem do ramo)',
   INVALID_DEADLINE:    'Prazo da negociação inválido para gerar parcelas',
   NEGATIVE_ITEM_VALUE: 'Item com valor líquido negativo (desconto maior que o total)',
+  MISSING_NCM:         'Produto de mercadoria sem NCM no cadastro — faturamento bloqueado',
+  INSTALLMENT_MISMATCH: 'Parcelamento elaborado difere do valor atual da ordem',
+  RETURN_INVALID:      'Devolução inválida contra o pedido original (saldo/itens/valores/âncora)',
+  RETURN_REQUIRES_ENTRY: 'Devolução de mercadoria exige ajuste de ENTRADA',
+  ORIGIN_NOT_INVOICED: 'Pedido de venda de origem ainda não foi faturado',
+  NOTHING_RETURNABLE:  'Pedido de origem sem saldo devolvível',
 }

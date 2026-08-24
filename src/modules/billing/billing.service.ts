@@ -9,14 +9,27 @@ import { getConfigContent } from '@shared/interface-config'
 import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
 import { parcelQuotas } from '@modules/service-orders/service-orders.calc'
-import { parseCrt, parseDeadline, addDays, adjustMva } from './billing.context'
+import {
+  parseCrt, parseDeadline, addDays, adjustMva, resolveFinancialPolarity,
+} from './billing.context'
 import {
   getOrderStatus, getOrderBranch, listBillingItems, getItemRuleLinks,
   upsertItemRuleAuto, clearAutoRuleLink, findDeadRuleIds,
   getFreightAndExpenses, getOrderBillingInfo,
   getInstallments, getEntityLocation, persistInvoice, ComputedItem,
   OrderBranchInfo,
+  getGeneralObservations, getRuleObservationNotes, getNcmApproxRates,
 } from './billing.repository'
+import {
+  buildRegimeObservations, buildIssqnObservation, buildApproxTaxObservation,
+  calcApproxTaxAliq, ObsRegimeItem,
+} from './billing.observations'
+import {
+  buildReturnPlan, getSaleOrderInfo, getAnchor, ReturnPlan,
+} from '@shared/order-return'
+import {
+  resolveCommissionAliq, getPostedItemCommissions, CommissionEntryInput,
+} from '@shared/commission'
 import {
   ValidationReport, ValidationIssue, InvoiceResult, BillingOrderItem,
 } from './billing.interface'
@@ -62,9 +75,6 @@ async function loadContext(
   } else if (crt === null) {
     issues.push({ scope: 'emitter', field: 'taxRegime',
       message: 'Regime tributário do emitente inválido — informe o regime (1/2/3)' })
-  } else if (crt === '1') {
-    issues.push({ scope: 'emitter', field: 'taxRegime',
-      message: 'Emitente do Simples Nacional: cálculo por CSOSN ainda não disponível (aguarda a onda CSOSN)' })
   }
   if (!emitterLoc || !emitterLoc.stateId) {
     issues.push({ scope: 'emitter', field: 'address',
@@ -102,7 +112,7 @@ async function loadContext(
 
 function buildCriteria(
   item: BillingOrderItem, ctx: BillingContext, institutionId: number,
-  adjustment: { direction: 'E' | 'S'; cfopId: string } | null | undefined,
+  adjustment: { cfopId: string } | null | undefined,
   manualRuleId: number | null
 ): TaxRuleMatchCriteria {
   const isAdjust = ctx.branch.branch === 'adjust'
@@ -117,7 +127,9 @@ function buildCriteria(
     customerIgnoreSt: ctx.recipientByPassSt,
     finalConsumer: ctx.recipientConsumer,
     simples: ctx.recipientSimples,
-    direction: isAdjust && adjustment ? adjustment.direction : ctx.branch.direction,
+    // direção sempre do RAMO (fonte única — a do ajuste é gravada na
+    // abertura pelo order-returns; parecer 2026-08-24)
+    direction: ctx.branch.direction,
     destinationStateId: ctx.recipientStateId ?? 0,
     emitterStateId: ctx.emitterStateId ?? 0,
     cfopId: isAdjust ? adjustment?.cfopId ?? null : null,
@@ -144,7 +156,7 @@ export async function validateOrder(
   }
   if (branch.branch === 'adjust' && !input.adjustment) {
     issues.push({ scope: 'order', field: 'adjustment',
-      message: 'Ordem de ajuste exige sentido (E/S) e CFOP no faturamento' })
+      message: 'Ordem de ajuste exige CFOP no faturamento' })
   }
 
   const { ctx, issues: ctxIssues } = await loadContext(schemaName, institutionId, branch)
@@ -153,6 +165,31 @@ export async function validateOrder(
   const items = await listBillingItems(schemaName, institutionId, input.orderId)
   if (items.length === 0) {
     issues.push({ scope: 'order', field: 'items', message: 'Ordem sem itens vivos' })
+  }
+
+  // Devolução de mercadoria (rodada 2026-08-24): a ÂNCORA gravada na
+  // abertura identifica a devolução (fonte única — nada viaja no payload);
+  // mesmas regras do legado, em lote — origem faturada/mesmo cliente,
+  // itens ⊆ origem, qtde ≤ saldo devolvível (acumulado), valor ≤ origem.
+  if (branch.branch === 'adjust') {
+    const anchor = await getAnchor(schemaName, institutionId, input.orderId)
+    if (anchor && branch.direction !== 'E') {
+      issues.push({ scope: 'order', field: 'adjustment',
+        message: 'Devolução de mercadoria exige ajuste de ENTRADA' })
+    } else if (anchor) {
+      // devolução de MERCADORIA — item de serviço fica fora do plano
+      // (achado LOW do gate adversarial 2026-08-24)
+      const { issues: retIssues } = await buildReturnPlan(
+        schemaName, institutionId, anchor.orderIdOri,
+        branch.recipientEntityId,
+        items.filter(i => i.productKind !== 'S')
+          .map(i => ({ id: i.id, kind: i.kind, productId: i.productId,
+            quantity: i.quantity, unitValue: i.unitValue })))
+      issues.push(...retIssues.map(ri => ({
+        scope: (ri.itemId !== undefined ? 'item' : 'order') as 'item' | 'order',
+        itemId: ri.itemId, field: ri.field, message: ri.message,
+      })))
+    }
   }
 
   const links = await getItemRuleLinks(schemaName, institutionId, input.orderId)
@@ -217,8 +254,8 @@ export async function invoiceOrder(
       [{ field: 'orderId', message: 'Ramo da ordem não identificado' }], 'ORDER_NO_BRANCH')
   }
   if (branch.branch === 'adjust' && !input.adjustment) {
-    throw new HttpError(422, 'Ordem de ajuste exige sentido e CFOP',
-      [{ field: 'adjustment', message: 'Informe direction e cfopId' }], 'ADJUST_PARAMS_REQUIRED')
+    throw new HttpError(422, 'Ordem de ajuste exige CFOP',
+      [{ field: 'adjustment', message: 'Informe o cfopId' }], 'ADJUST_PARAMS_REQUIRED')
   }
 
   const { ctx, issues: ctxIssues } = await loadContext(schemaName, institutionId, branch)
@@ -239,6 +276,17 @@ export async function invoiceOrder(
 
   const merchandiseItems = items.filter(
     i => i.productKind !== 'S' && MERCHANDISE_KINDS.includes(i.kind))
+
+  // R5-Q3 (evidência Fc_Valida_Itens_Nota): NCM ausente é gate DURO no
+  // legado, revalidado no momento de faturar (o /validate pode ter rodado
+  // antes do produto ser corrigido/trocado) — não é só aviso.
+  const missingNcm = merchandiseItems.filter(i => !i.ncm || i.ncm.trim() === '')
+  if (missingNcm.length > 0) {
+    throw new HttpError(422, 'Produto sem NCM — não é possível faturar',
+      missingNcm.map(i => ({ field: `item.${i.id}`, message: 'NCM ausente no cadastro do produto' })),
+      'MISSING_NCM')
+  }
+
   const missing = merchandiseItems.filter(i => !linkByItem.has(`${i.id}|${i.kind}`))
   if (missing.length > 0) {
     throw new HttpError(422, 'Itens sem regra de tributação resolvida — execute a validação',
@@ -267,11 +315,46 @@ export async function invoiceOrder(
       'NEGATIVE_ITEM_VALUE')
   }
 
+  // Devolução de mercadoria: identificada pela ÂNCORA (fonte única) e
+  // gate DURO revalidado no faturamento (mesmo padrão R5-Q3 — não confia
+  // só no /validate anterior). Issues = 422.
+  let returnPlan: ReturnPlan | null = null
+  if (branch.branch === 'adjust') {
+    const anchor = await getAnchor(schemaName, institutionId, input.orderId)
+    if (anchor) {
+      if (branch.direction !== 'E') {
+        throw new HttpError(422, 'Devolução de mercadoria exige ajuste de ENTRADA',
+          [{ field: 'adjustment', message: 'Sentido do ajuste deve ser E' }],
+          'RETURN_REQUIRES_ENTRY')
+      }
+      const { issues: retIssues, plan } = await buildReturnPlan(
+        schemaName, institutionId, anchor.orderIdOri,
+        branch.recipientEntityId,
+        items.filter(i => i.productKind !== 'S')
+          .map(i => ({ id: i.id, kind: i.kind, productId: i.productId,
+            quantity: i.quantity, unitValue: i.unitValue })))
+      if (retIssues.length > 0 || !plan) {
+        throw new HttpError(422, 'Devolução inválida contra o pedido original',
+          retIssues.map(ri => ({
+            field: ri.itemId !== undefined ? `item.${ri.itemId}` : ri.field,
+            message: ri.message,
+          })), 'RETURN_INVALID')
+      }
+      returnPlan = plan
+    }
+  }
+
   // rateio T2 sobre TODOS os itens vivos (mercadoria líquida como base)
   const { freight, expenses } = await getFreightAndExpenses(schemaName, institutionId, input.orderId)
   const merchValues = items.map(i => calcMerchandiseValue(i.unitValue, i.quantity, i.discountValue))
   const freightShares = prorateWithResidue(merchValues, freight)
   const expensesShares = prorateWithResidue(merchValues, expenses)
+
+  // P2.9 — alíquota do crédito SN (config única da institution, evidência
+  // GRL_G_AQ_CRED_ICMS: o legado lê a MESMA config em venda/compra/ajuste,
+  // não é campo da regra nem do produto).
+  const creditAliqPct = Number(
+    (await getConfigContent(institution, 'billing', 'sn_credit_aliq')) ?? '0')
 
   const computed: ComputedItem[] = []
   const piecesCache = new Map<number, TaxRulePieces>() // N itens, poucas regras
@@ -327,6 +410,7 @@ export async function invoiceOrder(
       kind: item.productKind,
       icms: pieces.icms ? {
         cst: pieces.icms.cstNr ?? '',
+        csosn: pieces.icms.csosn ?? null,
         aliq: pieces.icms.aliq ?? 0,
         aliqReduction: pieces.icms.aliqReduction ?? 0,
         baseReduction: pieces.icms.baseReduction ?? 0,
@@ -337,6 +421,7 @@ export async function invoiceOrder(
         stAliq, mvaPct,
         stBaseReduction: pieces.icmsSt?.propagateBaseReduction === 'S'
           ? (pieces.icms.baseReduction ?? 0) : 0,
+        creditAliqPct,
       } : undefined,
       fcp: (fcpAliq || fcpStAliq) ? { aliqFcp: fcpAliq, aliqFcpSt: fcpStAliq } : undefined,
       ipi: pieces.ipi ? { cst: pieces.ipi.cst, aliq: pieces.ipi.aliq ?? 0 } : undefined,
@@ -365,7 +450,7 @@ export async function invoiceOrder(
       pisCst: pieces.pisCofins?.find(p => p.kind === 'P')?.cst ?? null,
       cofinsCst: pieces.pisCofins?.find(p => p.kind === 'C')?.cst ?? null,
       icmsExtras: {
-        cst: pieces.icms?.cstNr ?? null,
+        cst: pieces.icms?.cstNr ?? pieces.icms?.csosn ?? null,
         origin: item.origin,
         modBc: pieces.icms?.modBc ?? null,
         modBcSt: pieces.icmsSt?.modBcSt ?? null,
@@ -402,6 +487,16 @@ export async function invoiceOrder(
   if (financialBase > 0 && billing) {
     const installments = await getInstallments(schemaName, institutionId, input.orderId)
     if (installments.length > 0) {
+      // R5-Q2 (evidência ControllerPedido.ValidaParcelamento): elaborado
+      // que diverge do valor atual da ordem BLOQUEIA — itens editados
+      // depois da negociação não faturam com um financeiro que não soma.
+      const installmentsSum = round2(installments.reduce((sum, i) => sum + i.amount, 0))
+      if (installmentsSum !== financialBase) {
+        throw new HttpError(422, 'Valor do parcelamento não confere com o valor da ordem',
+          [{ field: 'installments',
+            message: `Parcelamento ${installmentsSum} difere do valor atual da ordem ${financialBase}` }],
+          'INSTALLMENT_MISMATCH')
+      }
       parcels = installments.map(i => ({
         parcel: i.parcel, dueDate: i.dueDate, amount: i.amount,
         paymentTypeId: i.paymentTypeId ?? billing.paymentTypeId,
@@ -429,6 +524,130 @@ export async function invoiceOrder(
   const model = hasMerchandise ? '55' : 'SE'
   const serie = (await getConfigContent(institution, 'billing', 'invoice_serie') ?? '1').slice(0, 10)
 
+  // R5-Q1 atualizada pelo parecer 2026-08-24: a direção do ajuste vem do
+  // RAMO (gravada na abertura pelo order-returns) — fonte única, o
+  // payload não a carrega mais.
+  const polarity = resolveFinancialPolarity(branch.branch,
+    branch.branch === 'adjust' ? branch.direction : undefined)
+
+  // Motor de observações fiscais (T6/P11) — construído com os itens JÁ
+  // calculados; persistido na MESMA transação (padrão do financeiro).
+  const ruleIds = [...new Set(computed.map(ci => ci.link.taxRuleId).filter(id => id > 0))]
+  const ruleNotes = await getRuleObservationNotes(schemaName, ruleIds)
+  const generalNotes = await getGeneralObservations(schemaName, institutionId)
+
+  const regimeItems: ObsRegimeItem[] = computed
+    .filter(ci => ci.item.productKind !== 'S')
+    .map(ci => ({
+      cst: ci.icmsExtras.cst,
+      baseSt: ci.taxes.icms?.baseSt ?? null,
+      valueSt: ci.taxes.icms?.valueSt ?? null,
+      baseReduction: ci.icmsExtras.baseReduction ?? null,
+      creditAliq: ci.taxes.icms?.creditAliq ?? null,
+      creditValue: ci.taxes.icms?.creditValue ?? null,
+      observationNote: ci.link.taxRuleId > 0 ? (ruleNotes.get(ci.link.taxRuleId) ?? null) : null,
+    }))
+  const regimeTexts = buildRegimeObservations(regimeItems, creditAliqPct)
+
+  const totalWithheldIssqn = round2(computed.reduce(
+    (sum, ci) => sum + (ci.taxes.issqn?.withheldValue ?? 0), 0))
+  const issqnText = buildIssqnObservation(totalWithheldIssqn)
+
+  // Imposto aproximado (Lei 12.741/2012): percentual PERSISTIDO por item
+  // sempre (mesmo padrão do ITF_IMP_APROX do legado — não depende da
+  // config); a OBSERVAÇÃO agregada na nota é que é gated por config + só
+  // ordem de venda ("natureza contém VENDA" do legado).
+  const merchNcmCodes = computed
+    .filter(ci => ci.item.productKind !== 'S' && ci.item.ncm)
+    .map(ci => ci.item.ncm!)
+  const ncmRates = await getNcmApproxRates(merchNcmCodes)
+  const approxTaxByItem = new Map<string, number>()
+  for (const ci of computed) {
+    if (ci.item.productKind === 'S' || !ci.item.ncm) continue
+    const rate = ncmRates.get(ci.item.ncm) ?? null
+    approxTaxByItem.set(`${ci.item.id}|${ci.item.kind}`,
+      calcApproxTaxAliq(ci.item.origin !== '0', rate))
+  }
+
+  const approxTaxEnabled = (await getConfigContent(
+    institution, 'billing', 'approx_tax_enabled')) === 'S'
+  let approxTaxText: string | null = null
+  if (approxTaxEnabled && branch.branch === 'sale') {
+    const approxItems = computed.filter(ci => ci.item.ncm).map((ci) => {
+      const rate = ncmRates.get(ci.item.ncm!) ?? { aliqNac: 0, aliqImp: 0, aliqEst: 0, aliqMun: 0 }
+      return {
+        merchandiseValue: ci.merchandiseValue,
+        aliqNac: ci.item.origin !== '0' ? rate.aliqImp : rate.aliqNac,
+        aliqEst: rate.aliqEst, aliqMun: rate.aliqMun,
+      }
+    })
+    approxTaxText = buildApproxTaxObservation(approxItems)
+  }
+
+  const noteText = [...generalNotes, ...regimeTexts, issqnText, approxTaxText]
+    .filter((t): t is string => !!t).join('\n')
+
+  // ── Comissão por item (Q1/Q2 da rodada 2026-08-24) ──────────────────────
+  // Venda: lançamento POSITIVO por item (kind 'F' — faturamento; o modo
+  // 'R' fica para a peça completa, Q5). Base = valor líquido do item
+  // (qtde × unit − desconto), sem frete/ST/IPI. Alíquota resolvida na hora
+  // (vendedor ou produto — semântica do VEN_PROPORCAO); aliq 0 = sem linha.
+  const commissions: CommissionEntryInput[] = []
+  if (branch.branch === 'sale') {
+    const sale = await getSaleOrderInfo(schemaName, institutionId, input.orderId)
+    if (sale) {
+      // cache por produto×lista — sem ele a nota de N itens relê o mesmo
+      // vendedor N vezes (R6 do gate socrático)
+      const aliqCache = new Map<string, number>()
+      for (const ci of computed) {
+        if (ci.merchandiseValue <= 0) continue
+        const cacheKey = `${ci.item.productId}|${ci.item.priceListId ?? ''}`
+        let aliq = aliqCache.get(cacheKey)
+        if (aliq === undefined) {
+          aliq = await resolveCommissionAliq(
+            schemaName, institutionId, sale.salesmanId, ci.item.productId, ci.item.priceListId)
+          aliqCache.set(cacheKey, aliq)
+        }
+        if (aliq <= 0) continue
+        commissions.push({
+          kind: 'F', orderId: input.orderId,
+          orderItemId: ci.item.id, orderItemKind: ci.item.kind,
+          customerId: sale.customerId, salesmanId: sale.salesmanId,
+          baseValue: ci.merchandiseValue, aliq,
+          value: round2(ci.merchandiseValue * aliq / 100),
+        })
+      }
+    }
+  }
+  // Devolução: lançamento NEGATIVO por item devolvido, para o vendedor
+  // DERIVADO do pedido original (D3). Alíquota = a do lançamento positivo
+  // da venda quando existe (espelho fiel do que foi comissionado); venda
+  // anterior à peça = resolve pela fonte atual. Corrige o achado literal
+  // do legado (estorno da comissão INTEIRA em devolução parcial — Q2).
+  if (returnPlan) {
+    const posted = await getPostedItemCommissions(
+      schemaName, institutionId, returnPlan.orderIdOri)
+    const postedByItem = new Map(posted.map(p => [`${p.orderItemId}|${p.orderItemKind}`, p]))
+    const computedByItem = new Map(computed.map(ci => [`${ci.item.id}|${ci.item.kind}`, ci]))
+    for (const link of returnPlan.links) {
+      const ci = computedByItem.get(`${link.itemId}|${link.itemKind}`)
+      if (!ci || ci.merchandiseValue <= 0) continue
+      const postedEntry = postedByItem.get(`${link.itemIdOri}|${link.kindOri}`)
+      const aliq = postedEntry
+        ? postedEntry.aliq
+        : await resolveCommissionAliq(
+            schemaName, institutionId, returnPlan.salesmanId, link.productId, link.priceListIdOri)
+      if (aliq <= 0) continue
+      commissions.push({
+        kind: 'F', orderId: input.orderId,
+        orderItemId: link.itemId, orderItemKind: link.itemKind,
+        customerId: returnPlan.customerId, salesmanId: returnPlan.salesmanId,
+        baseValue: ci.merchandiseValue, aliq,
+        value: -round2(ci.merchandiseValue * aliq / 100),
+      })
+    }
+  }
+
   return persistInvoice(schemaName, institutionId, {
     orderId: input.orderId,
     recipientEntityId: branch.recipientEntityId,
@@ -436,7 +655,13 @@ export async function invoiceOrder(
     items: computed,
     totalValue,
     parcels,
-    financialKind: branch.direction === 'E' ? 'PA' : 'RA',
+    financialKind: polarity.kind,
+    financialOperation: polarity.operation,
+    noteText,
+    approxTaxByItem,
+    userId: institution.userId,
+    commissions,
+    returnPlan,
   })
 }
 

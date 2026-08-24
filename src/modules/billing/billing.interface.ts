@@ -31,6 +31,7 @@ export interface InvoiceResult {
   model: string
   totalValue: number
   parcels: number
+  autoSettled: number   // parcelas baixadas automaticamente à vista (W3.2 — kind='E')
 }
 
 /** Linha viva de tb_order_item para o faturamento. */
@@ -46,6 +47,7 @@ export interface BillingOrderItem {
   origin: string | null       // tb_merchandise.source (origem da mercadoria)
   merchandiseSt: 'S' | 'N'
   purpose: string | null      // kind_tributary (finalidade)
+  priceListId: number | null  // lista do item — fonte da alíquota de comissão por produto
 }
 
 /** Linha de tb_order_item_tax_rule. */
