@@ -31,12 +31,6 @@ const options = {
           bearerFormat: 'JWT',
           description: 'JWT token para autenticação de clientes',
         },
-        ApiKeyAuth: {
-          type: 'apiKey',
-          in: 'header',
-          name: 'X-Api-Key',
-          description: 'Chave de API do Sincronizador (rotas /sync)',
-        },
       },
       schemas: {
         SuccessResponse: {
@@ -87,7 +81,6 @@ const options = {
     './src/app.ts',
     './src/shared/swagger/swagger-endpoints.ts',
     './src/modules/**/*.routes.ts',
-    './src/modules/sync/endpoints/*.ts',
   ],
 }
 

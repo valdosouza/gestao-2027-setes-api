@@ -35,7 +35,11 @@ npx tsc --noEmit          # Type check without emitting
 
 **setes-api** is a modular multi-tenant Express.js API serving:
 - **setes-app** (Flutter web client) via JWT authentication
-- **Sincronizador** (Delphi legacy system) via X-Api-Key header for data sync endpoints
+
+⚠️ Sincronização com o legado NÃO vive aqui: é o projeto irmão **setes-sync**
+(porta 3001) — regra canônica dos dois grupos (setes-app↔setes-api ×
+Sincronizador↔setes-sync). Nada de rotas/módulos `/sync` neste projeto
+(módulo legado removido em 2026-08-24 por decisão do Valdo).
 
 ### Request Flow
 
@@ -44,13 +48,6 @@ Health Check (no auth)
     ↓
 ├─→ /health → 200 OK (always open)
 │
-└─→ /sync/* (Sincronizador endpoints)
-    ├─ X-Api-Key authentication
-    ├─ No feature-flag check
-    ├─ Rate limited
-    └─ Receives JSON from Firebird through Delphi
-        └─ Used by sync modules (brand, customer, financial, etc.)
-
 └─→ /api/* (Client app endpoints)
     ├─ JWT authentication
     ├─ Feature-flag middleware (per module)
@@ -82,10 +79,7 @@ src/
 │   ├── admin/         # Admin operations (POST /institutions APOSENTADO 2026-07-11 —
 │   │                  # onboarding vive no módulo institutions; GET/interfaces/flags ficam)
 │   ├── core/          # Tenant info & setup (GET /api/core/menus lê tb_interface)
-│   ├── erp/           # ERP module stub
-│   └── sync/          # Sync endpoints from Sincronizador
-│       ├── endpoints/         # One file per data type (brand.ts, customer.ts, etc.)
-│       └── sync.specific.routes.ts  # Routes for /sync prefix
+│   └── erp/           # ERP module stub
 ├── feature-flags/     # Feature flag system
 │   ├── flag.service.ts      # In-memory cache with TTL
 │   └── flag.repository.ts   # DB queries
@@ -124,7 +118,7 @@ checklist em `D:\Gestao2027\Infra-IA\setes-api\ARQUITETURA_MODULOS_API.md`
   segue o módulo: `/api/<modulo>` espelha `/home/<modulo>` (ex.: /api/countries).
   Guard POR MÓDULO no gateway: `router.use('/countries', superGuard, countriesRoutes)`
 - Módulo nunca importa módulo; compartilhado vai para `shared/`
-- Módulos legados (admin, core, erp, sync) ainda usam Repository → Service → Routes
+- Módulos legados (admin, core, erp) ainda usam Repository → Service → Routes
   sem controller/dto separados — migrar quando forem tocados
 
 ## Authentication & Authorization
@@ -148,14 +142,11 @@ Authorization: Bearer <jwt_token>
 
 **Special case**: `tenantId = 'setes'` and `role = 'setes_admin'` bypasses feature flags.
 
-### X-Api-Key (Sincronizador)
+### Chave do Sincronizador
 
-`/sync/*` routes use header-based API key (set in .env as `SYNC_API_KEY`):
-```
-X-Api-Key: <shared_key>
-```
-
-These routes skip JWT, feature-flag, and are used only by the Delphi synchronizer.
+O módulo `institutions` ADMINISTRA a `setes_central.tb_sync_api_key` (emissão da
+chave por institution — D12), mas quem CONSOME a chave é o setes-sync. Nenhuma
+rota deste projeto autentica por X-Api-Key.
 
 ## Feature Flags
 
@@ -183,23 +174,6 @@ Central database (`setes_central`) holds:
 - `tenants` table (schema names, client metadata)
 - `feature_flags` table (per-tenant module toggles)
 
-## Sync Module & Sincronizador Integration
-
-**Sync endpoints** (`/sync/*`) receive JSON payloads from Delphi containing data from Firebird.
-
-**Endpoint pattern** (`src/modules/sync/endpoints/*.ts`):
-```typescript
-// brand.ts example
-router.post('/brand/sincronize', async (req, res) => {
-  const { brands } = req.body
-  // Store brands in tenant's schema
-  await storeBrands(req.tenant!.schemaName, brands)
-  res.json({ ok: true })
-})
-```
-
-**Important**: `/sync` routes are prefixed directly on `app` (not under `/api`), skip JWT, and use X-Api-Key instead.
-
 ## Rate Limiting
 
 Uses `express-rate-limit` with **per-tenant keying**:
@@ -212,7 +186,6 @@ Uses `express-rate-limit` with **per-tenant keying**:
 ```bash
 PORT=3000
 JWT_SECRET=your_secret_key_here
-SYNC_API_KEY=delphi_shared_api_key
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
@@ -250,12 +223,6 @@ describe('GET /health', () => {
 4. Register route in `src/gateway/router.ts` if new module
 5. If new module needs feature flag: add entry to `feature_flags` table
 
-**Adding a new sync endpoint**:
-1. Create `src/modules/sync/endpoints/[datatype].ts`
-2. Define POST route at `/[datatype]/sincronize`
-3. Extract tenant info from request context
-4. Store data in tenant's schema
-
 **Debugging requests**:
 - Check `src/shared/logger/logger.ts` — log middleware calls and errors
 - Verify `req.tenant` is set after auth middleware
@@ -265,9 +232,8 @@ describe('GET /health', () => {
 
 | File | Purpose |
 |------|---------|
-| `src/app.ts` | Express setup, middleware order, sync vs. JWT routing |
+| `src/app.ts` | Express setup, middleware order, JWT routing |
 | `src/gateway/router.ts` | All `/api/*` route registrations |
-| `src/modules/sync/sync.specific.routes.ts` | All `/sync/*` route registrations |
 | `src/shared/db/connection.ts` | MySQL pool and schema switching |
 | `src/shared/types/express.d.ts` | `req.tenant` type definitions |
 | `.env.example` | Template for all environment variables |

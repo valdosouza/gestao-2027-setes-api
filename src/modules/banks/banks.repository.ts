@@ -79,7 +79,7 @@ export async function reviveBank(id: number, description: string): Promise<void>
 
 /**
  * Insere banco com id gerado MAX(id)+1 em TRANSAÇÃO com FOR UPDATE (mesmo
- * desenho do bank-accounts e do sync.id-generator — achado do gate
+ * desenho do bank-accounts — achado do gate
  * adversarial 2026-08-04: sem o lock, dois POSTs simultâneos colidem na PK
  * e o ER_DUP_ENTRY vira um 409 de "número duplicado" FALSO). tb_bank NÃO
  * tem auto_increment; o código externo é o `number` FEBRABAN (seed 17).
