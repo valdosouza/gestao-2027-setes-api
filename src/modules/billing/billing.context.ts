@@ -3,11 +3,10 @@
  * As queries vivem no repository; aqui só transformação.
  */
 
-/** CRT = 1º caractere do tax_regime ("1 - Simples Nacional" → '1'). */
-export function parseCrt(taxRegime: string | null | undefined): string | null {
-  const first = (taxRegime ?? '').trim().charAt(0)
-  return ['1', '2', '3'].includes(first) ? first : null
-}
+// parseCrt PROMOVIDO para @shared/entity-tax (D39 — o cadastro do
+// estabelecimento e o form de regras também precisam dele); re-export
+// mantém os consumidores/testes deste módulo.
+export { parseCrt } from '@shared/entity-tax/entity-tax.types'
 
 /** Teto de sanidade: prazo por parcela nunca passa de 10 anos (dado sujo do sync). */
 export const MAX_DEADLINE_DAYS = 3650

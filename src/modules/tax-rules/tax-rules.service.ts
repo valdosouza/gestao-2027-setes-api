@@ -1,9 +1,12 @@
 import { HttpError } from '@shared/errors/http-error'
+import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
+import { parseCrt } from '@shared/entity-tax/entity-tax.types'
 import { ListQuery, PagedRows } from '@shared/list'
 import { findInvalidCatalogCodes, findInvalidSelectorRefs } from '@shared/tax-rule'
 import {
   listTaxRules, getTaxRule, insertTaxRuleCascade, updateTaxRuleCascade,
   deleteTaxRuleCascade, listCatalogs,
+  getEmitterStateId, getStateAbbreviation, listCfopOptions,
 } from './tax-rules.repository'
 import { TaxRuleListRow, TaxRuleDetail, TaxRuleCatalogs } from './tax-rules.interface'
 import { TaxRuleBodyDto } from './tax-rules.dto'
@@ -94,4 +97,45 @@ export async function fetchCatalogs(): Promise<TaxRuleCatalogs> {
 /** Invalidação para testes/manutenção futura do catálogo (mesmo processo). */
 export function invalidateCatalogCache(): void {
   catalogCache = null
+}
+
+/**
+ * CFOPs por ALÇADA (rodada 2026-09-01): sentido + UF do destinatário
+ * determinam o 1º dígito — mesma UF do emitente = 1/5, UF diferente = 2/6,
+ * EX (Exterior) = 3/7. UF do seletor vazia (coringa) = os 3 dígitos do
+ * sentido. Emitente sem endereço com UF não consegue distinguir mesmo ×
+ * outro estado — devolve os dois (nunca esconder opção por dado faltante).
+ */
+export async function fetchCfopOptions(
+  institutionId: number, direction: 'E' | 'S', stateId: number | null,
+  filter: string | null
+): Promise<Array<{ id: string; description: string | null }>> {
+  const bases = direction === 'E' ? ['1', '2', '3'] : ['5', '6', '7']
+  let digits = bases
+  if (stateId !== null) {
+    const abbr = await getStateAbbreviation(stateId)
+    if (abbr === null) {
+      throw new HttpError(422, 'Estado informado não existe',
+        [{ field: 'stateId', message: `Estado ${stateId} não encontrado` }])
+    }
+    if (abbr === 'EX') {
+      digits = [bases[2]]
+    } else {
+      const emitterStateId = await getEmitterStateId(institutionId)
+      digits = emitterStateId === null
+        ? [bases[0], bases[1]]
+        : [stateId === emitterStateId ? bases[0] : bases[1]]
+    }
+  }
+  return listCfopOptions(digits, filter)
+}
+
+/** CRT do estabelecimento logado (D39.3) — null se regime não configurado
+ *  (form cai no fallback: mostra CST e CSOSN). Fonte única: tb_entity_tax
+ *  do próprio emitente (mesma leitura do billing). */
+export async function fetchEmitterCrt(
+  schemaName: string, institutionId: number
+): Promise<string | null> {
+  const tax = await getEntityTax(schemaName, institutionId, institutionId)
+  return parseCrt(tax?.taxRegime)
 }

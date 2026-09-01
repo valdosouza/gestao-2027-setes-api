@@ -27,6 +27,12 @@ export const TAX_REGIMES = [
 /** Indicador de IE do destinatário (NFe). */
 export const IND_IE_DEST_CODES = ['1', '2', '9'] as const
 
+/** CRT = 1º caractere do tax_regime ("1 - Simples Nacional" → '1'). */
+export function parseCrt(taxRegime: string | null | undefined): string | null {
+  const first = (taxRegime ?? '').trim().charAt(0)
+  return ['1', '2', '3'].includes(first) ? first : null
+}
+
 export interface EntityTaxInput {
   consumer?:               SN | null
   taxRegime?:              string | null

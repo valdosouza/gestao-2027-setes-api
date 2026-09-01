@@ -205,13 +205,15 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // 'orders' desde 2026-08-22: pedido de venda/conjugado.
   // 'order-returns' desde 2026-08-24: devolução de mercadoria (seed 39
   // cobre as institutions retroativas).
+  // 'establishment' desde 2026-08-26: autoatendimento do admin sobre o
+  // PRÓPRIO institution (seed 41 cobre as institutions retroativas).
   const defaultModules = [
     'core', 'users', 'customers', 'collaborators', 'salesmen', 'carriers',
     'providers', 'categories', 'financial-plans', 'tax-rules',
     'state-tax-rates', 'billing',
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements', 'modules', 'cashier', 'orders',
-    'order-returns',
+    'order-returns', 'establishment',
   ]
   const conn = await pool.getConnection()
   try {
@@ -251,7 +253,7 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
  * Ids resolvidos por i18n_key, nunca literais (lição do seed 25).
  * Roda DEPOIS das migrations: a tabela vive no schema do cliente.
  */
-export const STRUCTURAL_INTERFACE_KEYS = ['users', 'modules', 'interface-configs']
+export const STRUCTURAL_INTERFACE_KEYS = ['users', 'modules', 'interface-configs', 'establishment']
 
 export async function grantStructuralInterfaces(
   schemaName: string, institutionId: number

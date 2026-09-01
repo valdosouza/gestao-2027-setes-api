@@ -2,7 +2,7 @@ import { HttpError } from '@shared/errors/http-error'
 import {
   findTaxRule, loadPieces, calculateItemTaxes, prorateWithResidue,
   calcMerchandiseValue, TaxRuleMatchCriteria, TaxRulePieces,
-  ItemTaxCalcInput,
+  ItemTaxCalcInput, icmsMissingCodeForCrt,
 } from '@shared/tax-rule'
 import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { getConfigContent } from '@shared/interface-config'
@@ -199,6 +199,25 @@ export async function validateOrder(
   let rulesResolved = 0
   let rulesManual = 0
 
+  // D42 — regra casada precisa do código do regime VIGENTE do emitente
+  // (Simples = CSOSN, Normal = CST): a troca de regime no cadastro do
+  // estabelecimento zera o código antigo e a regra fica pendente até a
+  // revisão. Sem o check, o cálculo despacharia pelo código restante e a
+  // nota sairia no regime errado em silêncio.
+  const validatePiecesCache = new Map<number, TaxRulePieces>()
+  const ruleMissingCode = async (ruleId: number): Promise<'csosn' | 'cst' | null> => {
+    let pieces = validatePiecesCache.get(ruleId)
+    if (!pieces) {
+      pieces = (await loadPieces(schemaName, ruleId)) ?? {}
+      validatePiecesCache.set(ruleId, pieces)
+    }
+    return icmsMissingCodeForCrt(pieces, ctx.emitterCrt)
+  }
+  const missingCodeMessage = (itemId: number, ruleId: number, code: 'csosn' | 'cst') =>
+    `Item ${itemId}: regra de tributação ${ruleId} sem ${code === 'csosn'
+      ? 'CSOSN (emitente no Simples Nacional)'
+      : 'CST (emitente no Regime Normal)'} — revise as regras de tributação para o regime atual`
+
   for (const item of items) {
     if (item.productKind === 'S') continue // serviço: sem regra de mercadoria
     if (!MERCHANDISE_KINDS.includes(item.kind)) continue
@@ -209,13 +228,34 @@ export async function validateOrder(
     }
 
     const manual = manualByItem.get(`${item.id}|${item.kind}`)
-    if (manual) { rulesManual++; continue } // RegraDireta — escolha do cliente
+    if (manual) {
+      // RegraDireta — escolha do cliente: o vínculo 'M' é intocável, mas a
+      // incoerência com o regime vira pendência do mesmo jeito (D42).
+      const missing = await ruleMissingCode(manual.taxRuleId)
+      if (missing) {
+        issues.push({ scope: 'item', itemId: item.id, field: 'taxRule',
+          message: missingCodeMessage(item.id, manual.taxRuleId, missing) })
+      }
+      rulesManual++
+      continue
+    }
 
     if (ctx.recipientStateId === null || ctx.emitterStateId === null) continue
 
     const criteria = buildCriteria(item, ctx, institutionId, input.adjustment, null)
     const rule = await findTaxRule(schemaName, criteria)
     if (rule) {
+      // D42: regra incompleta para o regime NÃO grava o link 'A' — sem
+      // link o /invoice devolve 422 REQUIRES_VALIDATION (é a "interrupção
+      // do faturamento" prometida no aviso do cadastro).
+      const missing = await ruleMissingCode(rule.id)
+      if (missing) {
+        await clearAutoRuleLink(
+          schemaName, institutionId, input.orderId, item.id, item.kind)
+        issues.push({ scope: 'item', itemId: item.id, field: 'taxRule',
+          message: missingCodeMessage(item.id, rule.id, missing) })
+        continue
+      }
       await upsertItemRuleAuto(
         schemaName, institutionId, input.orderId, item.id, item.kind,
         rule.id, rule.cfopId)

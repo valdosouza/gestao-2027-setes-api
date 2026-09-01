@@ -82,3 +82,14 @@ export const taxRuleBodyDto = z.object({
 )
 
 export type TaxRuleBodyDto = z.infer<typeof taxRuleBodyDto>
+
+/** Query do GET /cfops (lookup por alçada — rodada 2026-09-01): sentido
+ *  obrigatório; stateId opcional (vazio = coringa → os 3 dígitos do
+ *  sentido); filter opcional (código/descrição). */
+export const cfopOptionsQueryDto = z.object({
+  direction: z.enum(['E', 'S']),
+  stateId:   z.coerce.number().int().positive().optional(),
+  filter:    z.string().max(100).optional(),
+})
+
+export type CfopOptionsQueryDto = z.infer<typeof cfopOptionsQueryDto>

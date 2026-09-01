@@ -229,3 +229,48 @@ export async function listCatalogs(): Promise<TaxRuleCatalogs> {
     ])
   return { icmsNr, icmsSn, modBc, modBcSt, discharge, ipi, pis, cofins }
 }
+
+// ---------------------------------------------------------------------
+// Lista de CFOPs por ALÇADA (rodada 2026-09-01): o form monta o combo a
+// partir do sentido + UF do destinatário; o 1º dígito resolve a alçada.
+// ---------------------------------------------------------------------
+
+/** UF (stateId) do endereço principal do PRÓPRIO estabelecimento —
+ *  convenção R4: tb_institution.id = tb_entity.id (mesma leitura da
+ *  getEntityLocation do billing, aqui só a UF). */
+export async function getEmitterStateId(institutionId: number): Promise<number | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT a.tb_state_id AS stateId
+       FROM setes_central.tb_address a
+      WHERE a.id = ? AND a.deleted = 'N'
+      ORDER BY (a.main = 'S') DESC
+      LIMIT 1`,
+    [institutionId])
+  return rows[0]?.stateId ?? null
+}
+
+/** Sigla da UF (null se o id não existe) — detecta 'EX' (Exterior). */
+export async function getStateAbbreviation(stateId: number): Promise<string | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT abbreviation FROM setes_central.tb_state WHERE id = ?`,
+    [stateId])
+  return rows[0]?.abbreviation ?? null
+}
+
+/** CFOPs vivos/ativos cujo 1º dígito ∈ digits — lookup (sem paginação,
+ *  exceção D6; teto de sanidade). */
+export async function listCfopOptions(
+  digits: string[], filter: string | null
+): Promise<Array<{ id: string; description: string | null }>> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT id, description
+       FROM setes_central.tb_cfop
+      WHERE deleted = 'N' AND active = 'S'
+        AND LEFT(id, 1) IN (${digits.map(() => '?').join(', ')})
+        AND (? IS NULL OR id LIKE ? OR description LIKE ?)
+      ORDER BY id
+      LIMIT 200`,
+    [...digits, like, like, like])
+  return rows as Array<{ id: string; description: string | null }>
+}

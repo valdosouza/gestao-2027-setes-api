@@ -236,3 +236,53 @@ export async function findInvalidCatalogCodes(
   }
   return invalid
 }
+
+// ---------------------------------------------------------------------
+// D42 — coerência do código ICMS com o regime do EMITENTE
+// ---------------------------------------------------------------------
+
+/** Grupo do CRT: Simples (1/2) × Normal (3); null = regime desconhecido. */
+export function crtGroup(crt: string | null | undefined): 'simples' | 'normal' | null {
+  if (crt === '1' || crt === '2') return 'simples'
+  if (crt === '3') return 'normal'
+  return null
+}
+
+/**
+ * Código da peça ICMS que FALTA para o CRT do emitente (D42): Simples exige
+ * CSOSN, Normal exige CST. null = coerente (ou sem peça ICMS/CRT — nada a
+ * exigir). Regra incompleta é pendência de faturamento, nunca cálculo mudo.
+ */
+export function icmsMissingCodeForCrt(
+  pieces: TaxRulePieces, crt: string | null
+): 'csosn' | 'cst' | null {
+  if (!pieces.icms) return null
+  const group = crtGroup(crt)
+  if (group === 'simples' && !pieces.icms.csosn) return 'csosn'
+  if (group === 'normal' && !pieces.icms.cstNr) return 'cst'
+  return null
+}
+
+/**
+ * D42 — troca de regime do estabelecimento REMOVE das regras o código do
+ * regime que ficou para trás: indo para Simples zera o CST; indo para o
+ * Normal zera o CSOSN. As regras ficam incompletas de propósito — o
+ * /billing/validate acusa e força a revisão (aviso emitido no app antes
+ * de salvar). Devolve quantas regras foram afetadas.
+ */
+export async function clearIcmsCodesForRegime(
+  schemaName: string, institutionId: number, newCrt: string
+): Promise<number> {
+  const s = assertSchema(schemaName)
+  const group = crtGroup(newCrt)
+  if (group === null) return 0
+  const column = group === 'simples' ? 'tb_tax_icms_nr_id' : 'tb_tax_icms_sn_id'
+  const [result] = await pool.query<any>(
+    `UPDATE \`${s}\`.tb_tax_rule_icms i
+       JOIN \`${s}\`.tb_tax_rule r ON r.id = i.id
+        SET i.${column} = NULL, i.updated_at = NOW()
+      WHERE r.tb_institution_id = ? AND r.deleted = 'N'
+        AND i.deleted = 'N' AND i.${column} IS NOT NULL`,
+    [institutionId])
+  return result.affectedRows ?? 0
+}

@@ -37,16 +37,51 @@ router.get('/', controller.list)
  *     summary: Catálogos fiscais centrais para os combos do form
  *     description: >-
  *       CSTs (ICMS NR/SN, IPI, PIS, COFINS), modalidades de base (NR/ST) e
- *       desoneração — lookups de apoio (sem paginação, exceção D6).
+ *       desoneração — lookups de apoio (sem paginação, exceção D6). Inclui
+ *       emitterCrt ('1'/'2'/'3' | null) do estabelecimento logado (D39.3 —
+ *       o form adapta CST × CSOSN ao regime; null = regime não configurado).
  *     tags: [tax-rules]
  *     security: [{ BearerAuth: [] }]
  *     responses:
- *       200: { description: "{ ok, data: { icmsNr, icmsSn, modBc, modBcSt, discharge, ipi, pis, cofins } }" }
+ *       200: { description: "{ ok, data: { icmsNr, icmsSn, modBc, modBcSt, discharge, ipi, pis, cofins, emitterCrt } }" }
  *       401: { description: Sem JWT }
  *       403: { description: Flag desabilitada }
  *       500: { description: Erro interno }
  */
 router.get('/catalogs', controller.catalogs)
+
+/**
+ * @swagger
+ * /api/tax-rules/cfops:
+ *   get:
+ *     summary: CFOPs por ALÇADA para o combo do seletor da regra
+ *     description: >-
+ *       Sentido + UF do destinatário determinam o 1º dígito do CFOP —
+ *       mesma UF do emitente = 1 (entrada) / 5 (saída); UF diferente = 2/6;
+ *       EX (Exterior, importação/exportação) = 3/7. stateId ausente
+ *       (coringa) = os 3 dígitos do sentido. Lookup sem paginação (D6).
+ *     tags: [tax-rules]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: direction
+ *         required: true
+ *         schema: { type: string, enum: [E, S] }
+ *       - in: query
+ *         name: stateId
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: "{ ok, data: [{ id, description }] }" }
+ *       400: { description: Query inválida }
+ *       401: { description: Sem JWT }
+ *       403: { description: Flag desabilitada }
+ *       422: { description: stateId inexistente }
+ *       500: { description: Erro interno }
+ */
+router.get('/cfops', controller.cfops)
 
 /**
  * @swagger

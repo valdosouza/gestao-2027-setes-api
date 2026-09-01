@@ -33,6 +33,7 @@ import ordersRoutes from '@modules/orders/orders.routes'
 import orderReturnsRoutes from '@modules/order-returns/order-returns.routes'
 import banksRoutes from '@modules/banks/banks.routes'
 import modulesRoutes from '@modules/modules/modules.routes'
+import establishmentRoutes from '@modules/establishment/establishment.routes'
 import { superGuard, superWriteGuard } from './super.guard'
 import { adminGuard } from './admin.guard'
 
@@ -69,6 +70,10 @@ router.use('/users',        adminGuard, usersRoutes)
 // camada 2 do menu ganha escrita — adminGuard (personalizar o menu é ação
 // administrativa); escopo = schema do JWT; flag 'modules'.
 router.use('/modules',      adminGuard, modulesRoutes)
+// Estabelecimento (autoatendimento do admin sobre o PRÓPRIO institution):
+// adminGuard, SEM :id de rota — institutionId vem sempre do token (IDOR
+// eliminado por construção). Telas estruturais: flag 'establishment'.
+router.use('/establishment', adminGuard, establishmentRoutes)
 
 // Painel de campos configuráveis (Fase 2, decisões 6 e 9): módulo do CLIENTE
 // (sem superGuard — privilégio da tela no app) e isento do gate de flags

@@ -237,6 +237,81 @@ describe('validateOrder', () => {
     expect(report.issues).toEqual([])
   })
 
+  // D42 — regra casada precisa do código do regime VIGENTE do emitente
+  it('D42: emitente Simples + regra só-CST -> issue e link NÃO gravado', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext({ emitterRegime: '1 - Simples Nacional' })
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]]) // itens
+    mockQuery.mockResolvedValueOnce([[]])                   // links
+    mockFindTaxRule.mockResolvedValueOnce({ id: 42, cfopId: '5102' })
+    mockLoadPieces.mockResolvedValueOnce({ icms: { cstNr: '00', csosn: null } })
+    mockQuery.mockResolvedValueOnce([{}]) // clearAutoRuleLink
+
+    const report = await validateOrder(inst as any, { orderId: 10 })
+
+    expect(report.rulesResolved).toBe(0)
+    expect(report.issues.some(i => i.field === 'taxRule' && i.itemId === 1
+      && i.message.includes('sem CSOSN'))).toBe(true)
+    // link automático limpo (sem link o /invoice devolve REQUIRES_VALIDATION)
+    const clearCall = mockQuery.mock.calls.find(c =>
+      (c[0] as string).includes("origin = 'A'") && (c[0] as string).includes("SET deleted = 'S'"))
+    expect(clearCall).toBeDefined()
+    // e NENHUM upsert de link aconteceu
+    const upsertCall = mockQuery.mock.calls.find(c =>
+      (c[0] as string).includes('tb_order_item_has_tax_rule') && (c[0] as string).includes('INSERT'))
+    expect(upsertCall).toBeUndefined()
+  })
+
+  it('D42: emitente Normal + regra só-CSOSN -> issue pedindo CST', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext({ emitterRegime: '3 - Regime Normal - Lucro Real' })
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockFindTaxRule.mockResolvedValueOnce({ id: 42, cfopId: '5102' })
+    mockLoadPieces.mockResolvedValueOnce({ icms: { cstNr: null, csosn: '102' } })
+    mockQuery.mockResolvedValueOnce([{}]) // clearAutoRuleLink
+
+    const report = await validateOrder(inst as any, { orderId: 10 })
+    expect(report.issues.some(i => i.field === 'taxRule'
+      && i.message.includes('sem CST'))).toBe(true)
+  })
+
+  it('D42: RegraDireta (M) incompleta p/ o regime gera issue mas o vínculo permanece', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext({ emitterRegime: '1 - Simples Nacional' })
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 99, cfopId: '5405',
+      setFinancial: 'S', origin: 'M',
+    }]])
+    mockLoadPieces.mockResolvedValueOnce({ icms: { cstNr: '60', csosn: null } })
+
+    const report = await validateOrder(inst as any, { orderId: 10 })
+
+    expect(report.rulesManual).toBe(1)
+    expect(mockFindTaxRule).not.toHaveBeenCalled()
+    expect(report.issues.some(i => i.field === 'taxRule' && i.itemId === 1
+      && i.message.includes('99'))).toBe(true)
+  })
+
+  it('D42: regra completa p/ o regime segue normal (Simples + CSOSN presente)', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext({ emitterRegime: '1 - Simples Nacional' })
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockFindTaxRule.mockResolvedValueOnce({ id: 42, cfopId: '5102' })
+    mockLoadPieces.mockResolvedValueOnce({ icms: { cstNr: null, csosn: '102' } })
+    mockQuery.mockResolvedValueOnce([{}]) // upsert
+
+    const report = await validateOrder(inst as any, { orderId: 10 })
+    expect(report.rulesResolved).toBe(1)
+    expect(report.issues).toEqual([])
+  })
+
   it('emitente Simples (CRT 1) NÃO gera issue — CSOSN implementado (P2.9)', async () => {
     mockOrderBase()
     mockBranchSale()

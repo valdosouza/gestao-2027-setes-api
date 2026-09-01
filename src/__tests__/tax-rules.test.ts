@@ -306,6 +306,125 @@ describe('fetchCatalogs (cache TTL)', () => {
   })
 })
 
+describe('fetchEmitterCrt (D39.3 — form adapta CST × CSOSN ao regime)', () => {
+  it('deriva o CRT do tax_regime do PRÓPRIO emitente; sem regime = null (fallback: form mostra os dois)', async () => {
+    const { fetchEmitterCrt } =
+      await import('../modules/tax-rules/tax-rules.service')
+
+    mockQuery.mockResolvedValueOnce([[{ taxRegime: '1 - Simples Nacional' }]])
+    expect(await fetchEmitterCrt('setes_setes', 1)).toBe('1')
+    // entity = institution (convenção R4 do faturamento)
+    expect(mockQuery.mock.calls[0][1]).toEqual(['setes_setes.tb_entity_tax', 1, 1])
+
+    mockQuery.mockResolvedValueOnce([[]])
+    expect(await fetchEmitterCrt('setes_setes', 1)).toBeNull()
+
+    mockQuery.mockResolvedValueOnce([[{ taxRegime: null }]])
+    expect(await fetchEmitterCrt('setes_setes', 1)).toBeNull()
+  })
+})
+
+describe('fetchCfopOptions — alçada por sentido + UF (rodada 2026-09-01)', () => {
+  const svc = () => import('../modules/tax-rules/tax-rules.service')
+
+  it('UF do seletor = UF do emitente -> só dígito 5 (saída) / 1 (entrada)', async () => {
+    const { fetchCfopOptions } = await svc()
+    mockQuery
+      .mockResolvedValueOnce([[{ abbreviation: 'PR' }]])   // getStateAbbreviation
+      .mockResolvedValueOnce([[{ stateId: 41 }]])          // getEmitterStateId
+      .mockResolvedValueOnce([[{ id: '5102', description: 'Venda' }]])
+    const rows = await fetchCfopOptions(1, 'S', 41, null)
+    expect(rows).toEqual([{ id: '5102', description: 'Venda' }])
+    const sql = mockQuery.mock.calls[2][0] as string
+    expect(sql).toContain('LEFT(id, 1) IN (?)')
+    expect(mockQuery.mock.calls[2][1]).toEqual(['5', null, null, null])
+
+    mockQuery
+      .mockResolvedValueOnce([[{ abbreviation: 'PR' }]])
+      .mockResolvedValueOnce([[{ stateId: 41 }]])
+      .mockResolvedValueOnce([[]])
+    await fetchCfopOptions(1, 'E', 41, null)
+    expect(mockQuery.mock.calls[5][1]).toEqual(['1', null, null, null])
+  })
+
+  it('UF diferente do emitente -> dígito 6/2; EX -> 7/3 (sem consultar o emitente)', async () => {
+    const { fetchCfopOptions } = await svc()
+    mockQuery
+      .mockResolvedValueOnce([[{ abbreviation: 'SP' }]])
+      .mockResolvedValueOnce([[{ stateId: 41 }]])
+      .mockResolvedValueOnce([[]])
+    await fetchCfopOptions(1, 'S', 35, null)
+    expect(mockQuery.mock.calls[2][1]).toEqual(['6', null, null, null])
+
+    mockQuery
+      .mockResolvedValueOnce([[{ abbreviation: 'EX' }]])
+      .mockResolvedValueOnce([[]])
+    await fetchCfopOptions(1, 'E', 54, null)
+    // EX não precisa da UF do emitente — 2 queries só
+    expect(mockQuery.mock.calls[4][1]).toEqual(['3', null, null, null])
+  })
+
+  it('UF vazia (coringa) -> os 3 dígitos do sentido; emitente sem UF -> mesmo+outro', async () => {
+    const { fetchCfopOptions } = await svc()
+    mockQuery.mockResolvedValueOnce([[]])
+    await fetchCfopOptions(1, 'S', null, 'venda')
+    expect(mockQuery.mock.calls[0][0] as string).toContain('LEFT(id, 1) IN (?, ?, ?)')
+    expect(mockQuery.mock.calls[0][1])
+      .toEqual(['5', '6', '7', '%venda%', '%venda%', '%venda%'])
+
+    mockQuery
+      .mockResolvedValueOnce([[{ abbreviation: 'SP' }]])
+      .mockResolvedValueOnce([[]])   // emitente sem endereço/UF
+      .mockResolvedValueOnce([[]])
+    await fetchCfopOptions(1, 'S', 35, null)
+    expect(mockQuery.mock.calls[3][1]).toEqual(['5', '6', null, null, null])
+  })
+
+  it('stateId inexistente -> 422 com fields[]', async () => {
+    const { fetchCfopOptions } = await svc()
+    mockQuery.mockResolvedValueOnce([[]]) // abbreviation não achada
+    await expect(fetchCfopOptions(1, 'S', 999, null))
+      .rejects.toMatchObject({ statusCode: 422 })
+  })
+})
+
+describe('D42 — coerência do código ICMS com o regime do emitente', () => {
+  const { crtGroup, icmsMissingCodeForCrt, clearIcmsCodesForRegime } =
+    require('../shared/tax-rule')
+
+  it('crtGroup: 1/2 = simples, 3 = normal, resto = null', () => {
+    expect(crtGroup('1')).toBe('simples')
+    expect(crtGroup('2')).toBe('simples')
+    expect(crtGroup('3')).toBe('normal')
+    expect(crtGroup(null)).toBeNull()
+    expect(crtGroup('9')).toBeNull()
+  })
+
+  it('icmsMissingCodeForCrt: Simples exige CSOSN, Normal exige CST; sem peça/CRT nada exige', () => {
+    expect(icmsMissingCodeForCrt({ icms: { cstNr: '00', csosn: null } }, '1')).toBe('csosn')
+    expect(icmsMissingCodeForCrt({ icms: { cstNr: null, csosn: '102' } }, '3')).toBe('cst')
+    expect(icmsMissingCodeForCrt({ icms: { cstNr: null, csosn: '102' } }, '2')).toBeNull()
+    expect(icmsMissingCodeForCrt({ icms: { cstNr: '00', csosn: null } }, '3')).toBeNull()
+    expect(icmsMissingCodeForCrt({}, '1')).toBeNull()
+    expect(icmsMissingCodeForCrt({ icms: { cstNr: null, csosn: null } }, null)).toBeNull()
+  })
+
+  it('clearIcmsCodesForRegime: indo p/ Simples zera CST; p/ Normal zera CSOSN — só regras vivas da institution', async () => {
+    mockQuery.mockResolvedValueOnce([{ affectedRows: 4 }])
+    expect(await clearIcmsCodesForRegime('setes_setes', 1, '1')).toBe(4)
+    const sqlSimples = mockQuery.mock.calls[0][0] as string
+    expect(sqlSimples).toContain('SET i.tb_tax_icms_nr_id = NULL')
+    expect(sqlSimples).toContain("r.tb_institution_id = ? AND r.deleted = 'N'")
+    expect(sqlSimples).toContain("i.deleted = 'N' AND i.tb_tax_icms_nr_id IS NOT NULL")
+    expect(mockQuery.mock.calls[0][1]).toEqual([1])
+
+    mockQuery.mockResolvedValueOnce([{ affectedRows: 2 }])
+    expect(await clearIcmsCodesForRegime('setes_setes', 1, '3')).toBe(2)
+    expect(mockQuery.mock.calls[1][0] as string)
+      .toContain('SET i.tb_tax_icms_sn_id = NULL')
+  })
+})
+
 describe('tax-rules repository', () => {
   it('listTaxRules: página e COUNT usam a MESMA where; ordem NCM DESC + id', async () => {
     mockQuery
