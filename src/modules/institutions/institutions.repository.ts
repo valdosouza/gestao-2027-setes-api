@@ -207,13 +207,16 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
   // cobre as institutions retroativas).
   // 'establishment' desde 2026-08-26: autoatendimento do admin sobre o
   // PRÓPRIO institution (seed 41 cobre as institutions retroativas).
+  // 'services'/'price-lists' desde 2026-09-01 (prompt_modulo_services.md):
+  // gate técnico — a liberação comercial é por interface (D3: só cliente
+  // sem legado); seed 42 cobre as institutions retroativas.
   const defaultModules = [
     'core', 'users', 'customers', 'collaborators', 'salesmen', 'carriers',
     'providers', 'categories', 'financial-plans', 'tax-rules',
     'state-tax-rates', 'billing',
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements', 'modules', 'cashier', 'orders',
-    'order-returns', 'establishment',
+    'order-returns', 'establishment', 'services', 'price-lists',
   ]
   const conn = await pool.getConnection()
   try {

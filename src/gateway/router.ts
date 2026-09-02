@@ -34,6 +34,8 @@ import orderReturnsRoutes from '@modules/order-returns/order-returns.routes'
 import banksRoutes from '@modules/banks/banks.routes'
 import modulesRoutes from '@modules/modules/modules.routes'
 import establishmentRoutes from '@modules/establishment/establishment.routes'
+import servicesRoutes from '@modules/services/services.routes'
+import priceListsRoutes from '@modules/price-lists/price-lists.routes'
 import { superGuard, superWriteGuard } from './super.guard'
 import { adminGuard } from './admin.guard'
 
@@ -158,6 +160,13 @@ router.use('/contracts', contractsRoutes)
 // Contas bancárias (Software House, 5.6): cadastro de CLIENTE — grupo
 // Financeiro; catálogo central tb_bank (DP2); flag 'bank-accounts'.
 router.use('/bank-accounts', bankAccountsRoutes)
+
+// Serviços (prompt_modulo_services.md, D1–D7 2026-09-01): tb_product
+// kind='S' fixo + grade de preços tb_price; tela irmã do futuro cadastro
+// de produtos (D5/D6); flag 'services'. Tabelas de Preço = módulo próprio
+// (D7); flag 'price-lists'.
+router.use('/services', servicesRoutes)
+router.use('/price-lists', priceListsRoutes)
 
 // Ordens de serviço (Software House, 4.4–4.6): 1ª TELA DE PROCESSO —
 // grupo Serviços; ciclo mensal + Gerar Faturamento; flag 'service-orders'.
