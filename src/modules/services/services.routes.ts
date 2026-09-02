@@ -71,6 +71,18 @@ router.get('/financial-plans', controller.financialPlansLookup)
 
 /**
  * @swagger
+ * /api/services/price-lists:
+ *   get:
+ *     summary: Lookup de tabelas de preço vivas — grade do serviço NOVO (o app fala só com /api/services)
+ *     tags: [services]
+ *     security: [{ BearerAuth: [] }]
+ *     responses:
+ *       200: { description: "{ ok, data: [{ id, description }] }" }
+ */
+router.get('/price-lists', controller.priceListsLookup)
+
+/**
+ * @swagger
  * /api/services/{id}:
  *   get:
  *     summary: Serviço por id, com a grade de preços (todas as tabelas vivas + preço atual)

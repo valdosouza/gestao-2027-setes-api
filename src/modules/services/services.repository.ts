@@ -289,3 +289,20 @@ export const listCategoriesLookup = (
 export const listFinancialPlansLookup = (
   filter: string, schemaName: string, institutionId: number
 ) => lookup('tb_financial_plans', filter, schemaName, institutionId)
+
+/** Tabelas de preço vivas — grade do serviço NOVO (o app fala só com
+ *  /api/services; nunca com o endpoint do módulo vizinho). */
+export async function listPriceListsLookup(
+  schemaName: string, institutionId: number
+): Promise<ServiceLookupRow[]> {
+  assertSchemaName(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT id, description
+       FROM \`${schemaName}\`.tb_price_list
+      WHERE tb_institution_id = ? AND deleted = 'N'
+      ORDER BY description, id
+      LIMIT 100`,
+    [institutionId]
+  )
+  return rows
+}
