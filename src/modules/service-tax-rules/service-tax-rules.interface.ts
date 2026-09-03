@@ -14,6 +14,8 @@ export interface ServiceTaxRuleRow {
   id:                     number
   cityId:                 number
   cityName:               string | null
+  /** UF da cidade de incidência — lookup dependente do app (UF → cidade). */
+  stateId:                number | null
   stateAbbreviation:      string | null
   serviceListId:          string
   serviceListDescription: string | null

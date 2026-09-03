@@ -29,7 +29,7 @@ const router = Router()
  *         name: pageSize
  *         schema: { type: integer }
  *     responses:
- *       200: { description: "{ ok, data: [{ id, cityId, cityName, stateAbbreviation, serviceListId, serviceListDescription, localIncidence, aliq, municipalCode, active }], page, pageSize, total }" }
+ *       200: { description: "{ ok, data: [{ id, cityId, cityName, stateId, stateAbbreviation, serviceListId, serviceListDescription, localIncidence, aliq, municipalCode, active }], page, pageSize, total }" }
  *       401: { description: Sem JWT }
  *       403: { description: Flag desabilitada }
  *   post:

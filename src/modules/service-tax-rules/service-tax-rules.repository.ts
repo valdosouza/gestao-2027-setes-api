@@ -15,7 +15,7 @@ import {
  */
 
 const FIELDS = `r.id, r.tb_city_id AS cityId, c.name AS cityName,
-            st.abbreviation AS stateAbbreviation,
+            c.tb_state_id AS stateId, st.abbreviation AS stateAbbreviation,
             r.tb_service_list_id AS serviceListId,
             sl.description AS serviceListDescription,
             sl.local_incidence AS localIncidence,
