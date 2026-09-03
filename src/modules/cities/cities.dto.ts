@@ -9,7 +9,6 @@ export const cityUpdateDto = z.object({
   tbStateId:  z.number().int().nonnegative(),
   ibge:       z.string().max(20).nullable().optional(),
   name:       z.string().min(1).max(100),
-  aliqIss:    z.number().min(0).optional(),
   population: z.number().int().min(0).optional(),
   density:    z.number().min(0).optional(),
   area:       z.number().min(0).optional(),

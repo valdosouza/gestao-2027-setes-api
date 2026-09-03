@@ -168,9 +168,10 @@ export interface IiCalcResult {
   siscomexValue: number
 }
 
-/** P6.1 — alíquota vem do cadastro da CIDADE do destinatário, NUNCA da regra. */
+/** ISSQN — alíquota vem da REGRA DE TRIBUTAÇÃO DE SERVIÇO do item (D13 do
+ *  prompt_regra_tributacao_servico.md; tb_city.aliq_iss morreu — D8). */
 export interface IssqnCalcContext {
-  cityAliqPct: number
+  aliqPct: number
   deductionValue: number   // ITF_VL_DESC
   withheld: boolean        // flag do cliente issretido='S'
 }

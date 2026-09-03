@@ -33,7 +33,7 @@ const router = Router()
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
- *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, tbStateId, ibge, name, aliqIss, population, density, area, stateName }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, tbStateId, ibge, name, population, density, area, stateName }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */

@@ -8,7 +8,6 @@ export interface CityRow {
   tbStateId:  number
   ibge:       string | null
   name:       string | null
-  aliqIss:    number
   population: number
   density:    number
   area:       number
@@ -20,7 +19,6 @@ export interface CityInput {
   tbStateId:   number
   ibge?:       string | null
   name:        string
-  aliqIss?:    number
   population?: number
   density?:    number
   area?:       number

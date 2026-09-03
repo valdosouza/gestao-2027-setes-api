@@ -182,6 +182,63 @@ export async function upsertItemRuleAuto(
   )
 }
 
+/** Vínculo por item da regra de SERVIÇO (tb_order_item_service_tax_rule —
+ *  irmã da tb_order_item_tax_rule, D14). */
+export interface ItemServiceTaxRuleLink {
+  orderItemId: number
+  kind: string
+  serviceTaxRuleId: number
+  origin: 'A' | 'M'
+}
+
+export async function getItemServiceRuleLinks(
+  schemaName: string, institutionId: number, orderId: number
+): Promise<ItemServiceTaxRuleLink[]> {
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT tb_order_item_id AS orderItemId, kind,
+            tb_service_tax_rule_id AS serviceTaxRuleId, origin
+       FROM \`${s}\`.tb_order_item_service_tax_rule
+      WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0
+        AND deleted = 'N'`,
+    [orderId, institutionId]
+  )
+  return rows as ItemServiceTaxRuleLink[]
+}
+
+export async function clearAutoServiceRuleLink(
+  schemaName: string, institutionId: number, orderId: number,
+  itemId: number, itemKind: string
+): Promise<void> {
+  const s = assertSchema(schemaName)
+  await pool.query(
+    `UPDATE \`${s}\`.tb_order_item_service_tax_rule
+        SET deleted = 'S', updated_at = NOW()
+      WHERE tb_order_id = ? AND tb_order_item_id = ? AND tb_institution_id = ?
+        AND terminal = 0 AND kind = ? AND origin = 'A' AND deleted = 'N'`,
+    [orderId, itemId, institutionId, itemKind]
+  )
+}
+
+/** Grava a regra de serviço resolvida (origin 'A'); 'M' nunca é sobrescrita. */
+export async function upsertItemServiceRuleAuto(
+  schemaName: string, institutionId: number, orderId: number,
+  itemId: number, itemKind: string, ruleId: number
+): Promise<void> {
+  const s = assertSchema(schemaName)
+  await pool.query(
+    `INSERT INTO \`${s}\`.tb_order_item_service_tax_rule
+       (tb_order_id, tb_order_item_id, tb_institution_id, terminal, kind,
+        tb_service_tax_rule_id, origin, created_at, updated_at, deleted)
+     VALUES (?, ?, ?, 0, ?, ?, 'A', NOW(), NOW(), 'N')
+     ON DUPLICATE KEY UPDATE
+       tb_service_tax_rule_id = IF(origin = 'M', tb_service_tax_rule_id, VALUES(tb_service_tax_rule_id)),
+       deleted    = IF(origin = 'M', deleted, 'N'),
+       updated_at = IF(origin = 'M', updated_at, NOW())`,
+    [orderId, itemId, institutionId, itemKind, ruleId]
+  )
+}
+
 export async function getFreightAndExpenses(
   schemaName: string, institutionId: number, orderId: number
 ): Promise<{ freight: number; expenses: number }> {
@@ -242,19 +299,17 @@ export async function getInstallments(
 /** Endereço principal da entity (main='S', senão o 1º vivo). */
 export async function getEntityLocation(
   entityId: number
-): Promise<{ stateId: number | null; cityId: number | null; cityIssAliq: number } | null> {
+): Promise<{ stateId: number | null; cityId: number | null } | null> {
   const [rows] = await pool.query<any[]>(
-    `SELECT a.tb_state_id AS stateId, a.tb_city_id AS cityId,
-            COALESCE(c.aliq_iss, 0) AS cityIssAliq
+    `SELECT a.tb_state_id AS stateId, a.tb_city_id AS cityId
        FROM setes_central.tb_address a
-       LEFT JOIN setes_central.tb_city c ON c.id = a.tb_city_id
       WHERE a.id = ? AND a.deleted = 'N'
       ORDER BY (a.main = 'S') DESC
       LIMIT 1`,
     [entityId]
   )
   return rows[0]
-    ? { stateId: rows[0].stateId, cityId: rows[0].cityId, cityIssAliq: Number(rows[0].cityIssAliq) }
+    ? { stateId: rows[0].stateId, cityId: rows[0].cityId }
     : null
 }
 
@@ -339,6 +394,8 @@ export interface ComputedItem {
     mvaPct: number | null
     stAliq: number | null   // alíquota INTERNA do destino usada no value_st
   }
+  /** Serviço: item LC 116 + código municipal da regra (D4) → tb_order_item_issqn. */
+  issqnExtras: { serviceListId: string; municipalCode: string | null } | null
 }
 
 export interface PersistInvoiceParams {
@@ -641,13 +698,15 @@ async function persistItemTaxes(
     await conn.query(
       `INSERT INTO \`${s}\`.tb_order_item_issqn
          (tb_order_id, tb_order_item_id, tb_institution_id, terminal,
-          base_value, aliq_value, tag_value,
+          base_value, aliq_value, tag_value, listservice, tax_code,
           created_at, updated_at, deleted)
-       VALUES (?, ?, ?, 0, ?, ?, ?, NOW(), NOW(), 'N')
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
        ON DUPLICATE KEY UPDATE
          base_value = VALUES(base_value), aliq_value = VALUES(aliq_value),
-         tag_value = VALUES(tag_value), deleted = 'N', updated_at = NOW()`,
-      [...key, t.issqn.base, t.issqn.aliq, t.issqn.value]
+         tag_value = VALUES(tag_value), listservice = VALUES(listservice),
+         tax_code = VALUES(tax_code), deleted = 'N', updated_at = NOW()`,
+      [...key, t.issqn.base, t.issqn.aliq, t.issqn.value,
+       ci.issqnExtras?.serviceListId ?? null, ci.issqnExtras?.municipalCode ?? null]
     )
   }
 }

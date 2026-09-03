@@ -5,6 +5,10 @@ import {
   ItemTaxCalcInput, icmsMissingCodeForCrt,
 } from '@shared/tax-rule'
 import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
+import {
+  resolveServiceTaxRule, getServiceTaxRuleById, checkServiceRule,
+  serviceRuleProblemMessage, ServiceTaxRuleResolved,
+} from '@shared/service-tax-rule'
 import { getConfigContent } from '@shared/interface-config'
 import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
@@ -15,6 +19,7 @@ import {
 import {
   getOrderStatus, getOrderBranch, listBillingItems, getItemRuleLinks,
   upsertItemRuleAuto, clearAutoRuleLink, findDeadRuleIds,
+  getItemServiceRuleLinks, upsertItemServiceRuleAuto, clearAutoServiceRuleLink,
   getFreightAndExpenses, getOrderBillingInfo,
   getInstallments, getEntityLocation, persistInvoice, ComputedItem,
   OrderBranchInfo,
@@ -50,7 +55,7 @@ interface BillingContext {
   branch: OrderBranchInfo
   emitterCrt: string | null
   emitterStateId: number | null
-  emitterCityIssAliq: number
+  recipientCityId: number | null
   recipientStateId: number | null
   recipientConsumer: 'S' | 'N'
   recipientSimples: 'S' | 'N'
@@ -98,7 +103,7 @@ async function loadContext(
     branch,
     emitterCrt: crt,
     emitterStateId: emitterLoc?.stateId ?? null,
-    emitterCityIssAliq: emitterLoc?.cityIssAliq ?? 0,
+    recipientCityId: recipientLoc?.cityId ?? null,
     recipientStateId: recipientLoc?.stateId ?? null,
     recipientConsumer: recipientTax?.consumer === 'S' ? 'S' : 'N',
     // Simples do DESTINATÁRIO no seletor da regra (T5) — regime 1 = optante
@@ -195,6 +200,13 @@ export async function validateOrder(
   const links = await getItemRuleLinks(schemaName, institutionId, input.orderId)
   const manualByItem = new Map(
     links.filter(l => l.origin === 'M').map(l => [`${l.orderItemId}|${l.kind}`, l]))
+  // Onda 3 (regra de serviço — D6/D12/D14): vínculo irmão por item; só
+  // consultado quando a ordem tem serviço (ordens só-mercadoria não pagam).
+  const hasService = items.some(i => i.productKind === 'S')
+  const serviceLinks = hasService
+    ? await getItemServiceRuleLinks(schemaName, institutionId, input.orderId) : []
+  const serviceManualByItem = new Map(
+    serviceLinks.filter(l => l.origin === 'M').map(l => [`${l.orderItemId}|${l.kind}`, l]))
 
   let rulesResolved = 0
   let rulesManual = 0
@@ -219,7 +231,34 @@ export async function validateOrder(
       : 'CST (emitente no Regime Normal)'} — revise as regras de tributação para o regime atual`
 
   for (const item of items) {
-    if (item.productKind === 'S') continue // serviço: sem regra de mercadoria
+    if (item.productKind === 'S') {
+      // Serviço: regra APONTADA pelo cadastro (D1) ou RegraDireta 'M' (D14);
+      // sem regra / inativa / cidade ≠ tomador = pendência (D6/D12). Vínculo
+      // 'A' só sobrevive quando a regra passa — sem link o /invoice devolve
+      // 422 REQUIRES_VALIDATION (a "interrupção do faturamento").
+      const svcManual = serviceManualByItem.get(`${item.id}|${item.kind}`)
+      const rule = svcManual
+        ? await getServiceTaxRuleById(schemaName, institutionId, svcManual.serviceTaxRuleId)
+        : await resolveServiceTaxRule(schemaName, institutionId, item.productId)
+      const problem = checkServiceRule(rule, ctx.recipientCityId)
+      if (problem) {
+        if (!svcManual) {
+          await clearAutoServiceRuleLink(
+            schemaName, institutionId, input.orderId, item.id, item.kind)
+        }
+        issues.push({ scope: 'item', itemId: item.id, field: 'serviceTaxRule',
+          message: serviceRuleProblemMessage(item.id, problem, rule) })
+        continue
+      }
+      if (svcManual) {
+        rulesManual++
+      } else {
+        await upsertItemServiceRuleAuto(
+          schemaName, institutionId, input.orderId, item.id, item.kind, rule!.id)
+        rulesResolved++
+      }
+      continue
+    }
     if (!MERCHANDISE_KINDS.includes(item.kind)) continue
 
     if (item.ncm === null || item.ncm === '') {
@@ -316,6 +355,38 @@ export async function invoiceOrder(
 
   const merchandiseItems = items.filter(
     i => i.productKind !== 'S' && MERCHANDISE_KINDS.includes(i.kind))
+
+  // Onda 3 — serviço exige vínculo gravado pelo /validate (D6) e a regra é
+  // REVALIDADA aqui (viva, ativa, cidade = tomador — D12): paridade com o
+  // gate duro de NCM/regra da mercadoria.
+  const serviceItems = items.filter(i => i.productKind === 'S')
+  const serviceRuleByItem = new Map<string, ServiceTaxRuleResolved>()
+  if (serviceItems.length > 0) {
+    const serviceLinks = await getItemServiceRuleLinks(schemaName, institutionId, input.orderId)
+    const serviceLinkByItem = new Map(serviceLinks.map(l => [`${l.orderItemId}|${l.kind}`, l]))
+    const missingService = serviceItems.filter(i => !serviceLinkByItem.has(`${i.id}|${i.kind}`))
+    if (missingService.length > 0) {
+      throw new HttpError(422, 'Serviço sem regra de tributação vinculada — valide a ordem',
+        missingService.map(i => ({ field: `item.${i.id}`, message: 'Sem regra de tributação de serviço vinculada' })),
+        'REQUIRES_VALIDATION')
+    }
+    const ruleCache = new Map<number, ServiceTaxRuleResolved | null>()
+    for (const item of serviceItems) {
+      const link = serviceLinkByItem.get(`${item.id}|${item.kind}`)!
+      if (!ruleCache.has(link.serviceTaxRuleId)) {
+        ruleCache.set(link.serviceTaxRuleId,
+          await getServiceTaxRuleById(schemaName, institutionId, link.serviceTaxRuleId))
+      }
+      const rule = ruleCache.get(link.serviceTaxRuleId)!
+      const problem = checkServiceRule(rule, ctx.recipientCityId)
+      if (problem) {
+        throw new HttpError(422, 'Regra de tributação de serviço inválida — valide a ordem',
+          [{ field: `item.${item.id}`, message: serviceRuleProblemMessage(item.id, problem, rule) }],
+          'REQUIRES_VALIDATION')
+      }
+      serviceRuleByItem.set(`${item.id}|${item.kind}`, rule!)
+    }
+  }
 
   // R5-Q3 (evidência Fc_Valida_Itens_Nota): NCM ausente é gate DURO no
   // legado, revalidado no momento de faturar (o /validate pode ter rodado
@@ -470,11 +541,12 @@ export async function invoiceOrder(
         quantity: item.quantity, unitAliqValue: item.unitValue,
       })),
       issqn: isService ? {
-        cityAliqPct: ctx.emitterCityIssAliq,     // decisão 3: município do PRESTADOR
+        aliqPct: serviceRuleByItem.get(`${item.id}|${item.kind}`)!.aliq, // D13: alíquota da REGRA
         deductionValue: item.discountValue,
         withheld: ctx.recipientIssRetido,
       } : undefined,
     }
+    const serviceRule = isService ? serviceRuleByItem.get(`${item.id}|${item.kind}`) ?? null : null
 
     computed.push({
       item,
@@ -502,6 +574,9 @@ export async function invoiceOrder(
         mvaPct,
         stAliq,
       },
+      issqnExtras: serviceRule
+        ? { serviceListId: serviceRule.serviceListId, municipalCode: serviceRule.municipalCode }
+        : null,
     })
   }
 

@@ -494,7 +494,10 @@ describe('invoiceOrder', () => {
     mockBranchSale()
     mockContext()
     mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, productKind: 'S' })]])
-    mockQuery.mockResolvedValueOnce([[]])                 // links (serviço não exige)
+    mockQuery.mockResolvedValueOnce([[]])                 // links (mercadoria)
+    // Onda 3: serviço exige vínculo irmão + regra viva/coerente (cidade 2 = tomador)
+    mockQuery.mockResolvedValueOnce([[{ orderItemId: 1, kind: 'Sale', serviceTaxRuleId: 2, origin: 'A' }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, active: 'S' }]])
     mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
@@ -528,7 +531,10 @@ describe('invoiceOrder', () => {
     mockBranchSale()
     mockContext()
     mockQuery.mockResolvedValueOnce([[itemRow({ id: 1, productKind: 'S', kind: 'Sale' })]])
-    mockQuery.mockResolvedValueOnce([[]])                 // links (serviço não exige)
+    mockQuery.mockResolvedValueOnce([[]])                 // links (mercadoria)
+    // Onda 3: serviço exige vínculo irmão + regra viva/coerente (cidade 2 = tomador)
+    mockQuery.mockResolvedValueOnce([[{ orderItemId: 1, kind: 'Sale', serviceTaxRuleId: 2, origin: 'A' }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, active: 'S' }]])
     mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
@@ -989,6 +995,9 @@ describe('comissão e devolução', () => {
     mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 77 })
     mockOrderReturn.buildReturnPlan.mockResolvedValueOnce({ issues: [], plan: null })
     mockQuery.mockResolvedValueOnce([[]]) // links
+    mockQuery.mockResolvedValueOnce([[]]) // links de serviço (Onda 3)
+    mockQuery.mockResolvedValueOnce([[]]) // item 2 (serviço) sem regra -> issue
+    mockQuery.mockResolvedValueOnce([{}]) // clear vínculo A do serviço
 
     await validateOrder(inst as any, {
       orderId: 10, adjustment: { cfopId: '1202' },

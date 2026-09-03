@@ -308,11 +308,11 @@ describe('calcIi (P9 + decisão 11/Q32 — peça completa)', () => {
 
 describe('calcIssqn (P6.1 — alíquota da CIDADE, nunca da regra)', () => {
   it('calcula sobre a mercadoria líquida', () => {
-    const r = calcIssqn({ cityAliqPct: 5, deductionValue: 0, withheld: false }, 1000)
+    const r = calcIssqn({ aliqPct: 5, deductionValue: 0, withheld: false }, 1000)
     expect(r).toEqual({ base: 1000, aliq: 5, value: 50, withheldValue: 0 })
   })
   it('retido -> withheldValue = valor inteiro', () => {
-    const r = calcIssqn({ cityAliqPct: 5, deductionValue: 0, withheld: true }, 1000)
+    const r = calcIssqn({ aliqPct: 5, deductionValue: 0, withheld: true }, 1000)
     expect(r.withheldValue).toBe(50)
   })
 })
@@ -340,7 +340,7 @@ describe('calculateItemTaxes — orquestrador (T1, presença = incidência)', ()
   it('item de serviço (kind S) calcula ISSQN e ignora ICMS/IPI/II ausentes', () => {
     const r = calculateItemTaxes({
       merchandiseValue: 500, freight: 0, insurance: 0, other: 0, kind: 'S',
-      issqn: { cityAliqPct: 3, deductionValue: 0, withheld: false },
+      issqn: { aliqPct: 3, deductionValue: 0, withheld: false },
     })
     expect(r.issqn!.value).toBe(15)
     expect(r.icms).toBeUndefined()

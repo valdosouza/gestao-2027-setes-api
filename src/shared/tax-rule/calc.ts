@@ -360,13 +360,13 @@ export function calcIi(ctx: IiCalcContext, merchandiseValue: number): IiCalcResu
   }
 }
 
-// ── P6.1 — ISSQN (só item kind 'S'; alíquota vem da CIDADE, não da regra) ──
+// ── ISSQN (só item kind 'S'; alíquota vem da REGRA DE SERVIÇO — D13) ──
 
 export function calcIssqn(ctx: IssqnCalcContext, merchandiseValue: number): IssqnCalcResult {
   const base = round2(merchandiseValue)
-  const value = round2(base * ctx.cityAliqPct / 100)
+  const value = round2(base * ctx.aliqPct / 100)
   return {
-    base, aliq: ctx.cityAliqPct, value,
+    base, aliq: ctx.aliqPct, value,
     withheldValue: ctx.withheld ? value : 0,
   }
 }

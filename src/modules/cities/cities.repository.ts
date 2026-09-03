@@ -27,7 +27,6 @@ export async function listCities(
             c.tb_state_id  AS tbStateId,
             c.ibge,
             c.name,
-            c.aliq_iss     AS aliqIss,
             c.population,
             c.density,
             c.area,
@@ -46,7 +45,7 @@ export async function listCities(
 export async function getCity(id: number): Promise<CityRow | null> {
   const [rows] = await pool.query<any[]>(
     `SELECT c.id, c.tb_state_id AS tbStateId, c.ibge, c.name,
-            c.aliq_iss AS aliqIss, c.population, c.density, c.area,
+            c.population, c.density, c.area,
             s.name AS stateName
      FROM setes_central.tb_city c
      LEFT JOIN setes_central.tb_state s ON s.id = c.tb_state_id
@@ -76,14 +75,13 @@ export async function cityIdExists(id: number): Promise<boolean> {
 export async function insertCity(input: CityCreateInput): Promise<number> {
   await pool.query(
     `INSERT INTO setes_central.tb_city
-       (id, tb_state_id, ibge, name, aliq_iss, population, density, area, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+       (id, tb_state_id, ibge, name, population, density, area, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
     [
       input.id,
       input.tbStateId,
       input.ibge ?? null,
       input.name,
-      input.aliqIss  ?? 0,
       input.population ?? 0,
       input.density  ?? 0,
       input.area     ?? 0,
@@ -96,14 +94,13 @@ export async function updateCity(id: number, input: CityInput): Promise<void> {
   await pool.query(
     `UPDATE setes_central.tb_city
      SET tb_state_id = ?, ibge = ?, name = ?,
-         aliq_iss = ?, population = ?, density = ?, area = ?,
+         population = ?, density = ?, area = ?,
          updated_at = NOW()
      WHERE id = ?`,
     [
       input.tbStateId,
       input.ibge ?? null,
       input.name,
-      input.aliqIss  ?? 0,
       input.population ?? 0,
       input.density  ?? 0,
       input.area     ?? 0,
