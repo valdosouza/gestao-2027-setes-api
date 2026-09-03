@@ -7,7 +7,7 @@ import { serviceDto } from './services.dto'
 import {
   ServiceScope, fetchServices, fetchService, createService, editService,
   removeService, fetchCategoriesLookup, fetchFinancialPlansLookup,
-  fetchPriceListsLookup,
+  fetchPriceListsLookup, fetchServiceTaxRulesLookup,
 } from './services.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
@@ -81,6 +81,15 @@ export async function categoriesLookup(req: Request, res: Response): Promise<voi
     res.json({ ok: true, data: await fetchCategoriesLookup(filter, scopeOf(req)) })
   } catch (err) {
     handleError(res, err, 'services/categories GET')
+  }
+}
+
+export async function taxRulesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const filter = String(req.query.filter ?? '')
+    res.json({ ok: true, data: await fetchServiceTaxRulesLookup(filter, scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'services/tax-rules GET')
   }
 }
 

@@ -83,6 +83,22 @@ router.get('/price-lists', controller.priceListsLookup)
 
 /**
  * @swagger
+ * /api/services/tax-rules:
+ *   get:
+ *     summary: Lookup das regras de tributacao de servico vivas/ativas (FK literal do servico — D1)
+ *     tags: [services]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: "{ ok, data: [{ id, description }] }" }
+ */
+router.get('/tax-rules', controller.taxRulesLookup)
+
+/**
+ * @swagger
  * /api/services/{id}:
  *   get:
  *     summary: Serviço por id, com a grade de preços (todas as tabelas vivas + preço atual)
@@ -123,6 +139,7 @@ router.get('/:id', controller.getOne)
  *               published:        { type: string, enum: [S, N], default: N }
  *               active:           { type: string, enum: [S, N], default: S }
  *               note:             { type: string, nullable: true }
+ *               serviceTaxRuleId: { type: integer, nullable: true, description: Regra de tributacao de servico (FK literal D1) }
  *               prices:
  *                 type: array
  *                 description: Grade por tabela de preço (priceTag null remove)

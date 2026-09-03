@@ -81,8 +81,18 @@ export async function getService(
             COALESCE(p.highlights, 'N') AS highlights,
             COALESCE(p.published, 'N')  AS published,
             COALESCE(p.active, 'S')     AS active,
-            CAST(p.note AS CHAR)        AS note
+            CAST(p.note AS CHAR)        AS note,
+            sv.tb_service_tax_rule_id   AS serviceTaxRuleId,
+            CASE WHEN r.id IS NULL THEN NULL ELSE
+              CONCAT(r.tb_service_list_id, ' \u00b7 ', COALESCE(ct.name, ''), '/', COALESCE(st.abbreviation, ''),
+                     ' \u00b7 ', FORMAT(r.aliq, 2), '%') END AS serviceTaxRuleLabel
      FROM \`${schemaName}\`.tb_product p
+     LEFT JOIN \`${schemaName}\`.tb_service sv
+       ON sv.id = p.id AND sv.tb_institution_id = p.tb_institution_id AND sv.deleted = 'N'
+     LEFT JOIN \`${schemaName}\`.tb_service_tax_rule r
+       ON r.id = sv.tb_service_tax_rule_id AND r.tb_institution_id = sv.tb_institution_id AND r.deleted = 'N'
+     LEFT JOIN setes_central.tb_city ct ON ct.id = r.tb_city_id
+     LEFT JOIN setes_central.tb_state st ON st.id = ct.tb_state_id
      LEFT JOIN \`${schemaName}\`.tb_category c
        ON c.id = p.tb_category_id AND c.tb_institution_id = p.tb_institution_id
      LEFT JOIN \`${schemaName}\`.tb_financial_plans f
@@ -123,6 +133,26 @@ async function assertRefs(
     await check('tb_price_list', price.priceListId,
       'prices', 'Tabela de preço')
   }
+  if (input.serviceTaxRuleId != null) {
+    await check('tb_service_tax_rule', input.serviceTaxRuleId,
+      'serviceTaxRuleId', 'Regra de tributação de serviço')
+  }
+}
+
+/** Especialização tb_service (D3) — FK literal para a regra (D1), gravada na
+ *  MESMA transação do produto; presença da linha = serviço enquadrado. */
+async function upsertServiceRule(
+  conn: PoolConnection, serviceId: number, input: ServiceInput,
+  schemaName: string, institutionId: number
+): Promise<void> {
+  await conn.query(
+    `INSERT INTO \`${schemaName}\`.tb_service
+       (id, tb_institution_id, tb_service_tax_rule_id, created_at, updated_at, deleted)
+     VALUES (?, ?, ?, NOW(), NOW(), 'N')
+     ON DUPLICATE KEY UPDATE
+       tb_service_tax_rule_id = VALUES(tb_service_tax_rule_id), deleted = 'N', updated_at = NOW()`,
+    [serviceId, institutionId, input.serviceTaxRuleId ?? null]
+  )
 }
 
 /** Grade tb_price na MESMA transação: presença = sincroniza (upsert das
@@ -193,6 +223,7 @@ export async function insertService(
        input.published ?? 'N', input.active ?? 'S', input.note ?? null]
     )
     await syncPrices(conn, id, input, schemaName, institutionId)
+    await upsertServiceRule(conn, id, input, schemaName, institutionId)
 
     await conn.commit()
     return id
@@ -235,6 +266,7 @@ export async function updateService(
       [identifier, ...PRODUCT_FIELDS(input), id, institutionId]
     )
     await syncPrices(conn, id, input, schemaName, institutionId)
+    await upsertServiceRule(conn, id, input, schemaName, institutionId)
 
     await conn.commit()
     return true
@@ -303,6 +335,30 @@ export async function listPriceListsLookup(
       ORDER BY description, id
       LIMIT 100`,
     [institutionId]
+  )
+  return rows
+}
+
+/** Regras de tributacao de servico VIVAS/ativas da institution — lookup do
+ *  form (FK literal D1). Rotulo: item · cidade/UF · aliquota. */
+export async function listServiceTaxRulesLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<ServiceLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT r.id,
+            CONCAT(r.tb_service_list_id, ' \u00b7 ', COALESCE(c.name, ''), '/', COALESCE(st.abbreviation, ''),
+                   ' \u00b7 ', FORMAT(r.aliq, 2), '%') AS description
+       FROM \`${schemaName}\`.tb_service_tax_rule r
+       LEFT JOIN setes_central.tb_city c ON c.id = r.tb_city_id
+       LEFT JOIN setes_central.tb_state st ON st.id = c.tb_state_id
+       LEFT JOIN setes_central.tb_service_list sl ON sl.id = r.tb_service_list_id
+      WHERE r.tb_institution_id = ? AND r.deleted = 'N' AND r.active = 'S'
+        AND (? IS NULL OR c.name LIKE ? OR r.tb_service_list_id LIKE ? OR sl.description LIKE ?)
+      ORDER BY c.name, r.tb_service_list_id
+      LIMIT 100`,
+    [institutionId, like, like, like, like]
   )
   return rows
 }

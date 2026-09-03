@@ -37,6 +37,7 @@ import modulesRoutes from '@modules/modules/modules.routes'
 import establishmentRoutes from '@modules/establishment/establishment.routes'
 import servicesRoutes from '@modules/services/services.routes'
 import priceListsRoutes from '@modules/price-lists/price-lists.routes'
+import serviceTaxRulesRoutes from '@modules/service-tax-rules/service-tax-rules.routes'
 import { superGuard, superWriteGuard } from './super.guard'
 import { adminGuard } from './admin.guard'
 
@@ -171,6 +172,10 @@ router.use('/bank-accounts', bankAccountsRoutes)
 // (D7); flag 'price-lists'.
 router.use('/services', servicesRoutes)
 router.use('/price-lists', priceListsRoutes)
+// Regra de Tributacao de SERVICO (ISS) — prompt_regra_tributacao_servico.md
+// D1-D14: cidade de incidencia x item LC 116 -> aliquota + codigo municipal;
+// caminho individual do servico (nada de @shared/tax-rule); flag 'service-tax-rules'.
+router.use('/service-tax-rules', serviceTaxRulesRoutes)
 
 // Ordens de serviço (Software House, 4.4–4.6): 1ª TELA DE PROCESSO —
 // grupo Serviços; ciclo mensal + Gerar Faturamento; flag 'service-orders'.

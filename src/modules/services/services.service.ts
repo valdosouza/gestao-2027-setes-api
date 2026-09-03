@@ -6,6 +6,7 @@ import {
 import {
   listServices, getService, insertService, updateService, softDeleteService,
   listCategoriesLookup, listFinancialPlansLookup, listPriceListsLookup,
+  listServiceTaxRulesLookup,
 } from './services.repository'
 
 /**
@@ -64,6 +65,12 @@ export async function fetchFinancialPlansLookup(
   filter: string, scope: ServiceScope
 ): Promise<ServiceLookupRow[]> {
   return listFinancialPlansLookup(filter, scope.schemaName, scope.institutionId)
+}
+
+export async function fetchServiceTaxRulesLookup(
+  filter: string, scope: ServiceScope
+): Promise<ServiceLookupRow[]> {
+  return listServiceTaxRulesLookup(filter, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchPriceListsLookup(

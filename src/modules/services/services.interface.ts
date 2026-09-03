@@ -28,6 +28,10 @@ export interface ServicePriceRow {
 }
 
 export interface ServiceFull extends ServiceListRow {
+  /** D1 (regra de tributacao de servico): FK literal tb_service -> regra;
+   *  null = sem regra (bloqueia o faturamento — D6). */
+  serviceTaxRuleId:          number | null
+  serviceTaxRuleLabel:       string | null
   financialPlansId:          number | null
   financialPlansDescription: string | null
   promotion:                 'S' | 'N'
@@ -47,6 +51,8 @@ export interface ServicePriceInput {
 export interface ServiceInput {
   /** D1: em branco → a API preenche com o próprio id na criação. */
   identifier?:       string | null
+  /** Regra de tributacao de servico (FK literal). null/ausente = sem regra. */
+  serviceTaxRuleId?: number | null
   description:       string
   categoryId:        number
   financialPlansId?: number | null

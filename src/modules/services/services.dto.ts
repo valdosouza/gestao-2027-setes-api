@@ -15,6 +15,7 @@ const priceDto = z.object({
 
 export const serviceDto = z.object({
   identifier:       z.string().max(50).nullable().optional(),
+  serviceTaxRuleId: z.number().int().positive().nullable().optional(),
   description:      z.string().min(1).max(100),
   categoryId:       z.number().int().positive(),
   financialPlansId: z.number().int().positive().nullable().optional(),
