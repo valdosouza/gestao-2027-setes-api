@@ -9,6 +9,7 @@ import citiesRoutes     from '@modules/cities/cities.routes'
 import interfacesRoutes from '@modules/interfaces/interfaces.routes'
 import privilegesRoutes from '@modules/privileges/privileges.routes'
 import cfopRoutes from '@modules/cfop/cfop.routes'
+import serviceListRoutes from '@modules/service-list/service-list.routes'
 import interfaceFieldsRoutes from '@modules/interface-fields/interface-fields.routes'
 import interfaceConfigsRoutes from '@modules/interface-configs/interface-configs.routes'
 import usersRoutes from '@modules/users/users.routes'
@@ -59,6 +60,9 @@ router.use('/interfaces', superGuard, interfacesRoutes)
 router.use('/privileges', superGuard, privilegesRoutes)
 // CFOP (2026-07-18): referência fiscal do catálogo CENTRAL — módulo Super.
 router.use('/cfop',       superGuard, cfopRoutes)
+// Lista de Servicos LC 116 (prompt_regra_tributacao_servico.md D10): referencia
+// fiscal central da regra de tributacao de servico - Super.
+router.use('/service-list', superGuard, serviceListRoutes)
 // Bancos (2026-08-04, fecho da decisão 8 da Fase 3): catálogo FEBRABAN
 // CENTRAL, cadastro geral SEM cadeia fiscal — manutenção do Super; o
 // consumo pelos clientes segue no lookup /api/bank-accounts/banks.
