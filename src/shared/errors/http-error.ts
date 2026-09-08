@@ -2,6 +2,10 @@
 export interface FieldError {
   field:   string
   message: string
+  /** Valor ESPERADO quando o erro é de conferência numérica (Q-N3 da negociação,
+   *  2026-09-07): a tela preenche/corrige sem fazer parse da prosa da mensagem.
+   *  Aditivo — consumidores antigos ignoram. */
+  expected?: number
 }
 
 export class HttpError extends Error {

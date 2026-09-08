@@ -3,6 +3,8 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { upsertOrderBilling } from '@shared/order-billing'
+import { assertPaymentRules } from '@shared/order-installment'
 import {
   prorataValue, parcelQuotas, firstDayOfMonth, lastDayOfMonth,
 } from './service-orders.calc'
@@ -545,18 +547,12 @@ export async function generateInvoice(
     await conn.beginTransaction()
     await lockOpenOrder(conn, schemaName, institutionId, orderId)
 
-    // forma de pagamento VINCULADA e habilitada na institution
-    const [pt] = await conn.query<any[]>(
-      `SELECT 1 FROM \`${schemaName}\`.tb_institution_has_payment_types
-        WHERE tb_institution_id = ? AND tb_payment_types_id = ?
-          AND deleted = 'N' AND \`enable\` = 'S'`,
-      [institutionId, input.paymentTypeId]
-    )
-    if (pt.length === 0) {
-      throw new HttpError(400, 'Forma de pagamento não vinculada/habilitada',
-        [{ field: 'paymentTypeId', message: 'Forma indisponível' }],
-        'PAYMENT_TYPE_UNAVAILABLE')
-    }
+    // forma VINCULADA/habilitada + nº de parcelas ≤ max_parcels do vínculo —
+    // a MESMA regra das três portas (Q-N1 da negociação do pedido, 2026-09-07)
+    await assertPaymentRules(conn, schemaName, institutionId, {
+      headerPaymentTypeId: input.paymentTypeId, parcels: [], nParcels: input.parcels,
+      limitField: 'parcels',
+    })
 
     const total = await recalcTotalizer(conn, schemaName, institutionId, orderId)
     const [itemsAlive] = await conn.query<any[]>(
@@ -578,17 +574,12 @@ export async function generateInvoice(
     )
     const customerId = Number(svc[0].customerId)
 
-    // condições de cobrança (passo 5 da sequência — tb_order_billing)
-    await conn.query(
-      `INSERT INTO \`${schemaName}\`.tb_order_billing
-         (id, tb_institution_id, terminal, tb_payment_types_id, plots,
-          created_at, updated_at, deleted)
-       VALUES (?, ?, 0, ?, ?, NOW(), NOW(), 'N')
-       ON DUPLICATE KEY UPDATE
-         tb_payment_types_id = VALUES(tb_payment_types_id),
-         plots = VALUES(plots), deleted = 'N', updated_at = NOW()`,
-      [orderId, institutionId, input.paymentTypeId, String(input.parcels)]
-    )
+    // condições de cobrança (passo 5 da sequência — tb_order_billing) pela
+    // peça @shared/order-billing (D2 da negociação): OS informa o nº de
+    // parcelas do contrato, sem prazo (deadline NULL = "não se aplica").
+    await upsertOrderBilling(conn, schemaName, institutionId, orderId, {
+      paymentTypeId: input.paymentTypeId, deadline: null, plots: input.parcels,
+    })
 
     // fatura INTERNA (DP8: model 'SE'; número MAX+1 por institution;
     // emissão OFICIAL da NFS-e = P1 futura)

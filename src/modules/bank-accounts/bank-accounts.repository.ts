@@ -163,13 +163,34 @@ export async function softDeleteBankAccount(
   id: number, schemaName: string, institutionId: number
 ): Promise<boolean> {
   assertSchemaName(schemaName)
-  const [result] = await pool.query<any>(
-    `UPDATE \`${schemaName}\`.tb_bank_account
-        SET deleted = 'S', updated_at = NOW()
-      WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
-    [id, institutionId]
-  )
-  return result.affectedRows > 0
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [result] = await conn.query<any>(
+      `UPDATE \`${schemaName}\`.tb_bank_account
+          SET deleted = 'S', updated_at = NOW()
+        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+      [id, institutionId]
+    )
+    if (result.affectedRows > 0) {
+      // D-G2 (contrato financeiro, Rodada 4): contrato que apontava para a
+      // conta excluída é soft-deletado junto — a forma volta a "sem baixa
+      // automática" de forma visível (nunca órfão apontando para conta morta).
+      await conn.query(
+        `UPDATE \`${schemaName}\`.tb_financial_contract
+            SET deleted = 'S', updated_at = NOW()
+          WHERE tb_institution_id = ? AND tb_bank_account_id = ? AND deleted = 'N'`,
+        [institutionId, id]
+      )
+    }
+    await conn.commit()
+    return result.affectedRows > 0
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /** Lookup do catálogo CENTRAL de bancos (form). */

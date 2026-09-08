@@ -31,34 +31,8 @@ export interface BillRow {
   paymentTypeDescription: string | null
 }
 
-/** Um título dentro do LOTE de baixa (valores informados — P5). */
-export interface SettleTitleInput {
-  orderId:         number
-  parcel:          number
-  interestValue:   number
-  lateValue:       number
-  discountAliquot: number
-  paidValue:       number
-}
-
-/** Lote de baixa: N títulos → 1 settled_code → 1 statement (N:1). */
-export interface SettleBatchInput {
-  titles:        SettleTitleInput[]
-  bankAccountId: number
-  dtPayment:     string
-  dtRealPayment?: string | null
-  financialPlanCreId?: number | null
-  financialPlanDebId?: number | null
-}
-
-export interface SettleBatchResult {
-  settledCode: number
-  statementId: number
-  totalValue:  number
-  titles:      number
-  /** Ordens PA geradas pela rotina de parcerias (4.3 — recebimentos). */
-  paOrders:    number
-}
+// Tipos do lote vivem na peça compartilhada (boleto também liquida em lote)
+export type { SettleTitleInput, SettleBatchInput, SettleBatchResult } from '@shared/financial-settlement/settlement-batch'
 
 /** Baixa registrada (evento da parcela) para a aba Baixados. */
 export interface SettledRow {

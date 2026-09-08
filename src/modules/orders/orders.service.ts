@@ -2,12 +2,14 @@ import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows } from '@shared/list'
 import {
   OrderListRow, OrderFull, OpenOrderInput, OrderItemInput,
-  OrderProductLookupRow,
+  OrderProductLookupRow, OrderNegotiation, NegotiationInput, OrderBankLookupRow,
 } from './orders.interface'
 import {
   listOrders, getOrder, openOrder, addItem, updateItem, removeItem,
-  cancelOrder, listProductsLookup,
+  cancelOrder, listProductsLookup, getNegotiation, saveNegotiation, listPaymentTypesLookup,
+  listBanksLookup,
 } from './orders.repository'
+import { EnabledPaymentType } from '@shared/payment-types'
 
 export interface OrdersScope {
   schemaName:    string
@@ -57,4 +59,31 @@ export async function fetchProductsLookup(
   branch: 'merchandise' | 'service', filter: string, scope: OrdersScope
 ): Promise<OrderProductLookupRow[]> {
   return listProductsLookup(branch, filter, scope.schemaName, scope.institutionId)
+}
+
+/** Negociação (prazo × parcelamento elaborado) — 404 se o pedido não é uma venda viva. */
+export async function fetchNegotiation(orderId: number, scope: OrdersScope): Promise<OrderNegotiation> {
+  const negotiation = await getNegotiation(orderId, scope.schemaName, scope.institutionId)
+  if (!negotiation) throw new HttpError(404, `Pedido ${orderId} não encontrado`, undefined, 'ORDER_NOT_FOUND')
+  return negotiation
+}
+
+/** Lookup das formas vinculadas/habilitadas — cabeçalho e forma por parcela da negociação. */
+export async function fetchPaymentTypesLookup(
+  filter: string, scope: OrdersScope
+): Promise<EnabledPaymentType[]> {
+  return listPaymentTypesLookup(filter, scope.schemaName, scope.institutionId)
+}
+
+/** Grava e devolve a negociação já recomposta (preview/base atualizados). */
+export async function updateNegotiation(
+  orderId: number, input: NegotiationInput, scope: OrdersScope
+): Promise<OrderNegotiation> {
+  await saveNegotiation(orderId, input, scope.schemaName, scope.institutionId)
+  return fetchNegotiation(orderId, scope)
+}
+
+/** Lookup de bancos (cheques do faturamento) — o módulo do app só fala com /api/orders. */
+export async function fetchBanksLookup(filter: string): Promise<OrderBankLookupRow[]> {
+  return listBanksLookup(filter)
 }

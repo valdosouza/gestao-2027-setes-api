@@ -72,8 +72,19 @@ app.use('/api', rateLimitMiddleware)
 app.use('/api', apiRouter)
 
 // Handler global de erros
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  logger.error('Erro nao tratado', { message: err.message })
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // Body inválido vindo do express.json (JSON malformado, primitivo, payload
+  // acima do limite) é erro do CLIENTE — contrato {error, code, fields[]},
+  // nunca 500 (gate adversarial 2026-09-06, achado transversal).
+  if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+    res.status(400).json({ error: 'Corpo da requisição não é um JSON válido', code: 'INVALID_JSON', fields: [] })
+    return
+  }
+  if (err && err.type === 'entity.too.large') {
+    res.status(413).json({ error: 'Corpo da requisição excede o limite', code: 'PAYLOAD_TOO_LARGE', fields: [] })
+    return
+  }
+  logger.error('Erro nao tratado', { message: err?.message })
   res.status(500).json({ error: 'Erro interno do servidor' })
 })
 

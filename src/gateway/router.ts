@@ -27,6 +27,10 @@ import financialPlansRoutes from '@modules/financial-plans/financial-plans.route
 import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
 import contractsRoutes from '@modules/contracts/contracts.routes'
 import bankAccountsRoutes from '@modules/bank-accounts/bank-accounts.routes'
+import financialContractsRoutes from '@modules/financial-contracts/financial-contracts.routes'
+import bankSlipsRoutes from '@modules/bank-slips/bank-slips.routes'
+import bankChargeAgreementsRoutes from '@modules/bank-charge-agreements/bank-charge-agreements.routes'
+import checksRoutes from '@modules/checks/checks.routes'
 import serviceOrdersRoutes from '@modules/service-orders/service-orders.routes'
 import settlementsRoutes from '@modules/settlements/settlements.routes'
 import cashierRoutes from '@modules/cashier/cashier.routes'
@@ -165,6 +169,26 @@ router.use('/contracts', contractsRoutes)
 // Contas bancárias (Software House, 5.6): cadastro de CLIENTE — grupo
 // Financeiro; catálogo central tb_bank (DP2); flag 'bank-accounts'.
 router.use('/bank-accounts', bankAccountsRoutes)
+
+// Contratos financeiros (política de baixa automática por forma de
+// pagamento — migration 038, prompt_contrato_financeiro_baixa_automatica.md
+// D1–D22): cadastro de CLIENTE, grupo Financeiro; flag 'financial-contracts'.
+router.use('/financial-contracts', financialContractsRoutes)
+
+// Boletos (tela de processo — migration 039, prompt_boleto_emitido.md
+// D1–D11): emitir/liquidar/cancelar/estornar; flag 'bank-slips'.
+router.use('/bank-slips', bankSlipsRoutes)
+
+// Carteiras de cobrança (tb_bank_charge_agreement — contratação de cobrança
+// com o banco; o boleto congela taxas/instruções daqui na emissão);
+// flag 'bank-charge-agreements'.
+router.use('/bank-charge-agreements', bankChargeAgreementsRoutes)
+
+// Cheques (tela de processo — migration 040, prompt_cheque_
+// rastreabilidade.md D1–D10 + D7a–c): depositar/descontar/retornar/pagar/
+// devolver/estornar; R nasce no faturamento (/api/billing/invoice);
+// flag 'checks'.
+router.use('/checks', checksRoutes)
 
 // Serviços (prompt_modulo_services.md, D1–D7 2026-09-01): tb_product
 // kind='S' fixo + grade de preços tb_price; tela irmã do futuro cadastro

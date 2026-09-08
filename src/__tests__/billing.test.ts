@@ -6,6 +6,7 @@ import pool from '../shared/db/connection'
 import { parseCrt, parseDeadline, addDays, adjustMva, deriveProductSt } from '../modules/billing/billing.context'
 import * as repo from '../modules/billing/billing.repository'
 import { validateOrder, invoiceOrder } from '../modules/billing/billing.service'
+import { invoiceBodyDto } from '../modules/billing/billing.dto'
 import * as taxRule from '../shared/tax-rule'
 
 jest.mock('../shared/db/connection', () => ({
@@ -31,9 +32,9 @@ jest.mock('../shared/interface-config', () => ({
 }))
 
 // isola a baixa automática à vista (W3.2 — testada isoladamente em
-// financial-settlement.test.ts); default = não é espécie/sem baixa.
+// financial-settlement.test.ts); default = forma sem contrato (NO_CONTRACT).
 jest.mock('../shared/financial-settlement', () => ({
-  tryAutoSettleCash: jest.fn().mockResolvedValue({ settled: false, reason: 'NOT_CASH' }),
+  tryAutoSettleByContract: jest.fn().mockResolvedValue({ settled: false, reason: 'NO_CONTRACT' }),
 }))
 
 // isola as peças de comissão/devolução (testadas em commission-return.test.ts);
@@ -54,7 +55,7 @@ jest.mock('../shared/commission', () => ({
 const mockQuery = (pool as any).query as jest.Mock
 const mockFindTaxRule = (taxRule as any).findTaxRule as jest.Mock
 const mockLoadPieces = (taxRule as any).loadPieces as jest.Mock
-const mockTryAutoSettleCash = (jest.requireMock('../shared/financial-settlement') as any).tryAutoSettleCash as jest.Mock
+const mockTryAutoSettleByContract = (jest.requireMock('../shared/financial-settlement') as any).tryAutoSettleByContract as jest.Mock
 const mockOrderReturn = jest.requireMock('../shared/order-return') as any
 const mockCommission = jest.requireMock('../shared/commission') as any
 
@@ -343,6 +344,17 @@ describe('validateOrder', () => {
 // Service — invoiceOrder
 // ---------------------------------------------------------------------
 
+// Gate socrático 2026-09-06 (TOCTOU): a negociação é resolvida DENTRO da
+// transação do faturamento (depois do FOR UPDATE) — billing, installments e
+// kinds saem do pool e entram na conn.
+let txnDeadline: string | null = null
+function mockNegotiationInTx(conn: { query: jest.Mock }, deadline: string | null) {
+  conn.query.mockResolvedValueOnce([[{ paymentTypeId: 5, plots: null, deadline }]]) // tb_order_billing (na tx)
+  conn.query.mockResolvedValueOnce([[]])                                            // installments
+  conn.query.mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1, na tx)
+  conn.query.mockResolvedValueOnce([[]])                                            // getPaymentTypeKinds (D9 cheque)
+}
+
 describe('invoiceOrder', () => {
   it('item de mercadoria sem regra gravada -> 422 REQUIRES_VALIDATION', async () => {
     mockOrderBase()
@@ -380,10 +392,6 @@ describe('invoiceOrder', () => {
         aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
         deferredAliq: null, highlight: 'N' },
     })
-    mockQuery.mockResolvedValueOnce([[{                       // order_billing
-      paymentTypeId: 5, deadline: '028/056',
-    }]])
-    mockQuery.mockResolvedValueOnce([[]])                     // installments vazios
     mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
     mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
     mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
@@ -396,6 +404,10 @@ describe('invoiceOrder', () => {
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query
       .mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+      .mockResolvedValueOnce([[{ paymentTypeId: 5, plots: null, deadline: '028/056' }]]) // negociação (na tx)
+      .mockResolvedValueOnce([[]])                  // installments
+      .mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1)
+      .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // icms item
       .mockResolvedValueOnce([{}])                  // approx_tax_aliq update
       .mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
@@ -412,6 +424,12 @@ describe('invoiceOrder', () => {
     expect(result.parcels).toBe(2)                  // prazo 028/056
     expect(result.totalValue).toBe(100)
     expect(conn.commit).toHaveBeenCalled()
+
+    // Gate socrático 2026-09-06 (TOCTOU): a negociação é lida DEPOIS do
+    // FOR UPDATE em tb_order, na mesma conexão — nunca pelo pool antes do lock.
+    expect(conn.query.mock.calls[0][0]).toContain('FOR UPDATE')
+    expect(conn.query.mock.calls[1][0]).toContain('tb_order_billing')
+    expect(mockQuery.mock.calls.some(c => (c[0] as string).includes('tb_order_billing'))).toBe(false)
 
     // financeiro: 2 parcelas de 50 kind RA (venda)
     const finCalls = conn.query.mock.calls.filter(c =>
@@ -470,11 +488,17 @@ describe('invoiceOrder', () => {
         aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
         deferredAliq: null, highlight: 'N' },
     })
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: '999999999' }]])
-    mockQuery.mockResolvedValueOnce([[]]) // installments
+    mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
+    mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
+    mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
+    const conn = { beginTransaction: jest.fn(), query: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn() }
+    ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+    conn.query.mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+    mockNegotiationInTx(conn, '999999999')
 
     await expect(invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false }))
       .rejects.toMatchObject({ statusCode: 422, code: 'INVALID_DEADLINE' })
+    expect(conn.rollback).toHaveBeenCalled()
   })
 
   it('gate A8: destinatário sem tributação configurada gera issue na validação', async () => {
@@ -500,8 +524,6 @@ describe('invoiceOrder', () => {
     mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, active: 'S' }]])
     mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
-    mockQuery.mockResolvedValueOnce([[]])                 // installments
     mockQuery.mockResolvedValueOnce([[]])                 // getGeneralObservations
 
     const conn = {
@@ -511,6 +533,10 @@ describe('invoiceOrder', () => {
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query
       .mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+      .mockResolvedValueOnce([[{ paymentTypeId: 5, plots: null, deadline: null }]]) // negociação (na tx)
+      .mockResolvedValueOnce([[]])                  // installments
+      .mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1)
+      .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // issqn item
       .mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1
       .mockResolvedValueOnce([{}])                  // tb_invoice
@@ -537,8 +563,6 @@ describe('invoiceOrder', () => {
     mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, active: 'S' }]])
     mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
-    mockQuery.mockResolvedValueOnce([[]])                 // installments
     mockQuery.mockResolvedValueOnce([[]])                 // getGeneralObservations
 
     const conn = {
@@ -585,15 +609,27 @@ describe('invoiceOrder', () => {
         aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
         deferredAliq: null, highlight: 'N' },
     })
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: '028/056' }]])
-    // elaborado com soma 80 ≠ financialBase 100 (itens editados depois da negociação)
-    mockQuery.mockResolvedValueOnce([[
+    mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
+    mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
+    mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
+    // Resolução DENTRO da transação (gate socrático 2026-09-06 — TOCTOU):
+    // elaborado com soma 80 ≠ base do PEDIDO 100 (itens editados depois da
+    // negociação). D4/D7: a comparação é contra a base do PEDIDO (itens +
+    // frete, sem impostos — ValidaParcelamento do legado), não da nota.
+    const conn = { beginTransaction: jest.fn(), query: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn() }
+    ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+    conn.query.mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+    conn.query.mockResolvedValueOnce([[{ paymentTypeId: 5, plots: '002', deadline: '028/056' }]])
+    conn.query.mockResolvedValueOnce([[
       { parcel: 1, dueDate: '2026-09-01', amount: 40, paymentTypeId: 5 },
       { parcel: 2, dueDate: '2026-10-01', amount: 40, paymentTypeId: 5 },
     ]])
+    conn.query.mockResolvedValueOnce([[{ quantity: 1, unitValue: 100, discountValue: 0, setFinancial: 'S' }]])
+    conn.query.mockResolvedValueOnce([[{ freight: 0 }]])
 
     await expect(invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false }))
       .rejects.toMatchObject({ statusCode: 422, code: 'INSTALLMENT_MISMATCH' })
+    expect(conn.rollback).toHaveBeenCalled()
   })
 
   function mockPersistTxn(extraInserts: number) {
@@ -603,6 +639,7 @@ describe('invoiceOrder', () => {
     }
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query.mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+    mockNegotiationInTx(conn, txnDeadline)
     conn.query.mockResolvedValueOnce([{}])                  // icms item
     conn.query.mockResolvedValueOnce([{}])                  // approx_tax_aliq update
     conn.query.mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
@@ -624,8 +661,7 @@ describe('invoiceOrder', () => {
         aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
         deferredAliq: null, highlight: 'N' },
     })
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline }]])
-    mockQuery.mockResolvedValueOnce([[]])                     // installments vazios
+    txnDeadline = deadline
     mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
     mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
     mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
@@ -716,8 +752,7 @@ describe('invoiceOrder', () => {
         aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
         deferredAliq: null, highlight: 'N' },
     })
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
-    mockQuery.mockResolvedValueOnce([[]])                     // installments
+    txnDeadline = null
     mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
     mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
     mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
@@ -730,7 +765,7 @@ describe('invoiceOrder', () => {
     expect(icmsCall![1]).toContain('900')      // cst gravado com o código CSOSN (fallback)
   })
 
-  it('W3.2: parcelas em espécie -> tryAutoSettleCash chamado por parcela, autoSettled reflete o resultado', async () => {
+  it('W3.2: parcelas em espécie -> tryAutoSettleByContract chamado por parcela, autoSettled reflete o resultado', async () => {
     mockOrderBase()
     mockBranchSale()
     mockContext()
@@ -741,7 +776,7 @@ describe('invoiceOrder', () => {
     }]])
     mockHappyItemChain('028/056')                              // 2 parcelas de 50
 
-    mockTryAutoSettleCash
+    mockTryAutoSettleByContract
       .mockResolvedValueOnce({ settled: true, settledCode: 1, statementId: 1, cashierId: 5 })
       .mockResolvedValueOnce({ settled: false, reason: 'NO_OPEN_CASHIER' })
 
@@ -749,8 +784,8 @@ describe('invoiceOrder', () => {
     const result = await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
 
     expect(result.autoSettled).toBe(1)
-    expect(mockTryAutoSettleCash).toHaveBeenCalledTimes(2)
-    expect(mockTryAutoSettleCash).toHaveBeenNthCalledWith(1, conn,
+    expect(mockTryAutoSettleByContract).toHaveBeenCalledTimes(2)
+    expect(mockTryAutoSettleByContract).toHaveBeenNthCalledWith(1, conn,
       'setes_setes', 1, 7,
       expect.objectContaining({ orderId: 10, parcel: 1, paymentTypeId: 5 }))
   })
@@ -766,7 +801,7 @@ describe('invoiceOrder', () => {
     }]])
     mockHappyItemChain(null) // 1 parcela
 
-    mockTryAutoSettleCash.mockRejectedValueOnce(new Error('falha técnica inesperada'))
+    mockTryAutoSettleByContract.mockRejectedValueOnce(new Error('falha técnica inesperada'))
 
     const conn = mockPersistTxn(1)
     const result = await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
@@ -803,8 +838,7 @@ describe('comissão e devolução', () => {
         aliq: 18, aliqReduction: 0, baseReduction: 0, deferred: 'N',
         deferredAliq: null, highlight: 'N' },
     })
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
-    mockQuery.mockResolvedValueOnce([[]])                     // installments vazios
+    txnDeadline = null
     mockQuery.mockResolvedValueOnce([[]])                     // getRuleObservationNotes
     mockQuery.mockResolvedValueOnce([[]])                     // getGeneralObservations
     mockQuery.mockResolvedValueOnce([[]])                     // getNcmApproxRates
@@ -818,6 +852,7 @@ describe('comissão e devolução', () => {
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query.mockResolvedValue([{}])
     conn.query.mockResolvedValueOnce([[{ status: 'A' }]])   // FOR UPDATE
+    mockNegotiationInTx(conn, txnDeadline)
     conn.query.mockResolvedValueOnce([{}])                  // icms item
     conn.query.mockResolvedValueOnce([{}])                  // approx_tax_aliq
     conn.query.mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
@@ -1005,5 +1040,31 @@ describe('comissão e devolução', () => {
     const passedItems = mockOrderReturn.buildReturnPlan.mock.calls[0][4]
     expect(passedItems).toHaveLength(1)
     expect(passedItems[0].id).toBe(1)
+  })
+})
+
+describe('invoiceBodyDto — bloco checks (D9/onda do cheque)', () => {
+  const checkItem = (over: Record<string, any> = {}) => ({
+    bankId: 1, agency: '1234', account: '56789', number: '000123',
+    issuer: 'JOAO DA SILVA', value: 100, dtCheck: '2026-09-04', ...over,
+  })
+  const body = (value: number) => ({
+    orderId: 10,
+    checks: [{ parcel: 1, items: [checkItem({ value })] }],
+  })
+
+  it('aceita valor com até 2 casas decimais', () => {
+    expect(invoiceBodyDto.safeParse(body(100)).success).toBe(true)
+    expect(invoiceBodyDto.safeParse(body(33.33)).success).toBe(true)
+  })
+
+  it('recusa valor com mais de 2 casas decimais (achado do gate adversarial 2026-09-04)', () => {
+    // Sem o refine, 3 cheques de 33.334 somavam 100.00 (round2) mas cada um
+    // gravava 33.33 em DECIMAL(10,2) — a soma real divergia do paid_value.
+    const r = invoiceBodyDto.safeParse(body(33.334))
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      expect(r.error.issues[0].message).toBe('Máximo 2 casas decimais')
+    }
   })
 })

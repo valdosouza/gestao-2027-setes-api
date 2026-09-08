@@ -21,11 +21,45 @@ export const validateBodyDto = z.object({
 })
 export type ValidateBodyDto = z.infer<typeof validateBodyDto>
 
+/**
+ * Cheque por parcela (D8/D9 — prompt_cheque_rastreabilidade.md): só
+ * parcelas cuja forma resolve para kind='Q' exigem isto; a soma dos itens
+ * precisa bater com o valor da parcela (422 CHECK_SUM_MISMATCH — validado
+ * em billing.service, com os dois valores na mensagem).
+ */
+const checkDateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data em YYYY-MM-DD')
+  .refine(v => {
+    const [y, m, d] = v.split('-').map(Number)
+    const t = new Date(Date.UTC(y, m - 1, d))
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d
+  }, 'Data inexistente')
+
+const checkItemDto = z.object({
+  bankId:  z.number().int().positive(),
+  agency:  z.string().min(1).max(10),
+  account: z.string().min(1).max(15),
+  number:  z.string().min(1).max(20),
+  issuer:  z.string().min(1).max(100),
+  // Achado do gate adversarial (2026-09-04): sem o refine, 3 cheques de
+  // 33.334 somavam 100.00 (round2) mas gravavam 33.33 cada (DECIMAL(10,2)),
+  // divergindo 1 centavo do paid_value lançado no financeiro — a soma
+  // "exata" da D9 só vale se cada cheque já chegar com no máx. 2 casas.
+  value:   z.number().min(0.01).max(99999999.99)
+    .refine(v => Math.abs(v * 100 - Math.round(v * 100)) < 1e-9, 'Máximo 2 casas decimais'),
+  dtCheck: checkDateStr,
+  kind:    z.enum(['P', 'T']).default('P'),
+})
+const checksByParcelDto = z.object({
+  parcel: z.number().int().positive(),
+  items:  z.array(checkItemDto).min(1),
+})
+
 export const invoiceBodyDto = z.object({
   orderId: z.number().int().positive(),
   // P3.2 — decisão POR FATURAMENTO: false (default) = MVA ajustada pela
   // carga real; true = MVA original do cadastro.
   useMvaOriginal: z.boolean().optional().default(false),
   adjustment: adjustmentDto.nullish(),
+  checks: z.array(checksByParcelDto).optional(),
 })
 export type InvoiceBodyDto = z.infer<typeof invoiceBodyDto>

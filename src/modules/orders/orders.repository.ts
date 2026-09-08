@@ -3,9 +3,20 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { getOrderFinancialBase } from '@shared/order'
+import { getOrderBilling, upsertOrderBilling, normalizeDeadline, parseDeadline } from '@shared/order-billing'
+import {
+  getInstallments, replaceInstallments, clearInstallments, materializeParcels,
+  assertPaymentRules,
+} from '@shared/order-installment'
+import {
+  assertPaymentTypesEnabled, getCatalogPaymentTypes, getEnabledPaymentTypes,
+  listEnabledPaymentTypes, EnabledPaymentType,
+} from '@shared/payment-types'
 import {
   OrderListRow, OrderFull, OpenOrderInput, OrderItemInput,
-  OrderProductLookupRow,
+  OrderProductLookupRow, OrderNegotiation, NegotiationInput, NegotiationParcelRow,
+  OrderBankLookupRow,
 } from './orders.interface'
 
 /**
@@ -187,7 +198,7 @@ async function lockOpenOrder(
        AND o.deleted = 'N' FOR UPDATE`,
     [orderId, institutionId]
   )
-  if (!rows[0]) throw new HttpError(404, `Pedido ${orderId} não encontrado`)
+  if (!rows[0]) throw new HttpError(404, `Pedido ${orderId} não encontrado`, undefined, 'ORDER_NOT_FOUND')
   if (rows[0].status !== 'A') {
     throw new HttpError(409, 'Pedido já faturado — alterações só via financeiro',
       undefined, 'ORDER_INVOICED')
@@ -454,4 +465,190 @@ export async function cancelOrder(
   } finally {
     conn.release()
   }
+}
+
+// ---------------------------------------------------------------------
+// Negociação (prompt_negociacao_pedido.md D1–D7, 2026-09-06): cabeçalho
+// via @shared/order-billing (via SIMPLES — forma + prazo), grade via
+// @shared/order-installment (via ELABORADA), base do PEDIDO via
+// @shared/order, formas via @shared/payment-types. O módulo COMPÕE; as
+// peças não se conhecem. Este módulo é a porta da VENDA — a compra reusa as
+// peças no seu próprio módulo.
+// ---------------------------------------------------------------------
+
+const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100
+
+export async function getNegotiation(
+  orderId: number, schemaName: string, institutionId: number
+): Promise<OrderNegotiation | null> {
+  assertSchemaName(schemaName)
+  const [ord] = await pool.query<any[]>(
+    `SELECT o.status FROM \`${schemaName}\`.tb_order o
+     INNER JOIN \`${schemaName}\`.tb_order_sale s
+        ON s.id = o.id AND s.tb_institution_id = o.tb_institution_id
+       AND s.terminal = o.terminal AND s.deleted = 'N'
+     WHERE o.id = ? AND o.tb_institution_id = ? AND o.terminal = 0 AND o.deleted = 'N'`,
+    [orderId, institutionId]
+  )
+  if (!ord[0]) return null
+  const status = ord[0].status === 'F' ? 'F' : 'A'
+
+  const billing = await getOrderBilling(pool, schemaName, institutionId, orderId)
+  const base = await getOrderFinancialBase(pool, schemaName, institutionId, orderId)
+  const installments = billing ? await getInstallments(pool, schemaName, institutionId, orderId) : []
+
+  const ids = [billing?.paymentTypeId ?? 0, ...installments.map(i => i.paymentTypeId ?? 0)]
+  const catalog = await getCatalogPaymentTypes(pool, ids)
+  const enabled = billing
+    ? await getEnabledPaymentTypes(pool, schemaName, institutionId, [billing.paymentTypeId])
+    : new Map()
+
+  const describe = (
+    p: { parcel: number; dueDate: string; amount: number; paymentTypeId: number }, own: boolean
+  ): NegotiationParcelRow => ({
+    ...p,
+    paymentTypeDescription: catalog.get(p.paymentTypeId)?.description ?? null,
+    paymentTypeKind:        catalog.get(p.paymentTypeId)?.kind ?? null,
+    ownPaymentType:         own,
+  })
+
+  const elaborated = installments.map(i => describe(
+    { parcel: i.parcel, dueDate: i.dueDate, amount: i.amount,
+      paymentTypeId: i.paymentTypeId ?? billing!.paymentTypeId },
+    i.paymentTypeId != null,
+  ))
+
+  // Grade GERADA do prazo a partir de HOJE (preview — nunca gravada; o
+  // faturamento gera de novo a partir da data da nota, sobre a base da NOTA).
+  let preview: NegotiationParcelRow[] = []
+  // Q-N5 (Rodada 2): pedido faturado (F) não tem preview "de hoje" — o
+  // financeiro real vive em tb_financial; a tela aponta para lá.
+  if (billing && base.base > 0 && status === 'A') {
+    const days = parseDeadline(billing.deadline)
+    if (days) {
+      preview = materializeParcels({
+        days, base: base.base, baseDate: new Date(), paymentTypeId: billing.paymentTypeId,
+      }).map(p => describe(p, false))
+    }
+  }
+
+  return {
+    orderId, status,
+    mode: elaborated.length > 0 ? 'elaborated' : 'simple',
+    billing: billing ? {
+      paymentTypeId:          billing.paymentTypeId,
+      paymentTypeDescription: catalog.get(billing.paymentTypeId)?.description ?? null,
+      paymentTypeKind:        catalog.get(billing.paymentTypeId)?.kind ?? null,
+      maxParcels:             enabled.get(billing.paymentTypeId)?.maxParcels ?? null,
+      deadline:               billing.deadline,
+      // Q-N4: canônico quando o gravado passa no normalizador; legado do sync
+      // ('A VISTA') vem com deadlineValid=false e o PUT aceita o mesmo raw.
+      deadlineCanonical:      normalizeDeadline(billing.deadline).valid
+        ? (normalizeDeadline(billing.deadline) as { deadline: string | null }).deadline
+        : null,
+      deadlineValid:          normalizeDeadline(billing.deadline).valid,
+      plots:                  billing.plots,
+    } : null,
+    base,
+    installments: elaborated,
+    preview,
+  }
+}
+
+/**
+ * Grava a negociação em transação única: trava o pedido ABERTO (venda),
+ * valida formas habilitadas + limite de parcelas do vínculo (parecer Q2),
+ * normaliza o prazo (estrito — parecer Q3), upsert do cabeçalho e, na via
+ * elaborada, contiguidade 1..n + soma = base do PEDIDO (ValidaParcelamento —
+ * D4) antes de substituir a grade; sem `installments` = "voltar ao prazo".
+ */
+export async function saveNegotiation(
+  orderId: number, input: NegotiationInput, schemaName: string, institutionId: number
+): Promise<void> {
+  assertSchemaName(schemaName)
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await lockOpenOrder(conn, schemaName, institutionId, orderId)
+
+    // Q-N4 (Rodada 2): prazo LEGADO gravado pelo sync que não passa no
+    // normalizador ('A VISTA', '30/60/90 DIAS') é tolerado enquanto o usuário
+    // não o mexer — PUT com o MESMO raw gravado mantém; prazo NOVO é estrito.
+    const current = await getOrderBilling(conn, schemaName, institutionId, orderId)
+    let norm = normalizeDeadline(input.deadline)
+    if (!norm.valid && current && (input.deadline ?? null) === current.deadline) {
+      const days = parseDeadline(current.deadline)
+      if (days) norm = { valid: true, deadline: current.deadline, days }
+    }
+    if (!norm.valid) {
+      throw new HttpError(422, 'Prazo da negociação inválido',
+        [{ field: 'deadline', message: norm.reason }], 'INVALID_DEADLINE')
+    }
+    const rows = [...(input.installments ?? [])].sort((a, b) => a.parcel - b.parcel)
+
+    // Q-N1: regras das formas numa implementação só (as três portas) —
+    // habilitadas, limite do cabeçalho e limite de cada forma própria.
+    await assertPaymentRules(conn, schemaName, institutionId, {
+      headerPaymentTypeId: input.paymentTypeId,
+      parcels: rows.map(r => ({ paymentTypeId: r.paymentTypeId ?? null })),
+      nParcels: rows.length > 0 ? rows.length : norm.days.length,
+      limitField: rows.length > 0 ? 'installments' : 'deadline',
+    })
+
+    await upsertOrderBilling(conn, schemaName, institutionId, orderId, {
+      paymentTypeId: input.paymentTypeId, deadline: norm.deadline,
+    })
+
+    if (rows.length === 0) {
+      await clearInstallments(conn, schemaName, institutionId, orderId)
+    } else {
+      rows.forEach((r, i) => {
+        if (r.parcel !== i + 1) {
+          throw new HttpError(422, 'Parcelamento inválido',
+            [{ field: 'installments', message: 'Parcelas devem ser numeradas 1..n, sem buracos' }],
+            'INSTALLMENT_INVALID')
+        }
+      })
+      const { base } = await getOrderFinancialBase(conn, schemaName, institutionId, orderId)
+      const sum = round2(rows.reduce((acc, r) => acc + r.amount, 0))
+      if (sum !== base) {
+        throw new HttpError(422, 'Valor do parcelamento não confere com o valor da ordem',
+          [{ field: 'installments', expected: base, // Q-N3: a tela corrige sem parse
+            message: `Parcelamento ${sum} difere do valor atual da ordem ${base}` }],
+          'INSTALLMENT_MISMATCH')
+      }
+      await replaceInstallments(conn, schemaName, institutionId, orderId,
+        rows.map(r => ({
+          parcel: r.parcel, dueDate: r.dueDate, amount: r.amount,
+          paymentTypeId: r.paymentTypeId ?? null,
+        })))
+    }
+
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+/** Lookup das formas de pagamento vinculadas/habilitadas (cabeçalho e forma por parcela da negociação). */
+export async function listPaymentTypesLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<EnabledPaymentType[]> {
+  assertSchemaName(schemaName)
+  return listEnabledPaymentTypes(pool, schemaName, institutionId, filter)
+}
+
+/** Lookup dos bancos do catálogo central (cheques no faturamento — mesmo shape de /api/checks/banks). */
+export async function listBanksLookup(filter: string): Promise<OrderBankLookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT id, number, description FROM setes_central.tb_bank
+      WHERE deleted = 'N' AND (? IS NULL OR description LIKE ? OR number LIKE ?)
+      ORDER BY description LIMIT 100`,
+    [like, like, like]
+  )
+  return rows
 }

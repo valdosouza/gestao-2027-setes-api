@@ -217,7 +217,8 @@ export async function insertDefaultFlags(institutionId: number): Promise<void> {
     'payment-types', 'contracts', 'bank-accounts',
     'service-orders', 'settlements', 'modules', 'cashier', 'orders',
     'order-returns', 'establishment', 'services', 'price-lists',
-    'service-tax-rules',
+    'service-tax-rules', 'financial-contracts', 'bank-slips',
+    'bank-charge-agreements', 'checks',
   ]
   const conn = await pool.getConnection()
   try {

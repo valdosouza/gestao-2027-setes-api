@@ -43,13 +43,10 @@ export function prorataValue(
 }
 
 /** Quotas das parcelas: round(total/n) com o RESÍDUO de centavos na última. */
-export function parcelQuotas(total: number, parcels: number): number[] {
-  const base = round2(total / parcels)
-  const quotas = Array.from({ length: parcels }, () => base)
-  const spread = round2(base * (parcels - 1))
-  quotas[parcels - 1] = round2(total - spread)
-  return quotas
-}
+// parcelQuotas MIGROU para @shared/order-installment (negociação do pedido,
+// 2026-09-06) — o billing importava daqui (módulo → módulo). Re-export
+// mantido para os consumidores/testes da OS.
+export { parcelQuotas } from '@shared/order-installment'
 
 /**
  * SUGESTÃO de vencimento (DP1 revisada — o USUÁRIO decide na tela; isto é

@@ -8,36 +8,12 @@
 // mantém os consumidores/testes deste módulo.
 export { parseCrt } from '@shared/entity-tax/entity-tax.types'
 
-/** Teto de sanidade: prazo por parcela nunca passa de 10 anos (dado sujo do sync). */
-export const MAX_DEADLINE_DAYS = 3650
-
-/**
- * Prazo string do tb_order_billing.deadline ("028/056/084") → dias por
- * parcela. Tolerante a separadores e espaços; entrada vazia = à vista
- * (1 parcela, 0 dias). Dia acima do teto (dado sujo — o campo é texto
- * livre vindo do sync) devolve null: o caller responde 422 apontando o
- * prazo, nunca 500.
- */
-export function parseDeadline(deadline: string | null | undefined): number[] | null {
-  const raw = (deadline ?? '').trim()
-  if (!raw) return [0]
-  const days = raw.split(/[\/,;|-]/)
-    .map(p => parseInt(p.trim(), 10))
-    .filter(n => Number.isInteger(n) && n >= 0)
-  if (days.length === 0) return [0]
-  if (days.some(d => d > MAX_DEADLINE_DAYS)) return null
-  return days
-}
-
-/** Soma [days] dias a uma data — formata em data LOCAL (nunca UTC: o
- *  vencimento não pode pular de dia por fuso, par do CURDATE() do MySQL). */
-export function addDays(baseDate: Date, days: number): string {
-  const d = new Date(baseDate)
-  d.setDate(d.getDate() + days)
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${mm}-${dd}`
-}
+// Prazo e datas MIGRARAM para as peças da negociação (prompt_negociacao_pedido.md
+// §6, 2026-09-06): a gramática da coluna deadline vive em @shared/order-billing
+// e a materialização em @shared/order-installment. Re-export mantido para os
+// consumidores/testes antigos (precedente parseCrt, D39).
+export { parseDeadline, MAX_DEADLINE_DAYS } from '@shared/order-billing'
+export { addDays } from '@shared/order-installment'
 
 /**
  * MVA ajustada pela carga tributária real (P2.7/P3.2):

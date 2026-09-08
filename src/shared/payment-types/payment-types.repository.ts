@@ -53,13 +53,13 @@ export interface PaymentTypeLinkAttrs {
   tef:                     'S' | 'N'
   financialPlansIdCre:     number
   financialPlansIdDeb:     number
-  usagePreference:         'C' | 'B' | 'A'
+  // usagePreference APOSENTADA (migration 038 — D17 do contrato financeiro)
 }
 
 export const DEFAULT_LINK_ATTRS: PaymentTypeLinkAttrs = {
   enable: 'S', appMobile: 'N', blockForCustomerBlocked: 'N',
   blockForCustomerNoLimit: 'N', maxParcels: 1, tef: 'N',
-  financialPlansIdCre: 0, financialPlansIdDeb: 0, usagePreference: 'A',
+  financialPlansIdCre: 0, financialPlansIdDeb: 0,
 }
 
 /**
@@ -79,21 +79,20 @@ export async function upsertLink(
        block_for_customer_no_limit = VALUES(block_for_customer_no_limit),
        max_parcels = VALUES(max_parcels), tef = VALUES(tef),
        tb_financial_plans_id_cre = VALUES(tb_financial_plans_id_cre),
-       tb_financial_plans_id_deb = VALUES(tb_financial_plans_id_deb),
-       usage_preference = VALUES(usage_preference),`
+       tb_financial_plans_id_deb = VALUES(tb_financial_plans_id_deb),`
     : ''
   await conn.query(
     `INSERT INTO ?? (tb_institution_id, tb_payment_types_id, \`enable\`,
        app_mobile, block_for_customer_blocked, block_for_customer_no_limit,
        max_parcels, tef, tb_financial_plans_id_cre, tb_financial_plans_id_deb,
-       usage_preference, created_at, updated_at, deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+       created_at, updated_at, deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
      ON DUPLICATE KEY UPDATE
        ${overwrite}
        deleted = 'N', updated_at = NOW()`,
     [`${schemaName}.tb_institution_has_payment_types`, institutionId,
      paymentTypeId, a.enable, a.appMobile, a.blockForCustomerBlocked,
      a.blockForCustomerNoLimit, a.maxParcels, a.tef,
-     a.financialPlansIdCre, a.financialPlansIdDeb, a.usagePreference]
+     a.financialPlansIdCre, a.financialPlansIdDeb]
   )
 }

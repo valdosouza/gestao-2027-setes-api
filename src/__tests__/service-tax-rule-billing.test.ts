@@ -27,7 +27,7 @@ jest.mock('../shared/interface-config', () => ({
   getConfigContent: jest.fn().mockResolvedValue(null),
 }))
 jest.mock('../shared/financial-settlement', () => ({
-  tryAutoSettleCash: jest.fn().mockResolvedValue({ settled: false, reason: 'NOT_CASH' }),
+  tryAutoSettleByContract: jest.fn().mockResolvedValue({ settled: false, reason: 'NO_CONTRACT' }),
 }))
 jest.mock('../shared/order-return', () => ({
   buildReturnPlan: jest.fn().mockResolvedValue({ issues: [], plan: null }),
@@ -193,14 +193,16 @@ describe('invoiceOrder — caminho kind=S', () => {
     mockQuery.mockResolvedValueOnce([[ruleRow()]])
     mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
-    mockQuery.mockResolvedValueOnce([[{ paymentTypeId: 5, deadline: null }]])
-    mockQuery.mockResolvedValueOnce([[]])   // installments
     mockQuery.mockResolvedValueOnce([[]])   // observações gerais
 
     const conn = { beginTransaction: jest.fn(), query: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn() }
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query
       .mockResolvedValueOnce([[{ status: 'A' }]])
+      .mockResolvedValueOnce([[{ paymentTypeId: 5, plots: null, deadline: null }]]) // negociação (na tx)
+      .mockResolvedValueOnce([[]])                  // installments
+      .mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1)
+      .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // issqn item
       .mockResolvedValueOnce([[{ nextNumber: 1 }]])
       .mockResolvedValueOnce([{}])                  // tb_invoice

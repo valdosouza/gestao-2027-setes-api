@@ -31,7 +31,7 @@ export interface InvoiceResult {
   model: string
   totalValue: number
   parcels: number
-  autoSettled: number   // parcelas baixadas automaticamente à vista (W3.2 — kind='E')
+  autoSettled: number   // parcelas baixadas automaticamente por CONTRATO FINANCEIRO (migration 038)
 }
 
 /** Linha viva de tb_order_item para o faturamento. */

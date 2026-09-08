@@ -31,7 +31,7 @@ const router = Router()
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
- *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, description, idNfce, enable, appMobile, blockForCustomerBlocked, blockForCustomerNoLimit, maxParcels, tef, financialPlansIdCre, financialPlansIdDeb, usagePreference, financialPlanCreDescription, financialPlanDebDescription }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, description, idNfce, enable, appMobile, blockForCustomerBlocked, blockForCustomerNoLimit, maxParcels, tef, financialPlansIdCre, financialPlansIdDeb, financialPlanCreDescription, financialPlanDebDescription }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  *   post:
@@ -44,7 +44,7 @@ const router = Router()
  *       fica reutilizável pelos demais clientes). description/idNfce são
  *       imutáveis depois de criados (linha compartilhada). Os atributos do
  *       vínculo (enable, appMobile, bloqueios, maxParcels, tef, planos de
- *       conta, usagePreference) acompanham o POST e têm defaults.
+ *       conta) acompanham o POST e têm defaults.
  *     tags: [PaymentTypes]
  *     security:
  *       - BearerAuth: []
@@ -66,7 +66,6 @@ const router = Router()
  *               tef: { type: string, enum: [S, N], description: 'Usa TEF — Transferência Eletrônica de Fundos' }
  *               financialPlansIdCre: { type: integer, description: 'Plano de Contas — Resultado (0 = não definido)' }
  *               financialPlansIdDeb: { type: integer, description: 'Plano de Contas — Centro de Custo (0 = não definido)' }
- *               usagePreference: { type: string, enum: [C, B, A], description: 'Lançamento em C(aixa), B(anco) ou A(mbos)' }
  *     responses:
  *       201: { description: 'Envelope { ok, data: { id, reused } } — reused=true quando a forma já existia no catálogo' }
  *       400: { description: 'Validação / forma inexistente' }
@@ -129,7 +128,6 @@ router.get('/catalog', controller.catalog)
  *               tef: { type: string, enum: [S, N] }
  *               financialPlansIdCre: { type: integer }
  *               financialPlansIdDeb: { type: integer }
- *               usagePreference: { type: string, enum: [C, B, A] }
  *     responses:
  *       200: { description: 'Envelope { ok }' }
  *       400: { description: Validação }

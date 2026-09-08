@@ -12,18 +12,21 @@ import {
 import { getConfigContent } from '@shared/interface-config'
 import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
-import { parcelQuotas } from '@modules/service-orders/service-orders.calc'
+import pool from '@shared/db/connection'
+import { resolveOrderParcels, MaterializedParcel as ResolvedParcel } from '@shared/order-installment'
+import { Queryable } from '@shared/order'
 import {
-  parseCrt, parseDeadline, addDays, adjustMva, resolveFinancialPolarity,
+  parseCrt, adjustMva, resolveFinancialPolarity,
 } from './billing.context'
 import {
   getOrderStatus, getOrderBranch, listBillingItems, getItemRuleLinks,
   upsertItemRuleAuto, clearAutoRuleLink, findDeadRuleIds,
   getItemServiceRuleLinks, upsertItemServiceRuleAuto, clearAutoServiceRuleLink,
-  getFreightAndExpenses, getOrderBillingInfo,
-  getInstallments, getEntityLocation, persistInvoice, ComputedItem,
+  getFreightAndExpenses,
+  getEntityLocation, persistInvoice, ComputedItem,
   OrderBranchInfo,
   getGeneralObservations, getRuleObservationNotes, getNcmApproxRates,
+  getPaymentTypeKinds,
 } from './billing.repository'
 import {
   buildRegimeObservations, buildIssqnObservation, buildApproxTaxObservation,
@@ -592,44 +595,46 @@ export async function invoiceOrder(
     .reduce((sum, ci) => sum + ci.merchandiseValue + ci.freightShare
       + ci.expensesShare + (ci.taxes.icms?.valueSt ?? 0) + (ci.taxes.ipi?.value ?? 0), 0))
 
-  const billing = await getOrderBillingInfo(schemaName, institutionId, input.orderId)
-  if (financialBase > 0 && !billing) {
-    throw new HttpError(422, 'Ordem sem condições de cobrança (forma/prazo)',
-      [{ field: 'billing', message: 'Informe a negociação da ordem' }], 'ORDER_NO_BILLING')
-  }
+  // Parcelas do pedido — COMPOSIÇÃO única (@shared/order-installment,
+  // prompt_negociacao_pedido.md D7, 2026-09-06): elaborado é validado contra
+  // a base do PEDIDO (itens + frete — ValidaParcelamento do legado) e a
+  // diferença até a base da NOTA (ST/IPI/despesas) entra na 1ª parcela; sem
+  // elaborado, o prazo do billing gera sobre a base da NOTA. ORDER_NO_BILLING
+  // e INVALID_DEADLINE nascem lá. A mesma função alimenta o preview da tela.
+  // Gate socrático 2026-09-06 (TOCTOU): a resolução roda DENTRO da transação
+  // do faturamento, depois do FOR UPDATE em tb_order — um PUT da negociação
+  // concorrente não pode mais deixar tb_financial nascendo de uma grade que
+  // já não existe; o retry em deadlock re-resolve junto com a transação.
+  const baseDate = new Date()
+  const resolveParcels = async (db: Queryable): Promise<ResolvedParcel[]> => {
+    const resolved = await resolveOrderParcels(db, schemaName, institutionId, input.orderId,
+      { noteBase: financialBase, baseDate })
+    const parcels = resolved.parcels
 
-  let parcels: { parcel: number; dueDate: string; amount: number; paymentTypeId: number }[] = []
-  if (financialBase > 0 && billing) {
-    const installments = await getInstallments(schemaName, institutionId, input.orderId)
-    if (installments.length > 0) {
-      // R5-Q2 (evidência ControllerPedido.ValidaParcelamento): elaborado
-      // que diverge do valor atual da ordem BLOQUEIA — itens editados
-      // depois da negociação não faturam com um financeiro que não soma.
-      const installmentsSum = round2(installments.reduce((sum, i) => sum + i.amount, 0))
-      if (installmentsSum !== financialBase) {
-        throw new HttpError(422, 'Valor do parcelamento não confere com o valor da ordem',
-          [{ field: 'installments',
-            message: `Parcelamento ${installmentsSum} difere do valor atual da ordem ${financialBase}` }],
-          'INSTALLMENT_MISMATCH')
+    // Cheque (D8/D9 — prompt_cheque_rastreabilidade.md): parcela cuja forma
+    // resolve para kind='Q' EXIGE cheques no payload cuja soma bata com o
+    // valor da parcela; formas de qualquer outro kind não usam este bloco
+    // (dados de cheque enviados por engano são ignorados, nunca aceitos).
+    if (parcels.length > 0) {
+      const typeIds = [...new Set(parcels.map(p => p.paymentTypeId))]
+      const kindByType = await getPaymentTypeKinds(typeIds, db)
+      for (const p of parcels) {
+        if (kindByType.get(p.paymentTypeId) !== 'Q') continue
+        const entry = input.checks?.find(c => c.parcel === p.parcel)
+        if (!entry || entry.items.length === 0) {
+          throw new HttpError(422, `Parcela ${p.parcel} é cheque — informe ao menos um cheque`,
+            [{ field: `checks.${p.parcel}`, message: 'Obrigatório' }], 'CHECK_REQUIRED')
+        }
+        const sum = round2(entry.items.reduce((s, c) => s + c.value, 0))
+        if (sum !== p.amount) {
+          throw new HttpError(422, 'Soma dos cheques não confere com o valor da parcela',
+            [{ field: `checks.${p.parcel}`, expected: p.amount, // Q-N3: a tela corrige sem parse
+              message: `Soma dos cheques ${sum} difere do valor da parcela ${p.amount}` }],
+            'CHECK_SUM_MISMATCH')
+        }
       }
-      parcels = installments.map(i => ({
-        parcel: i.parcel, dueDate: i.dueDate, amount: i.amount,
-        paymentTypeId: i.paymentTypeId ?? billing.paymentTypeId,
-      }))
-    } else {
-      const days = parseDeadline(billing.deadline)
-      if (days === null) {
-        throw new HttpError(422, 'Prazo da negociação inválido',
-          [{ field: 'deadline', message: `Prazo "${billing.deadline}" fora do limite` }],
-          'INVALID_DEADLINE')
-      }
-      const quotas = parcelQuotas(financialBase, days.length)
-      const today = new Date()
-      parcels = days.map((d, i) => ({
-        parcel: i + 1, dueDate: addDays(today, d), amount: quotas[i],
-        paymentTypeId: billing.paymentTypeId,
-      }))
     }
+    return parcels
   }
 
   // model por PRESENÇA de itens (natureza = ramo, D1–D11): mercadoria
@@ -763,13 +768,20 @@ export async function invoiceOrder(
     }
   }
 
+  // D18 (contrato financeiro) / D9 (boleto): "gerar boleto automaticamente
+  // no faturamento" é config da interface billing (Framework de Configurações)
+  const autoBankSlip =
+    (await getConfigContent(institution, 'billing', 'auto_bank_slip')) === 'S'
+
   return persistInvoice(schemaName, institutionId, {
     orderId: input.orderId,
+    autoBankSlip,
     recipientEntityId: branch.recipientEntityId,
     model, serie,
     items: computed,
     totalValue,
-    parcels,
+    resolveParcels,
+    checks: input.checks ?? [],
     financialKind: polarity.kind,
     financialOperation: polarity.operation,
     noteText,

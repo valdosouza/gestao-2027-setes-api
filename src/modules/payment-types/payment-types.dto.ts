@@ -21,7 +21,9 @@ const linkAttrs = {
   tef:                     flag.default('N'),
   financialPlansIdCre:     z.number().int().min(0).default(0),
   financialPlansIdDeb:     z.number().int().min(0).default(0),
-  usagePreference:         z.enum(['C', 'B', 'A']).default('A'),
+  // usagePreference APOSENTADA (migration 038 — D17 do contrato financeiro):
+  // destino caixa × banco vem do tb_financial_contract. Payload antigo com o
+  // campo é ignorado (strip padrão do Zod).
 }
 
 export const paymentTypeLinkDto = z.object({

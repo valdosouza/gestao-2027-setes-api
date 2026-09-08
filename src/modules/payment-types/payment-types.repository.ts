@@ -50,7 +50,6 @@ export async function listLinked(
             h.tef,
             h.tb_financial_plans_id_cre   AS financialPlansIdCre,
             h.tb_financial_plans_id_deb   AS financialPlansIdDeb,
-            h.usage_preference            AS usagePreference,
             fpc.description   AS financialPlanCreDescription,
             fpd.description   AS financialPlanDebDescription
      ${where}
@@ -165,14 +164,14 @@ export async function updateLink(
           block_for_customer_blocked = ?, block_for_customer_no_limit = ?,
           max_parcels = ?, tef = ?,
           tb_financial_plans_id_cre = ?, tb_financial_plans_id_deb = ?,
-          usage_preference = ?, updated_at = NOW()
+          updated_at = NOW()
         WHERE tb_institution_id = ? AND tb_payment_types_id = ?`,
       [`${schemaName}.tb_institution_has_payment_types`,
        input.enable, input.appMobile,
        input.blockForCustomerBlocked, input.blockForCustomerNoLimit,
        input.maxParcels, input.tef,
        input.financialPlansIdCre, input.financialPlansIdDeb,
-       input.usagePreference, institutionId, id]
+       institutionId, id]
     )
     if (input.idNfce !== undefined) {
       await conn.query(
@@ -196,9 +195,27 @@ export async function unlinkPaymentType(
   id: number, schemaName: string, institutionId: number
 ): Promise<void> {
   assertSchemaName(schemaName)
-  await pool.query(
-    `UPDATE ?? SET deleted = 'S', updated_at = NOW()
-      WHERE tb_institution_id = ? AND tb_payment_types_id = ?`,
-    [`${schemaName}.tb_institution_has_payment_types`, institutionId, id]
-  )
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await conn.query(
+      `UPDATE ?? SET deleted = 'S', updated_at = NOW()
+        WHERE tb_institution_id = ? AND tb_payment_types_id = ?`,
+      [`${schemaName}.tb_institution_has_payment_types`, institutionId, id]
+    )
+    // D-G2 (contrato financeiro, Rodada 4): o contrato é especialização do
+    // vínculo — desvincular a forma soft-deleta o contrato junto (nunca fica
+    // órfão; revincular NÃO revive o contrato — recriar pelo cadastro).
+    await conn.query(
+      `UPDATE ?? SET deleted = 'S', updated_at = NOW()
+        WHERE tb_institution_id = ? AND tb_payment_types_id = ? AND deleted = 'N'`,
+      [`${schemaName}.tb_financial_contract`, institutionId, id]
+    )
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }

@@ -3,10 +3,11 @@ import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
-import { openOrderDto, orderItemDto } from './orders.dto'
+import { openOrderDto, orderItemDto, negotiationDto } from './orders.dto'
 import {
   OrdersScope, fetchOrders, fetchOrder, createOrder, createItem,
   editItem, deleteItem, removeOrder, fetchProductsLookup,
+  fetchNegotiation, updateNegotiation, fetchPaymentTypesLookup, fetchBanksLookup,
 } from './orders.service'
 
 function scopeOf(req: Request): OrdersScope {
@@ -125,5 +126,53 @@ export async function serviceLookup(req: Request, res: Response): Promise<void> 
     res.json({ ok: true, data: await fetchProductsLookup('service', filter, scopeOf(req)) })
   } catch (err) {
     handleError(res, err, 'orders/service-lookup GET')
+  }
+}
+
+/** GET /:id/negotiation — cabeçalho (via simples), grade elaborada, preview e base do pedido. */
+export async function getNegotiation(req: Request, res: Response): Promise<void> {
+  const id = parseId(req, res)
+  if (id === null) return
+  try {
+    res.json({ ok: true, data: await fetchNegotiation(id, scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'orders/:id/negotiation GET')
+  }
+}
+
+/** PUT /:id/negotiation — grava (transação única) e devolve a negociação recomposta. */
+export async function putNegotiation(req: Request, res: Response): Promise<void> {
+  const id = parseId(req, res)
+  if (id === null) return
+  const body = parseBody(negotiationDto, req, res)
+  if (body === null) return
+  try {
+    const data = await updateNegotiation(id, body, scopeOf(req))
+    logger.info('Negociação gravada', {
+      institutionId: req.institution!.institutionId, orderId: id, mode: data.mode,
+    })
+    res.json({ ok: true, data })
+  } catch (err) {
+    handleError(res, err, 'orders/:id/negotiation PUT')
+  }
+}
+
+/** GET /payment-types-lookup — formas vinculadas/habilitadas ({ id, description, kind, maxParcels }). */
+export async function paymentTypesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const filter = String(req.query.filter ?? '')
+    res.json({ ok: true, data: await fetchPaymentTypesLookup(filter, scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'orders/payment-types-lookup GET')
+  }
+}
+
+/** GET /banks-lookup — bancos do catálogo ({ id, number, description }) para os cheques do faturamento. */
+export async function banksLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const filter = String(req.query.filter ?? '')
+    res.json({ ok: true, data: await fetchBanksLookup(filter) })
+  } catch (err) {
+    handleError(res, err, 'orders/banks-lookup GET')
   }
 }

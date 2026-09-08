@@ -69,3 +69,65 @@ export interface OrderProductLookupRow {
   description: string
   kind:        'P' | 'M' | 'S'
 }
+
+// ---------------------------------------------------------------------
+// Negociação (prompt_negociacao_pedido.md D1–D7): via SIMPLES (cabeçalho =
+// tb_order_billing, @shared/order-billing) × via ELABORADA (grade =
+// tb_order_installment, @shared/order-installment). `mode` é DERIVADO da
+// presença do elaborado — nunca coluna. `preview` = parcelas GERADAS do prazo
+// sobre a base do PEDIDO (nunca gravadas; a base da NOTA, com impostos, só
+// existe no faturamento — D7 põe a diferença na 1ª parcela).
+// ---------------------------------------------------------------------
+
+export interface NegotiationParcelRow {
+  parcel:                 number
+  dueDate:                string
+  amount:                 number
+  /** Forma RESOLVIDA (cabeçalho quando a parcela não tem a sua). */
+  paymentTypeId:          number
+  paymentTypeDescription: string | null
+  /** kind do catálogo (Q = cheque → o faturamento exige os cheques desta parcela). */
+  paymentTypeKind:        string | null
+  /** Só no elaborado: true quando a parcela tem forma PRÓPRIA (não herdada). */
+  ownPaymentType:         boolean
+}
+
+export interface OrderNegotiation {
+  orderId:      number
+  /** 'A' aberto (editável) | 'F' faturado (somente leitura). */
+  status:       'A' | 'F'
+  mode:         'simple' | 'elaborated'
+  billing: {
+    paymentTypeId:          number
+    paymentTypeDescription: string | null
+    paymentTypeKind:        string | null
+    maxParcels:             number | null
+    /** Prazo como gravado (pode ser legado do sync: 'A VISTA', '30/60/90 DIAS'). */
+    deadline:               string | null
+    /** Q-N4: canônico '028/056/084' (null = à vista) quando o gravado passa no
+     *  normalizador; `deadlineValid=false` = legado tolerado — o PUT aceita o
+     *  MESMO raw de volta, qualquer prazo novo é estrito. */
+    deadlineCanonical:      string | null
+    deadlineValid:          boolean
+    plots:                  number | null
+  } | null
+  /** Base do PEDIDO (itens set_financial + frete) — a que a negociação enxerga. */
+  base: { itemsValue: number; freight: number; base: number }
+  /** Parcelamento ELABORADO gravado (vazio na via simples). */
+  installments: NegotiationParcelRow[]
+  /** Grade GERADA do prazo a partir de hoje (via simples; vazia sem billing/base). */
+  preview:      NegotiationParcelRow[]
+}
+
+/** Lookup dos bancos do catálogo central (cheques do faturamento — mesmo shape de /api/checks/banks). */
+export interface OrderBankLookupRow {
+  id:          number
+  number:      string
+  description: string | null
+}
+
+export interface NegotiationInput {
+  paymentTypeId: number
+  deadline?:     string | null
+  installments?: { parcel: number; dueDate: string; amount: number; paymentTypeId?: number | null }[]
+}
