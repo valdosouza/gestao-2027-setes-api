@@ -131,6 +131,10 @@ export interface StatementLine {
   paymentTypeId: number | null
   planCre: number
   planDeb: number
+  /** 'R' = linha de estorno (espelho); padrão 'N'. */
+  status?: 'N' | 'R'
+  /** Linha original espelhada (tb_financial_statement_id_origin) — só no estorno. */
+  originId?: number | null
 }
 
 /**
@@ -174,12 +178,13 @@ export async function insertStatement(
         tb_bank_historic_id, credit_value, debit_value, manual_history,
         kind, settled_code, tb_user_id, future, dt_original, conferred,
         tb_payment_types_id, tb_financial_plans_id_cre, tb_financial_plans_id_deb,
-        status, created_at, updated_at)
-     VALUES (?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'N', ?, 'N', ?, ?, ?, 'N', NOW(), NOW())`,
+        status, tb_financial_statement_id_origin, created_at, updated_at)
+     VALUES (?, ?, 0, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'N', ?, 'N', ?, ?, ?, ?, ?, NOW(), NOW())`,
     [statementId, institutionId, line.bankAccountId, line.cashierId, line.dtRecord,
      line.credit, line.debit, line.history.slice(0, 100),
      line.credit >= line.debit ? 'C' : 'D', line.settledCode, line.userId,
-     line.dtOriginal, line.paymentTypeId, line.planCre, line.planDeb]
+     line.dtOriginal, line.paymentTypeId, line.planCre, line.planDeb,
+     line.status ?? 'N', line.originId ?? null]
   )
   return statementId
 }

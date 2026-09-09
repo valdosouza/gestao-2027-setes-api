@@ -5,6 +5,7 @@ import {
   settleOneTitle, findOpenCashierIdTx, insertStatement, nextSettledCode, StatementLine,
 } from '@shared/financial-settlement'
 import { reverseOnePayment } from '@shared/financial-settlement/settlement-batch'
+import { reverseStatementLines } from '@shared/financial-settlement/statement-reversal'
 
 /**
  * Peça compartilhada do CHEQUE (migration 040 —
@@ -20,7 +21,8 @@ import { reverseOnePayment } from '@shared/financial-settlement/settlement-batch
  * Nenhuma operação escreve movimento por conta própria: R/P reusam
  * `settleOneTitle` (título envolvido); B/D/T mintam o próprio `settled_code`
  * (`nextSettledCode`) e gravam linhas via `insertStatement` (sem título —
- * é MOVIMENTO puro, não baixa); F não move dinheiro; V cria um título NOVO
+ * é MOVIMENTO puro, não baixa) e são estornados pela peça única
+ * `reverseStatementLines` (Q-CH1); F não move dinheiro; V cria um título NOVO
  * (2º produtor do ramo financial, molde `generatePartnershipOrders`).
  */
 
@@ -689,9 +691,9 @@ export async function returnCheck(
       [institutionId, check.id]
     )
     if (bankEvent[0]?.settledCode != null) {
-      await reverseStatementOnly(conn, s, institutionId, userId,
-        Number(bankEvent[0].settledCode), input.dtRecord,
-        `cheque ${check.number} devolvido sem fundos`)
+      await reverseStatementLines(conn, s, institutionId, userId,
+        Number(bankEvent[0].settledCode), `cheque ${check.number} devolvido sem fundos`,
+        input.dtRecord)
     }
   }
 
@@ -774,40 +776,6 @@ export interface ReverseCheckEventResult {
   affectedCheckIds: number[]
 }
 
-/** Inverte as linhas do statement de um settled_code SEM título (B/D/T — mesmo padrão dos satélites do boleto). */
-async function reverseStatementOnly(
-  conn: PoolConnection, s: string, institutionId: number, userId: number,
-  settledCode: number, dtRecord: string, note: string
-): Promise<number> {
-  const [lines] = await conn.query<any[]>(
-    `SELECT id, tb_bank_account_id AS bankAccountId, tb_cashier_id AS cashierId,
-            credit_value AS creditValue, debit_value AS debitValue,
-            manual_history AS history, tb_payment_types_id AS paymentTypeId,
-            tb_financial_plans_id_cre AS planCre, tb_financial_plans_id_deb AS planDeb
-       FROM \`${s}\`.tb_financial_statement
-      WHERE tb_institution_id = ? AND settled_code = ? AND status <> 'R'
-      ORDER BY id FOR UPDATE`,
-    [institutionId, settledCode]
-  )
-  const reversalCode = await nextSettledCode(conn, s, institutionId)
-  for (const line of lines) {
-    await insertStatement(conn, s, institutionId, {
-      bankAccountId: Number(line.bankAccountId), cashierId: line.cashierId == null ? null : Number(line.cashierId),
-      dtRecord, dtOriginal: dtRecord,
-      credit: Number(line.debitValue) || 0, debit: Number(line.creditValue) || 0,
-      history: `Estorno: ${note}`.slice(0, 100), settledCode: reversalCode, userId,
-      paymentTypeId: line.paymentTypeId == null ? null : Number(line.paymentTypeId),
-      planCre: Number(line.planCre) || 0, planDeb: Number(line.planDeb) || 0,
-    })
-    await conn.query(
-      `UPDATE \`${s}\`.tb_financial_statement SET status = 'E', updated_at = NOW()
-        WHERE tb_institution_id = ? AND id = ?`,
-      [institutionId, line.id]
-    )
-  }
-  return reversalCode
-}
-
 export async function reverseCheckEvent(
   conn: PoolConnection, schemaName: string, institutionId: number,
   userId: number, input: ReverseCheckEventInput
@@ -881,9 +849,10 @@ export async function reverseCheckEvent(
       kind: 'X', dtRecord, originEvent: input.event, note: input.reason,
     })
   } else {
-    // B / D / T — movimento próprio, sem título
-    const reversalCode = await reverseStatementOnly(
-      conn, s, institutionId, userId, Number(target.settledCode), dtRecord, input.reason)
+    // B / D / T — movimento próprio, sem título: convenção única do extrato
+    // (Q-CH1 — espelho 'R' com origem e dt_record herdado; original vira 'E')
+    const reversalCode = await reverseStatementLines(
+      conn, s, institutionId, userId, Number(target.settledCode), input.reason, dtRecord)
     await insertCheckEvent(conn, s, institutionId, check.id, userId, {
       kind: 'X', dtRecord, settledCode: reversalCode, originEvent: input.event, note: input.reason,
     })

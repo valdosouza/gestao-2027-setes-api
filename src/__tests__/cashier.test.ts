@@ -81,6 +81,16 @@ describe('fetchBalance', () => {
     const result = await fetchBalance(scope, 5)
     expect(result.balance).toBe(120)
     expect(result.registeredByPaymentType[0].value).toBe(120)
+
+    // D-CH2 (2026-09-08): saldo e conferência somam TODAS as linhas não
+    // deletadas — o espelho 'R' do estorno compensa a original 'E'; filtrar
+    // por status contava o estorno total uma vez só. Soft-delete continua.
+    const balanceSql = String(mockQuery.mock.calls[1][0])
+    const registeredSql = String(mockQuery.mock.calls[2][0])
+    expect(balanceSql).toMatch(/deleted = 'N'/)
+    expect(balanceSql).not.toMatch(/status/)
+    expect(registeredSql).toMatch(/deleted = 'N'/)
+    expect(registeredSql).not.toMatch(/status/)
   })
 })
 

@@ -96,7 +96,16 @@ export async function openCashier(
   }
 }
 
-/** Saldo DERIVADO da sessão (créditos − débitos dos movimentos do caixa). */
+/**
+ * Saldo DERIVADO da sessão (créditos − débitos dos movimentos do caixa).
+ *
+ * D-CH2 (Valdo, 2026-09-08): soma TODAS as linhas não deletadas — o razão é
+ * append-only e o estorno grava um ESPELHO ('R') que compensa a original
+ * (que vira 'E'); o status é informativo (N vigente · E estornada · R estorno).
+ * Filtrar `status IN ('N','R')` contava o espelho sem a original e errava o
+ * saldo exatamente pelo valor de cada estorno TOTAL (caixa 5 do dev: −871
+ * pelo filtro × 278 somando tudo). Soft-delete (`deleted`) continua valendo.
+ */
 export async function getCashierBalance(
   schemaName: string, institutionId: number, cashierId: number
 ): Promise<number> {
@@ -105,14 +114,13 @@ export async function getCashierBalance(
     `SELECT COALESCE(SUM(credit_value), 0) AS credit,
             COALESCE(SUM(debit_value), 0) AS debit
        FROM \`${s}\`.tb_financial_statement
-      WHERE tb_institution_id = ? AND tb_cashier_id = ? AND deleted = 'N'
-        AND status IN ('N', 'R')`,
+      WHERE tb_institution_id = ? AND tb_cashier_id = ? AND deleted = 'N'`,
     [institutionId, cashierId]
   )
   return Math.round((Number(rows[0].credit) - Number(rows[0].debit)) * 100) / 100
 }
 
-/** Registrado por forma de pagamento — insumo da conferência do fechamento. */
+/** Registrado por forma de pagamento — insumo da conferência do fechamento (mesma regra D-CH2: todas as linhas não deletadas). */
 export async function getRegisteredByPaymentType(
   schemaName: string, institutionId: number, cashierId: number
 ): Promise<{ paymentTypeId: number; paymentTypeDescription: string | null; value: number }[]> {
@@ -123,7 +131,6 @@ export async function getRegisteredByPaymentType(
        FROM \`${s}\`.tb_financial_statement s
        LEFT JOIN setes_central.tb_payment_types pt ON pt.id = s.tb_payment_types_id
       WHERE s.tb_institution_id = ? AND s.tb_cashier_id = ? AND s.deleted = 'N'
-        AND s.status IN ('N', 'R')
       GROUP BY s.tb_payment_types_id, pt.description`,
     [institutionId, cashierId]
   )

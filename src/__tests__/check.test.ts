@@ -551,6 +551,10 @@ describe('reverseCheckEvent (X — D10)', () => {
     expect(fs.insertStatement).toHaveBeenCalledTimes(2)
     expect(fs.insertStatement.mock.calls[0][3]).toMatchObject({ credit: 100, debit: 0 }) // inverteu
     expect(fs.insertStatement.mock.calls[1][3]).toMatchObject({ credit: 0, debit: 100 })
+    // Q-CH1: convenção única do extrato — espelho 'R' apontando a origem
+    expect(fs.insertStatement.mock.calls[0][3]).toMatchObject({ status: 'R', originId: 30, settledCode: 13 })
+    expect(fs.insertStatement.mock.calls[1][3]).toMatchObject({ status: 'R', originId: 31 })
+    expect(fs.insertStatement.mock.calls[0][3].history).toMatch(/^Estorno: reversão/)
   })
   it('F: só grava X, sem tocar o extrato', async () => {
     const conn = fakeConn()
