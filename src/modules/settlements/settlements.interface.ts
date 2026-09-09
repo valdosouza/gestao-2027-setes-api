@@ -61,6 +61,10 @@ export interface ReversalInput {
 export interface ReversalResult {
   reversalEvent: number
   settledCode:   number
+  /** D-G7: cheques cujo R/P foi cancelado (X) junto com a baixa — [] quando a baixa não era com cheque. */
+  checksReversed: number[]
+  /** D-G7a: cheques da baixa que já transitaram e ficaram como estão (não interferem). */
+  checksKept: number[]
   /** Cadeia PA (4.3.2/3): baixas de PA estornadas recursivamente. */
   paReversed:    number
   /** Títulos de compensação PA+C gerados (DP11). */

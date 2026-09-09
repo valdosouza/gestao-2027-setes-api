@@ -102,6 +102,42 @@ export async function getPostedItemCommissions(
   }))
 }
 
+export interface ItemCommissionBalance {
+  orderItemId: number
+  orderItemKind: string
+  salesmanId: number
+  customerId: number
+  aliq: number
+  /** Σ value dos lançamentos vivos do item (positivos da venda − compensações). */
+  balance: number
+}
+
+/**
+ * SALDO vivo de comissão por item do pedido (Q-P8 do cancelamento, 2026-09-08):
+ * net dos lançamentos imutáveis — a compensação do cancelamento é
+ * `-balance` (R4: sempre lançamento novo, nunca UPDATE). Transaction-aware.
+ */
+export async function getCommissionBalanceByItem(
+  conn: PoolConnection, schemaName: string, institutionId: number, orderId: number
+): Promise<ItemCommissionBalance[]> {
+  const s = assertSchema(schemaName)
+  const [rows] = await conn.query<any[]>(
+    `SELECT tb_order_item_id AS orderItemId, tb_order_item_kind AS orderItemKind,
+            tb_salesman_id AS salesmanId, tb_customer_id AS customerId,
+            MAX(aliq) AS aliq, SUM(value) AS balance
+       FROM \`${s}\`.tb_commission
+      WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0 AND deleted = 'N'
+      GROUP BY tb_order_item_id, tb_order_item_kind, tb_salesman_id, tb_customer_id
+     HAVING ABS(SUM(value)) >= 0.005`,
+    [institutionId, orderId]
+  )
+  return rows.map(r => ({
+    orderItemId: Number(r.orderItemId), orderItemKind: String(r.orderItemKind),
+    salesmanId: Number(r.salesmanId), customerId: Number(r.customerId),
+    aliq: Number(r.aliq ?? 0), balance: Math.round(Number(r.balance) * 100) / 100,
+  }))
+}
+
 /**
  * INSERT em LOTE (transaction-aware) — o MAX+1 sob FOR UPDATE é reservado
  * UMA vez para a nota inteira (R6 do gate socrático 2026-08-24: por

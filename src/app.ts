@@ -13,6 +13,7 @@ import { rateLimitMiddleware }   from '@gateway/rate-limit.middleware'
 import apiRouter                 from '@gateway/router'
 import authRoutes                from '@modules/auth/auth.routes'
 import logger                    from '@shared/logger/logger'
+import { contentionToHttpError } from '@shared/db/contention'
 import { swaggerSpec }           from '@shared/swagger/swagger-config'
 
 const app = express()
@@ -82,6 +83,11 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   }
   if (err && err.type === 'entity.too.large') {
     res.status(413).json({ error: 'Corpo da requisição excede o limite', code: 'PAYLOAD_TOO_LARGE', fields: [] })
+    return
+  }
+  const busy = contentionToHttpError(err)
+  if (busy) {
+    res.status(busy.statusCode).json({ error: busy.message, code: busy.code })
     return
   }
   logger.error('Erro nao tratado', { message: err?.message })

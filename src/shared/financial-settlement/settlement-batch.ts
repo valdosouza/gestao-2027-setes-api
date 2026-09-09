@@ -1,4 +1,5 @@
 import { PoolConnection } from 'mysql2/promise'
+import { getPrincipalPaidTx, settlementCeiling } from './title-balance'
 import { HttpError } from '@shared/errors/http-error'
 import { nextSettledCode } from './financial-settlement'
 
@@ -143,6 +144,23 @@ export async function settleBatchTx(
         throw new HttpError(409,
           `Título ${title.orderId}/${title.parcel} tem o boleto ${blockingSlip.id} vigente — cancele-o antes de baixar por outro meio`,
           undefined, 'TITLE_HAS_OPEN_SLIP')
+      }
+
+      // Q-A7 (3ª rodada adversarial do cancelamento, Valdo 2026-09-09): TETO da
+      // baixa = saldo em aberto do título + juros/multa INFORMADOS nesta baixa
+      // (P5 "valores informados"); acima disso é 409 — título quitado não
+      // aceita 2ª baixa e boleto liquidado + baixa manual não soma 200 %.
+      // Leitura TRAVANTE das baixas vivas (ordem título → payment).
+      // Q-G21: saldo em aberto pela peça ÚNICA (desconto abate; baixa com
+      // desconto QUITA) — teto = saldo − desconto DESTA baixa + juros/multa.
+      const principalPaid = await getPrincipalPaidTx(conn, schemaName, institutionId,
+        title.orderId, title.parcel, Number(fin[0].tagValue))
+      const { openBalance, ceiling } = settlementCeiling(Number(fin[0].tagValue), principalPaid, title)
+      const r2 = (n: number) => Math.round(n * 100) / 100
+      if (r2(Number(title.paidValue)) > ceiling + 0.005) {
+        throw new HttpError(409,
+          `Título ${title.orderId}/${title.parcel}: valor ${Number(title.paidValue).toFixed(2)} passa do saldo em aberto (${openBalance.toFixed(2)} + juros/multa informados)`,
+          [{ field: 'paidValue', message: `Máximo ${ceiling.toFixed(2)}` }], 'TITLE_EXCEEDS_BALANCE')
       }
 
       if (firstPaymentTypeId === null) {

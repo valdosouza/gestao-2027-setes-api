@@ -21,8 +21,18 @@ jest.mock('../shared/order-return', () => ({
   getOpenReturnQuantityByProduct: jest.fn().mockResolvedValue(new Map()),
 }))
 
+// Q-A4: condições de cobrança herdadas da venda — a peça é testada em
+// order-billing.test.ts; aqui só o contrato (default: venda sem condições)
+jest.mock('../shared/order-billing', () => ({
+  __esModule: true,
+  ...jest.requireActual('../shared/order-billing'),   // normalizeDeadline real
+  getOrderBilling: jest.fn().mockResolvedValue(null),
+  upsertOrderBilling: jest.fn().mockResolvedValue(undefined),
+}))
+
 const mockQuery = (pool as any).query as jest.Mock
 const piece = jest.requireMock('../shared/order-return') as any
+const billing = jest.requireMock('../shared/order-billing') as any
 
 function mockConn() {
   const conn = {
@@ -97,13 +107,23 @@ describe('openReturn', () => {
 
     const conn = mockConn()
     conn.query
+      .mockResolvedValueOnce([{}])                   // N2: lock da institution (1º)
+      .mockResolvedValueOnce([[{ status: 'F' }]])    // Q-A1: venda relida FOR UPDATE dentro da tx
       .mockResolvedValueOnce([[{ nextId: 42 }]])     // MAX+1 tb_order
       .mockResolvedValueOnce([[{ nextNumber: 3 }]])  // MAX+1 number do ajuste
+    billing.getOrderBilling.mockResolvedValueOnce({ paymentTypeId: 6, plots: 1, deadline: '030' })
 
     const id = await openReturn(77, 'setes_setes', 1, 7)
 
     expect(id).toBe(42)
     expect(conn.commit).toHaveBeenCalled()
+    expect(String(conn.query.mock.calls[0][0])).toMatch(/setes_central\.tb_institution WHERE id = \? FOR UPDATE/)   // N2
+    expect(String(conn.query.mock.calls[1][0])).toMatch(/FROM `setes_setes`\.tb_order[\s\S]*FOR UPDATE/)
+    expect(conn.query.mock.calls[1][1]).toEqual([77, 1])
+    // Q-A4: herda forma + prazo da venda para a ordem de devolução
+    expect(billing.getOrderBilling).toHaveBeenCalledWith(conn, 'setes_setes', 1, 77)
+    expect(billing.upsertOrderBilling).toHaveBeenCalledWith(conn, 'setes_setes', 1, 42,
+      { paymentTypeId: 6, deadline: '030', plots: 1 })
     const sqls = conn.query.mock.calls.map(c => c[0] as string)
     expect(sqls.some(s => s.includes('INSERT') && s.includes('.tb_order\n'))).toBe(true)
     const adjustInsert = conn.query.mock.calls.find(c =>
@@ -119,6 +139,47 @@ describe('openReturn', () => {
     const itemInsert = conn.query.mock.calls.find(c =>
       (c[0] as string).includes('tb_order_item\n'))
     expect(itemInsert![1]).toEqual([1, 1, 42, 'Adjust', 100, 5, 50])
+  })
+})
+
+describe('openReturn — Q-A1 / Q-A4 (gate adversarial do cancelamento, Valdo 2026-09-09)', () => {
+  it('venda CANCELADA entre a triagem e a transação → 422 ORIGIN_NOT_INVOICED, sem INSERT, com rollback', async () => {
+    piece.getSaleOrderInfo.mockResolvedValueOnce({ salesmanId: 9, customerId: 55, status: 'F' }) // triagem viu 'F'
+    mockQuery.mockResolvedValueOnce([[originItem()]])
+    const conn = mockConn()
+    conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([[{ status: 'A' }]])  // lock da institution; sob lock: a nota já foi cancelada
+    await expect(openReturn(77, 'setes_setes', 1, 7))
+      .rejects.toMatchObject({ statusCode: 422, code: 'ORIGIN_NOT_INVOICED' })
+    expect(conn.query).toHaveBeenCalledTimes(2)
+    expect(conn.rollback).toHaveBeenCalled()
+    expect(billing.upsertOrderBilling).not.toHaveBeenCalled()
+  })
+
+  it('prazo legado NÃO canônico na venda → não herda (Q-G15): devolução nasce sem condições', async () => {
+    piece.getSaleOrderInfo.mockResolvedValueOnce({ salesmanId: 9, customerId: 55, status: 'F' })
+    mockQuery.mockResolvedValueOnce([[originItem()]])
+    const conn = mockConn()
+    conn.query
+      .mockResolvedValueOnce([{}])                   // N2: lock da institution
+      .mockResolvedValueOnce([[{ status: 'F' }]])
+      .mockResolvedValueOnce([[{ nextId: 44 }]])
+      .mockResolvedValueOnce([[{ nextNumber: 5 }]])
+    billing.getOrderBilling.mockResolvedValueOnce({ paymentTypeId: 6, plots: 2, deadline: '30 DDL' })
+    expect(await openReturn(77, 'setes_setes', 1, 7)).toBe(44)
+    expect(billing.upsertOrderBilling).not.toHaveBeenCalled()
+  })
+
+  it('venda sem condições de cobrança (legado) → devolução nasce sem também (billing avisa depois)', async () => {
+    piece.getSaleOrderInfo.mockResolvedValueOnce({ salesmanId: 9, customerId: 55, status: 'F' })
+    mockQuery.mockResolvedValueOnce([[originItem()]])
+    const conn = mockConn()
+    conn.query
+      .mockResolvedValueOnce([{}])                   // N2: lock da institution
+      .mockResolvedValueOnce([[{ status: 'F' }]])
+      .mockResolvedValueOnce([[{ nextId: 43 }]])
+      .mockResolvedValueOnce([[{ nextNumber: 4 }]])
+    expect(await openReturn(77, 'setes_setes', 1, 7)).toBe(43)
+    expect(billing.upsertOrderBilling).not.toHaveBeenCalled()
   })
 })
 

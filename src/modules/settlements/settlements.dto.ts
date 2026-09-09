@@ -26,6 +26,16 @@ export const settleBatchDto = z.object({
   body => new Set(body.titles.map(t => `${t.orderId}-${t.parcel}`)).size
           === body.titles.length,
   { message: 'Título repetido no lote', path: ['titles'] },
+).refine(
+  // Q-A16/Q-A19 (3ª adversarial do cancelamento): juros + multa acima do pago
+  // deixariam principal NEGATIVO (inflando o teto D-A7) e IGUAL ao pago deixa
+  // principal ZERO ("recebimento só de encargos" não existe na casa — Valdo
+  // rec.). Comparação em 2 casas (10,005 de juros sobre 10 pagos não passa).
+  body => body.titles.every(t => {
+    const r2 = (n: number) => Math.round(n * 100) / 100
+    return r2(t.interestValue) + r2(t.lateValue) < r2(t.paidValue)
+  }),
+  { message: 'Juros + multa precisam ser menores que o valor pago (principal > 0)', path: ['titles'] },
 )
 
 export const reversalDto = z.object({

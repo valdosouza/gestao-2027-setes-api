@@ -1,11 +1,13 @@
 import app from './app'
 import logger from '@shared/logger/logger'
+import { assertIsolationLevel } from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
 
 const PORT = process.env.PORT ?? 3000
 
 async function bootstrap() {
   try {
+    logger.info(`Isolamento da conexão: ${await assertIsolationLevel()}`)
     logger.info('Iniciando migrations...')
     await runMigrationsForAllInstitutions()
     logger.info('Migrations concluidas. Subindo servidor...')

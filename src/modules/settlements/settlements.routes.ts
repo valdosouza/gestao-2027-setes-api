@@ -149,7 +149,7 @@ router.get('/settled', controller.settled)
  *               event: { type: integer }
  *               reason: { type: string, maxLength: 100 }
  *     responses:
- *       201: { description: 'Envelope { ok, data: { reversalEvent, settledCode, paReversed, paCompensated } } — cadeia PA (4.3.3+DP11): baixas de PA estornadas recursivamente e títulos de compensação PA+C gerados (empresa tem crédito com o colaborador; saldo do parceiro zera)' }
+ *       201: { description: 'Envelope { ok, data: { reversalEvent, settledCode, checksReversed[], paReversed, paCompensated } } — checksReversed/checksKept (D-G7/D-G7a): baixa feita com cheque SEMPRE estorna — a peça do cheque cancela (X) o R/P dos cheques ainda em custódia (checksReversed) e deixa como estão os que já transitaram (checksKept). Cadeia PA (4.3.3+DP11): baixas de PA estornadas recursivamente e títulos de compensação PA+C gerados (empresa tem crédito com o colaborador; saldo do parceiro zera)' }
  *       401: { description: Não autenticado }
  *       404: { description: Baixa não encontrada }
  *       409: { description: 'Baixa não está vigente (já estornada ou é um registro de estorno)' }

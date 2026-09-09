@@ -506,22 +506,32 @@ export async function settleBankSlip(
 
   // rateio do valor RECEBIDO (líquido — convenção da casa: paid_value = o
   // que entrou, e o statement soma os paid_value) na proporção do vínculo,
-  // resíduo de centavos no último; a sobra sobre o valor de face vai
-  // informada como juros no último título (gate adversarial: antes os
-  // juros ficavam fora do extrato). Pagamento MENOR que a face deixa
+  // resíduo de centavos no último. A parte até a FACE é principal de cada
+  // título; a SOBRA sobre a face (juros do banco) vai informada como juros
+  // RATEADA na mesma proporção (H1 do gate socrático da Rodada 3 do
+  // cancelamento, 2026-09-09: com a sobra num título só, o teto D-A7 —
+  // saldo em aberto + juros INFORMADOS — recusava o 1º título do agrupado
+  // e derrubava a liquidação inteira). Pagamento MENOR que a face deixa
   // resíduo no título (Q-B2 da rodada).
   const extra = round2(Math.max(0, paidValue - slip.value))
+  const principalTotal = round2(paidValue - extra)
   const titles: SettleTitleInput[] = []
-  let distributed = 0
+  let distributedPrincipal = 0
+  let distributedExtra = 0
   links.forEach((l, i) => {
-    const share = i === links.length - 1
-      ? round2(paidValue - distributed)
-      : round2(paidValue * Number(l.value) / slip.value)
-    distributed = round2(distributed + share)
+    const last = i === links.length - 1
+    const principal = last
+      ? round2(principalTotal - distributedPrincipal)
+      : round2(principalTotal * Number(l.value) / slip.value)
+    const interest = last
+      ? round2(extra - distributedExtra)
+      : round2(extra * Number(l.value) / slip.value)
+    distributedPrincipal = round2(distributedPrincipal + principal)
+    distributedExtra = round2(distributedExtra + interest)
     titles.push({
       orderId: Number(l.orderId), parcel: Number(l.parcel),
-      interestValue: i === links.length - 1 ? extra : 0,
-      lateValue: 0, discountAliquot: 0, paidValue: share,
+      interestValue: interest, lateValue: 0, discountAliquot: 0,
+      paidValue: round2(principal + interest),
     })
   })
 

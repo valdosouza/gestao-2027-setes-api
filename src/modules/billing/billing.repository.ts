@@ -8,6 +8,7 @@ import { tryIssueBankSlipsOnBilling } from '@shared/bank-slip'
 import { receiveChecksOnBilling, CheckReceiveItem } from '@shared/check'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { insertCommissions, CommissionEntryInput } from '@shared/commission'
+import { issueInvoice } from '@shared/invoice'
 import { persistReturn, assertReturnableInTx, ReturnPlan } from '@shared/order-return'
 import logger from '@shared/logger/logger'
 import {
@@ -26,6 +27,24 @@ export interface OrderBranchInfo {
   branch: OrderBranch
   recipientEntityId: number
   direction: 'E' | 'S'
+}
+
+/**
+ * Q-A8 (3ª rodada adversarial do cancelamento, Valdo 2026-09-09): o VALIDATE
+ * acusa a ordem sem condições de cobrança (forma/prazo) como issue — antes
+ * devolvia 200 limpo e o INVOICE caía em 422 ORDER_NO_BILLING. Vale para a
+ * venda (negociação) e para a devolução (herda da venda — D-A4).
+ */
+export async function hasOrderBilling(
+  schemaName: string, institutionId: number, orderId: number
+): Promise<boolean> {
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT 1 FROM \`${s}\`.tb_order_billing
+      WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N' LIMIT 1`,
+    [orderId, institutionId]
+  )
+  return rows.length > 0
 }
 
 export async function getOrderStatus(
@@ -457,71 +476,53 @@ async function persistInvoiceOnce(
       }
     }
 
-    // nota: número MAX+1 por MODELO+SÉRIE (decisão R4-Q3)
-    const [mx] = await conn.query<any[]>(
-      `SELECT COALESCE(MAX(CAST(number AS UNSIGNED)), 0) + 1 AS nextNumber
-         FROM \`${s}\`.tb_invoice
-        WHERE tb_institution_id = ? AND model = ? AND serie = ? FOR UPDATE`,
-      [institutionId, params.model, params.serie]
-    )
-    const invoiceNumber = String(mx[0].nextNumber)
-
+    // nota + ramos + evento E pela PEÇA @shared/invoice (cancelamento D3/D4/
+    // D5/D17, 2026-09-08): número MAX+1 por modelo+série IGNORA canceladas
+    // (deleted='S'), cabeçalho e ramos REVIVEM por upsert no refaturamento,
     // status '0' = pronta, NÃO transmitida (autorização = fase guardada);
-    // note = motor de observações (T6/P11), texto já concatenado
-    await conn.query(
-      `INSERT INTO \`${s}\`.tb_invoice
-         (id, tb_institution_id, terminal, issuer, number, serie,
-          tb_entity_id, dt_emission, value, model, status, note, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, CURDATE(), ?, ?, '0', ?, NOW(), NOW())`,
-      [params.orderId, institutionId, institutionId, invoiceNumber, params.serie,
-       params.recipientEntityId, params.totalValue, params.model, params.noteText || null]
-    )
-
+    // note = motor de observações (T6/P11), texto já concatenado.
     // natureza da nota = PRESENÇA do ramo (D1–D11 de notas mercadoria ×
     // serviço): cada ramo só nasce se há itens dele; conjugada = os dois.
     const merchItems = params.items.filter(ci => ci.item.productKind !== 'S')
     const serviceItems = params.items.filter(ci => ci.item.productKind === 'S')
-
-    if (merchItems.length > 0) {
-      const agg = aggregateForMerchandise(merchItems)
-      await conn.query(
-        `INSERT INTO \`${s}\`.tb_invoice_merchandise
-           (id, tb_institution_id, terminal, base_icms_value, icms_value,
-            base_icms_st_value, icms_st_value, ipi_value, total_value,
-            freight_value, insurance_value, expenses_value, discount_value,
-            total_qtty, indPres, created_at, updated_at)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, NOW(), NOW())`,
-        [params.orderId, institutionId, agg.baseIcms, agg.icms, agg.baseIcmsSt,
-         agg.icmsSt, agg.ipi, params.totalValue, agg.freight, agg.expenses,
-         agg.discount, agg.quantity]
-      )
-    }
-    if (serviceItems.length > 0) {
-      const serviceTotal = Math.round(serviceItems.reduce(
-        (sum, ci) => sum + ci.merchandiseValue, 0) * 100) / 100
-      await conn.query(
-        `INSERT INTO \`${s}\`.tb_invoice_service
-           (id, tb_institution_id, terminal, total_value, created_at, updated_at)
-         VALUES (?, ?, 0, ?, NOW(), NOW())`,
-        [params.orderId, institutionId, serviceTotal]
-      )
-    }
+    const agg = merchItems.length > 0 ? aggregateForMerchandise(merchItems) : null
+    const issued = await issueInvoice(conn, s, institutionId, params.userId, {
+      orderId: params.orderId, recipientEntityId: params.recipientEntityId,
+      model: params.model, serie: params.serie, totalValue: params.totalValue,
+      noteText: params.noteText || null,
+      merchandise: agg ? {
+        baseIcms: agg.baseIcms, icms: agg.icms, baseIcmsSt: agg.baseIcmsSt, icmsSt: agg.icmsSt,
+        ipi: agg.ipi, totalValue: params.totalValue, freight: agg.freight,
+        expenses: agg.expenses, discount: agg.discount, quantity: agg.quantity,
+      } : null,
+      serviceTotal: serviceItems.length > 0
+        ? Math.round(serviceItems.reduce((sum, ci) => sum + ci.merchandiseValue, 0) * 100) / 100
+        : null,
+    })
+    const invoiceNumber = issued.invoiceNumber
 
     // financeiro (decisões 25/29 — 3º produtor das MESMAS tabelas)
     for (const p of parcels) {
       await conn.query(
         `INSERT INTO \`${s}\`.tb_financial
            (tb_institution_id, tb_order_id, terminal, parcel, dt_expiration,
-            tb_payment_types_id, tag_value, created_at, updated_at)
-         VALUES (?, ?, 0, ?, ?, ?, ?, NOW(), NOW())`,
+            tb_payment_types_id, tag_value, created_at, updated_at, deleted)
+         VALUES (?, ?, 0, ?, ?, ?, ?, NOW(), NOW(), 'N')
+         ON DUPLICATE KEY UPDATE
+           dt_expiration = VALUES(dt_expiration), tb_payment_types_id = VALUES(tb_payment_types_id),
+           tag_value = VALUES(tag_value), deleted = 'N', updated_at = NOW()`,
         [institutionId, params.orderId, p.parcel, p.dueDate, p.paymentTypeId, p.amount]
       )
       await conn.query(
         `INSERT INTO \`${s}\`.tb_financial_bills
            (tb_institution_id, tb_order_id, terminal, parcel,
             tb_financial_plans_id, number, kind, situation, operation, stage,
-            created_at, updated_at)
-         VALUES (?, ?, 0, ?, 0, ?, ?, 'N', ?, 'N', NOW(), NOW())`,
+            created_at, updated_at, deleted)
+         VALUES (?, ?, 0, ?, 0, ?, ?, 'N', ?, 'N', NOW(), NOW(), 'N')
+         ON DUPLICATE KEY UPDATE
+           tb_financial_plans_id = 0, number = VALUES(number), kind = VALUES(kind),
+           situation = 'N', operation = VALUES(operation), stage = 'N',
+           deleted = 'N', updated_at = NOW()`,
         [institutionId, params.orderId, p.parcel,
          `${params.orderId}/${invoiceNumber}-${p.parcel}`, params.financialKind,
          params.financialOperation]

@@ -1,9 +1,12 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
+import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { lockInstitutionCounters } from '@shared/db/counters'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { upsertOrderBilling } from '@shared/order-billing'
+import { issueInvoice } from '@shared/invoice'
 import { assertPaymentRules } from '@shared/order-installment'
 import {
   prorataValue, parcelQuotas, firstDayOfMonth, lastDayOfMonth,
@@ -15,10 +18,14 @@ import {
 } from './service-orders.interface'
 
 /**
- * Repositório das Ordens de Serviço (backbone tb_order + ramo
- * tb_order_service — Fases 3 e 6 do 05-ORDEM-SERVICO). Regras estruturais:
- * status vive na tb_order (DP7); open_lock preenchido/esvaziado pela
- * APLICAÇÃO na MESMA transação (D5 — UNIQUE é a rede da corrida); itens no
+ * Repositório das Ordens de Serviço (backbone tb_order + natureza
+ * tb_order_service (tomador) + CICLO tb_service_order — Fases 3 e 6 do
+ * 05-ORDEM-SERVICO; migration 047: o ciclo ganhou ramo próprio porque
+ * tb_order_service é natureza por PRESENÇA, compartilhada com a venda de
+ * serviço e com o sync). Regras estruturais: status vive na tb_order (DP7);
+ * open_lock (no CICLO) preenchido/esvaziado pela APLICAÇÃO na MESMA
+ * transação (D5 — UNIQUE é a rede da corrida); a identidade da OS é a
+ * EXISTÊNCIA do ciclo (venda com serviço nunca entra aqui); itens no
  * detalhe universal kind='Service' (DP6 — sem estoque); totalizer
  * recalculado a cada mudança; faturamento em transação única
  * (billing → invoice 'SE' → financial/bills 'RA' → status 'F').
@@ -44,22 +51,25 @@ export async function listOrders(
   const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const statusFilter = status || null
   const where =
-    `FROM \`${schemaName}\`.tb_order_service s
+    `FROM \`${schemaName}\`.tb_service_order c
+     INNER JOIN \`${schemaName}\`.tb_order_service s
+        ON s.id = c.id AND s.tb_institution_id = c.tb_institution_id
+       AND s.terminal = c.terminal AND s.deleted = 'N'
      INNER JOIN \`${schemaName}\`.tb_order o
-        ON o.id = s.id AND o.tb_institution_id = s.tb_institution_id
-       AND o.terminal = s.terminal AND o.deleted = 'N'
+        ON o.id = c.id AND o.tb_institution_id = c.tb_institution_id
+       AND o.terminal = c.terminal AND o.deleted = 'N'
      INNER JOIN setes_central.tb_entity e ON e.id = s.tb_customer_id
      LEFT JOIN \`${schemaName}\`.tb_order_totalizer t
-        ON t.id = s.id AND t.tb_institution_id = s.tb_institution_id
-       AND t.terminal = s.terminal AND t.deleted = 'N'
-     WHERE s.tb_institution_id = ? AND s.deleted = 'N'
+        ON t.id = c.id AND t.tb_institution_id = c.tb_institution_id
+       AND t.terminal = c.terminal AND t.deleted = 'N'
+     WHERE c.tb_institution_id = ? AND c.deleted = 'N'
        AND (? IS NULL OR o.status = ?)
        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)`
   const params = [institutionId, statusFilter, statusFilter, like, like, like]
 
   const [rows] = await pool.query<any[]>(
-    `SELECT s.id,
-            s.number,
+    `SELECT c.id,
+            c.number,
             s.tb_customer_id AS customerId,
             COALESCE(e.nick_trade, e.name_company) AS customerName,
             o.status,
@@ -69,7 +79,7 @@ export async function listOrders(
                 AND i.terminal = s.terminal AND i.deleted = 'N') AS itemsCount,
             COALESCE(t.total_value, 0) AS totalValue
      ${where}
-     ORDER BY o.status, s.number DESC, s.id DESC
+     ORDER BY o.status, c.number DESC, c.id DESC
      LIMIT ? OFFSET ?`,
     [...params, query.pageSize, query.offset]
   )
@@ -84,7 +94,7 @@ export async function getOrder(
 ): Promise<ServiceOrderFull | null> {
   assertSchemaName(schemaName)
   const [rows] = await pool.query<any[]>(
-    `SELECT s.id, s.number,
+    `SELECT c.id, c.number,
             s.tb_customer_id AS customerId,
             COALESCE(e.nick_trade, e.name_company) AS customerName,
             o.status,
@@ -92,10 +102,13 @@ export async function getOrder(
             COALESCE(t.total_value, 0) AS totalValue,
             inv.number AS invoiceNumber,
             DATE_FORMAT(inv.dt_emission, '%Y-%m-%d') AS dtEmission
-     FROM \`${schemaName}\`.tb_order_service s
+     FROM \`${schemaName}\`.tb_service_order c
+     INNER JOIN \`${schemaName}\`.tb_order_service s
+        ON s.id = c.id AND s.tb_institution_id = c.tb_institution_id
+       AND s.terminal = c.terminal AND s.deleted = 'N'
      INNER JOIN \`${schemaName}\`.tb_order o
-        ON o.id = s.id AND o.tb_institution_id = s.tb_institution_id
-       AND o.terminal = s.terminal AND o.deleted = 'N'
+        ON o.id = c.id AND o.tb_institution_id = c.tb_institution_id
+       AND o.terminal = c.terminal AND o.deleted = 'N'
      INNER JOIN setes_central.tb_entity e ON e.id = s.tb_customer_id
      LEFT JOIN \`${schemaName}\`.tb_order_totalizer t
         ON t.id = s.id AND t.tb_institution_id = s.tb_institution_id
@@ -103,7 +116,7 @@ export async function getOrder(
      LEFT JOIN \`${schemaName}\`.tb_invoice inv
         ON inv.id = s.id AND inv.tb_institution_id = s.tb_institution_id
        AND inv.terminal = s.terminal AND inv.deleted = 'N'
-     WHERE s.id = ? AND s.tb_institution_id = ? AND s.deleted = 'N'`,
+     WHERE c.id = ? AND c.tb_institution_id = ? AND c.deleted = 'N'`,
     [id, institutionId]
   )
   if (!rows[0]) return null
@@ -180,15 +193,20 @@ async function recalcTotalizer(
   return total
 }
 
-/** Ordem ABERTA travada para escrita (409 quando não está aberta). */
+/**
+ * Ordem ABERTA travada para escrita (409 quando não está aberta). A
+ * identidade da OS é a EXISTÊNCIA do ciclo (tb_service_order): uma venda com
+ * item de serviço tem a natureza mas não o ciclo → 404 aqui (antes vazava:
+ * DELETE/itens/faturar do módulo de OS pegavam a venda — parecer 2026-09-09).
+ */
 async function lockOpenOrder(
   conn: PoolConnection, schemaName: string, institutionId: number, orderId: number
 ): Promise<void> {
   const [rows] = await conn.query<any[]>(
     `SELECT o.status FROM \`${schemaName}\`.tb_order o
-     INNER JOIN \`${schemaName}\`.tb_order_service s
-        ON s.id = o.id AND s.tb_institution_id = o.tb_institution_id
-       AND s.terminal = o.terminal AND s.deleted = 'N'
+     INNER JOIN \`${schemaName}\`.tb_service_order c
+        ON c.id = o.id AND c.tb_institution_id = o.tb_institution_id
+       AND c.terminal = o.terminal AND c.deleted = 'N'
      WHERE o.id = ? AND o.tb_institution_id = ? AND o.terminal = 0
        AND o.deleted = 'N' FOR UPDATE`,
     [orderId, institutionId]
@@ -200,7 +218,12 @@ async function lockOpenOrder(
   }
 }
 
-/** Cria tb_order + tb_order_service ABERTA (D5/DP7) e devolve o id. */
+/**
+ * Cria tb_order + natureza tb_order_service + CICLO tb_service_order ABERTO
+ * (D5/DP7) e devolve o id. PRÉ-CONDIÇÃO: a transação já travou a institution
+ * (`lockInstitutionCounters`) — os dois MAX+1 abaixo deadlockam entre
+ * concorrentes sem isso (Q-A12).
+ */
 async function createOpenOrder(
   conn: PoolConnection, schemaName: string, institutionId: number,
   customerId: number, userId: number
@@ -212,9 +235,11 @@ async function createOpenOrder(
   )
   const id = Number(mx[0].nextId)
 
+  // nº da OS: MAX+1 sobre o CICLO (UNIQUE (institution, number) = índice do
+  // contador — família do Q-G5), travante
   const [mxNum] = await conn.query<any[]>(
     `SELECT COALESCE(MAX(number), 0) + 1 AS nextNumber
-       FROM \`${schemaName}\`.tb_order_service WHERE tb_institution_id = ?`,
+       FROM \`${schemaName}\`.tb_service_order WHERE tb_institution_id = ? FOR UPDATE`,
     [institutionId]
   )
 
@@ -225,15 +250,64 @@ async function createOpenOrder(
      VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
     [id, institutionId, userId]
   )
+  // natureza (tomador) — number NULL: nº de origem é só do sync (ramos irmãos)
   await conn.query(
     `INSERT INTO \`${schemaName}\`.tb_order_service
-       (id, tb_institution_id, terminal, number, tb_customer_id, open_lock,
-        created_at, updated_at)
-     VALUES (?, ?, 0, ?, ?, CONCAT(?, '-', ?), NOW(), NOW())`,
-    [id, institutionId, Number(mxNum[0].nextNumber), customerId,
-     institutionId, customerId]
+       (id, tb_institution_id, terminal, tb_customer_id, created_at, updated_at)
+     VALUES (?, ?, 0, ?, NOW(), NOW())`,
+    [id, institutionId, customerId]
   )
+  try {
+    await conn.query(
+      `INSERT INTO \`${schemaName}\`.tb_service_order
+         (id, tb_institution_id, terminal, number, open_lock, created_at, updated_at)
+       VALUES (?, ?, 0, ?, CONCAT(?, '-', ?), NOW(), NOW())`,
+      [id, institutionId, Number(mxNum[0].nextNumber), institutionId, customerId]
+    )
+  } catch (err: any) {
+    // Q-A5: a trava D5 (UNIQUE open_lock) ocupada entre a consulta e o INSERT
+    // (ex.: cancelamento da nota reabrindo a OS do cliente) é 409, não 500.
+    if (err?.code === 'ER_DUP_ENTRY') {
+      throw new HttpError(409, 'Cliente já tem ordem de serviço aberta (máx. 1 por cliente — D5)',
+        undefined, 'ORDER_OPEN_EXISTS')
+    }
+    throw err
+  }
   return id
+}
+
+/**
+ * Guarda ÚNICA do produto do item da OS (Q-A17/Q-A20): existe, ATIVO e é
+ * SERVIÇO (kind 'S' — o lookup só oferece isso; a re-prova adversarial
+ * mostrou o PUT aceitando produto inexistente/inativo/mercadoria e a OS
+ * faturando nota 'SE' com item de mercadoria). POST e PUT passam aqui.
+ */
+async function assertServiceProduct(
+  conn: PoolConnection, schemaName: string, institutionId: number, productId: number
+): Promise<void> {
+  const [prod] = await conn.query<any[]>(
+    `SELECT kind, active FROM \`${schemaName}\`.tb_product
+      WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+    [productId, institutionId]
+  )
+  if (prod.length === 0 || String(prod[0].active) !== 'S') {
+    throw new HttpError(400, 'Produto/serviço inexistente ou inativo',
+      [{ field: 'productId', message: 'Produto não encontrado' }],
+      'ROLE_MISSING')
+  }
+  if (String(prod[0].kind) !== 'S') {
+    throw new HttpError(422, 'Item da ordem de serviço precisa ser um SERVIÇO',
+      [{ field: 'productId', message: 'Produto de mercadoria não entra na OS' }],
+      'SERVICE_ORDER_ITEM_NOT_SERVICE')
+  }
+}
+
+/** Q-A17b (Valdo 2026-09-09): item de OS sem valor não existe (sem caso real de cortesia) → 422. */
+function assertItemValue(input: OrderItemInput): void {
+  if (!(Number(input.unitValue) > 0)) {
+    throw new HttpError(422, 'Item da ordem de serviço precisa de valor unitário maior que zero',
+      [{ field: 'unitValue', message: 'Informe o valor' }], 'SERVICE_ORDER_ITEM_VALUE_REQUIRED')
+  }
 }
 
 async function insertServiceItem(
@@ -266,44 +340,50 @@ export async function openOrder(
   input: OpenOrderInput, schemaName: string, institutionId: number, userId: number
 ): Promise<number> {
   assertSchemaName(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
+  // Q-A5 (3ª rodada adversarial do cancelamento, 2026-09-09): os locks da
+  // Rodada 2 (trava D5 no plano do cancelamento; MAX(number_seq) na sequência
+  // 'SE') deadlockam com este módulo — vítima reexecuta, nunca 500 (mesma peça
+  // do billing, bank-slips, checks e settlements).
+  return withDeadlockRetry('abertura de OS', { institutionId, customerId: input.customerId }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await lockInstitutionCounters(conn, institutionId) // Q-A12: cunha nº do pedido/OS — 1º lock
 
-    const [role] = await conn.query<any[]>(
-      `SELECT 1 FROM \`${schemaName}\`.tb_customer
-        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
-      [input.customerId, institutionId]
-    )
-    if (role.length === 0) {
-      throw new HttpError(400, 'Cliente não encontrado nesta institution',
-        [{ field: 'customerId', message: 'Cliente inexistente' }],
-        'ROLE_MISSING')
+      const [role] = await conn.query<any[]>(
+        `SELECT 1 FROM \`${schemaName}\`.tb_customer
+          WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+        [input.customerId, institutionId]
+      )
+      if (role.length === 0) {
+        throw new HttpError(400, 'Cliente não encontrado nesta institution',
+          [{ field: 'customerId', message: 'Cliente inexistente' }],
+          'ROLE_MISSING')
+      }
+
+      const [open] = await conn.query<any[]>(
+        `SELECT id FROM \`${schemaName}\`.tb_service_order
+        WHERE tb_institution_id = ? AND open_lock = CONCAT(?, '-', ?) AND deleted = 'N' FOR UPDATE`,
+      [institutionId, institutionId, input.customerId]
+      )
+      if (open[0]) {
+        throw new HttpError(409,
+          `Cliente já tem a ordem ${open[0].id} aberta (máx. 1 por cliente — D5)`,
+          undefined, 'ORDER_OPEN_EXISTS')
+      }
+
+      const id = await createOpenOrder(conn, schemaName, institutionId,
+        input.customerId, userId)
+
+      await conn.commit()
+      return id
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
     }
-
-    const [open] = await conn.query<any[]>(
-      `SELECT id FROM \`${schemaName}\`.tb_order_service
-        WHERE tb_institution_id = ? AND tb_customer_id = ?
-          AND open_lock IS NOT NULL AND deleted = 'N' FOR UPDATE`,
-      [institutionId, input.customerId]
-    )
-    if (open[0]) {
-      throw new HttpError(409,
-        `Cliente já tem a ordem ${open[0].id} aberta (máx. 1 por cliente — D5)`,
-        undefined, 'ORDER_OPEN_EXISTS')
-    }
-
-    const id = await createOpenOrder(conn, schemaName, institutionId,
-      input.customerId, userId)
-
-    await conn.commit()
-    return id
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+  })
 }
 
 export async function addItem(
@@ -316,16 +396,8 @@ export async function addItem(
     await conn.beginTransaction()
     await lockOpenOrder(conn, schemaName, institutionId, orderId)
 
-    const [prod] = await conn.query<any[]>(
-      `SELECT 1 FROM \`${schemaName}\`.tb_product
-        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
-      [input.productId, institutionId]
-    )
-    if (prod.length === 0) {
-      throw new HttpError(400, 'Produto/serviço inexistente',
-        [{ field: 'productId', message: 'Produto não encontrado' }],
-        'ROLE_MISSING')
-    }
+    await assertServiceProduct(conn, schemaName, institutionId, input.productId)
+    assertItemValue(input)
 
     const itemId = await insertServiceItem(conn, schemaName, institutionId, orderId, input)
     await recalcTotalizer(conn, schemaName, institutionId, orderId)
@@ -349,6 +421,8 @@ export async function updateItem(
   try {
     await conn.beginTransaction()
     await lockOpenOrder(conn, schemaName, institutionId, orderId)
+    await assertServiceProduct(conn, schemaName, institutionId, input.productId)   // Q-A20: PUT = mesma guarda do POST
+    assertItemValue(input)   // Q-A17b
 
     const [result] = await conn.query<any>(
       `UPDATE \`${schemaName}\`.tb_order_item
@@ -414,8 +488,14 @@ export async function cancelOrder(
     await lockOpenOrder(conn, schemaName, institutionId, orderId)
 
     await conn.query(
-      `UPDATE \`${schemaName}\`.tb_order_service
+      `UPDATE \`${schemaName}\`.tb_service_order
           SET deleted = 'S', open_lock = NULL, updated_at = NOW()
+        WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+      [orderId, institutionId]
+    )
+    await conn.query(
+      `UPDATE \`${schemaName}\`.tb_order_service
+          SET deleted = 'S', updated_at = NOW()
         WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
       [orderId, institutionId]
     )
@@ -474,60 +554,75 @@ export async function monthlyRun(
   }
 
   for (const [customerId, rows] of byCustomer) {
-    const conn = await pool.getConnection()
+    report.processed += 1
     try {
-      await conn.beginTransaction()
-      report.processed += 1
+      // Q-A5: transação por cliente reexecuta em deadlock (a trava D5 do
+      // cancelamento da nota da OS cruza com este SELECT … FOR UPDATE + INSERT);
+      // os contadores só entram no relatório DEPOIS do commit — uma tentativa
+      // desfeita não conta duas vezes.
+      const done = await withDeadlockRetry('rotina mensal', { institutionId, customerId }, 3, async () => {
+        const conn = await pool.getConnection()
+        const local = { opened: 0, injected: 0, skipped: 0 }
+        try {
+          await conn.beginTransaction()
+          await lockInstitutionCounters(conn, institutionId) // Q-A12: pode cunhar nº — 1º lock
 
-      // ordem ABERTA do cliente (FOR UPDATE) ou nova
-      const [open] = await conn.query<any[]>(
-        `SELECT s.id FROM \`${schemaName}\`.tb_order_service s
-          WHERE s.tb_institution_id = ? AND s.tb_customer_id = ?
-            AND s.open_lock IS NOT NULL AND s.deleted = 'N' FOR UPDATE`,
-        [institutionId, customerId]
-      )
-      let orderId: number
-      if (open[0]) {
-        orderId = Number(open[0].id)
-      } else {
-        orderId = await createOpenOrder(conn, schemaName, institutionId, customerId, userId)
-        report.opened += 1
-      }
+          // ordem ABERTA do cliente (FOR UPDATE) ou nova
+          const [open] = await conn.query<any[]>(
+            `SELECT c.id FROM \`${schemaName}\`.tb_service_order c
+              WHERE c.tb_institution_id = ? AND c.open_lock = CONCAT(?, '-', ?) AND c.deleted = 'N' FOR UPDATE`,
+            [institutionId, institutionId, customerId]
+          )
+          let orderId: number
+          if (open[0]) {
+            orderId = Number(open[0].id)
+          } else {
+            orderId = await createOpenOrder(conn, schemaName, institutionId, customerId, userId)
+            local.opened += 1
+          }
 
-      let touched = false
-      for (const row of rows) {
-        // idempotência (3.4): item do produto do contrato JÁ injetado na
-        // competência? (kind Service criado dentro do mês)
-        const [exists] = await conn.query<any[]>(
-          `SELECT 1 FROM \`${schemaName}\`.tb_order_item
-            WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0
-              AND kind = ? AND tb_product_id = ? AND deleted = 'N'
-              AND DATE(created_at) BETWEEN ? AND ?`,
-          [orderId, institutionId, SERVICE_KIND, row.productId, first, last]
-        )
-        if (exists.length > 0) {
-          report.skipped += 1
-          continue
+          let touched = false
+          for (const row of rows) {
+            // idempotência (3.4): item do produto do contrato JÁ injetado na
+            // competência? (kind Service criado dentro do mês)
+            const [exists] = await conn.query<any[]>(
+              `SELECT 1 FROM \`${schemaName}\`.tb_order_item
+                WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0
+                  AND kind = ? AND tb_product_id = ? AND deleted = 'N'
+                  AND DATE(created_at) BETWEEN ? AND ?`,
+              [orderId, institutionId, SERVICE_KIND, row.productId, first, last]
+            )
+            if (exists.length > 0) {
+              local.skipped += 1
+              continue
+            }
+            const value = prorataValue(Number(row.value), row.dtStart, row.dtEnd,
+              input.year, input.month)
+            if (value <= 0) {
+              local.skipped += 1
+              continue
+            }
+            await insertServiceItem(conn, schemaName, institutionId, orderId,
+              { productId: Number(row.productId), quantity: 1, unitValue: value })
+            local.injected += 1
+            touched = true
+          }
+          if (touched) await recalcTotalizer(conn, schemaName, institutionId, orderId)
+
+          await conn.commit()
+          return local
+        } catch (err) {
+          await conn.rollback()
+          throw err
+        } finally {
+          conn.release()
         }
-        const value = prorataValue(Number(row.value), row.dtStart, row.dtEnd,
-          input.year, input.month)
-        if (value <= 0) {
-          report.skipped += 1
-          continue
-        }
-        await insertServiceItem(conn, schemaName, institutionId, orderId,
-          { productId: Number(row.productId), quantity: 1, unitValue: value })
-        report.injected += 1
-        touched = true
-      }
-      if (touched) await recalcTotalizer(conn, schemaName, institutionId, orderId)
-
-      await conn.commit()
+      })
+      report.opened += done.opened
+      report.injected += done.injected
+      report.skipped += done.skipped
     } catch (err: any) {
-      await conn.rollback()
       report.errors.push({ customerId, message: String(err.message ?? err) })
-    } finally {
-      conn.release()
     }
   }
   return report
@@ -539,108 +634,128 @@ export async function monthlyRun(
 
 export async function generateInvoice(
   orderId: number, input: InvoiceInput,
-  schemaName: string, institutionId: number
+  schemaName: string, institutionId: number, userId: number
 ): Promise<InvoiceResult> {
   assertSchemaName(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
-    await lockOpenOrder(conn, schemaName, institutionId, orderId)
+  // Q-A5 (3ª rodada adversarial do cancelamento, 2026-09-09): os locks da
+  // Rodada 2 (trava D5 no plano do cancelamento; MAX(number_seq) na sequência
+  // 'SE') deadlockam com este módulo — vítima reexecuta, nunca 500 (mesma peça
+  // do billing, bank-slips, checks e settlements).
+  return withDeadlockRetry('faturamento da OS', { institutionId, orderId }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await lockOpenOrder(conn, schemaName, institutionId, orderId)
 
-    // forma VINCULADA/habilitada + nº de parcelas ≤ max_parcels do vínculo —
-    // a MESMA regra das três portas (Q-N1 da negociação do pedido, 2026-09-07)
-    await assertPaymentRules(conn, schemaName, institutionId, {
-      headerPaymentTypeId: input.paymentTypeId, parcels: [], nParcels: input.parcels,
-      limitField: 'parcels',
-    })
+      // forma VINCULADA/habilitada + nº de parcelas ≤ max_parcels do vínculo —
+      // a MESMA regra das três portas (Q-N1 da negociação do pedido, 2026-09-07)
+      await assertPaymentRules(conn, schemaName, institutionId, {
+        headerPaymentTypeId: input.paymentTypeId, parcels: [], nParcels: input.parcels,
+        limitField: 'parcels',
+      })
 
-    const total = await recalcTotalizer(conn, schemaName, institutionId, orderId)
-    const [itemsAlive] = await conn.query<any[]>(
-      `SELECT COUNT(*) AS n FROM \`${schemaName}\`.tb_order_item
-        WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0
-          AND deleted = 'N'`,
-      [orderId, institutionId]
-    )
-    if (Number(itemsAlive[0].n) === 0) {
-      throw new HttpError(400, 'Ordem sem itens — nada a faturar',
-        [{ field: 'items', message: 'Inclua ao menos um item' }],
-        'ORDER_NO_ITEMS')
-    }
+      const total = await recalcTotalizer(conn, schemaName, institutionId, orderId)
+      const [itemsAlive] = await conn.query<any[]>(
+        `SELECT COUNT(*) AS n FROM \`${schemaName}\`.tb_order_item
+          WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0
+            AND deleted = 'N'`,
+        [orderId, institutionId]
+      )
+      if (Number(itemsAlive[0].n) === 0) {
+        throw new HttpError(400, 'Ordem sem itens — nada a faturar',
+          [{ field: 'items', message: 'Inclua ao menos um item' }],
+          'ORDER_NO_ITEMS')
+      }
+      // Q-A20 (cinto): o faturamento revalida os itens — produto vivo, ativo e
+      // SERVIÇO (item gravado antes da guarda, ou produto inativado depois)
+      const [badItems] = await conn.query<any[]>(
+        `SELECT COUNT(*) AS n FROM \`${schemaName}\`.tb_order_item i
+           LEFT JOIN \`${schemaName}\`.tb_product p
+             ON p.id = i.tb_product_id AND p.tb_institution_id = i.tb_institution_id AND p.deleted = 'N'
+          WHERE i.tb_order_id = ? AND i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N'
+            AND (p.id IS NULL OR p.active <> 'S' OR p.kind <> 'S')`,
+        [orderId, institutionId]
+      )
+      if (Number(badItems[0].n) > 0) {
+        throw new HttpError(422, 'Ordem tem item que não é serviço ativo — corrija os itens antes de faturar',
+          [{ field: 'items', message: 'Item com produto inexistente, inativo ou de mercadoria' }],
+          'SERVICE_ORDER_ITEM_NOT_SERVICE')
+      }
 
-    const [svc] = await conn.query<any[]>(
-      `SELECT tb_customer_id AS customerId FROM \`${schemaName}\`.tb_order_service
-        WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
-      [orderId, institutionId]
-    )
-    const customerId = Number(svc[0].customerId)
+      const [svc] = await conn.query<any[]>(
+        `SELECT tb_customer_id AS customerId FROM \`${schemaName}\`.tb_order_service
+          WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+        [orderId, institutionId]
+      )
+      const customerId = Number(svc[0].customerId)
 
-    // condições de cobrança (passo 5 da sequência — tb_order_billing) pela
-    // peça @shared/order-billing (D2 da negociação): OS informa o nº de
-    // parcelas do contrato, sem prazo (deadline NULL = "não se aplica").
-    await upsertOrderBilling(conn, schemaName, institutionId, orderId, {
-      paymentTypeId: input.paymentTypeId, deadline: null, plots: input.parcels,
-    })
+      // condições de cobrança (passo 5 da sequência — tb_order_billing) pela
+      // peça @shared/order-billing (D2 da negociação): OS informa o nº de
+      // parcelas do contrato, sem prazo (deadline NULL = "não se aplica").
+      await upsertOrderBilling(conn, schemaName, institutionId, orderId, {
+        paymentTypeId: input.paymentTypeId, deadline: null, plots: input.parcels,
+      })
 
-    // fatura INTERNA (DP8: model 'SE'; número MAX+1 por institution;
-    // emissão OFICIAL da NFS-e = P1 futura)
-    const [mxInv] = await conn.query<any[]>(
-      `SELECT COALESCE(MAX(CAST(number AS UNSIGNED)), 0) + 1 AS nextNumber
-         FROM \`${schemaName}\`.tb_invoice
-        WHERE tb_institution_id = ? FOR UPDATE`,
-      [institutionId]
-    )
-    const invoiceNumber = String(mxInv[0].nextNumber)
-    await conn.query(
-      `INSERT INTO \`${schemaName}\`.tb_invoice
-         (id, tb_institution_id, terminal, issuer, number, serie,
-          tb_entity_id, dt_emission, value, model, status,
-          created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, '1', ?, CURDATE(), ?, 'SE', 'A', NOW(), NOW())`,
-      [orderId, institutionId, institutionId, invoiceNumber, customerId, total]
-    )
+      // fatura INTERNA (DP8: model 'SE', série '1'; emissão OFICIAL da NFS-e =
+      // P1 futura) pela MESMA peça da nota de venda — Q-G3 (Valdo 2026-09-09:
+      // "a nota da OS deve ser cancelável"): evento E, numeração D4 por
+      // modelo/série, cabeçalho REVIVIDO no refaturamento; o cancelamento
+      // (POST /billing/cancel) reabre a OS devolvendo a trava D5.
+      const { invoiceNumber } = await issueInvoice(conn, schemaName, institutionId, userId, {
+        orderId, recipientEntityId: customerId, model: 'SE', serie: '1', totalValue: total,
+        noteText: null, merchandise: null, serviceTotal: null,
+      })
 
-    // financeiro: 1 tb_financial + 1 bill 'RA' POR PARCELA (P7 — PK natural)
-    const quotas = parcelQuotas(total, input.parcels)
-    for (let parcel = 1; parcel <= input.parcels; parcel++) {
+      // financeiro: 1 tb_financial + 1 bill 'RA' POR PARCELA (P7 — PK natural);
+      // ON DUPLICATE KEY = revive da parcela soft-deletada pelo cancelamento
+      const quotas = parcelQuotas(total, input.parcels)
+      for (let parcel = 1; parcel <= input.parcels; parcel++) {
+        await conn.query(
+          `INSERT INTO \`${schemaName}\`.tb_financial
+             (tb_institution_id, tb_order_id, terminal, parcel, dt_expiration,
+              tb_payment_types_id, tag_value, created_at, updated_at, deleted)
+           VALUES (?, ?, 0, ?, ?, ?, ?, NOW(), NOW(), 'N')
+           ON DUPLICATE KEY UPDATE
+             dt_expiration = VALUES(dt_expiration), tb_payment_types_id = VALUES(tb_payment_types_id),
+             tag_value = VALUES(tag_value), deleted = 'N', updated_at = NOW()`,
+          [institutionId, orderId, parcel, input.dtExpiration,
+           input.paymentTypeId, quotas[parcel - 1]]
+        )
+        await conn.query(
+          `INSERT INTO \`${schemaName}\`.tb_financial_bills
+             (tb_institution_id, tb_order_id, terminal, parcel,
+              tb_financial_plans_id, number, kind, situation, operation, stage,
+              created_at, updated_at, deleted)
+           VALUES (?, ?, 0, ?, 0, ?, 'RA', 'N', 'C', 'N', NOW(), NOW(), 'N')
+           ON DUPLICATE KEY UPDATE
+             tb_financial_plans_id = 0, number = VALUES(number), kind = 'RA',
+             situation = 'N', operation = 'C', stage = 'N', deleted = 'N', updated_at = NOW()`,
+          [institutionId, orderId, parcel,
+           `${orderId}/${invoiceNumber}-${parcel}`]
+        )
+      }
+
+      // A→F no backbone (DP7) + libera a trava D5
       await conn.query(
-        `INSERT INTO \`${schemaName}\`.tb_financial
-           (tb_institution_id, tb_order_id, terminal, parcel, dt_expiration,
-            tb_payment_types_id, tag_value, created_at, updated_at)
-         VALUES (?, ?, 0, ?, ?, ?, ?, NOW(), NOW())`,
-        [institutionId, orderId, parcel, input.dtExpiration,
-         input.paymentTypeId, quotas[parcel - 1]]
+        `UPDATE \`${schemaName}\`.tb_order
+            SET status = 'F', updated_at = NOW()
+          WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+        [orderId, institutionId]
       )
       await conn.query(
-        `INSERT INTO \`${schemaName}\`.tb_financial_bills
-           (tb_institution_id, tb_order_id, terminal, parcel,
-            tb_financial_plans_id, number, kind, situation, operation, stage,
-            created_at, updated_at)
-         VALUES (?, ?, 0, ?, 0, ?, 'RA', 'N', 'C', 'N', NOW(), NOW())`,
-        [institutionId, orderId, parcel,
-         `${orderId}/${invoiceNumber}-${parcel}`]
-      )
-    }
-
-    // A→F no backbone (DP7) + libera a trava D5
-    await conn.query(
-      `UPDATE \`${schemaName}\`.tb_order
-          SET status = 'F', updated_at = NOW()
-        WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
-      [orderId, institutionId]
-    )
-    await conn.query(
-      `UPDATE \`${schemaName}\`.tb_order_service
+        `UPDATE \`${schemaName}\`.tb_service_order
           SET open_lock = NULL, updated_at = NOW()
-        WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
-      [orderId, institutionId]
-    )
+          WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+        [orderId, institutionId]
+      )
 
-    await conn.commit()
-    return { invoiceNumber, parcels: input.parcels, totalValue: total }
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+      await conn.commit()
+      return { invoiceNumber, parcels: input.parcels, totalValue: total }
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
+    }
+  })
 }

@@ -36,13 +36,24 @@ jest.mock('../shared/order-return', () => ({
   assertReturnableInTx: jest.fn().mockResolvedValue(undefined),
   persistReturn: jest.fn().mockResolvedValue(undefined),
 }))
+jest.mock('../shared/invoice', () => ({
+  __esModule: true,
+  // nota + ramos + evento E vivem na peça (cancelamento D3/D4/D17) — aqui só o contrato
+  issueInvoice: jest.fn(async () => ({ invoiceNumber: '1', event: 1 })),
+}))
 jest.mock('../shared/commission', () => ({
   resolveCommissionAliq: jest.fn().mockResolvedValue(0),
   getPostedItemCommissions: jest.fn().mockResolvedValue([]),
   insertCommissions: jest.fn().mockResolvedValue([]),
 }))
 
+jest.mock('../shared/service-order', () => ({
+  __esModule: true,
+  hasServiceOrderCycle: jest.fn().mockResolvedValue(false),   // Q-A11: venda de serviço não é OS
+}))
 const mockQuery = (pool as any).query as jest.Mock
+// Q-A8: o validate termina lendo tb_order_billing — default "tem condições"
+beforeEach(() => { mockQuery.mockResolvedValue([[{ 1: 1 }]]) })
 const inst = { institutionId: 1, userId: 7, role: 'admin', schemaName: 'setes_setes' }
 const RULE: ServiceTaxRuleResolved = {
   id: 2, cityId: 4004, cityName: 'CURITIBA', serviceListId: '1.02',
@@ -204,9 +215,6 @@ describe('invoiceOrder — caminho kind=S', () => {
       .mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1)
       .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // issqn item
-      .mockResolvedValueOnce([[{ nextNumber: 1 }]])
-      .mockResolvedValueOnce([{}])                  // tb_invoice
-      .mockResolvedValueOnce([{}])                  // tb_invoice_service
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}])
       .mockResolvedValueOnce([{}])
 

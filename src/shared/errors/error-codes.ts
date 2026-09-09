@@ -97,6 +97,18 @@ export const ErrorCodes = {
   RETURN_REQUIRES_ENTRY: 'RETURN_REQUIRES_ENTRY',
   ORIGIN_NOT_INVOICED: 'ORIGIN_NOT_INVOICED',
   NOTHING_RETURNABLE:  'NOTHING_RETURNABLE',
+  // Cancelamento de nota (prompt_cancelamento_nota.md, 2026-09-08)
+  INVOICE_NOT_FOUND:   'INVOICE_NOT_FOUND',
+  INVOICE_NOT_CANCELLABLE: 'INVOICE_NOT_CANCELLABLE',
+  INVOICE_REASON_REQUIRED: 'INVOICE_REASON_REQUIRED',
+  INVOICE_CANCEL_BLOCKED: 'INVOICE_CANCEL_BLOCKED',
+  PRIVILEGE_REQUIRED:  'PRIVILEGE_REQUIRED',
+  RESOURCE_BUSY:       'RESOURCE_BUSY',
+  TITLE_EXCEEDS_BALANCE: 'TITLE_EXCEEDS_BALANCE',
+  SERVICE_ORDER_CUSTOMER_OPEN: 'SERVICE_ORDER_CUSTOMER_OPEN',
+  SERVICE_ORDER_OWN_ENDPOINT: 'SERVICE_ORDER_OWN_ENDPOINT',
+  SERVICE_ORDER_ITEM_NOT_SERVICE: 'SERVICE_ORDER_ITEM_NOT_SERVICE',
+  SERVICE_ORDER_ITEM_VALUE_REQUIRED: 'SERVICE_ORDER_ITEM_VALUE_REQUIRED',
 } as const
 
 export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
@@ -175,4 +187,15 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   RETURN_REQUIRES_ENTRY: 'Devolução de mercadoria exige ajuste de ENTRADA',
   ORIGIN_NOT_INVOICED: 'Pedido de venda de origem ainda não foi faturado',
   NOTHING_RETURNABLE:  'Pedido de origem sem saldo devolvível',
+  INVOICE_NOT_FOUND:   'Nota fiscal não encontrada',
+  INVOICE_NOT_CANCELLABLE: 'Nota não pode ser cancelada (pedido não faturado, nota já cancelada ou sincronizada da origem)',
+  INVOICE_REASON_REQUIRED: 'Motivo do cancelamento é obrigatório',
+  INVOICE_CANCEL_BLOCKED: 'Cancelamento bloqueado — resolva as pendências listadas antes (baixa, boleto liquidado, cheque que avançou, devolução)',
+  PRIVILEGE_REQUIRED:  'Privilégio necessário para esta ação',
+  RESOURCE_BUSY:       'Registro em uso por outra operação — tente novamente',
+  TITLE_EXCEEDS_BALANCE: 'Valor da baixa passa do saldo em aberto do título',
+  SERVICE_ORDER_CUSTOMER_OPEN: 'Cliente já tem uma ordem de serviço aberta',
+  SERVICE_ORDER_OWN_ENDPOINT: 'Ordem de serviço fatura pelo módulo de OS',
+  SERVICE_ORDER_ITEM_NOT_SERVICE: 'Item da ordem de serviço precisa ser um serviço',
+  SERVICE_ORDER_ITEM_VALUE_REQUIRED: 'Item da ordem de serviço precisa de valor maior que zero',
 }

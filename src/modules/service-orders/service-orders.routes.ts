@@ -1,5 +1,7 @@
 import { Router } from 'express'
 import * as controller from './service-orders.controller'
+import { requirePrivilege } from '@shared/auth/require-privilege'
+import { PRIVILEGE_FATURAR } from '@shared/auth/privileges'
 
 /**
  * Rotas do módulo service-orders — montadas em /api/service-orders.
@@ -159,7 +161,7 @@ router.get('/products', controller.productsLookup)
  *       404: { description: OS não encontrada }
  *   delete:
  *     summary: Cancela a OS ABERTA (soft delete — libera a trava D5)
- *     description: Ordem faturada não cancela (409) — o caminho é o estorno financeiro.
+ *     description: Ordem faturada não cancela por aqui (409) — a NOTA da OS cancela por POST /api/billing/cancel (Q-G3, 2026-09-09) e a OS volta a aberta.
  *     tags: [ServiceOrders]
  *     security:
  *       - BearerAuth: []
@@ -306,6 +308,7 @@ router.delete('/:id/items/:itemId', controller.removeOrderItem)
  *       404: { description: OS não encontrada }
  *       409: { description: Ordem já faturada }
  */
-router.post('/:id/invoice', controller.invoice)
+// Q-G23 (Valdo 2026-09-09): FATURAR na interface do ramo (seed 53) — admin/super passam
+router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR), controller.invoice)
 
 export default router

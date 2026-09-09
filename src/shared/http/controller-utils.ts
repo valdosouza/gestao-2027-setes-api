@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { HttpError, FieldError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { newCrashRef, recordCrash } from '@shared/errors/crash.repository'
+import { contentionToHttpError } from '@shared/db/contention'
 import logger from '@shared/logger/logger'
 
 /**
@@ -22,6 +23,12 @@ export function handleError(res: Response, err: unknown, ctx: string): void {
       ...(err.code ? { code: err.code } : {}),
       ...(err.fields ? { fields: err.fields } : {}),
     })
+    return
+  }
+  // Q-A3: lock wait é contenção normal → 409 RESOURCE_BUSY (nunca crashlytics)
+  const busy = contentionToHttpError(err)
+  if (busy) {
+    res.status(busy.statusCode).json({ error: busy.message, code: busy.code })
     return
   }
 

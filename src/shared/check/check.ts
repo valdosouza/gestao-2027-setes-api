@@ -4,7 +4,8 @@ import { HttpError } from '@shared/errors/http-error'
 import {
   settleOneTitle, findOpenCashierIdTx, insertStatement, nextSettledCode, StatementLine,
 } from '@shared/financial-settlement'
-import { reverseOnePayment } from '@shared/financial-settlement/settlement-batch'
+import { reverseOnePayment, ReversalCore } from '@shared/financial-settlement/settlement-batch'
+import { OPEN_BALANCE_SQL } from '@shared/financial-settlement/title-balance'
 import { reverseStatementLines } from '@shared/financial-settlement/statement-reversal'
 
 /**
@@ -603,12 +604,9 @@ export async function useCheckInPayment(
   // Achado do gate adversarial (2026-09-04): o cheque paga pelo valor de
   // FACE (não é um valor digitado com juízo — é o papel), então sem teto
   // um cheque de 500 quitava um título com saldo de 30 sem erro nem troco.
+  // Q-G21: saldo em aberto pela peça ÚNICA (desconto abate)
   const [bal] = await conn.query<any[]>(
-    `SELECT GREATEST(f.tag_value - (SELECT COALESCE(SUM(p.paid_value), 0)
-        FROM \`${s}\`.tb_financial_payment p
-       WHERE p.tb_institution_id = f.tb_institution_id AND p.tb_order_id = f.tb_order_id
-         AND p.terminal = f.terminal AND p.parcel = f.parcel
-         AND p.status = 'N' AND p.deleted = 'N'), 0) AS balance
+    `SELECT ${OPEN_BALANCE_SQL(s, 'f')} AS balance
        FROM \`${s}\`.tb_financial f
       WHERE f.tb_institution_id = ? AND f.tb_order_id = ? AND f.terminal = 0
         AND f.parcel = ? AND f.deleted = 'N' FOR UPDATE`,
@@ -710,10 +708,14 @@ export async function returnCheck(
       undefined, 'CHECK_NO_ORIGIN')
   }
   const [orig] = await conn.query<any[]>(
+    // Q-G19 (Valdo 2026-09-09): cheque MANTIDO de nota cancelada (D-G7a) volta
+    // sem fundos — o título de origem está soft-deletado, mas a dívida é do
+    // CHEQUE: só a forma de pagamento vem dele; o título CH nasce contra o
+    // cliente de origem (tb_entity_id do R). Por isso SEM filtro de deleted.
     `SELECT f.tb_payment_types_id AS paymentTypeId
        FROM \`${s}\`.tb_financial f
       WHERE f.tb_institution_id = ? AND f.tb_order_id = ? AND f.terminal = 0
-        AND f.parcel = ? AND f.deleted = 'N'`,
+        AND f.parcel = ?`,
     [institutionId, origin[0].orderId, origin[0].parcel]
   )
   const paymentTypeId = orig[0] ? Number(orig[0].paymentTypeId) : null
@@ -774,6 +776,42 @@ export interface ReverseCheckEventInput {
 export interface ReverseCheckEventResult {
   event: number
   affectedCheckIds: number[]
+  /**
+   * D-G7 (cancelamento, Valdo 2026-09-09): quando o alvo é R/P a peça também
+   * estorna a BAIXA do título — quem chamou por outra porta (tela de Baixas)
+   * precisa do núcleo do estorno (evento/código) para compor a resposta.
+   */
+  core?: ReversalCore
+}
+
+/**
+ * Q-P6 (cancelamento de nota, 2026-09-08 — refina a D10): um evento é
+ * "vigente" quando nenhum evento POSTERIOR vivo o supera — pares
+ * neutralizados por X (ex.: R → B → X(B)) não contam. Antes, o cheque que
+ * foi depositado e teve o depósito estornado voltava à custódia mas nunca
+ * mais tinha o R como último evento, e a nota ficava incancelável.
+ */
+export async function isCheckEventCurrent(
+  conn: PoolConnection, s: string, institutionId: number, checkId: number, event: number
+): Promise<boolean> {
+  const [rows] = await conn.query<any[]>(
+    `SELECT event, kind, origin_event AS originEvent
+       FROM \`${s}\`.tb_check_event
+      WHERE tb_institution_id = ? AND tb_check_id = ? AND event > ? AND deleted = 'N'
+      ORDER BY event FOR UPDATE`,
+    [institutionId, checkId, event]
+  )
+  // Gate adversarial (2026-09-09, CRITICAL): leitura TRAVANTE — sob
+  // REPEATABLE READ o snapshot do cancelamento não via um depósito (B)
+  // commitado no meio e estornava o R com o B vivo (cheque "em custódia"
+  // com o dinheiro no banco, depositável de novo).
+  const neutralized = new Set<number>(
+    rows.filter(r => r.kind === 'X' && r.originEvent != null).map(r => Number(r.originEvent)))
+  // Gate socrático C2 (2026-09-09): o PRÓPRIO alvo já estornado (existe X
+  // apontando para ele) não é vigente — sem isto, um R da vida anterior da
+  // nota entrava no cancelamento e "estornar X duas vezes" passava.
+  if (neutralized.has(event)) return false
+  return rows.every(r => r.kind === 'X' || neutralized.has(Number(r.event)))
 }
 
 export async function reverseCheckEvent(
@@ -792,9 +830,10 @@ export async function reverseCheckEvent(
   const target = rows[0]
   // 404 antes do D10: evento inexistente não é "já avançou de estado".
   if (!target) throw new HttpError(404, `Evento ${input.event} não encontrado`, undefined, 'CHECK_EVENT_NOT_FOUND')
-  if (check.lastEvent !== input.event) {
+  // D10 refinada (Q-P6): "evento posterior VIGENTE" — pares B→X(B) não contam
+  if (!(await isCheckEventCurrent(conn, s, institutionId, check.id, input.event))) {
     throw new HttpError(409,
-      `Cheque ${check.id} tem evento posterior — estorne o evento mais recente primeiro`,
+      `Cheque ${check.id}: evento ${input.event} já foi estornado ou tem evento posterior vigente — estorne o mais recente primeiro`,
       undefined, 'CHECK_ALREADY_MOVED')
   }
   if (target.kind === 'X') {
@@ -807,6 +846,7 @@ export async function reverseCheckEvent(
 
   const dtRecord = todayIso()
   const affected = new Set<number>([check.id])
+  let core: ReversalCore | undefined
 
   if (target.kind === 'R' || target.kind === 'P') {
     // D9: N cheques podem compartilhar o MESMO settled_code (mesma baixa de
@@ -827,21 +867,35 @@ export async function reverseCheckEvent(
     // banco) e reabrindo o título por inteiro mesmo com parte já resolvida.
     for (const sib of siblings) {
       if (Number(sib.checkId) === check.id) continue
-      const sibCheck = await lockCheck(conn, s, institutionId, Number(sib.checkId))
-      if (sibCheck.lastEvent !== Number(sib.event)) {
+      await lockCheck(conn, s, institutionId, Number(sib.checkId))
+      if (!(await isCheckEventCurrent(conn, s, institutionId, Number(sib.checkId), Number(sib.event)))) {
         throw new HttpError(409,
-          `Cheque ${sib.checkId} do mesmo recebimento já avançou de estado — estorne-o primeiro`,
+          `Cheque ${sib.checkId} do mesmo recebimento já avançou de estado (depositado/descontado/usado) — este estorno é do EVENTO (D10, grupo inteiro em custódia); para desfazer a BAIXA use a tela de Baixas (D-G7a: cancela os em custódia e mantém os que transitaram)`,
           undefined, 'CHECK_ALREADY_MOVED')
       }
     }
-    const core = await reverseOnePayment(conn, schemaName, institutionId, userId,
-      Number(target.orderId), Number(target.parcel), Number(target.paymentEvent),
-      input.reason)
+    // Q-G20 (Valdo 2026-09-09): a baixa deste R/P pode já ter morrido por outra
+    // porta (Baixas D-G7a deixou o cheque que transitou; depois o X do depósito
+    // o trouxe de volta à custódia) — o X aqui só CANCELA o evento e libera a
+    // identidade, sem tocar a baixa. Leitura travante (ordem cheque → payment).
+    const [pay] = await conn.query<any[]>(
+      `SELECT status FROM \`${s}\`.tb_financial_payment
+        WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0 AND parcel = ? AND event = ?
+        FOR UPDATE`,
+      [institutionId, Number(target.orderId), Number(target.parcel), Number(target.paymentEvent)]
+    )
+    const paymentAlive = pay[0] != null && String(pay[0].status) === 'N'
+    if (paymentAlive) {
+      core = await reverseOnePayment(conn, schemaName, institutionId, userId,
+        Number(target.orderId), Number(target.parcel), Number(target.paymentEvent),
+        input.reason)
+    }
     for (const sib of siblings) {
       affected.add(Number(sib.checkId))
       await insertCheckEvent(conn, s, institutionId, Number(sib.checkId), userId, {
-        kind: 'X', dtRecord, settledCode: core.settledCode,
-        originEvent: Number(sib.event), note: input.reason,
+        kind: 'X', dtRecord, settledCode: core ? core.settledCode : null,
+        originEvent: Number(sib.event),
+        note: core ? input.reason : `${input.reason} (baixa já estornada por outra porta — só o evento do cheque)`.slice(0, 100),
       })
     }
   } else if (target.kind === 'F') {
@@ -857,5 +911,75 @@ export async function reverseCheckEvent(
       kind: 'X', dtRecord, settledCode: reversalCode, originEvent: input.event, note: input.reason,
     })
   }
-  return { event: input.event, affectedCheckIds: [...affected] }
+  return { event: input.event, affectedCheckIds: [...affected], ...(core ? { core } : {}) }
+}
+
+export interface ReversePaymentWithChecksInput {
+  orderId: number
+  parcel: number
+  paymentEvent: number
+  reason: string
+}
+
+export interface ReversePaymentWithChecksResult {
+  core: ReversalCore
+  /** Membros em custódia: R/P cancelado (X) — o cheque deixa de sustentar a baixa. */
+  checksReversed: number[]
+  /** Membros que já TRANSITARAM (depositado/descontado/usado): ficam como estão (D-G7a). */
+  checksKept: number[]
+}
+
+/**
+ * D-G7a (Valdo 2026-09-09): "cheque que já transitou não pode interferir em
+ * momento algum". Estorno de uma BAIXA feita com cheque(s), pela tela de
+ * Baixas: a baixa é desfeita UMA vez (reverseOnePayment); cada cheque do
+ * grupo (D9 — um settled_code por parcela) que ainda está em CUSTÓDIA ganha
+ * X do seu R/P (o "cancelamento" na linha do tempo — princípio "portador
+ * substitui a dívida": a dívida volta ao título); o que já transitou fica
+ * como está — o dinheiro é fato do mundo e a vida dele segue no módulo de
+ * cheque. Diferente de `reverseCheckEvent` (tela de Cheques), que estorna um
+ * EVENTO do cheque e exige o grupo inteiro em custódia (D10 por membro).
+ *
+ * Ordem de locks = a da peça: cheque → eventos → payment. A descoberta é
+ * leitura simples; a vigência de cada membro é decidida sob lock. Devolve
+ * null quando a baixa não foi feita com cheque.
+ */
+export async function reversePaymentWithChecks(
+  conn: PoolConnection, schemaName: string, institutionId: number, userId: number,
+  input: ReversePaymentWithChecksInput
+): Promise<ReversePaymentWithChecksResult | null> {
+  const s = assertSchema(schemaName)
+  const [members] = await conn.query<any[]>(
+    `SELECT e.tb_check_id AS checkId, e.event, e.kind
+       FROM \`${s}\`.tb_check_event e
+      WHERE e.tb_institution_id = ? AND e.tb_order_id = ? AND e.terminal = 0 AND e.parcel = ?
+        AND e.payment_event = ? AND e.kind IN ('R', 'P') AND e.deleted = 'N'
+        AND NOT EXISTS (SELECT 1 FROM \`${s}\`.tb_check_event x
+                         WHERE x.tb_institution_id = e.tb_institution_id AND x.tb_check_id = e.tb_check_id
+                           AND x.kind = 'X' AND x.origin_event = e.event AND x.deleted = 'N')
+      ORDER BY e.tb_check_id, e.event`,
+    [institutionId, input.orderId, input.parcel, input.paymentEvent]
+  )
+  if (members.length === 0) return null
+
+  const inCustody: { checkId: number; event: number }[] = []
+  const kept: number[] = []
+  for (const m of members) {
+    const checkId = Number(m.checkId)
+    await lockCheck(conn, s, institutionId, checkId)
+    if (await isCheckEventCurrent(conn, s, institutionId, checkId, Number(m.event))) {
+      inCustody.push({ checkId, event: Number(m.event) })
+    } else {
+      kept.push(checkId)
+    }
+  }
+  const core = await reverseOnePayment(conn, schemaName, institutionId, userId,
+    input.orderId, input.parcel, input.paymentEvent, input.reason)
+  const dtRecord = todayIso()
+  for (const c of inCustody) {
+    await insertCheckEvent(conn, s, institutionId, c.checkId, userId, {
+      kind: 'X', dtRecord, settledCode: core.settledCode, originEvent: c.event, note: input.reason,
+    })
+  }
+  return { core, checksReversed: inCustody.map(c => c.checkId), checksKept: kept }
 }

@@ -13,7 +13,11 @@ import { getConfigContent } from '@shared/interface-config'
 import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
 import pool from '@shared/db/connection'
+import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { cancelInvoice, CancelInvoiceResult } from '@shared/invoice'
+import { CancelBody } from './billing.dto'
 import { resolveOrderParcels, MaterializedParcel as ResolvedParcel } from '@shared/order-installment'
+import { hasServiceOrderCycle } from '@shared/service-order'
 import { Queryable } from '@shared/order'
 import {
   parseCrt, adjustMva, resolveFinancialPolarity,
@@ -27,6 +31,7 @@ import {
   OrderBranchInfo,
   getGeneralObservations, getRuleObservationNotes, getNcmApproxRates,
   getPaymentTypeKinds,
+  hasOrderBilling,
 } from './billing.repository'
 import {
   buildRegimeObservations, buildIssqnObservation, buildApproxTaxObservation,
@@ -161,6 +166,11 @@ export async function validateOrder(
   if (!branch) {
     throw new HttpError(422, 'Ordem sem ramo (venda/compra/ajuste/serviço)',
       [{ field: 'orderId', message: 'Ramo da ordem não identificado' }], 'ORDER_NO_BRANCH')
+  }
+  if (branch.branch === 'service' && await hasServiceOrderCycle(schemaName, institutionId, input.orderId)) {
+    // Q-A11: ordem de SERVIÇO (ciclo vivo) fatura pelo próprio módulo
+    throw new HttpError(409, 'Ordem de serviço fatura pelo módulo de OS (POST /api/service-orders/:id/invoice)',
+      undefined, 'SERVICE_ORDER_OWN_ENDPOINT')
   }
   if (branch.branch === 'adjust' && !input.adjustment) {
     issues.push({ scope: 'order', field: 'adjustment',
@@ -318,6 +328,13 @@ export async function validateOrder(
     }
   }
 
+  // Q-A8: condições de cobrança são pré-requisito do faturamento — a tela
+  // descobre AQUI, não no 422 do invoice.
+  if (!(await hasOrderBilling(schemaName, institutionId, input.orderId))) {
+    issues.push({ scope: 'order', field: 'billing',
+      message: 'Ordem sem condições de cobrança (forma de pagamento/prazo) — negocie antes de faturar' })
+  }
+
   return { orderId: input.orderId, branch: branch.branch, issues, rulesResolved, rulesManual }
 }
 
@@ -334,6 +351,11 @@ export async function invoiceOrder(
   if (!branch) {
     throw new HttpError(422, 'Ordem sem ramo identificado',
       [{ field: 'orderId', message: 'Ramo da ordem não identificado' }], 'ORDER_NO_BRANCH')
+  }
+  if (branch.branch === 'service' && await hasServiceOrderCycle(schemaName, institutionId, input.orderId)) {
+    // Q-A11: ordem de SERVIÇO (ciclo vivo) fatura pelo próprio módulo
+    throw new HttpError(409, 'Ordem de serviço fatura pelo módulo de OS (POST /api/service-orders/:id/invoice)',
+      undefined, 'SERVICE_ORDER_OWN_ENDPOINT')
   }
   if (branch.branch === 'adjust' && !input.adjustment) {
     throw new HttpError(422, 'Ordem de ajuste exige CFOP',
@@ -790,6 +812,34 @@ export async function invoiceOrder(
     commissions,
     returnPlan,
   })
+}
+
+/**
+ * Cancelamento da nota (prompt_cancelamento_nota.md, Onda 1 — nota NÃO
+ * transmitida): a composição @shared/invoice.cancelInvoice faz tudo dentro
+ * de UMA transação; deadlock reexecuta do zero (D-G4).
+ */
+export async function cancelOrderInvoice(
+  institution: InstitutionPayload, input: CancelBody
+): Promise<CancelInvoiceResult> {
+  const { schemaName, institutionId, userId } = institution
+  return withDeadlockRetry('cancelamento da nota', { institutionId, orderId: input.orderId }, 3,
+    async () => {
+      const conn = await pool.getConnection()
+      try {
+        await conn.beginTransaction()
+        const result = await cancelInvoice(conn, schemaName, institutionId, userId, input)
+        await conn.commit()
+        return result
+      } catch (err: any) {
+        await conn.rollback()
+        // lock wait → 409 RESOURCE_BUSY é TRANSVERSAL (Q-A3: @shared/db/contention
+        // no handleError); aqui só propaga — deadlock reexecuta pelo retry.
+        throw err
+      } finally {
+        conn.release()
+      }
+    })
 }
 
 function round2(v: number): number {

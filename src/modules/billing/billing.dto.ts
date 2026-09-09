@@ -54,6 +54,13 @@ const checksByParcelDto = z.object({
   items:  z.array(checkItemDto).min(1),
 })
 
+/** Cancelamento da nota (prompt_cancelamento_nota.md D13): motivo obrigatório. */
+export const cancelBodyDto = z.object({
+  orderId: z.number().int().positive(),
+  reason:  z.string().trim().min(1).max(255),
+})
+export type CancelBody = z.infer<typeof cancelBodyDto>
+
 export const invoiceBodyDto = z.object({
   orderId: z.number().int().positive(),
   // P3.2 — decisão POR FATURAMENTO: false (default) = MVA ajustada pela

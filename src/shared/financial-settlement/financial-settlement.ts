@@ -1,4 +1,5 @@
 import { PoolConnection } from 'mysql2/promise'
+import { lockInstitutionCounters } from '@shared/db/counters'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
 import { HttpError } from '@shared/errors/http-error'
@@ -154,6 +155,15 @@ export async function nextSettledCode(
   // cheque não toca tb_financial_payment nenhuma vez; se o contador lesse
   // só o payment, dois movimentos-sem-título seguidos mintavam o MESMO
   // código, colidindo o agrupamento de reversão).
+  // Q-A18 (3ª adversarial, re-prova — regra 7 do PADROES_BANCO §9): gap locks do
+  // MAX FOR UPDATE são compatíveis entre si → baixas CONCORRENTES de títulos
+  // diferentes deadlockavam no INSERT (6/18 viravam 409 mesmo com retry). O X
+  // de 1 linha da institution serializa TODOS os cunhadores de movimento
+  // (baixa, estorno, cheque, boleto, auto-baixa do faturamento) — aplicado AQUI,
+  // na fonte única, e não no início de cada transação: quem já travou título/
+  // cheque/pedido antes aceita o retry contra as portas que travam a
+  // institution primeiro (abrir pedido/OS/devolução).
+  await lockInstitutionCounters(conn, institutionId)
   const [mx] = await conn.query<any[]>(
     `SELECT COALESCE(MAX(settled_code), 0) + 1 AS nextCode
        FROM \`${s}\`.tb_financial_statement WHERE tb_institution_id = ? FOR UPDATE`,

@@ -29,6 +29,7 @@ describe('createOrder (openOrder)', () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query
+      .mockResolvedValueOnce([{}])                       // Q-A12: lock da institution (1º)
       .mockResolvedValueOnce([[{ salesmanId: null }]]) // cliente existe, sem vendedor padrão
       .mockResolvedValueOnce([[{ nextId: 10 }]])
       .mockResolvedValueOnce([[{ nextNumber: 1 }]])
@@ -38,7 +39,7 @@ describe('createOrder (openOrder)', () => {
     const id = await createOrder({ customerId: 5, salesmanId: 9 }, scope)
     expect(id).toBe(10)
     expect(conn.commit).toHaveBeenCalled()
-    const saleInsert = conn.query.mock.calls[4]
+    const saleInsert = conn.query.mock.calls[5]
     expect(saleInsert[1]).toContain(9) // salesmanId gravado
   })
 
@@ -46,6 +47,7 @@ describe('createOrder (openOrder)', () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query
+      .mockResolvedValueOnce([{}])                       // Q-A12: lock da institution
       .mockResolvedValueOnce([[{ salesmanId: 22 }]])
       .mockResolvedValueOnce([[{ nextId: 10 }]])
       .mockResolvedValueOnce([[{ nextNumber: 1 }]])
@@ -53,14 +55,14 @@ describe('createOrder (openOrder)', () => {
       .mockResolvedValueOnce([{}])
 
     await createOrder({ customerId: 5 }, scope)
-    const saleInsert = conn.query.mock.calls[4]
+    const saleInsert = conn.query.mock.calls[5]
     expect(saleInsert[1]).toContain(22)
   })
 
   it('cliente sem vendedor explícito NEM default -> 400 SALESMAN_REQUIRED', async () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
-    conn.query.mockResolvedValueOnce([[{ salesmanId: null }]])
+    conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([[{ salesmanId: null }]]) // lock + cliente
 
     await expect(createOrder({ customerId: 5 }, scope))
       .rejects.toMatchObject({ statusCode: 400, code: 'SALESMAN_REQUIRED' })
@@ -70,7 +72,7 @@ describe('createOrder (openOrder)', () => {
   it('cliente inexistente -> 400 ROLE_MISSING', async () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
-    conn.query.mockResolvedValueOnce([[]])
+    conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([[]]) // lock + cliente inexistente
 
     await expect(createOrder({ customerId: 999 }, scope))
       .rejects.toMatchObject({ statusCode: 400, code: 'ROLE_MISSING' })
@@ -120,8 +122,7 @@ describe('createItem (addItem)', () => {
       .mockResolvedValueOnce([[{ kind: 'S' }]])         // produto = serviço
       .mockResolvedValueOnce([[{ customerId: 5 }]])     // tb_order_sale (customer)
       .mockResolvedValueOnce([[]])                      // ensureServiceBranch: ainda não existe
-      .mockResolvedValueOnce([[{ nextNumber: 1 }]])     // MAX+1 number
-      .mockResolvedValueOnce([{}])                      // insert tb_order_service
+      .mockResolvedValueOnce([{}])                      // insert tb_order_service (natureza: só o tomador — 047)
       .mockResolvedValueOnce([[{ nextId: 1 }]])         // MAX+1 item
       .mockResolvedValueOnce([{}])                      // insert item
       .mockResolvedValueOnce([[{ itemsQtde: 1, productQtde: 1, productValue: 80, discountValue: 0 }]])
@@ -129,10 +130,11 @@ describe('createItem (addItem)', () => {
 
     const itemId = await createItem(10, { productId: 9, quantity: 1, unitValue: 80 }, scope)
     expect(itemId).toBe(1)
-    const serviceInsert = conn.query.mock.calls[5]
+    const serviceInsert = conn.query.mock.calls[4]
     expect((serviceInsert[0] as string)).toContain('tb_order_service')
-    expect((serviceInsert[0] as string)).toContain('NULL') // open_lock NULL — não é "1 OS por cliente"
-    const itemInsert = conn.query.mock.calls[7]
+    // 047: natureza por PRESENÇA — só o tomador; nº e trava são do CICLO (tb_service_order)
+    expect((serviceInsert[0] as string)).not.toMatch(/open_lock|number/)
+    const itemInsert = conn.query.mock.calls[6]
     expect(itemInsert[1]).toContain('Service')
   })
 

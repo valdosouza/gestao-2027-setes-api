@@ -186,8 +186,10 @@ describe('settleBankSlip', () => {
     expect(input.allowedBankSlipId).toBe(12) // D-B1: a própria liquidação é a exceção autorizada
     // 153 rateados 100:50 -> 102 + 51 (o extrato soma 153 — juros DENTRO do statement)
     expect(input.titles).toEqual([
-      { orderId: 10, parcel: 1, interestValue: 0, lateValue: 0, discountAliquot: 0, paidValue: 102 },
-      { orderId: 11, parcel: 1, interestValue: 3, lateValue: 0, discountAliquot: 0, paidValue: 51 },
+      // H1 (Rodada 3 do cancelamento): principal = FACE de cada título; a sobra (3) é juros
+      // RATEADA (2 + 1) — cada título passa no teto D-A7 (saldo + juros informados)
+      { orderId: 10, parcel: 1, interestValue: 2, lateValue: 0, discountAliquot: 0, paidValue: 102 },
+      { orderId: 11, parcel: 1, interestValue: 1, lateValue: 0, discountAliquot: 0, paidValue: 51 },
     ])
     const ev = conn.query.mock.calls[4][1]
     expect(ev).toContain('L')

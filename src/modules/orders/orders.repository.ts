@@ -2,6 +2,8 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
+import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { lockInstitutionCounters } from '@shared/db/counters'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { getOrderFinancialBase } from '@shared/order'
 import { getOrderBilling, upsertOrderBilling, normalizeDeadline, parseDeadline } from '@shared/order-billing'
@@ -217,17 +219,14 @@ async function ensureServiceBranch(
   )
   if (exists[0]) return
 
-  const [mxNum] = await conn.query<any[]>(
-    `SELECT COALESCE(MAX(number), 0) + 1 AS nextNumber
-       FROM \`${schemaName}\`.tb_order_service WHERE tb_institution_id = ? FOR UPDATE`,
-    [institutionId]
-  )
+  // natureza por PRESENÇA: só o tomador. `number` é nº de ORIGEM (sync) e o
+  // ciclo da OS mora em tb_service_order (migration 047) — a venda não cunha
+  // número nem trava aqui (antes disputava a sequência da OS sem exibir).
   await conn.query(
     `INSERT INTO \`${schemaName}\`.tb_order_service
-       (id, tb_institution_id, terminal, number, tb_customer_id, open_lock,
-        created_at, updated_at)
-     VALUES (?, ?, 0, ?, ?, NULL, NOW(), NOW())`,
-    [orderId, institutionId, Number(mxNum[0].nextNumber), customerId]
+       (id, tb_institution_id, terminal, tb_customer_id, created_at, updated_at)
+     VALUES (?, ?, 0, ?, NOW(), NOW())`,
+    [orderId, institutionId, customerId]
   )
 }
 
@@ -262,61 +261,67 @@ export async function openOrder(
   input: OpenOrderInput, schemaName: string, institutionId: number, userId: number
 ): Promise<number> {
   assertSchemaName(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
+  // Q-A12 (3ª adversarial do cancelamento, achado FORA do alvo): abrir venda cunha
+  // MAX(id)+1 e MAX(number)+1 — gap locks compatíveis deadlockavam com 2
+  // concorrentes (50 % de 500). Institution travada antes + retry.
+  return withDeadlockRetry('abertura de pedido', { institutionId, customerId: input.customerId }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await lockInstitutionCounters(conn, institutionId) // Q-A12: cunha nº do pedido — 1º lock
 
-    const [cust] = await conn.query<any[]>(
-      `SELECT tb_salesman_id AS salesmanId FROM \`${schemaName}\`.tb_customer
-        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
-      [input.customerId, institutionId]
-    )
-    if (cust.length === 0) {
-      throw new HttpError(400, 'Cliente não encontrado nesta institution',
-        [{ field: 'customerId', message: 'Cliente inexistente' }], 'ROLE_MISSING')
+      const [cust] = await conn.query<any[]>(
+        `SELECT tb_salesman_id AS salesmanId FROM \`${schemaName}\`.tb_customer
+          WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+        [input.customerId, institutionId]
+      )
+      if (cust.length === 0) {
+        throw new HttpError(400, 'Cliente não encontrado nesta institution',
+          [{ field: 'customerId', message: 'Cliente inexistente' }], 'ROLE_MISSING')
+      }
+      const salesmanId = input.salesmanId ?? cust[0].salesmanId
+      if (!salesmanId) {
+        throw new HttpError(400,
+          'Vendedor não informado e o cliente não tem vendedor padrão na carteira',
+          [{ field: 'salesmanId', message: 'Informe o vendedor' }], 'SALESMAN_REQUIRED')
+      }
+
+      const [mx] = await conn.query<any[]>(
+        `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM \`${schemaName}\`.tb_order
+          WHERE tb_institution_id = ? FOR UPDATE`,
+        [institutionId]
+      )
+      const id = Number(mx[0].nextId)
+      const [mxNum] = await conn.query<any[]>(
+        `SELECT COALESCE(MAX(number), 0) + 1 AS nextNumber
+           FROM \`${schemaName}\`.tb_order_sale WHERE tb_institution_id = ? FOR UPDATE`,
+        [institutionId]
+      )
+
+      await conn.query(
+        `INSERT INTO \`${schemaName}\`.tb_order
+           (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
+            created_at, updated_at)
+         VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
+        [id, institutionId, userId]
+      )
+      await conn.query(
+        `INSERT INTO \`${schemaName}\`.tb_order_sale
+           (id, tb_institution_id, terminal, tb_salesman_id, number, tb_customer_id,
+            created_at, updated_at)
+         VALUES (?, ?, 0, ?, ?, ?, NOW(), NOW())`,
+        [id, institutionId, salesmanId, Number(mxNum[0].nextNumber), input.customerId]
+      )
+
+      await conn.commit()
+      return id
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
     }
-    const salesmanId = input.salesmanId ?? cust[0].salesmanId
-    if (!salesmanId) {
-      throw new HttpError(400,
-        'Vendedor não informado e o cliente não tem vendedor padrão na carteira',
-        [{ field: 'salesmanId', message: 'Informe o vendedor' }], 'SALESMAN_REQUIRED')
-    }
-
-    const [mx] = await conn.query<any[]>(
-      `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM \`${schemaName}\`.tb_order
-        WHERE tb_institution_id = ? FOR UPDATE`,
-      [institutionId]
-    )
-    const id = Number(mx[0].nextId)
-    const [mxNum] = await conn.query<any[]>(
-      `SELECT COALESCE(MAX(number), 0) + 1 AS nextNumber
-         FROM \`${schemaName}\`.tb_order_sale WHERE tb_institution_id = ? FOR UPDATE`,
-      [institutionId]
-    )
-
-    await conn.query(
-      `INSERT INTO \`${schemaName}\`.tb_order
-         (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
-          created_at, updated_at)
-       VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
-      [id, institutionId, userId]
-    )
-    await conn.query(
-      `INSERT INTO \`${schemaName}\`.tb_order_sale
-         (id, tb_institution_id, terminal, tb_salesman_id, number, tb_customer_id,
-          created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, NOW(), NOW())`,
-      [id, institutionId, salesmanId, Number(mxNum[0].nextNumber), input.customerId]
-    )
-
-    await conn.commit()
-    return id
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+  })
 }
 
 /** Adiciona item — a NATUREZA do produto decide o ramo (D-Orders-1: presença). */

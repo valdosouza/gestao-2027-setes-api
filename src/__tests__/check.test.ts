@@ -6,7 +6,7 @@
 import {
   stateFromLastEvent, receiveChecksOnBilling, depositCheck, discountCheck,
   returnCheckWithRefund, returnCheckGood, useCheckInPayment, returnCheck,
-  reverseCheckEvent,
+  reverseCheckEvent, isCheckEventCurrent,
 } from '../shared/check'
 
 jest.mock('../shared/financial-settlement', () => ({
@@ -484,6 +484,7 @@ describe('reverseCheckEvent (X — D10)', () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 2, kind: 'B' }]])
       .mockResolvedValueOnce([[{ kind: 'R', settledCode: 5, paymentEvent: 1, orderId: 10, parcel: 1 }]]) // evento 1 existe
+      .mockResolvedValueOnce([[{ event: 2, kind: 'B', originEvent: null }]]) // Q-P6: B vigente depois do R
     await expect(reverseCheckEvent(conn as any, 'setes_setes', 1, 7, { checkId: 1, event: 1, reason: 'erro' }))
       .rejects.toMatchObject({ statusCode: 409, code: 'CHECK_ALREADY_MOVED' })
   })
@@ -497,12 +498,12 @@ describe('reverseCheckEvent (X — D10)', () => {
   it('X não pode ser estornado; V não é suportado', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 1, kind: 'X' }]])
-      .mockResolvedValueOnce([[{ kind: 'X' }]])
+      .mockResolvedValueOnce([[{ kind: 'X' }]]).mockResolvedValueOnce([[]]) // + Q-P6 (sem posterior)
     await expect(reverseCheckEvent(conn as any, 'setes_setes', 1, 7, { checkId: 1, event: 1, reason: 'erro' }))
       .rejects.toMatchObject({ statusCode: 409, code: 'CHECK_EVENT_NOT_REVERSIBLE' })
     const conn2 = fakeConn()
     conn2.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 1, kind: 'V' }]])
-      .mockResolvedValueOnce([[{ kind: 'V' }]])
+      .mockResolvedValueOnce([[{ kind: 'V' }]]).mockResolvedValueOnce([[]])
     await expect(reverseCheckEvent(conn2 as any, 'setes_setes', 1, 7, { checkId: 1, event: 1, reason: 'erro' }))
       .rejects.toMatchObject({ statusCode: 409, code: 'CHECK_EVENT_NOT_REVERSIBLE' })
   })
@@ -510,8 +511,11 @@ describe('reverseCheckEvent (X — D10)', () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 1, kind: 'R' }]])
       .mockResolvedValueOnce([[{ kind: 'R', settledCode: 5, paymentEvent: 1, orderId: 10, parcel: 1 }]])
+      .mockResolvedValueOnce([[]]) // Q-P6: nada vigente depois do R
       .mockResolvedValueOnce([[{ checkId: 1, event: 1 }, { checkId: 2, event: 1 }]]) // irmãos
       .mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 1, kind: 'R' }]]) // lockCheck do irmão: ainda em R
+      .mockResolvedValueOnce([[]]) // Q-P6 do irmão
+      .mockResolvedValueOnce([[{ status: 'N' }]]) // Q-G20: baixa VIVA → reverseOnePayment
       .mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}]) // X do próprio
       .mockResolvedValueOnce([[{ nextEvent: 1 }]]).mockResolvedValueOnce([{}]) // X do irmão
     batch.reverseOnePayment.mockResolvedValueOnce({ reversalEvent: 2, settledCode: 12 })
@@ -527,8 +531,10 @@ describe('reverseCheckEvent (X — D10)', () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 1, kind: 'R' }]])
       .mockResolvedValueOnce([[{ kind: 'R', settledCode: 5, paymentEvent: 1, orderId: 10, parcel: 1 }]])
+      .mockResolvedValueOnce([[]]) // Q-P6: o próprio está vigente
       .mockResolvedValueOnce([[{ checkId: 1, event: 1 }, { checkId: 2, event: 1 }]]) // irmãos
       .mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 2, kind: 'B' }]]) // irmão JÁ depositado (evento 2, não 1)
+      .mockResolvedValueOnce([[{ event: 2, kind: 'B', originEvent: null }]]) // Q-P6 do irmão: B vigente
     await expect(reverseCheckEvent(conn as any, 'setes_setes', 1, 7, { checkId: 1, event: 1, reason: 'erro banco' }))
       .rejects.toMatchObject({ statusCode: 409, code: 'CHECK_ALREADY_MOVED' })
     expect(batch.reverseOnePayment).not.toHaveBeenCalled()
@@ -537,6 +543,7 @@ describe('reverseCheckEvent (X — D10)', () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 1, kind: 'B' }]])
       .mockResolvedValueOnce([[{ kind: 'B', settledCode: 7 }]])
+      .mockResolvedValueOnce([[]]) // Q-P6: nada vigente depois
       .mockResolvedValueOnce([[ // linhas do settled_code 7 (já com os aliases do SELECT)
         { id: 30, bankAccountId: 0, cashierId: 42, creditValue: 0, debitValue: 100,
           history: 'x', paymentTypeId: null, planCre: 0, planDeb: 0 },
@@ -556,10 +563,64 @@ describe('reverseCheckEvent (X — D10)', () => {
     expect(fs.insertStatement.mock.calls[1][3]).toMatchObject({ status: 'R', originId: 31 })
     expect(fs.insertStatement.mock.calls[0][3].history).toMatch(/^Estorno: reversão/)
   })
+  it('C2 (gate socrático): alvo que JÁ tem X apontando para ele não é vigente — estornar duas vezes recusa', async () => {
+    const conn = fakeConn()
+    conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 3, kind: 'X' }]])
+      .mockResolvedValueOnce([[{ kind: 'B', settledCode: 7 }]]) // alvo: B (evento 2)
+      .mockResolvedValueOnce([[{ event: 3, kind: 'X', originEvent: 2 }]]) // X(2) já existe
+    await expect(reverseCheckEvent(conn as any, 'setes_setes', 1, 7, { checkId: 1, event: 2, reason: 'de novo' }))
+      .rejects.toMatchObject({ statusCode: 409, code: 'CHECK_ALREADY_MOVED' })
+    expect(fs.insertStatement).not.toHaveBeenCalled()
+  })
+  it('isCheckEventCurrent: neutralizado = não vigente; posterior neutralizado não conta', async () => {
+    const conn = fakeConn()
+    conn.query.mockResolvedValueOnce([[{ event: 2, kind: 'B', originEvent: null }, { event: 3, kind: 'X', originEvent: 2 }]])
+    expect(await isCheckEventCurrent(conn as any, 'setes_setes', 1, 1, 1)).toBe(true)  // R com B→X(B) depois
+    conn.query.mockResolvedValueOnce([[{ event: 3, kind: 'X', originEvent: 2 }]])
+    expect(await isCheckEventCurrent(conn as any, 'setes_setes', 1, 1, 2)).toBe(false) // o próprio B já estornado
+    conn.query.mockResolvedValueOnce([[{ event: 2, kind: 'B', originEvent: null }]])
+    expect(await isCheckEventCurrent(conn as any, 'setes_setes', 1, 1, 1)).toBe(false) // B vigente depois do R
+    // gate adversarial CRITICAL 2: leitura travante (snapshot não decide)
+    expect(String(conn.query.mock.calls[0][0])).toMatch(/tb_check_event[\s\S]*FOR UPDATE/)
+  })
+  it('Q-P6 (cancelamento): R → B → X(B) deixa o cheque em custódia e o R volta a ser estornável', async () => {
+    const conn = fakeConn()
+    conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 3, kind: 'X' }]]) // último = X
+      .mockResolvedValueOnce([[{ kind: 'R', settledCode: 5, paymentEvent: 1, orderId: 10, parcel: 1 }]]) // alvo: R (evento 1)
+      .mockResolvedValueOnce([[ // posteriores: B neutralizado pelo X → nada VIGENTE
+        { event: 2, kind: 'B', originEvent: null }, { event: 3, kind: 'X', originEvent: 2 },
+      ]])
+      .mockResolvedValueOnce([[{ checkId: 1, event: 1 }]]) // sem irmãos
+      .mockResolvedValueOnce([[{ status: 'N' }]]) // Q-G20: baixa viva
+      .mockResolvedValueOnce([[{ nextEvent: 4 }]]).mockResolvedValueOnce([{}]) // X do R
+    batch.reverseOnePayment.mockResolvedValueOnce({ reversalEvent: 2, settledCode: 12 })
+    const r = await reverseCheckEvent(conn as any, 'setes_setes', 1, 7, { checkId: 1, event: 1, reason: 'cancelamento da nota' })
+    expect(r).toEqual({ event: 1, affectedCheckIds: [1], core: { reversalEvent: 2, settledCode: 12 } }) // core: D-G7 (Baixas compõe a resposta)
+    expect(batch.reverseOnePayment).toHaveBeenCalledTimes(1)
+  })
+  it('Q-G20: R cuja baixa já morreu por outra porta → X sem tocar a baixa (identidade liberada)', async () => {
+    const conn = fakeConn()
+    conn.query
+      .mockResolvedValueOnce([[{ id: 1, bankId: 1, agency: '1', account: '2', number: 'ORF', value: 70 }]]) // lockCheck
+      .mockResolvedValueOnce([[{ event: 3, kind: 'X', originKind: 'B' }]])                                   // último evento: X do depósito
+      .mockResolvedValueOnce([[{ kind: 'R', settledCode: 50, paymentEvent: 1, orderId: 99, parcel: 1 }]])   // alvo R
+      .mockResolvedValueOnce([[{ event: 2, kind: 'B', originEvent: null }, { event: 3, kind: 'X', originEvent: 2 }]]) // isCheckEventCurrent: B neutralizado → vigente
+      .mockResolvedValueOnce([[{ checkId: 1, event: 1 }]])                                                   // irmãos do grupo
+      .mockResolvedValueOnce([[{ status: 'E' }]])                                                            // baixa já 'E' (Baixas D-G7a)
+      .mockResolvedValueOnce([[{ nextEvent: 4 }]]).mockResolvedValueOnce([{}])                                // X
+    const r = await reverseCheckEvent(conn as any, 'setes_setes', 1, 7, { checkId: 1, event: 1, reason: 'cheque errado' })
+    expect(r).toEqual({ event: 1, affectedCheckIds: [1] })
+    expect(batch.reverseOnePayment).not.toHaveBeenCalled()
+    const ins = conn.query.mock.calls.find(c => /INSERT INTO `setes_setes`\.tb_check_event/.test(String(c[0])))!
+    expect(ins[1]).toEqual(expect.arrayContaining([1, 'X', null, 1]))
+    expect(String(conn.query.mock.calls[5][0])).toMatch(/tb_financial_payment[\s\S]*event = \?[\s\S]*FOR UPDATE/)
+  })
+
   it('F: só grava X, sem tocar o extrato', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[{ event: 1, kind: 'F' }]])
       .mockResolvedValueOnce([[{ kind: 'F', settledCode: null }]])
+      .mockResolvedValueOnce([[]]) // Q-P6
       .mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}])
     const r = await reverseCheckEvent(conn as any, 'setes_setes', 1, 7, { checkId: 1, event: 1, reason: 'engano' })
     expect(r).toEqual({ event: 1, affectedCheckIds: [1] })

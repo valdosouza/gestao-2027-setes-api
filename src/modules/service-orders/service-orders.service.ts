@@ -78,7 +78,7 @@ export async function runMonthly(
 export async function invoiceOrder(
   orderId: number, input: InvoiceInput, scope: ServiceOrderScope
 ): Promise<InvoiceResult> {
-  return generateInvoice(orderId, input, scope.schemaName, scope.institutionId)
+  return generateInvoice(orderId, input, scope.schemaName, scope.institutionId, scope.userId)
 }
 
 export function expirationSuggestion(year: number, month: number): string {

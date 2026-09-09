@@ -46,6 +46,16 @@ jest.mock('../shared/order-return', () => ({
   assertReturnableInTx: jest.fn().mockResolvedValue(undefined),
   persistReturn: jest.fn().mockResolvedValue(undefined),
 }))
+jest.mock('../shared/invoice', () => ({
+  __esModule: true,
+  // nota + ramos + evento E vivem na peça (cancelamento D3/D4/D17) — aqui só o contrato
+  issueInvoice: jest.fn(async () => ({ invoiceNumber: '1', event: 1 })),
+}))
+// Q-A11: OS (ciclo vivo) fora do billing de venda — default "não é OS"
+jest.mock('../shared/service-order', () => ({
+  __esModule: true,
+  hasServiceOrderCycle: jest.fn().mockResolvedValue(false),
+}))
 jest.mock('../shared/commission', () => ({
   resolveCommissionAliq: jest.fn().mockResolvedValue(0),
   getPostedItemCommissions: jest.fn().mockResolvedValue([]),
@@ -61,7 +71,12 @@ const mockCommission = jest.requireMock('../shared/commission') as any
 
 const inst = { institutionId: 1, userId: 7, role: 'admin', schemaName: 'setes_setes' }
 
-beforeEach(() => jest.clearAllMocks())
+beforeEach(() => {
+  jest.clearAllMocks()
+  // Q-A8: o validate termina lendo tb_order_billing — default "tem condições"
+  // (as sequências antigas não precisam saber; o teste da issue sobrescreve)
+  mockQuery.mockResolvedValue([[{ 1: 1 }]])
+})
 
 // ---------------------------------------------------------------------
 // billing.context — funções puras
@@ -219,6 +234,36 @@ describe('validateOrder', () => {
     const clearCall = mockQuery.mock.calls.find(c =>
       (c[0] as string).includes("origin = 'A'") && (c[0] as string).includes("SET deleted = 'S'"))
     expect(clearCall).toBeDefined()
+  })
+
+  it('Q-A11: ordem de SERVIÇO com ciclo vivo → 409 SERVICE_ORDER_OWN_ENDPOINT no validate (fatura só pelo módulo de OS)', async () => {
+    const so = jest.requireMock('../shared/service-order') as any
+    so.hasServiceOrderCycle.mockResolvedValueOnce(true)
+    mockOrderBase()
+    mockQuery.mockResolvedValueOnce([[]])   // ramo sale: não
+    mockQuery.mockResolvedValueOnce([[]])   // ramo purchase: não
+    mockQuery.mockResolvedValueOnce([[]])   // ramo adjust: não
+    mockQuery.mockResolvedValueOnce([[{ entityId: 209 }]])   // ramo service (tomador)
+    await expect(validateOrder(inst as any, { orderId: 10 }))
+      .rejects.toMatchObject({ statusCode: 409, code: 'SERVICE_ORDER_OWN_ENDPOINT' })
+    expect(so.hasServiceOrderCycle).toHaveBeenCalledWith('setes_setes', 1, 10)
+  })
+
+  it('Q-A8: ordem SEM tb_order_billing → issue order/billing (antes: 200 limpo e 422 no invoice)', async () => {
+    mockOrderBase()
+    mockBranchSale()
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[itemRow({ id: 1 })]])
+    mockQuery.mockResolvedValueOnce([[{
+      orderItemId: 1, kind: 'Sale', taxRuleId: 99, cfopId: '5405',
+      setFinancial: 'S', origin: 'M',
+    }]])
+    mockQuery.mockResolvedValueOnce([[]])   // tb_order_billing: nada
+    const report = await validateOrder(inst as any, { orderId: 10 })
+    expect(report.issues).toEqual([expect.objectContaining({ scope: 'order', field: 'billing' })])
+    const last = mockQuery.mock.calls[mockQuery.mock.calls.length - 1]
+    expect(String(last[0])).toMatch(/tb_order_billing[\s\S]*deleted = 'N' LIMIT 1/)
+    expect(last[1]).toEqual([10, 1])
   })
 
   it('linha manual (M) é respeitada — motor não roda para o item', async () => {
@@ -410,9 +455,6 @@ describe('invoiceOrder', () => {
       .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // icms item
       .mockResolvedValueOnce([{}])                  // approx_tax_aliq update
-      .mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
-      .mockResolvedValueOnce([{}])                  // tb_invoice
-      .mockResolvedValueOnce([{}])                  // tb_invoice_merchandise
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]) // financial p1 + bill p1
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]) // financial p2 + bill p2
       .mockResolvedValueOnce([{}])                  // status F
@@ -538,9 +580,6 @@ describe('invoiceOrder', () => {
       .mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1)
       .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // issqn item
-      .mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1
-      .mockResolvedValueOnce([{}])                  // tb_invoice
-      .mockResolvedValueOnce([{}])                  // tb_invoice_service
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]) // financeiro p1
       .mockResolvedValueOnce([{}])                  // status F
 
@@ -548,7 +587,11 @@ describe('invoiceOrder', () => {
 
     expect(result.model).toBe('SE')                 // só serviço → SE
     const sqls = conn.query.mock.calls.map(c => c[0] as string)
-    expect(sqls.some(s => s.includes('tb_invoice_service'))).toBe(true)
+    // natureza por PRESENÇA chega à peça: serviço com total, mercadoria ausente
+    const inv = jest.requireMock('../shared/invoice') as any
+    expect(inv.issueInvoice).toHaveBeenCalledTimes(1)
+    expect(inv.issueInvoice.mock.calls[0][4]).toMatchObject({ merchandise: null })
+    expect(inv.issueInvoice.mock.calls[0][4].serviceTotal).toBeGreaterThan(0)
     expect(sqls.some(s => s.includes('tb_invoice_merchandise'))).toBe(false)
   })
 
@@ -642,9 +685,6 @@ describe('invoiceOrder', () => {
     mockNegotiationInTx(conn, txnDeadline)
     conn.query.mockResolvedValueOnce([{}])                  // icms item
     conn.query.mockResolvedValueOnce([{}])                  // approx_tax_aliq update
-    conn.query.mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
-    conn.query.mockResolvedValueOnce([{}])                  // tb_invoice
-    conn.query.mockResolvedValueOnce([{}])                  // tb_invoice_merchandise
     for (let i = 0; i < extraInserts; i++) {
       conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]) // financial + bill
     }
@@ -855,7 +895,6 @@ describe('comissão e devolução', () => {
     mockNegotiationInTx(conn, txnDeadline)
     conn.query.mockResolvedValueOnce([{}])                  // icms item
     conn.query.mockResolvedValueOnce([{}])                  // approx_tax_aliq
-    conn.query.mockResolvedValueOnce([[{ nextNumber: 1 }]]) // MAX+1 nota
     return conn
   }
 

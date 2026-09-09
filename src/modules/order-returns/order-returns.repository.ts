@@ -3,6 +3,9 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { lockInstitutionCounters } from '@shared/db/counters'
+import { getOrderBilling, upsertOrderBilling, normalizeDeadline } from '@shared/order-billing'
 import {
   getSaleOrderInfo, getReturnedQuantityByProduct,
   getOpenReturnQuantityByProduct, QTY_EPSILON,
@@ -274,71 +277,109 @@ export async function openReturn(
       'NOTHING_RETURNABLE')
   }
 
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
+  // N2 (re-score socrático da Rodada 3): abrir devolução cunha MAX(id)+1 e
+  // MAX(number)+1 — mesma classe do HIGH 3 (gap locks compatíveis); lock da
+  // institution como 1º lock + retry.
+  return withDeadlockRetry('abertura de devolução', { institutionId, saleOrderId }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await lockInstitutionCounters(conn, institutionId) // N2 (regra 7): cunha nº do pedido e do ajuste — 1º lock
 
-    const [mx] = await conn.query<any[]>(
-      `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM \`${schemaName}\`.tb_order
-        WHERE tb_institution_id = ? FOR UPDATE`,
-      [institutionId]
-    )
-    const id = Number(mx[0].nextId)
-    const [mxNum] = await conn.query<any[]>(
-      `SELECT COALESCE(MAX(number), 0) + 1 AS nextNumber
-         FROM \`${schemaName}\`.tb_order_stock_adjust
-        WHERE tb_institution_id = ? FOR UPDATE`,
-      [institutionId]
-    )
-
-    await conn.query(
-      `INSERT INTO \`${schemaName}\`.tb_order
-         (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
-          created_at, updated_at)
-       VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
-      [id, institutionId, userId]
-    )
-    // tb_entity_id = cliente DERIVADO da origem (a validação "mesmo
-    // cliente" do buildReturnPlan vira rede de segurança que nunca
-    // dispara pela tela — parecer 2026-08-24)
-    await conn.query(
-      `INSERT INTO \`${schemaName}\`.tb_order_stock_adjust
-         (id, tb_institution_id, terminal, tb_entity_id, number, direction,
-          created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, 'E', NOW(), NOW())`,
-      [id, institutionId, sale.customerId, Number(mxNum[0].nextNumber)]
-    )
-    await conn.query(
-      `INSERT INTO \`${schemaName}\`.tb_order_stock_adjust_return
-         (id, tb_institution_id, terminal, tb_order_id_ori, terminal_ori,
-          created_at, updated_at)
-       VALUES (?, ?, 0, ?, 0, NOW(), NOW())`,
-      [id, institutionId, saleOrderId]
-    )
-
-    let itemId = 0
-    for (const rp of returnable) {
-      itemId += 1
-      await conn.query(
-        `INSERT INTO \`${schemaName}\`.tb_order_item
-           (id, tb_institution_id, tb_order_id, terminal, kind, tb_product_id,
-            quantity, unit_value, discount_aliquot, discount_value,
-            created_at, updated_at)
-         VALUES (?, ?, ?, 0, ?, ?, ?, ?, NULL, 0, NOW(), NOW())`,
-        [itemId, institutionId, id, ADJUST_KIND, rp.productId,
-         rp.available, rp.unitValue]
+      // Q-A1 (M4 PROVADO no gate adversarial do cancelamento, 2026-09-09): a
+      // leitura acima é triagem — a DECISÃO relê a venda SOB LOCK (receita C1):
+      // a nota cancelada entre a triagem e o INSERT não pode deixar uma
+      // devolução ancorada em venda que voltou a 'A'.
+      const [locked] = await conn.query<any[]>(
+        `SELECT status FROM \`${schemaName}\`.tb_order
+          WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N' FOR UPDATE`,
+        [saleOrderId, institutionId]
       )
-    }
-    await recalcTotalizer(conn, schemaName, institutionId, id)
+      if (!locked[0] || String(locked[0].status) !== 'F') {
+        throw new HttpError(422, 'Pedido de venda deixou de estar faturado — abra a devolução de novo',
+          [{ field: 'saleOrderId', message: 'Devolução exige nota emitida' }],
+          'ORIGIN_NOT_INVOICED')
+      }
 
-    await conn.commit()
-    return id
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+      const [mx] = await conn.query<any[]>(
+        `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM \`${schemaName}\`.tb_order
+          WHERE tb_institution_id = ? FOR UPDATE`,
+        [institutionId]
+      )
+      const id = Number(mx[0].nextId)
+      const [mxNum] = await conn.query<any[]>(
+        `SELECT COALESCE(MAX(number), 0) + 1 AS nextNumber
+           FROM \`${schemaName}\`.tb_order_stock_adjust
+          WHERE tb_institution_id = ? FOR UPDATE`,
+        [institutionId]
+      )
+
+      await conn.query(
+        `INSERT INTO \`${schemaName}\`.tb_order
+           (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
+            created_at, updated_at)
+         VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
+        [id, institutionId, userId]
+      )
+      // tb_entity_id = cliente DERIVADO da origem (a validação "mesmo
+      // cliente" do buildReturnPlan vira rede de segurança que nunca
+      // dispara pela tela — parecer 2026-08-24)
+      await conn.query(
+        `INSERT INTO \`${schemaName}\`.tb_order_stock_adjust
+           (id, tb_institution_id, terminal, tb_entity_id, number, direction,
+            created_at, updated_at)
+         VALUES (?, ?, 0, ?, ?, 'E', NOW(), NOW())`,
+        [id, institutionId, sale.customerId, Number(mxNum[0].nextNumber)]
+      )
+      await conn.query(
+        `INSERT INTO \`${schemaName}\`.tb_order_stock_adjust_return
+           (id, tb_institution_id, terminal, tb_order_id_ori, terminal_ori,
+            created_at, updated_at)
+         VALUES (?, ?, 0, ?, 0, NOW(), NOW())`,
+        [id, institutionId, saleOrderId]
+      )
+
+      // Q-A4 (Valdo 2026-09-09: HERDAR): a devolução nasce com as condições de
+      // cobrança da VENDA (forma + prazo) — o billing exige tb_order_billing
+      // desde a negociação (2026-09-06) e a ordem de ajuste não tem negociação
+      // própria: o valor volta pela mesma forma em que entrou. Venda legada sem
+      // condições → devolução também sem (o billing avisa ORDER_NO_BILLING).
+      // Prazo legado NÃO canônico (D-N4 só tolera se inalterado) não é herdado —
+      // a devolução nasce sem condições e o billing avisa (Q-G15, assunção);
+      // parcelamento ELABORADO da venda também não é herdado (prazo simples).
+      const billing = await getOrderBilling(conn, schemaName, institutionId, saleOrderId)
+      const inherited = billing ? normalizeDeadline(billing.deadline) : null
+      if (billing && inherited && inherited.valid) {
+        await upsertOrderBilling(conn, schemaName, institutionId, id, {
+          paymentTypeId: billing.paymentTypeId, deadline: inherited.deadline,
+          ...(billing.plots != null ? { plots: billing.plots } : {}),
+        })
+      }
+
+      let itemId = 0
+      for (const rp of returnable) {
+        itemId += 1
+        await conn.query(
+          `INSERT INTO \`${schemaName}\`.tb_order_item
+             (id, tb_institution_id, tb_order_id, terminal, kind, tb_product_id,
+              quantity, unit_value, discount_aliquot, discount_value,
+              created_at, updated_at)
+           VALUES (?, ?, ?, 0, ?, ?, ?, ?, NULL, 0, NOW(), NOW())`,
+          [itemId, institutionId, id, ADJUST_KIND, rp.productId,
+           rp.available, rp.unitValue]
+        )
+      }
+      await recalcTotalizer(conn, schemaName, institutionId, id)
+
+      await conn.commit()
+      return id
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
+    }
+  })
 }
 
 /** Edita a QUANTIDADE de um item (teto = saldo devolvível excluindo esta). */

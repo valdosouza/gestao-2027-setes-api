@@ -2,6 +2,10 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
+import { reversePaymentWithChecks } from '@shared/check'
+import type { ReversalCore } from '@shared/financial-settlement/settlement-batch'
+import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { PRINCIPAL_PAID_SQL } from '@shared/financial-settlement/title-balance'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { round2 } from './settlements.calc'
 import {
@@ -35,12 +39,11 @@ const ENTITY_JOINS = (schema: string) => `
      LEFT JOIN setes_central.tb_entity e
         ON e.id = COALESCE(osv.tb_customer_id, ofn.tb_entity_id)`
 
-const PAID_SUM = (schema: string) => `
-    (SELECT COALESCE(SUM(p.paid_value), 0)
-       FROM \`${schema}\`.tb_financial_payment p
-      WHERE p.tb_institution_id = f.tb_institution_id
-        AND p.tb_order_id = f.tb_order_id AND p.terminal = f.terminal
-        AND p.parcel = f.parcel AND p.status = 'N' AND p.deleted = 'N')`
+// Q-G21: saldo em aberto pela peça ÚNICA (@shared/financial-settlement/title-balance)
+// — principal coberto por baixa = paid − juros − multa + desconto; baixa com
+// desconto QUITA (antes: Σ paid bruto, e o título "quitado com desconto"
+// ficava em Abertos).
+const PAID_SUM = (schema: string) => PRINCIPAL_PAID_SQL(schema, 'f')
 
 // ---------------------------------------------------------------------
 // Carteira de títulos
@@ -114,18 +117,24 @@ export async function settleBatch(
   userId: number
 ): Promise<SettleBatchResult> {
   assertSchemaName(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
-    const result = await settleBatchTx(conn, input, schemaName, institutionId, userId)
-    await conn.commit()
-    return result
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+  // M-1 (gate socrático da Rodada 2 do cancelamento, Q-G13): baixa × plano do
+  // cancelamento × peça do cheque travam objetos em ordens que podem se cruzar;
+  // em deadlock o InnoDB escolhe a vítima — reexecutar do zero é seguro
+  // (mesmo wrapper do billing, bank-slips e checks).
+  return withDeadlockRetry('baixa em lote', { institutionId, titles: input.titles.length }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      const result = await settleBatchTx(conn, input, schemaName, institutionId, userId)
+      await conn.commit()
+      return result
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
+    }
+  })
 }
 
 // Núcleo do lote (settleBatchTx), rotina de parcerias (ordens PA — 4.3),
@@ -202,75 +211,109 @@ export async function reverseSettlement(
   userId: number
 ): Promise<ReversalResult> {
   assertSchemaName(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
+  // M-1 / Q-G13: ver settleBatch — vítima de deadlock reexecuta, nunca 500.
+  return withDeadlockRetry('estorno de baixa', { institutionId, orderId: input.orderId, parcel: input.parcel }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
 
-    const core = await reverseOnePayment(conn, schemaName, institutionId,
-      userId, input.orderId, input.parcel, input.event, input.reason)
+      // D-G7 / D-G7a (cancelamento de nota, Valdo 2026-09-09): quando o cliente
+      // paga com cheque ele deixa de dever o TÍTULO e passa a dever o CHEQUE
+      // (módulo de cheque = rastreabilidade). Estornar essa baixa aqui SEMPRE
+      // acontece: a peça do cheque desfaz a baixa e cancela (X) o R/P de cada
+      // cheque ainda em custódia; cheque que já TRANSITOU (depositado/descontado/
+      // usado) não interfere em momento algum — fica como está, a vida dele segue
+      // no módulo de cheque. Quem trava, na ordem canônica (cheque → eventos →
+      // payment), é a peça.
+      const withChecks = await reversePaymentWithChecks(conn, schemaName, institutionId, userId, {
+        orderId: input.orderId, parcel: input.parcel, paymentEvent: input.event, reason: input.reason,
+      })
+      let core: ReversalCore
+      let checksReversed: number[] = []
+      let checksKept: number[] = []
+      if (withChecks) {
+        core = withChecks.core
+        checksReversed = withChecks.checksReversed
+        checksKept = withChecks.checksKept
+      } else {
+        core = await reverseOnePayment(conn, schemaName, institutionId,
+          userId, input.orderId, input.parcel, input.event, input.reason)
+      }
 
-    let paReversed = 0
-    let paCompensated = 0
-    const chainReason = `Estorno em cadeia: ${input.reason}`.slice(0, 100)
+      let paReversed = 0
+      let paCompensated = 0
+      const chainReason = `Estorno em cadeia: ${input.reason}`.slice(0, 100)
 
-    const [paOrders] = await conn.query<any[]>(
-      `SELECT id FROM \`${schemaName}\`.tb_order_financial
-        WHERE tb_institution_id = ? AND tb_order_id_origin = ?
-          AND origin_parcel = ? AND origin_event = ? AND deleted = 'N'
-        FOR UPDATE`,
-      [institutionId, input.orderId, input.parcel, input.event]
-    )
-
-    for (const pa of paOrders) {
-      const paOrderId = Number(pa.id)
-
-      // baixas VIGENTES dos títulos a pagar do PA → estorno recursivo (4.3.3)
-      const [alivePays] = await conn.query<any[]>(
-        `SELECT p.parcel, p.event
-           FROM \`${schemaName}\`.tb_financial_payment p
-           INNER JOIN \`${schemaName}\`.tb_financial_bills b
-              ON b.tb_institution_id = p.tb_institution_id
-             AND b.tb_order_id = p.tb_order_id AND b.terminal = p.terminal
-             AND b.parcel = p.parcel AND b.deleted = 'N'
-          WHERE p.tb_institution_id = ? AND p.tb_order_id = ? AND p.terminal = 0
-            AND p.status = 'N' AND b.kind = 'PA' AND b.operation = 'D'
+      const [paOrders] = await conn.query<any[]>(
+        `SELECT id FROM \`${schemaName}\`.tb_order_financial
+          WHERE tb_institution_id = ? AND tb_order_id_origin = ?
+            AND origin_parcel = ? AND origin_event = ? AND deleted = 'N'
           FOR UPDATE`,
-        [institutionId, paOrderId]
+        [institutionId, input.orderId, input.parcel, input.event]
       )
-      for (const pay of alivePays) {
-        await reverseOnePayment(conn, schemaName, institutionId, userId,
-          paOrderId, Number(pay.parcel), Number(pay.event), chainReason)
-        paReversed += 1
+
+      for (const pa of paOrders) {
+        const paOrderId = Number(pa.id)
+
+        // baixas VIGENTES dos títulos a pagar do PA → estorno recursivo (4.3.3)
+        const [alivePays] = await conn.query<any[]>(
+          `SELECT p.parcel, p.event
+             FROM \`${schemaName}\`.tb_financial_payment p
+             INNER JOIN \`${schemaName}\`.tb_financial_bills b
+                ON b.tb_institution_id = p.tb_institution_id
+               AND b.tb_order_id = p.tb_order_id AND b.terminal = p.terminal
+               AND b.parcel = p.parcel AND b.deleted = 'N'
+            WHERE p.tb_institution_id = ? AND p.tb_order_id = ? AND p.terminal = 0
+              AND p.status = 'N' AND b.kind = 'PA' AND b.operation = 'D'
+            FOR UPDATE`,
+          [institutionId, paOrderId]
+        )
+        for (const pay of alivePays) {
+          // H2 (gate socrático da Rodada 3): a cadeia PA também é uma porta de
+          // estorno de baixa — um PA pago com cheque de terceiro (evento P) segue
+          // a MESMA regra D-G7a: em custódia ganha X, transitado fica como está.
+          const paChecks = await reversePaymentWithChecks(conn, schemaName, institutionId, userId, {
+            orderId: paOrderId, parcel: Number(pay.parcel), paymentEvent: Number(pay.event), reason: chainReason,
+          })
+          if (paChecks) {
+            checksReversed.push(...paChecks.checksReversed)
+            checksKept.push(...paChecks.checksKept)
+          } else {
+            await reverseOnePayment(conn, schemaName, institutionId, userId,
+              paOrderId, Number(pay.parcel), Number(pay.event), chainReason)
+          }
+          paReversed += 1
+        }
+
+        // compensação PA+C por payable vivo (DP11) — zera o saldo em aberto
+        const [payables] = await conn.query<any[]>(
+          `SELECT f.parcel, f.tag_value AS tagValue,
+                  f.tb_payment_types_id AS paymentTypeId
+             FROM \`${schemaName}\`.tb_financial f
+             INNER JOIN \`${schemaName}\`.tb_financial_bills b
+                ON b.tb_institution_id = f.tb_institution_id
+               AND b.tb_order_id = f.tb_order_id AND b.terminal = f.terminal
+               AND b.parcel = f.parcel AND b.deleted = 'N'
+            WHERE f.tb_institution_id = ? AND f.tb_order_id = ? AND f.terminal = 0
+              AND f.deleted = 'N' AND b.kind = 'PA' AND b.operation = 'D'`,
+          [institutionId, paOrderId]
+        )
+        for (const payable of payables) {
+          await createPaCompensation(conn, schemaName, institutionId,
+            paOrderId, Number(payable.tagValue), Number(payable.paymentTypeId))
+          paCompensated += 1
+        }
       }
 
-      // compensação PA+C por payable vivo (DP11) — zera o saldo em aberto
-      const [payables] = await conn.query<any[]>(
-        `SELECT f.parcel, f.tag_value AS tagValue,
-                f.tb_payment_types_id AS paymentTypeId
-           FROM \`${schemaName}\`.tb_financial f
-           INNER JOIN \`${schemaName}\`.tb_financial_bills b
-              ON b.tb_institution_id = f.tb_institution_id
-             AND b.tb_order_id = f.tb_order_id AND b.terminal = f.terminal
-             AND b.parcel = f.parcel AND b.deleted = 'N'
-          WHERE f.tb_institution_id = ? AND f.tb_order_id = ? AND f.terminal = 0
-            AND f.deleted = 'N' AND b.kind = 'PA' AND b.operation = 'D'`,
-        [institutionId, paOrderId]
-      )
-      for (const payable of payables) {
-        await createPaCompensation(conn, schemaName, institutionId,
-          paOrderId, Number(payable.tagValue), Number(payable.paymentTypeId))
-        paCompensated += 1
-      }
+      await conn.commit()
+      return { ...core, checksReversed, checksKept, paReversed, paCompensated }
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
     }
-
-    await conn.commit()
-    return { ...core, paReversed, paCompensated }
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+  })
 }
 
 // ---------------------------------------------------------------------

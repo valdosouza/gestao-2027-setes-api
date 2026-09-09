@@ -27,6 +27,7 @@ describe('settleOneTitle', () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[{ paymentTypeId: 5, operation: 'C' }]]) // título
+      .mockResolvedValueOnce([{}])   // Q-A18: lock da institution (regra 7)
       .mockResolvedValueOnce([[{ nextCode: 3 }]])                      // settled_code
       .mockResolvedValueOnce([[{ nextEvent: 1 }]])                     // event
       .mockResolvedValueOnce([{}])                                     // insert payment
@@ -42,9 +43,9 @@ describe('settleOneTitle', () => {
     expect(result).toEqual({
       settledCode: 3, statementId: 9, event: 1, operation: 'C', paymentTypeId: 5,
     })
-    const stageCall = conn.query.mock.calls[4]
+    const stageCall = conn.query.mock.calls[5]   // +1: lock da institution (Q-A18)
     expect(stageCall[1]).toContain('C') // stage='C' — caixa (bankAccountId=0)
-    const statementCall = conn.query.mock.calls[6]
+    const statementCall = conn.query.mock.calls[7]
     expect(statementCall[1]).toContain(5) // cashierId gravado
     // sem dtRecord: dt_record = dt_original = dtPayment ("cai na hora")
     expect(statementCall[1].filter((v: any) => v === '2026-08-22')).toHaveLength(2)
@@ -54,6 +55,7 @@ describe('settleOneTitle', () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[{ paymentTypeId: 5, operation: 'C' }]])
+      .mockResolvedValueOnce([{}])   // Q-A18: lock da institution (regra 7)
       .mockResolvedValueOnce([[{ nextCode: 1 }]])
       .mockResolvedValueOnce([[{ nextEvent: 1 }]])
       .mockResolvedValueOnce([{}])
@@ -66,7 +68,7 @@ describe('settleOneTitle', () => {
       bankAccountId: 8, cashierId: null,
     })
 
-    const stageCall = conn.query.mock.calls[4]
+    const stageCall = conn.query.mock.calls[5]   // +1: lock da institution (Q-A18)
     expect(stageCall[1]).toContain('B')
   })
 
@@ -74,6 +76,7 @@ describe('settleOneTitle', () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[{ paymentTypeId: 5, operation: 'C' }]])
+      .mockResolvedValueOnce([{}])   // Q-A18: lock da institution (regra 7)
       .mockResolvedValueOnce([[{ nextCode: 1 }]])
       .mockResolvedValueOnce([[{ nextEvent: 1 }]])
       .mockResolvedValueOnce([{}])
@@ -86,7 +89,7 @@ describe('settleOneTitle', () => {
       dtRecord: '2026-10-03', bankAccountId: 8, history: 'Cartão X',
       financialPlanCreId: 11, financialPlanDebId: 22,
     })
-    const params = conn.query.mock.calls[6][1]
+    const params = conn.query.mock.calls[7][1]
     expect(params).toContain('2026-10-03') // dt_record (disponível)
     expect(params).toContain('2026-09-03') // dt_original (fato gerador)
     expect(params).toContain('Cartão X')
@@ -107,6 +110,7 @@ describe('settleOneTitle', () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[{ paymentTypeId: 5, operation: 'D' }]])
+      .mockResolvedValueOnce([{}])   // Q-A18: lock da institution (regra 7)
       .mockResolvedValueOnce([[{ nextCode: 1 }]])
       .mockResolvedValueOnce([[{ nextEvent: 1 }]])
       .mockResolvedValueOnce([{}])
@@ -118,7 +122,7 @@ describe('settleOneTitle', () => {
       orderId: 10, parcel: 1, paidValue: 50, dtPayment: '2026-08-22', bankAccountId: 0,
     })
     expect(result.operation).toBe('D')
-    const statementCall = conn.query.mock.calls[6]
+    const statementCall = conn.query.mock.calls[7]
     expect(statementCall[1]).toContain('D') // credit=0, debit=50 -> kind 'D'
   })
 })
@@ -132,12 +136,12 @@ describe('nextSettledCode', () => {
   // settleOneTitle/settleBatchTx grava as duas).
   it('lê o MAX+1 de tb_financial_statement, nunca de tb_financial_payment', async () => {
     const conn = fakeConn()
-    conn.query.mockResolvedValueOnce([[{ nextCode: 53 }]])
+    conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([[{ nextCode: 53 }]])
 
     const code = await nextSettledCode(conn as any, 'setes_setes', 1)
 
     expect(code).toBe(53)
-    const [sql, params] = conn.query.mock.calls[0]
+    const [sql, params] = conn.query.mock.calls[1]   // calls[0] = lock da institution (Q-A18)
     expect(sql).toContain('tb_financial_statement')
     expect(sql).not.toContain('tb_financial_payment')
     expect(params).toEqual([1])
@@ -196,6 +200,7 @@ describe('tryAutoSettleByContract', () => {
   // settleOneTitle: título, code, event, insert payment, stage, st id, insert st
   const settleMocks = (conn: any, operation = 'C') => conn.query
     .mockResolvedValueOnce([[{ paymentTypeId: 5, operation }]])
+    .mockResolvedValueOnce([{}])   // Q-A18: lock da institution (regra 7)
     .mockResolvedValueOnce([[{ nextCode: 7 }]])
     .mockResolvedValueOnce([[{ nextEvent: 1 }]])
     .mockResolvedValueOnce([{}])
@@ -268,8 +273,8 @@ describe('tryAutoSettleByContract', () => {
       cashierId: 42, dtRecord: '2026-09-03',
     })
     // 3 + 7 chamadas: nenhuma linha de taxa
-    expect(conn.query).toHaveBeenCalledTimes(10)
-    const stCall = conn.query.mock.calls[9][1]
+    expect(conn.query).toHaveBeenCalledTimes(11)   // +1: lock da institution (Q-A18)
+    const stCall = conn.query.mock.calls[10][1]
     expect(stCall).toContain(0)   // bankAccountId 0 = caixa
     expect(stCall).toContain(42)  // cashierId
   })
@@ -293,13 +298,13 @@ describe('tryAutoSettleByContract', () => {
       cashierId: null, dtRecord: '2026-11-02', // 2026-09-03 + 30 × 2
     })
     // crédito da parcela: dt_record futuro, dt_original = faturamento, planos do vínculo
-    const credit = conn.query.mock.calls[9][1]
+    const credit = conn.query.mock.calls[10][1]
     expect(credit).toContain('2026-11-02')
     expect(credit).toContain('2026-09-03')
     expect(credit).toContain(11)
     expect(credit).toContain(22)
     // débito da taxa: 2.5% de 100 = 2.50, mesmo settled_code 7, mesma conta 8
-    const fee = conn.query.mock.calls[11][1]
+    const fee = conn.query.mock.calls[12][1]   // +1: lock da institution (Q-A18)
     expect(fee).toContain(2.5)
     expect(fee).toContain(7)
     expect(fee).toContain(8)
@@ -315,7 +320,7 @@ describe('tryAutoSettleByContract', () => {
     settleMocks(conn, 'D')
     const result = await tryAutoSettleByContract(conn as any, 'setes_setes', 1, 7, baseInput)
     expect(result).toMatchObject({ settled: true, feeStatementId: null })
-    expect(conn.query).toHaveBeenCalledTimes(10)
+    expect(conn.query).toHaveBeenCalledTimes(11)   // +1: lock da institution (Q-A18)
   })
 })
 
