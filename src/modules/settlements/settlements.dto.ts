@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { toCents } from '@shared/money'
 
 /**
  * DTOs (Zod) do módulo settlements. Valores da apuração INFORMADOS (P5);
@@ -14,7 +15,9 @@ export const settleBatchDto = z.object({
     parcel:          z.number().int().positive(),
     interestValue:   z.number().min(0).default(0),
     lateValue:       z.number().min(0).default(0),
-    discountAliquot: z.number().min(0).max(100).default(0),
+    // D-G35 (Q-G35/Q-A22, Valdo 2026-09-13): não existe desconto de 100 % — "desativar
+    // a cobrança" é ato PRÓPRIO (B09/BX-04 do legado, onda futura), não baixa.
+    discountAliquot: z.number().min(0).max(99.99, 'Desconto não pode cobrir o saldo inteiro (máximo 99,99 %)').default(0),
     paidValue:       z.number().gt(0),
   })).min(1, 'Selecione ao menos um título'),
   bankAccountId: z.number().int().min(0),
@@ -30,11 +33,9 @@ export const settleBatchDto = z.object({
   // Q-A16/Q-A19 (3ª adversarial do cancelamento): juros + multa acima do pago
   // deixariam principal NEGATIVO (inflando o teto D-A7) e IGUAL ao pago deixa
   // principal ZERO ("recebimento só de encargos" não existe na casa — Valdo
-  // rec.). Comparação em 2 casas (10,005 de juros sobre 10 pagos não passa).
-  body => body.titles.every(t => {
-    const r2 = (n: number) => Math.round(n * 100) / 100
-    return r2(t.interestValue) + r2(t.lateValue) < r2(t.paidValue)
-  }),
+  // rec.). Comparação em CENTAVOS pela regra do DECIMAL (Q-A27: 9,995 de
+  // juros sobre 10 pagos vira 10,00 no banco — não passa; 10,005 idem).
+  body => body.titles.every(t => toCents(t.interestValue) + toCents(t.lateValue) < toCents(t.paidValue)),
   { message: 'Juros + multa precisam ser menores que o valor pago (principal > 0)', path: ['titles'] },
 )
 

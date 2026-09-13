@@ -71,7 +71,7 @@ export interface MonthlyRunReport {
   opened:    number
   injected:  number
   skipped:   number
-  errors:    { customerId: number; message: string }[]
+  errors:    { customerId: number; contractId?: number; productId?: number; message: string }[]
 }
 
 /** Gerar Faturamento — vencimento DECIDIDO PELO USUÁRIO (DP1). */

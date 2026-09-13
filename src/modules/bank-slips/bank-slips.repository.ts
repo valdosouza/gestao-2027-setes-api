@@ -1,6 +1,7 @@
 import pool from '@shared/db/connection'
 import { assertSchemaName } from '@shared/field-config'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { OPEN_BALANCE_SQL } from '@shared/financial-settlement'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import {
   LAST_EVENT_KIND_SQL, stateFromLastEvent, BankSlipState,
@@ -188,11 +189,7 @@ export async function listOpenTitles(
               COALESCE(osl.tb_customer_id, osv.tb_customer_id, ofn.tb_entity_id) AS customerId,
               COALESCE(e.nick_trade, e.name_company) AS entityName,
               DATE_FORMAT(f.dt_expiration, '%Y-%m-%d') AS dtExpiration,
-              GREATEST(f.tag_value - (SELECT COALESCE(SUM(p.paid_value), 0)
-                 FROM \`${s}\`.tb_financial_payment p
-                WHERE p.tb_institution_id = f.tb_institution_id AND p.tb_order_id = f.tb_order_id
-                  AND p.terminal = f.terminal AND p.parcel = f.parcel
-                  AND p.status = 'N' AND p.deleted = 'N'), 0) AS balance,
+              ${OPEN_BALANCE_SQL(s, 'f')} AS balance,
               pt.description AS paymentTypeDescription,
               (SELECT COUNT(*) FROM \`${s}\`.tb_bank_slip_title t
                  INNER JOIN \`${s}\`.tb_bank_slip bs

@@ -166,6 +166,7 @@ router.get('/:id', controller.getOne)
  *       400: { description: Validação }
  *       401: { description: Não autenticado }
  *       404: { description: Boleto não encontrado }
+ *       422: { description: 'BANK_SLIP_FUTURE_PAYMENT — data do pagamento no futuro (D-G36)' }
  *       409: { description: 'BANK_SLIP_NOT_OPEN' }
  *       500: { description: Erro interno }
  */

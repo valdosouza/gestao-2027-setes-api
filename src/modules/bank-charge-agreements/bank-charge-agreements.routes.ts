@@ -74,7 +74,7 @@ const router = Router()
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
-router.post('/', controller.create)
+router.post('/', controller.create)   // D-G36: aliqDiscount > 0 exige o privilégio DESCONTO (403)
 
 /**
  * @swagger

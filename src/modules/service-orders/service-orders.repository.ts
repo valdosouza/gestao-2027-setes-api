@@ -3,6 +3,8 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { lockInstitutionCounters } from '@shared/db/counters'
+import { assertServiceProduct, serviceProductIssue } from '@shared/service-product'   // Q-G27: guarda única virou peça
+import { isLockWaitTimeout, isDeadlock } from '@shared/db/contention'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { upsertOrderBilling } from '@shared/order-billing'
@@ -276,32 +278,6 @@ async function createOpenOrder(
   return id
 }
 
-/**
- * Guarda ÚNICA do produto do item da OS (Q-A17/Q-A20): existe, ATIVO e é
- * SERVIÇO (kind 'S' — o lookup só oferece isso; a re-prova adversarial
- * mostrou o PUT aceitando produto inexistente/inativo/mercadoria e a OS
- * faturando nota 'SE' com item de mercadoria). POST e PUT passam aqui.
- */
-async function assertServiceProduct(
-  conn: PoolConnection, schemaName: string, institutionId: number, productId: number
-): Promise<void> {
-  const [prod] = await conn.query<any[]>(
-    `SELECT kind, active FROM \`${schemaName}\`.tb_product
-      WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
-    [productId, institutionId]
-  )
-  if (prod.length === 0 || String(prod[0].active) !== 'S') {
-    throw new HttpError(400, 'Produto/serviço inexistente ou inativo',
-      [{ field: 'productId', message: 'Produto não encontrado' }],
-      'ROLE_MISSING')
-  }
-  if (String(prod[0].kind) !== 'S') {
-    throw new HttpError(422, 'Item da ordem de serviço precisa ser um SERVIÇO',
-      [{ field: 'productId', message: 'Produto de mercadoria não entra na OS' }],
-      'SERVICE_ORDER_ITEM_NOT_SERVICE')
-  }
-}
-
 /** Q-A17b (Valdo 2026-09-09): item de OS sem valor não existe (sem caso real de cortesia) → 422. */
 function assertItemValue(input: OrderItemInput): void {
   if (!(Number(input.unitValue) > 0)) {
@@ -466,6 +442,19 @@ export async function removeItem(
     if (result.affectedRows === 0) {
       throw new HttpError(404, `Item ${itemId} não encontrado na ordem ${orderId}`)
     }
+    // D-A34 (Valdo 2026-09-13, "sim"): LIBERAR A COMPETÊNCIA é consequência de remover o
+    // item — o fato gravado é "a rotina faturou o item X do contrato na competência Y
+    // gerando ESTE item da OS"; sem o item, o fato perdeu o objeto e o mês volta a ser
+    // injetável (antes ficava consumido para sempre e o cliente sem cobrança, com o
+    // operador sem saída a não ser cancelar a OS inteira). Não é botão novo: é o mesmo
+    // ato que o operador já faz.
+    await conn.query(
+      `UPDATE \`${schemaName}\`.tb_contract_item_competence
+          SET deleted = 'S', updated_at = NOW()
+        WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0
+          AND tb_order_item_id = ? AND deleted = 'N'`,
+      [institutionId, orderId, itemId]
+    )
     await recalcTotalizer(conn, schemaName, institutionId, orderId)
 
     await conn.commit()
@@ -505,6 +494,14 @@ export async function cancelOrder(
         WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
       [orderId, institutionId]
     )
+    // D-A29: OS cancelada devolve a competência ao contrato (a rotina pode
+    // reinjetar); item REMOVIDO à mão da OS viva NÃO devolve — ato do operador.
+    await conn.query(
+      `UPDATE \`${schemaName}\`.tb_contract_item_competence
+          SET deleted = 'S', updated_at = NOW()
+        WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0`,
+      [institutionId, orderId]
+    )
 
     await conn.commit()
   } catch (err) {
@@ -525,6 +522,7 @@ export async function monthlyRun(
   assertSchemaName(schemaName)
   const first = firstDayOfMonth(input.year, input.month)
   const last  = lastDayOfMonth(input.year, input.month)
+  const competence = `${input.year}-${String(input.month).padStart(2, '0')}`   // D-A29
 
   // contratos VIGENTES na competência, com seus itens
   const [contracts] = await pool.query<any[]>(
@@ -562,10 +560,73 @@ export async function monthlyRun(
       // desfeita não conta duas vezes.
       const done = await withDeadlockRetry('rotina mensal', { institutionId, customerId }, 3, async () => {
         const conn = await pool.getConnection()
-        const local = { opened: 0, injected: 0, skipped: 0 }
+        const local = { opened: 0, injected: 0, skipped: 0, invalid: [] as { contractId: number; productId: number; reason: string }[] }
         try {
           await conn.beginTransaction()
-          await lockInstitutionCounters(conn, institutionId) // Q-A12: pode cunhar nº — 1º lock
+          // D-A35 (Valdo 2026-09-13, "sim"): a VARREDURA não trava a institution — só o ATO de
+          // cunhar trava (regra 7). Estas leituras NÃO são travantes (só decidem se há trabalho);
+          // depois do X, cada competência é RE-LIDA travante antes de injetar, então o lock
+          // continua sendo o 1º lock EXCLUSIVO da transação e ninguém injeta duas vezes.
+          // Antes, a rotina tomava o X por cliente mesmo sem nada a fazer (caso comum depois da
+          // D-G33) e empurrava faturamento/baixa concorrentes para 10 s.
+
+          // D-A29 (Q-A29, Valdo 2026-09-13): idempotência pela COMPETÊNCIA gravada no
+          // ato (tb_contract_item_competence — migration 051), não por created_at:
+          // a reexecução retroativa injetava em dobro. D-G33 (Q-G33): a OS só abre
+          // quando há ao menos um item injetável — OS vazia ocupava a trava D5.
+          const injectable: { row: any; value: number }[] = []
+          for (const row of rows) {
+            const [billed] = await conn.query<any[]>(
+              `SELECT 1 FROM \`${schemaName}\`.tb_contract_item_competence
+                WHERE tb_institution_id = ? AND tb_contract_id = ? AND tb_product_id = ?
+                  AND competence = ? AND deleted = 'N'`,
+              [institutionId, row.contractId, row.productId, competence]
+            )
+            if (billed.length > 0) {
+              local.skipped += 1
+              continue
+            }
+            // Q-G27 ("ambos", Valdo 2026-09-10): o contrato valida o produto ao gravar,
+            // mas ele pode ter sido inativado/trocado depois — a rotina PULA o item e
+            // REPORTA (antes injetava e o cinto do faturamento recusava a OS inteira).
+            const issue = await serviceProductIssue(conn, schemaName, institutionId, Number(row.productId))
+            if (issue) {
+              local.skipped += 1
+              local.invalid.push({ contractId: Number(row.contractId), productId: Number(row.productId), reason: issue })
+              continue
+            }
+            const value = prorataValue(Number(row.value), row.dtStart, row.dtEnd,
+              input.year, input.month)
+            if (value <= 0) {
+              local.skipped += 1
+              continue
+            }
+            injectable.push({ row, value })
+          }
+          if (injectable.length === 0) {
+            await conn.commit()
+            return local
+          }
+
+          // há o que injetar: AGORA trava (regra 7 — 1º lock exclusivo) e reconfere as
+          // competências de forma TRAVANTE (o snapshot REPEATABLE READ acima pode ter
+          // envelhecido entre a varredura e o X)
+          await lockInstitutionCounters(conn, institutionId)
+          const confirmed: typeof injectable = []
+          for (const item of injectable) {
+            const [billed] = await conn.query<any[]>(
+              `SELECT 1 FROM \`${schemaName}\`.tb_contract_item_competence
+                WHERE tb_institution_id = ? AND tb_contract_id = ? AND tb_product_id = ?
+                  AND competence = ? AND deleted = 'N' FOR UPDATE`,
+              [institutionId, item.row.contractId, item.row.productId, competence]
+            )
+            if (billed.length > 0) local.skipped += 1
+            else confirmed.push(item)
+          }
+          if (confirmed.length === 0) {
+            await conn.commit()
+            return local
+          }
 
           // ordem ABERTA do cliente (FOR UPDATE) ou nova
           const [open] = await conn.query<any[]>(
@@ -581,33 +642,23 @@ export async function monthlyRun(
             local.opened += 1
           }
 
-          let touched = false
-          for (const row of rows) {
-            // idempotência (3.4): item do produto do contrato JÁ injetado na
-            // competência? (kind Service criado dentro do mês)
-            const [exists] = await conn.query<any[]>(
-              `SELECT 1 FROM \`${schemaName}\`.tb_order_item
-                WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0
-                  AND kind = ? AND tb_product_id = ? AND deleted = 'N'
-                  AND DATE(created_at) BETWEEN ? AND ?`,
-              [orderId, institutionId, SERVICE_KIND, row.productId, first, last]
-            )
-            if (exists.length > 0) {
-              local.skipped += 1
-              continue
-            }
-            const value = prorataValue(Number(row.value), row.dtStart, row.dtEnd,
-              input.year, input.month)
-            if (value <= 0) {
-              local.skipped += 1
-              continue
-            }
-            await insertServiceItem(conn, schemaName, institutionId, orderId,
+          for (const { row, value } of confirmed) {
+            const itemId = await insertServiceItem(conn, schemaName, institutionId, orderId,
               { productId: Number(row.productId), quantity: 1, unitValue: value })
+            // fato do ato: contrato × produto × competência → item da OS (revive se a
+            // OS anterior da competência foi cancelada — cancelOrder soft-deleta aqui)
+            await conn.query(
+              `INSERT INTO \`${schemaName}\`.tb_contract_item_competence
+                 (tb_institution_id, tb_contract_id, tb_product_id, competence,
+                  tb_order_id, terminal, tb_order_item_id, created_at, updated_at, deleted)
+               VALUES (?, ?, ?, ?, ?, 0, ?, NOW(), NOW(), 'N')
+               ON DUPLICATE KEY UPDATE tb_order_id = VALUES(tb_order_id),
+                 tb_order_item_id = VALUES(tb_order_item_id), deleted = 'N', updated_at = NOW()`,
+              [institutionId, row.contractId, row.productId, competence, orderId, itemId]
+            )
             local.injected += 1
-            touched = true
           }
-          if (touched) await recalcTotalizer(conn, schemaName, institutionId, orderId)
+          await recalcTotalizer(conn, schemaName, institutionId, orderId)
 
           await conn.commit()
           return local
@@ -621,7 +672,18 @@ export async function monthlyRun(
       report.opened += done.opened
       report.injected += done.injected
       report.skipped += done.skipped
+      for (const inv of done.invalid) {
+        report.errors.push({
+          customerId, contractId: inv.contractId, productId: inv.productId,
+          message: `Contrato ${inv.contractId}: ${inv.reason} (produto ${inv.productId}) — item pulado`,
+        })
+      }
     } catch (err: any) {
+      // Adversarial da Rodada 5 (D5, 2026-09-11): contenção (1205 / 1213 com retry
+      // esgotado) NÃO é erro de negócio de UM cliente — propaga para a fronteira
+      // (409 RESOURCE_BUSY, como em todo módulo), em vez de 200 com o texto cru
+      // do driver em errors[] e N × 10 s serializados nos clientes seguintes.
+      if (isLockWaitTimeout(err) || isDeadlock(err)) throw err
       report.errors.push({ customerId, message: String(err.message ?? err) })
     }
   }

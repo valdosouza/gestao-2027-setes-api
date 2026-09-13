@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import * as controller from './billing.controller'
-import { requirePrivilege, requirePrivilegeFor } from '@shared/auth/require-privilege'
-import { hasServiceOrderCycle } from '@shared/service-order'
+import { requirePrivilegeFor } from '@shared/auth/require-privilege'
+import { resolveFromBody } from './billing.interface-resolver'
 import { PRIVILEGE_FATURAR, PRIVILEGE_CANCELAR } from '@shared/auth/privileges'
 
 /**
@@ -112,7 +112,8 @@ router.post('/validate', controller.validate)
  */
 // Q-P5 (cancelamento, 2026-09-08): FATURAR e CANCELAR são privilégios de
 // AÇÃO da interface 'orders' aplicados na rota (super/admin passam).
-router.post('/invoice', requirePrivilege('orders', PRIVILEGE_FATURAR), controller.invoice)
+// Q-G29: FATURAR na interface do RAMO (orders / order-returns; OS tem rota própria)
+router.post('/invoice', requirePrivilegeFor(PRIVILEGE_FATURAR, resolveFromBody), controller.invoice)
 
 /**
  * @swagger
@@ -151,12 +152,6 @@ router.post('/invoice', requirePrivilege('orders', PRIVILEGE_FATURAR), controlle
  */
 // Q-G16/Q-G22: CANCELAR na interface do RAMO do pedido — ciclo de OS vivo →
 // `service-orders`, senão `orders` (orderId inválido cai em `orders`; o DTO recusa depois)
-router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, async req => {
-  const orderId = Number(req.body?.orderId)
-  const inst = req.institution!
-  return Number.isInteger(orderId) && orderId > 0
-      && await hasServiceOrderCycle(inst.schemaName, inst.institutionId, orderId)
-    ? 'service-orders' : 'orders'
-}), controller.cancel)
+router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody), controller.cancel)
 
 export default router

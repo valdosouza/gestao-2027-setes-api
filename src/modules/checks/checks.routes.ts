@@ -294,6 +294,7 @@ router.post('/:id/return-good', controller.returnGood)
  *       401: { description: Não autenticado }
  *       404: { description: 'Cheque ou título não encontrado' }
  *       409: { description: 'CHECK_NOT_IN_CUSTODY / NO_OPEN_CASHIER' }
+ *       422: { description: 'CHECK_TITLE_NOT_PAYABLE (título a receber) / CHECK_EXCEEDS_BALANCE' }
  */
 router.post('/:id/pay', controller.pay)
 

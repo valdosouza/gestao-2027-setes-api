@@ -71,6 +71,11 @@ export const ErrorCodes = {
   CHECK_EVENT_NOT_FOUND:            'CHECK_EVENT_NOT_FOUND',
   CHECK_EVENT_NOT_REVERSIBLE:       'CHECK_EVENT_NOT_REVERSIBLE',
   CHECK_EXCEEDS_BALANCE:            'CHECK_EXCEEDS_BALANCE',
+  CHECK_TITLE_NOT_PAYABLE:          'CHECK_TITLE_NOT_PAYABLE',
+  DISCOUNT_REQUIRES_PRIVILEGE:      'DISCOUNT_REQUIRES_PRIVILEGE',
+  DISCOUNT_EXCEEDS_BALANCE:         'DISCOUNT_EXCEEDS_BALANCE',
+  BANK_SLIP_FUTURE_PAYMENT:         'BANK_SLIP_FUTURE_PAYMENT',
+  RETURN_ANCHOR_INCONSISTENT:       'RETURN_ANCHOR_INCONSISTENT',
   CHECK_FACTORING_NOT_FOUND:        'CHECK_FACTORING_NOT_FOUND',
   CHECK_IDENTITY_MISMATCH:          'CHECK_IDENTITY_MISMATCH',
   REVERSAL_NOT_CURRENT: 'REVERSAL_NOT_CURRENT',
@@ -109,6 +114,8 @@ export const ErrorCodes = {
   SERVICE_ORDER_OWN_ENDPOINT: 'SERVICE_ORDER_OWN_ENDPOINT',
   SERVICE_ORDER_ITEM_NOT_SERVICE: 'SERVICE_ORDER_ITEM_NOT_SERVICE',
   SERVICE_ORDER_ITEM_VALUE_REQUIRED: 'SERVICE_ORDER_ITEM_VALUE_REQUIRED',
+  SETTLEMENT_NO_PRINCIPAL: 'SETTLEMENT_NO_PRINCIPAL',
+  PRODUCT_NOT_FOUND:   'PRODUCT_NOT_FOUND',
 } as const
 
 export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
@@ -166,6 +173,11 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   CHECK_EVENT_NOT_FOUND:            'Evento do cheque não encontrado',
   CHECK_EVENT_NOT_REVERSIBLE:       'Este evento não pode ser estornado',
   CHECK_EXCEEDS_BALANCE:            'Valor do cheque excede o saldo aberto do título',
+  CHECK_TITLE_NOT_PAYABLE:          'Cheque só paga título a PAGAR (o informado é a receber)',
+  DISCOUNT_REQUIRES_PRIVILEGE:      'Desconto acima do teto da empresa — exige o privilégio DESCONTO',
+  DISCOUNT_EXCEEDS_BALANCE:         'Desconto não cabe no saldo em aberto (nunca cobre o saldo inteiro)',
+  BANK_SLIP_FUTURE_PAYMENT:         'Data do pagamento do boleto no futuro',
+  RETURN_ANCHOR_INCONSISTENT:       'Devolução com âncora cancelada — ordem de ajuste inconsistente (cancele a devolução)',
   CHECK_FACTORING_NOT_FOUND:        'Entidade da factoring inexistente',
   CHECK_IDENTITY_MISMATCH:          'Cheque já cadastrado com dados diferentes (valor/emitente/data)',
   REVERSAL_NOT_CURRENT: 'Só baixas vigentes (status N) podem ser estornadas',
@@ -198,4 +210,6 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   SERVICE_ORDER_OWN_ENDPOINT: 'Ordem de serviço fatura pelo módulo de OS',
   SERVICE_ORDER_ITEM_NOT_SERVICE: 'Item da ordem de serviço precisa ser um serviço',
   SERVICE_ORDER_ITEM_VALUE_REQUIRED: 'Item da ordem de serviço precisa de valor maior que zero',
+  SETTLEMENT_NO_PRINCIPAL: 'Baixa sem principal (juros + multa devem ser menores que o valor pago)',
+  PRODUCT_NOT_FOUND:   'Produto/serviço inexistente ou inativo',
 }

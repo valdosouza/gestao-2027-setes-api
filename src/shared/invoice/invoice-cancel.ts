@@ -125,9 +125,14 @@ export async function buildCancelPlan(
   // H1 / Q-G1 (gate socrático 2026-09-09): nota de DEVOLUÇÃO faturada — a
   // composição não conhece o ramo adjust (elos por item, saldo da venda de
   // origem); Onda 1 RECUSA (assunção registrada; ramo adjust na Onda 2).
+  // D-A31 (HIGH da adversarial da Rodada 6): a âncora SOFT-DELETADA também
+  // conta — é devolução, viva ou não. Com o filtro `deleted = 'N'` a guarda
+  // sumia no estado que a própria D-A31 nomeia (âncora morta + ordem viva), o
+  // cancelamento passava e os elos `tb_order_item_return` ficavam vivos: a
+  // venda de origem perdia o saldo devolvível PARA SEMPRE.
   const [anchor] = await conn.query<any[]>(
     `SELECT 1 FROM \`${s}\`.tb_order_stock_adjust_return
-      WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N' FOR UPDATE`,
+      WHERE id = ? AND tb_institution_id = ? AND terminal = 0 FOR UPDATE`,
     [orderId, institutionId]
   )
   if (anchor.length > 0) {

@@ -3,6 +3,7 @@ import logger from '@shared/logger/logger'
 import { handleError, parseBody } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
+import { assertDiscountPolicy } from './settlements.discount-policy'
 import { settleBatchDto, reversalDto } from './settlements.dto'
 import {
   SettlementScope, fetchBills, settle, fetchSettled, reverse,
@@ -32,6 +33,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   if (body === null) return
   try {
     await assertClientRequired(req.institution!, 'settlements', body)
+    await assertDiscountPolicy(req.institution!, body.titles)   // D-G32: teto por config × privilégio DESCONTO
     const result = await settle(body, scopeOf(req))
     logger.info('Baixa registrada', {
       institutionId: req.institution!.institutionId, ...result,

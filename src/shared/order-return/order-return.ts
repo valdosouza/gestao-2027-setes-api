@@ -36,6 +36,28 @@ export interface OriginalSaleItem {
  *  (soma float JS × SUM decimal do MySQL) — quantity é decimal(10,4). */
 export const QTY_EPSILON = 1e-6
 
+/**
+ * D-A36 (Valdo 2026-09-13: "contar pelo último evento") — devolução VIGENTE.
+ *
+ * O saldo devolvível de uma venda NUNCA é gravado nela: a venda é fato consumado
+ * e imutável. O saldo é DERIVADO — vendido − Σ devolvido — e "devolvido" conta só
+ * o que está VIGENTE, do mesmo jeito que o saldo do título conta só as baixas
+ * vivas (`status='N'`) e o faturamento só as notas não canceladas. Cancelar a
+ * nota de uma devolução (Onda 2) não reescreve nada: os elos e os eventos ficam
+ * como história e o CÁLCULO deixa de somá-los.
+ *
+ * Vigente = ordem de ajuste viva E (sem nota OU nota cujo último evento ≠ 'C').
+ */
+export const CURRENT_RETURN_SQL = (schema: string, retAlias = 'r') => `
+      EXISTS (SELECT 1 FROM \`${schema}\`.tb_order adj
+               WHERE adj.id = ${retAlias}.tb_order_id AND adj.tb_institution_id = ${retAlias}.tb_institution_id
+                 AND adj.terminal = ${retAlias}.terminal AND adj.deleted = 'N')
+      AND COALESCE((SELECT ev.kind FROM \`${schema}\`.tb_invoice_event ev
+                     WHERE ev.tb_institution_id = ${retAlias}.tb_institution_id
+                       AND ev.tb_invoice_id = ${retAlias}.tb_order_id
+                       AND ev.terminal = ${retAlias}.terminal AND ev.deleted = 'N'
+                     ORDER BY ev.event DESC LIMIT 1), 'E') <> 'C'`
+
 export interface ReturnLink {
   /** item do AJUSTE (devolvido) */
   itemId: number
@@ -70,16 +92,23 @@ export interface ReturnPlan {
  * carrega mais returnedOrderId).
  */
 export async function getAnchor(
-  schemaName: string, institutionId: number, adjustOrderId: number
-): Promise<{ orderIdOri: number } | null> {
+  schemaName: string, institutionId: number, adjustOrderId: number,
+  opts: { includeDeleted?: boolean } = {}
+): Promise<{ orderIdOri: number; deleted: 'N' | 'S' } | null> {
   const s = assertSchema(schemaName)
+  // D-A31 (Q-A31, Valdo 2026-09-13): quem decide o RAMO (resolver do privilégio,
+  // billing) lê a âncora mesmo soft-deletada — devolução com âncora cancelada e
+  // ordem viva (estado só por SQL) não pode virar ajuste solto; só o cancelReturn
+  // decide vida (cascateia âncora + ajuste + ordem).
   const [rows] = await pool.query<any[]>(
-    `SELECT tb_order_id_ori AS orderIdOri
+    `SELECT tb_order_id_ori AS orderIdOri, deleted
        FROM \`${s}\`.tb_order_stock_adjust_return
-      WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`,
+      WHERE id = ? AND tb_institution_id = ? AND terminal = 0${opts.includeDeleted ? '' : " AND deleted = 'N'"}`,
     [adjustOrderId, institutionId]
   )
-  return rows[0] ? { orderIdOri: Number(rows[0].orderIdOri) } : null
+  return rows[0]
+    ? { orderIdOri: Number(rows[0].orderIdOri), deleted: String(rows[0].deleted) === 'S' ? 'S' : 'N' }
+    : null
 }
 
 /**
@@ -176,6 +205,7 @@ export async function getReturnedQuantityByProduct(
              AND i.tb_order_id = r.tb_order_id AND i.terminal = r.terminal
              AND i.kind = r.kind AND i.deleted = 'N')
       WHERE r.tb_institution_id = ? AND r.tb_order_id_ori = ? AND r.deleted = 'N'
+        AND ${CURRENT_RETURN_SQL(s, 'r')}
       GROUP BY i.tb_product_id`,
     [institutionId, orderIdOri]
   )
@@ -346,6 +376,7 @@ export async function assertReturnableInTx(
              AND i.tb_order_id = r.tb_order_id AND i.terminal = r.terminal
              AND i.kind = r.kind AND i.deleted = 'N')
       WHERE r.tb_institution_id = ? AND r.tb_order_id_ori = ? AND r.deleted = 'N'
+        AND ${CURRENT_RETURN_SQL(s, 'r')}
       GROUP BY i.tb_product_id`,
     [institutionId, plan.orderIdOri]
   )

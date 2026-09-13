@@ -2,6 +2,8 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
 import { HttpError } from '@shared/errors/http-error'
+import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { lockInstitutionCounters } from '@shared/db/counters'
 import { writeManualCashierMovement, ManualCashierMovementResult } from '@shared/financial-settlement'
 import { CashierRow, ClosingItemResult } from './cashier.interface'
 
@@ -59,41 +61,45 @@ export async function openCashier(
   schemaName: string, institutionId: number, userId: number
 ): Promise<CashierRow> {
   const s = assertSchema(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
-    const [open] = await conn.query<any[]>(
-      `SELECT id FROM \`${s}\`.tb_cashier
-        WHERE tb_institution_id = ? AND terminal = ? AND tb_user_id = ?
-          AND hr_end IS NULL AND deleted = 'N' FOR UPDATE`,
-      [institutionId, WEB_TERMINAL, userId]
-    )
-    if (open[0]) {
-      throw new HttpError(409, 'Já existe um caixa aberto para este usuário',
-        undefined, 'CASHIER_ALREADY_OPEN')
+  // L2 (re-score socrático final): caixa cunhava MAX+1 fora do protocolo (sem X e sem retry)
+  return withDeadlockRetry('abertura de caixa', { institutionId, userId }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await lockInstitutionCounters(conn, institutionId) // regra 7 (L2 do re-score final): cunha id/extrato — 1º lock
+      const [open] = await conn.query<any[]>(
+        `SELECT id FROM \`${s}\`.tb_cashier
+          WHERE tb_institution_id = ? AND terminal = ? AND tb_user_id = ?
+            AND hr_end IS NULL AND deleted = 'N' FOR UPDATE`,
+        [institutionId, WEB_TERMINAL, userId]
+      )
+      if (open[0]) {
+        throw new HttpError(409, 'Já existe um caixa aberto para este usuário',
+          undefined, 'CASHIER_ALREADY_OPEN')
+      }
+      const [mx] = await conn.query<any[]>(
+        `SELECT COALESCE(MAX(id), 0) + 1 AS nextId
+           FROM \`${s}\`.tb_cashier WHERE tb_institution_id = ? FOR UPDATE`,
+        [institutionId]
+      )
+      const id = Number(mx[0].nextId)
+      await conn.query(
+        `INSERT INTO \`${s}\`.tb_cashier
+           (id, tb_institution_id, terminal, dt_record, tb_user_id, hr_begin,
+            created_at, updated_at, deleted)
+         VALUES (?, ?, ?, CURDATE(), ?, NOW(), NOW(), NOW(), 'N')`,
+        [id, institutionId, WEB_TERMINAL, userId]
+      )
+      await conn.commit()
+      const row = await getCashier(schemaName, institutionId, id)
+      return row!
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
     }
-    const [mx] = await conn.query<any[]>(
-      `SELECT COALESCE(MAX(id), 0) + 1 AS nextId
-         FROM \`${s}\`.tb_cashier WHERE tb_institution_id = ? FOR UPDATE`,
-      [institutionId]
-    )
-    const id = Number(mx[0].nextId)
-    await conn.query(
-      `INSERT INTO \`${s}\`.tb_cashier
-         (id, tb_institution_id, terminal, dt_record, tb_user_id, hr_begin,
-          created_at, updated_at, deleted)
-       VALUES (?, ?, ?, CURDATE(), ?, NOW(), NOW(), NOW(), 'N')`,
-      [id, institutionId, WEB_TERMINAL, userId]
-    )
-    await conn.commit()
-    const row = await getCashier(schemaName, institutionId, id)
-    return row!
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+  })
 }
 
 /**
@@ -146,33 +152,37 @@ export async function withdrawTx(
   value: number, history: string, destinationBankAccountId: number | null | undefined
 ): Promise<ManualCashierMovementResult> {
   const s = assertSchema(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
-    // dono da sessão (achado QA adversarial 2026-08-22): sem isso, qualquer
-    // usuário da institution sacava/transferia de caixa ALHEIO — 404 (não
-    // vaza existência, mesmo padrão multi-tenant do resto da API).
-    const [row] = await conn.query<any[]>(
-      `SELECT hr_end FROM \`${s}\`.tb_cashier
-        WHERE tb_institution_id = ? AND terminal = 0 AND id = ? AND tb_user_id = ?
-          AND deleted = 'N' FOR UPDATE`,
-      [institutionId, cashierId, userId]
-    )
-    if (!row[0]) throw new HttpError(404, `Caixa ${cashierId} não encontrado`)
-    if (row[0].hr_end) throw new HttpError(409, 'Caixa fechado', undefined, 'CASHIER_NOT_OPEN')
+  // L2 (re-score socrático final): caixa cunhava MAX+1 fora do protocolo (sem X e sem retry)
+  return withDeadlockRetry('retirada do caixa', { institutionId, userId }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      await lockInstitutionCounters(conn, institutionId) // regra 7 (L2 do re-score final): cunha id/extrato — 1º lock
+      // dono da sessão (achado QA adversarial 2026-08-22): sem isso, qualquer
+      // usuário da institution sacava/transferia de caixa ALHEIO — 404 (não
+      // vaza existência, mesmo padrão multi-tenant do resto da API).
+      const [row] = await conn.query<any[]>(
+        `SELECT hr_end FROM \`${s}\`.tb_cashier
+          WHERE tb_institution_id = ? AND terminal = 0 AND id = ? AND tb_user_id = ?
+            AND deleted = 'N' FOR UPDATE`,
+        [institutionId, cashierId, userId]
+      )
+      if (!row[0]) throw new HttpError(404, `Caixa ${cashierId} não encontrado`)
+      if (row[0].hr_end) throw new HttpError(409, 'Caixa fechado', undefined, 'CASHIER_NOT_OPEN')
 
-    const result = await writeManualCashierMovement(conn, schemaName, institutionId, userId, {
-      cashierId, value, history, dtRecord: new Date().toISOString().slice(0, 10),
-      destinationBankAccountId,
-    })
-    await conn.commit()
-    return result
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
+      const result = await writeManualCashierMovement(conn, schemaName, institutionId, userId, {
+        cashierId, value, history, dtRecord: new Date().toISOString().slice(0, 10),
+        destinationBankAccountId,
+      })
+      await conn.commit()
+      return result
+    } catch (err) {
+      await conn.rollback()
+      throw err
+    } finally {
+      conn.release()
+    }
+  })
 }
 
 /** Grava a CONFERÊNCIA (registrado × digitado) e fecha a sessão — UMA transação. */

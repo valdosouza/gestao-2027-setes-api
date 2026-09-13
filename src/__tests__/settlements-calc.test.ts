@@ -1,30 +1,9 @@
-import {
-  liquidValue, openBalance, addDays, partnerShare,
-} from '../modules/settlements/settlements.calc'
+import { addDays, partnerShare } from '../modules/settlements/settlements.calc'
 
 /**
  * Aritmética pura da apuração da baixa (Fase 6.1 — P5: valores
  * informados; aqui só a conta do líquido e do saldo derivado).
  */
-
-describe('liquidValue', () => {
-  it('sem acréscimos nem desconto = tag', () => {
-    expect(liquidValue(100, 0, 0, 0)).toBe(100)
-  })
-
-  it('juros e multa somam', () => {
-    expect(liquidValue(100, 2.5, 1.5, 0)).toBe(104)
-  })
-
-  it('desconto percentual sobre o tag', () => {
-    expect(liquidValue(200, 0, 0, 10)).toBe(180)
-  })
-
-  it('combinado com arredondamento de 2 casas', () => {
-    // 100 + 1.11 + 2.22 − 3.33% de 100 (=3.33) = 100
-    expect(liquidValue(100, 1.11, 2.22, 3.33)).toBe(100)
-  })
-})
 
 describe('addDays (DP12 — vencimento PA = baixa + 12 dias)', () => {
   it('soma simples', () => {
@@ -51,16 +30,3 @@ describe('partnerShare (4.3 — % sobre o pago)', () => {
   })
 })
 
-describe('openBalance', () => {
-  it('parcial deixa saldo', () => {
-    expect(openBalance(170, 100)).toBe(70)
-  })
-
-  it('quitado zera', () => {
-    expect(openBalance(170, 170)).toBe(0)
-  })
-
-  it('pago a maior não fica negativo', () => {
-    expect(openBalance(170, 200)).toBe(0)
-  })
-})

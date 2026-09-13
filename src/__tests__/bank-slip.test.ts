@@ -19,6 +19,12 @@ jest.mock('../shared/financial-settlement/settlement-batch', () => ({
 const batch = jest.requireMock('../shared/financial-settlement/settlement-batch') as any
 
 function fakeConn() { return { query: jest.fn() } }
+
+const DAY = 86400000
+/** D-G36: a liquidação não acontece no futuro — datas dos testes são relativas a HOJE. */
+const iso = (offsetDays: number) => new Date(Date.now() + offsetDays * DAY).toISOString().slice(0, 10)
+const TODAY = iso(0)
+
 beforeEach(() => jest.clearAllMocks())
 
 const AGREEMENT = {
@@ -28,7 +34,7 @@ const AGREEMENT = {
   ourNumberNext: 1000, active: 'S',
 }
 const TITLE = (over: Record<string, any> = {}) => ({
-  orderId: 10, parcel: 1, tagValue: 100, paidSum: 0, paymentTypeId: 6,
+  orderId: 10, parcel: 1, tagValue: 100, principalPaid: 0, paymentTypeId: 6,
   dtExpiration: '2026-10-10', operation: 'C', customerId: 209, ...over,
 })
 
@@ -76,7 +82,7 @@ describe('issueBankSlip', () => {
     const conn2 = fakeConn()
     conn2.query
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
-      .mockResolvedValueOnce([[TITLE({ paidSum: 100 })]])
+      .mockResolvedValueOnce([[TITLE({ principalPaid: 100 })]])
     await expect(issueBankSlip(conn2 as any, 'setes_setes', 1, 7, base))
       .rejects.toMatchObject({ statusCode: 409, code: 'TITLE_SETTLED' })
   })
@@ -115,7 +121,7 @@ describe('issueBankSlip', () => {
     conn.query
       .mockResolvedValueOnce([[AGREEMENT]])          // carteira FOR UPDATE
       .mockResolvedValueOnce([[{ 1: 1 }]])           // conta existe
-      .mockResolvedValueOnce([[TITLE({ tagValue: 150, paidSum: 50 })]]) // título
+      .mockResolvedValueOnce([[TITLE({ tagValue: 150, principalPaid: 50 })]]) // título
       .mockResolvedValueOnce([[]])                   // sem boleto vigente
       .mockResolvedValueOnce([[{ nextId: 12 }]])     // id MAX+1
       .mockResolvedValueOnce([{}])                   // UPDATE our_number_next
@@ -134,6 +140,23 @@ describe('issueBankSlip', () => {
     expect(slipParams).toContain(5)                        // protest_days
     expect(conn.query.mock.calls[7][1]).toContain(100)     // value do vínculo = saldo
     expect(conn.query.mock.calls[9][1]).toContain('E')
+  })
+
+  it('HIGH adversarial R5: face do boleto = saldo pela PEÇA (principal coberto inclui juros/multa/desconto), não tag − Σ pago', async () => {
+    const conn = fakeConn()
+    conn.query
+      .mockResolvedValueOnce([[AGREEMENT]])
+      .mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[TITLE({ tagValue: 100, principalPaid: 60 })]]) // parcial 50 @ 10 % → principal 60
+      .mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[{ nextId: 13 }]])
+      .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([[{ nextEvent: 1 }]]).mockResolvedValueOnce([{}])
+    const r = await issueBankSlip(conn as any, 'setes_setes', 1, 7, base)
+    expect(r.value).toBe(40)
+    const titleSql = String(conn.query.mock.calls[2][0])
+    expect(titleSql).toMatch(/COALESCE\(p\.discount_value, 0\)/)
+    expect(titleSql).not.toMatch(/SUM\(p\.paid_value\), 0\)/)
   })
 
   it('carteira SEM faixa: nosso número = id; agrupado: doc = id, valor = soma dos saldos', async () => {
@@ -161,12 +184,12 @@ describe('settleBankSlip', () => {
   it('boleto não aberto -> 409 BANK_SLIP_NOT_OPEN; valor <= 0, 0.004 (arredonda a 0) ou > teto -> 400 antes do banco', async () => {
     const conn = fakeConn()
     for (const paidValue of [0, 0.004, -1, 1e12]) {
-      await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue, dtPayment: '2026-10-10' }))
+      await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue, dtPayment: TODAY }))
         .rejects.toMatchObject({ statusCode: 400, code: 'BANK_SLIP_INVALID_VALUE' })
     }
     expect(conn.query).not.toHaveBeenCalled()
     conn.query.mockResolvedValueOnce([slipRow]).mockResolvedValueOnce([[{ event: 2, kind: 'L', settledCode: 5 }]])
-    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 150, dtPayment: '2026-10-10' }))
+    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 150, dtPayment: TODAY }))
       .rejects.toMatchObject({ statusCode: 409, code: 'BANK_SLIP_NOT_OPEN' })
   })
 
@@ -177,7 +200,7 @@ describe('settleBankSlip', () => {
       .mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
       .mockResolvedValueOnce([[{ orderId: 10, parcel: 1, value: 100 }, { orderId: 11, parcel: 1, value: 50 }]])
       .mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}])
-    const r = await settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 153, dtPayment: '2026-10-12' })
+    const r = await settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 153, dtPayment: TODAY })
     expect(r).toEqual({ settledCode: 77, statementId: 90, event: 2, titles: 2 })
     const input = batch.settleBatchTx.mock.calls[0][1]
     expect(input.bankAccountId).toBe(1)
@@ -188,24 +211,98 @@ describe('settleBankSlip', () => {
     expect(input.titles).toEqual([
       // H1 (Rodada 3 do cancelamento): principal = FACE de cada título; a sobra (3) é juros
       // RATEADA (2 + 1) — cada título passa no teto D-A7 (saldo + juros informados)
-      { orderId: 10, parcel: 1, interestValue: 2, lateValue: 0, discountAliquot: 0, paidValue: 102 },
-      { orderId: 11, parcel: 1, interestValue: 1, lateValue: 0, discountAliquot: 0, paidValue: 51 },
+      { orderId: 10, parcel: 1, interestValue: 2, lateValue: 0, discountAliquot: 0, discountValue: 0, paidValue: 102 },
+      { orderId: 11, parcel: 1, interestValue: 1, lateValue: 0, discountAliquot: 0, discountValue: 0, paidValue: 51 },
     ])
     const ev = conn.query.mock.calls[4][1]
     expect(ev).toContain('L')
     expect(ev).toContain(77)
     expect(ev).toContain(153)
   })
+
+  it('D-G30: pagar a face MENOS o desconto congelado grava o desconto na baixa (rateado) e quita — não é parcial', async () => {
+    const conn = fakeConn()
+    const discounted = [{ id: 13, bankAccountId: 1, ourNumber: '1001', value: 150, discountValue: 15, aliqDiscount: 10, dtDiscountUntil: iso(5) }]
+    conn.query
+      .mockResolvedValueOnce([discounted])
+      .mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
+      .mockResolvedValueOnce([[{ orderId: 10, parcel: 1, value: 100 }, { orderId: 11, parcel: 1, value: 50 }]])
+      .mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}])
+    await settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 13, paidValue: 135, dtPayment: TODAY })
+    const input = batch.settleBatchTx.mock.calls[0][1]
+    // 135 pagos rateados 90 + 45; desconto honrado 15 rateado 10 + 5 → principal coberto = face
+    expect(input.titles).toEqual([
+      { orderId: 10, parcel: 1, interestValue: 0, lateValue: 0, discountAliquot: 10, discountValue: 10, paidValue: 90 },
+      { orderId: 11, parcel: 1, interestValue: 0, lateValue: 0, discountAliquot: 10, discountValue: 5, paidValue: 45 },
+    ])
+  })
+
+  it('D-G36: liquidação com dtPayment no FUTURO → 422 antes de tocar o banco (retro/pós-datar ressuscitava desconto vencido)', async () => {
+    const conn = fakeConn()
+    const future = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
+    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 100, dtPayment: future }))
+      .rejects.toMatchObject({ statusCode: 422, code: 'BANK_SLIP_FUTURE_PAYMENT' })
+    expect(conn.query).not.toHaveBeenCalled()
+  })
+
+  it('HIGH adversarial R6: rateio com centavos (33,35 + 66,65) mantém principal + desconto = FACE em TODO título', async () => {
+    const conn = fakeConn()
+    const slip = [{ id: 14, bankAccountId: 1, ourNumber: '1002', value: 100, discountValue: 10, aliqDiscount: 10, dtDiscountUntil: null }]
+    conn.query
+      .mockResolvedValueOnce([slip])
+      .mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
+      .mockResolvedValueOnce([[{ orderId: 10, parcel: 1, value: 33.35 }, { orderId: 11, parcel: 1, value: 66.65 }]])
+      .mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}])
+    await settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 14, paidValue: 90, dtPayment: TODAY })
+    const titles = batch.settleBatchTx.mock.calls[0][1].titles
+    const faces = [33.35, 66.65]
+    titles.forEach((t: any, i: number) => {
+      expect(Math.round((t.paidValue - t.interestValue + t.discountValue) * 100) / 100).toBe(faces[i])
+    })
+    expect(Math.round(titles.reduce((s: number, t: any) => s + t.paidValue, 0) * 100) / 100).toBe(90)
+    expect(Math.round(titles.reduce((s: number, t: any) => s + t.discountValue, 0) * 100) / 100).toBe(10)
+  })
+
+  it('HIGH adversarial R6 (propriedade): para todo par (v, 100−v) em centavos, principal + desconto = face e as somas fecham', async () => {
+    for (let cents = 5; cents <= 9995; cents += 7) {
+      const a = Math.round(cents) / 100
+      const b = Math.round(10000 - cents) / 100
+      const conn = fakeConn()
+      conn.query
+        .mockResolvedValueOnce([[{ id: 15, bankAccountId: 1, ourNumber: '1003', value: 100, discountValue: 10, aliqDiscount: 10, dtDiscountUntil: null }]])
+        .mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
+        .mockResolvedValueOnce([[{ orderId: 10, parcel: 1, value: a }, { orderId: 11, parcel: 1, value: b }]])
+        .mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}])
+      batch.settleBatchTx.mockClear()
+      await settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 15, paidValue: 90, dtPayment: TODAY })
+      const titles = batch.settleBatchTx.mock.calls[0][1].titles
+      const faces = [a, b]
+      titles.forEach((t: any, i: number) => {
+        expect(Math.round((t.paidValue - t.interestValue + t.discountValue) * 100) / 100).toBe(faces[i])
+        expect(t.discountValue).toBeGreaterThanOrEqual(0)
+      })
+      expect(Math.round(titles.reduce((s: number, t: any) => s + t.paidValue, 0) * 100) / 100).toBe(90)
+    }
+  })
+
+  it('D-G30: fora do prazo do desconto (D-B2) nada é honrado — abaixo da face é 409 antes de baixar', async () => {
+    const conn = fakeConn()
+    const discounted = [{ id: 13, bankAccountId: 1, ourNumber: '1001', value: 150, discountValue: 15, aliqDiscount: 10, dtDiscountUntil: iso(-5) }]
+    conn.query.mockResolvedValueOnce([discounted]).mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
+    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 13, paidValue: 135, dtPayment: TODAY }))
+      .rejects.toMatchObject({ statusCode: 409, code: 'BANK_SLIP_BELOW_MINIMUM' })
+    expect(batch.settleBatchTx).not.toHaveBeenCalled()
+  })
 })
 
 describe('settleBankSlip — D-B2: mínimo aceito = face menos desconto congelado', () => {
   const slipRow = (over: Record<string, any> = {}) =>
-    [{ id: 12, bankAccountId: 1, ourNumber: '1000', value: 150, discountValue: 10, dtDiscountUntil: '2026-10-10', ...over }]
+    [{ id: 12, bankAccountId: 1, ourNumber: '1000', value: 150, discountValue: 10, dtDiscountUntil: iso(-1), ...over }]
 
   it('abaixo do mínimo (dentro do prazo do desconto) -> 409 BANK_SLIP_BELOW_MINIMUM', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([slipRow()]).mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
-    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 139, dtPayment: '2026-10-05' }))
+    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 139, dtPayment: iso(-5) }))
       .rejects.toMatchObject({ statusCode: 409, code: 'BANK_SLIP_BELOW_MINIMUM' })
   })
 
@@ -214,14 +311,14 @@ describe('settleBankSlip — D-B2: mínimo aceito = face menos desconto congelad
     conn.query.mockResolvedValueOnce([slipRow()]).mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
       .mockResolvedValueOnce([[{ orderId: 10, parcel: 1, value: 150 }]])
       .mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}])
-    const r = await settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 140, dtPayment: '2026-10-05' })
+    const r = await settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 140, dtPayment: iso(-5) })
     expect(r.settledCode).toBe(77)
   })
 
   it('desconto vencido (dtPayment após dt_discount_until) -> mínimo volta a ser a face cheia', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([slipRow()]).mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
-    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 140, dtPayment: '2026-10-11' }))
+    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 140, dtPayment: TODAY }))
       .rejects.toMatchObject({ statusCode: 409, code: 'BANK_SLIP_BELOW_MINIMUM' })
   })
 
@@ -229,7 +326,7 @@ describe('settleBankSlip — D-B2: mínimo aceito = face menos desconto congelad
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([slipRow({ discountValue: 0, dtDiscountUntil: null })])
       .mockResolvedValueOnce([[{ event: 1, kind: 'E', settledCode: null }]])
-    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 149, dtPayment: '2026-10-05' }))
+    await expect(settleBankSlip(conn as any, 'setes_setes', 1, 7, { slipId: 12, paidValue: 149, dtPayment: iso(-5) }))
       .rejects.toMatchObject({ statusCode: 409, code: 'BANK_SLIP_BELOW_MINIMUM' })
   })
 })

@@ -1,3 +1,5 @@
+import { assertServiceProduct } from '@shared/service-product'
+import { round2 } from '@shared/money'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
@@ -105,7 +107,25 @@ async function syncItems(
   conn: any, schemaName: string, institutionId: number,
   contractId: number, items: ContractInput['items']
 ): Promise<void> {
+  // Q-G27 (Valdo 2026-09-10, "ambos"): item do contrato = SERVIÇO existente e ativo —
+  // a MESMA guarda única da OS (peça @shared/service-product); sem FK, a validação é
+  // aqui. A rotina mensal ainda pula e reporta o que ficou inválido depois.
+  // D-G34 (Valdo 2026-09-13): só item NOVO ou com valor ALTERADO revalida o produto —
+  // encerrar/inativar o contrato com item herdado que ficou inválido passa (padrão
+  // da Q5 dos Menus: "422 só para ids novos, vínculo herdado sobrevive").
   const table = `${schemaName}.tb_contract_item`
+  const [current] = await conn.query(
+    `SELECT tb_product_id AS productId, value FROM ??
+      WHERE tb_contract_id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+    [table, contractId, institutionId]
+  )
+  const known = new Map<number, number>((current as any[]).map(r => [Number(r.productId), round2(Number(r.value))]))
+  for (const item of items) {
+    const before = known.get(Number(item.productId))
+    if (before === undefined || before !== round2(Number(item.value))) {
+      await assertServiceProduct(conn, schemaName, institutionId, item.productId)
+    }
+  }
   const ids = items.map(i => i.productId)
   await conn.query(
     `UPDATE ?? SET deleted = 'S', updated_at = NOW()

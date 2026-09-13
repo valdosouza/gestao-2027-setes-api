@@ -1,6 +1,7 @@
 import app from './app'
 import logger from '@shared/logger/logger'
-import { assertIsolationLevel } from '@shared/db/connection'
+import { assertIsolationLevel, assertRollbackOnTimeoutOff } from '@shared/db/connection'
+import { detectLockWaitSupport } from '@shared/db/counters'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
 
 const PORT = process.env.PORT ?? 3000
@@ -8,6 +9,8 @@ const PORT = process.env.PORT ?? 3000
 async function bootstrap() {
   try {
     logger.info(`Isolamento da conexão: ${await assertIsolationLevel()}`)
+    await detectLockWaitSupport()   // Q-A23: FOR UPDATE WAIT n no lock da institution
+    logger.info(`innodb_rollback_on_timeout: ${await assertRollbackOnTimeoutOff()}`)   // L7
     logger.info('Iniciando migrations...')
     await runMigrationsForAllInstitutions()
     logger.info('Migrations concluidas. Subindo servidor...')

@@ -13,3 +13,7 @@ export const PRIVILEGE_VISUALIZAR = 6
 /** Cancelar nota (D12 do cancelamento, 2026-09-08 — seed sql/51; aplicado na
  *  rota pelo guard @shared/auth/require-privilege, junto com FATURAR — Q-P5). */
 export const PRIVILEGE_CANCELAR   = 7
+/** Desconto na baixa acima do teto da institution (D-G32 do cancelamento, Valdo
+ *  2026-09-13 — BX-15 do legado exigia senha para QUALQUER desconto; seed sql/55:
+ *  privilégio 8 na interface `settlements` + config `max_discount_aliquot`). */
+export const PRIVILEGE_DESCONTO   = 8

@@ -14,4 +14,13 @@ describe('settleBatchDto — juros + multa ≤ pago', () => {
     expect(settleBatchDto.safeParse({ ...base, titles: [{ orderId: 1, parcel: 1, paidValue: 10, interestValue: 10.005 }] }).success).toBe(false)
     expect(settleBatchDto.safeParse({ ...base, titles: [{ orderId: 1, parcel: 1, paidValue: 10, interestValue: 9.99 }] }).success).toBe(true)
   })
+  it('D-G35: desconto de 100 % não existe (máximo 99,99 %) — "desativar a cobrança" é outro ato', () => {
+    expect(settleBatchDto.safeParse({ ...base, titles: [{ orderId: 1, parcel: 1, paidValue: 0.01, discountAliquot: 100 }] }).success).toBe(false)
+    expect(settleBatchDto.safeParse({ ...base, titles: [{ orderId: 1, parcel: 1, paidValue: 0.01, discountAliquot: 99.99 }] }).success).toBe(true)
+  })
+  it('Q-A27: compara em CENTAVOS pela regra do DECIMAL — 9,995 e 4,999 + 5 sobre 10 não passam (o banco gravaria 10,00)', () => {
+    expect(settleBatchDto.safeParse({ ...base, titles: [{ orderId: 1, parcel: 1, paidValue: 10, interestValue: 9.995 }] }).success).toBe(false)
+    expect(settleBatchDto.safeParse({ ...base, titles: [{ orderId: 1, parcel: 1, paidValue: 10, interestValue: 4.999, lateValue: 5 }] }).success).toBe(false)
+    expect(settleBatchDto.safeParse({ ...base, titles: [{ orderId: 1, parcel: 1, paidValue: 10, interestValue: 9.994 }] }).success).toBe(true)
+  })
 })

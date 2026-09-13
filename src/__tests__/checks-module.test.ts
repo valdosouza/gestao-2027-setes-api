@@ -3,6 +3,7 @@
 // service para a peça @shared/check (mocada — já coberta em check.test.ts).
 import pool from '../shared/db/connection'
 import { parseState, fetchCheck } from '../modules/checks/checks.service'
+import { listOpenPayables } from '../modules/checks/checks.repository'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
@@ -26,6 +27,17 @@ describe('parseState', () => {
       expect(parseState(s)).toBe(s)
     }
     expect(() => parseState('xx')).toThrow(expect.objectContaining({ statusCode: 400, code: 'INVALID_STATUS' }))
+  })
+})
+
+describe('listOpenPayables — Q-A26: saldo pela peça única (OPEN_BALANCE_SQL)', () => {
+  it('só títulos a PAGAR e saldo com juros/multa/desconto (4º consumidor da peça)', async () => {
+    mockQuery.mockResolvedValueOnce([[{ orderId: 6569, parcel: 1, balance: 0 }]])
+    await listOpenPayables('', 'setes_setes', 1)
+    const sql = String(mockQuery.mock.calls[0][0])
+    expect(sql).toMatch(/fb\.operation = 'D'/)
+    expect(sql).toMatch(/COALESCE\(p\.interest_value, 0\)[\s\S]*COALESCE\(p\.late_value, 0\)[\s\S]*\+ COALESCE\(p\.discount_value, 0\)/)
+    expect(sql).toMatch(/HAVING balance > 0/)
   })
 })
 

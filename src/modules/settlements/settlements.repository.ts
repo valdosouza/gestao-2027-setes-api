@@ -5,9 +5,9 @@ import { assertSchemaName } from '@shared/field-config'
 import { reversePaymentWithChecks } from '@shared/check'
 import type { ReversalCore } from '@shared/financial-settlement/settlement-batch'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
-import { PRINCIPAL_PAID_SQL } from '@shared/financial-settlement/title-balance'
+import { OPEN_BALANCE_SQL, PRINCIPAL_PAID_SQL } from '@shared/financial-settlement/title-balance'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
-import { round2 } from './settlements.calc'
+import { round2 } from '@shared/money'   // L4 (socrático R6): peça única do arredondamento
 import {
   settleBatchTx, reverseOnePayment, createPaCompensation,
 } from '@shared/financial-settlement/settlement-batch'
@@ -86,7 +86,7 @@ export async function listBills(
             DATE_FORMAT(f.dt_expiration, '%Y-%m-%d') AS dtExpiration,
             f.tag_value AS tagValue,
             ${PAID_SUM(schemaName)} AS paidValue,
-            GREATEST(f.tag_value - ${PAID_SUM(schemaName)}, 0) AS balance,
+            ${OPEN_BALANCE_SQL(schemaName, 'f')} AS balance,   -- L6: peça única (com ROUND)
             COALESCE(e.nick_trade, e.name_company) AS entityName,
             f.tb_payment_types_id AS paymentTypeId,
             pt.description AS paymentTypeDescription
@@ -99,7 +99,7 @@ export async function listBills(
   const [count] = await pool.query<any[]>(
     `SELECT COUNT(*) AS total FROM (
        SELECT ${PAID_SUM(schemaName)} AS paidValue,
-              GREATEST(f.tag_value - ${PAID_SUM(schemaName)}, 0) AS balance
+              ${OPEN_BALANCE_SQL(schemaName, 'f')} AS balance
        ${where}
        ${having}
      ) t`,

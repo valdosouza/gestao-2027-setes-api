@@ -1,6 +1,9 @@
 import { PoolConnection } from 'mysql2/promise'
 import { assertSchema } from '@shared/db/schema'
 import { HttpError } from '@shared/errors/http-error'
+import { round2 } from '@shared/money'
+import { localTodayIso } from '@shared/invoice/invoice'   // D-G36: liquidação não é no futuro   // L2: um arredondador por ponta (regra do DECIMAL)
+import { PRINCIPAL_PAID_SQL } from '@shared/financial-settlement/title-balance'
 import {
   settleBatchTx, reverseOnePayment, SettleTitleInput,
 } from '@shared/financial-settlement/settlement-batch'
@@ -84,7 +87,6 @@ export interface SettleBankSlipResult {
   titles: number
 }
 
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100
 /** Teto do DECIMAL(10,2) — o banco sem STRICT truncaria em silêncio. */
 export const MAX_MONEY = 99999999.99
 
@@ -157,11 +159,7 @@ async function lockTitle(
             DATE_FORMAT(f.dt_expiration, '%Y-%m-%d') AS dtExpiration,
             b.operation,
             COALESCE(osl.tb_customer_id, osv.tb_customer_id, ofn.tb_entity_id) AS customerId,
-            (SELECT COALESCE(SUM(p.paid_value), 0)
-               FROM \`${s}\`.tb_financial_payment p
-              WHERE p.tb_institution_id = f.tb_institution_id
-                AND p.tb_order_id = f.tb_order_id AND p.terminal = f.terminal
-                AND p.parcel = f.parcel AND p.status = 'N' AND p.deleted = 'N') AS paidSum
+            ${PRINCIPAL_PAID_SQL(s, 'f')} AS principalPaid
        FROM \`${s}\`.tb_financial f
        INNER JOIN \`${s}\`.tb_financial_bills b
           ON b.tb_institution_id = f.tb_institution_id AND b.tb_order_id = f.tb_order_id
@@ -188,7 +186,11 @@ async function lockTitle(
     orderId: Number(r.orderId), parcel: Number(r.parcel),
     customerId: r.customerId == null ? null : Number(r.customerId),
     operation: String(r.operation ?? 'C'), dtExpiration: r.dtExpiration ?? null,
-    balance: round2(Math.max(0, Number(r.tagValue) - Number(r.paidSum))),
+    // HIGH da adversarial da Rodada 5 (2026-09-11): a face do boleto vinha de
+    // tag − Σ paid_value (5ª fórmula fora da peça) — título com parcial
+    // descontada/juros nascia com face errada e ficava SEM SAÍDA (teto D-A7 ×
+    // mínimo do boleto). Saldo pela peça ÚNICA (Q-G21/D-G28).
+    balance: round2(Math.max(0, Number(r.tagValue) - Number(r.principalPaid))),
     paymentTypeId: Number(r.paymentTypeId),
   }
 }
@@ -422,6 +424,8 @@ interface LockedSlip {
   ourNumber: string
   value: number
   discountValue: number
+  /** % congelado na emissão (informativo na baixa — o VALOR é o fato, D-G30). */
+  aliqDiscount: number
   dtDiscountUntil: string | null
   lastKind: string | null
   lastEvent: number | null
@@ -433,7 +437,7 @@ async function lockSlip(
 ): Promise<LockedSlip> {
   const [rows] = await conn.query<any[]>(
     `SELECT bs.id, bs.tb_bank_account_id AS bankAccountId, bs.our_number AS ourNumber,
-            bs.value, bs.discount_value AS discountValue,
+            bs.value, bs.discount_value AS discountValue, bs.aliq_discount AS aliqDiscount,
             DATE_FORMAT(bs.dt_discount_until, '%Y-%m-%d') AS dtDiscountUntil
        FROM \`${s}\`.tb_bank_slip bs
       WHERE bs.id = ? AND bs.tb_institution_id = ? AND bs.deleted = 'N' FOR UPDATE`,
@@ -451,6 +455,7 @@ async function lockSlip(
     id: Number(rows[0].id), bankAccountId: Number(rows[0].bankAccountId),
     ourNumber: String(rows[0].ourNumber), value: Number(rows[0].value),
     discountValue: Number(rows[0].discountValue) || 0,
+    aliqDiscount: Number(rows[0].aliqDiscount) || 0,
     dtDiscountUntil: rows[0].dtDiscountUntil ?? null,
     lastKind: last[0]?.kind ?? null,
     lastEvent: last[0] ? Number(last[0].event) : null,
@@ -476,6 +481,13 @@ export async function settleBankSlip(
   if (!(paidValue >= 0.01) || paidValue > MAX_MONEY) {
     throw new HttpError(400, 'Valor recebido inválido (mínimo 0,01; máximo 99.999.999,99)',
       [{ field: 'paidValue', message: 'Inválido' }], 'BANK_SLIP_INVALID_VALUE')
+  }
+  // D-G36 (Valdo 2026-09-13): a data do pagamento decide se o desconto congelado
+  // ainda vale (`dt_discount_until`) — sem limite, retro-datar ressuscitava um
+  // desconto vencido. Liquidação não acontece no futuro.
+  if (input.dtPayment > localTodayIso()) {
+    throw new HttpError(422, 'Data do pagamento no futuro — a liquidação registra o que já entrou',
+      [{ field: 'dtPayment', message: 'Data futura' }], 'BANK_SLIP_FUTURE_PAYMENT')
   }
   const slip = await lockSlip(conn, s, institutionId, input.slipId)
   if (stateFromLastEvent(slip.lastKind) !== 'open') {
@@ -515,22 +527,41 @@ export async function settleBankSlip(
   // resíduo no título (Q-B2 da rodada).
   const extra = round2(Math.max(0, paidValue - slip.value))
   const principalTotal = round2(paidValue - extra)
+  // D-G30 (Q-G30, Valdo 2026-09-13): pagar a face MENOS o desconto congelado NÃO é
+  // baixa parcial — o desconto honrado (a parte não paga, até o congelado) é gravado
+  // na baixa (discount_value, D-G28) e o título QUITA; rateado na proporção do vínculo.
+  const discountGranted = discountApplies
+    ? round2(Math.max(0, Math.min(slip.discountValue, slip.value - paidValue)))
+    : 0
+  // HIGH da adversarial da Rodada 6: os três baldes (principal, juros, desconto)
+  // eram rateados com `round2` INDEPENDENTES e só o último recebia o resíduo de
+  // cada um — num título do meio em que as duas metades arredondavam para cima,
+  // `principal + desconto` passava da face do vínculo em 0,01 e o teto D-A7
+  // derrubava o lote inteiro (boleto agrupado 33,35 + 66,65 não liquidava por
+  // 90,00 nem por 89,99). O INVARIANTE que faz o título QUITAR é
+  // `principal_i + desconto_i === valor do vínculo_i` — então rateia-se só o
+  // DINHEIRO (por soma acumulada, que garante total exato e nunca ultrapassa a
+  // face acumulada) e o desconto é DERIVADO da face. `principalTotal +
+  // discountGranted === slip.value` por construção (o mínimo já foi conferido).
   const titles: SettleTitleInput[] = []
-  let distributedPrincipal = 0
-  let distributedExtra = 0
+  let accValue = 0
+  let accPrincipal = 0
+  let accInterest = 0
   links.forEach((l, i) => {
     const last = i === links.length - 1
-    const principal = last
-      ? round2(principalTotal - distributedPrincipal)
-      : round2(principalTotal * Number(l.value) / slip.value)
-    const interest = last
-      ? round2(extra - distributedExtra)
-      : round2(extra * Number(l.value) / slip.value)
-    distributedPrincipal = round2(distributedPrincipal + principal)
-    distributedExtra = round2(distributedExtra + interest)
+    const value = round2(Number(l.value))
+    accValue = round2(accValue + value)
+    const principalCum = last ? principalTotal : round2(principalTotal * accValue / slip.value)
+    const principal = round2(principalCum - accPrincipal)
+    accPrincipal = principalCum
+    const interestCum = last ? extra : round2(extra * accValue / slip.value)
+    const interest = round2(interestCum - accInterest)
+    accInterest = interestCum
+    const discount = round2(value - principal)   // invariante: cobre a face do vínculo
     titles.push({
       orderId: Number(l.orderId), parcel: Number(l.parcel),
-      interestValue: interest, lateValue: 0, discountAliquot: 0,
+      interestValue: interest, lateValue: 0,
+      discountAliquot: discount > 0 ? slip.aliqDiscount : 0, discountValue: discount,
       paidValue: round2(principal + interest),
     })
   })

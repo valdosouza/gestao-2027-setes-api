@@ -89,6 +89,7 @@ router.get('/bills', controller.bills)
  *     responses:
  *       201: { description: 'Envelope { ok, data: { settledCode, statementId, totalValue, titles, paOrders } } — paOrders = ordens PA geradas pela rotina de parcerias (recebimentos RA/RM de cliente com parceria viva: 1 tb_order + tb_order_financial + título PA por parceiro, % × pago, venc. = baixa + 12 dias — DP12)' }
  *       400: { description: 'Validação / conta inexistente' }
+ *       403: { description: 'DISCOUNT_REQUIRES_PRIVILEGE — desconto acima do teto `max_discount_aliquot` sem o privilégio DESCONTO (D-G32)' }
  *       401: { description: Não autenticado }
  *       404: { description: Título não encontrado }
  *       500: { description: Erro interno }

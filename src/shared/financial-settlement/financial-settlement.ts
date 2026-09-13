@@ -91,8 +91,8 @@ export async function settleOneTitle(
        (tb_institution_id, tb_order_id, terminal, parcel, event,
         interest_value, late_value, discount_aliquot, paid_value,
         dt_payment, dt_real_payment, settled, tb_financial_plans_id,
-        settled_code, tb_payment_types_id, status, created_at, updated_at)
-     VALUES (?, ?, 0, ?, ?, 0, 0, 0, ?, ?, ?, 'S', 0, ?, ?, 'N', NOW(), NOW())`,
+        settled_code, tb_payment_types_id, status, created_at, updated_at, discount_value)
+     VALUES (?, ?, 0, ?, ?, 0, 0, 0, ?, ?, ?, 'S', 0, ?, ?, 'N', NOW(), NOW(), 0)`,
     [institutionId, input.orderId, input.parcel, event, input.paidValue,
      input.dtPayment, input.dtPayment, settledCode, fin[0].paymentTypeId]
   )
@@ -331,7 +331,7 @@ export function addDaysIso(date: string, days: number): string {
 }
 
 /** Arredondamento half-up estável em 2 casas (1.005 → 1.01, não 1.00). */
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100
+import { round2 } from '@shared/money'   // L2 (socrático R6): um arredondador por ponta
 
 /**
  * Baixa automática por CONTRATO FINANCEIRO (D1–D22). Gates GRACIOSOS:

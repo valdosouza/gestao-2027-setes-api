@@ -605,9 +605,17 @@ export async function useCheckInPayment(
   // FACE (não é um valor digitado com juízo — é o papel), então sem teto
   // um cheque de 500 quitava um título com saldo de 30 sem erro nem troco.
   // Q-G21: saldo em aberto pela peça ÚNICA (desconto abate)
+  // Q-A24 (HIGH da re-prova adversarial final, 2026-09-09): a peça lia só
+  // tb_financial e aceitava título RECEBÍVEL — um cheque recebido "pagava" a
+  // venda de outro cliente e o caixa ganhava um 2º crédito do mesmo papel
+  // (settleOneTitle herda a operação do título). O lookup filtrava 'D', a
+  // peça não. P só existe contra título a PAGAR (operation 'D').
   const [bal] = await conn.query<any[]>(
-    `SELECT ${OPEN_BALANCE_SQL(s, 'f')} AS balance
+    `SELECT ${OPEN_BALANCE_SQL(s, 'f')} AS balance, b.operation
        FROM \`${s}\`.tb_financial f
+       INNER JOIN \`${s}\`.tb_financial_bills b
+          ON b.tb_institution_id = f.tb_institution_id AND b.tb_order_id = f.tb_order_id
+         AND b.terminal = f.terminal AND b.parcel = f.parcel AND b.deleted = 'N'
       WHERE f.tb_institution_id = ? AND f.tb_order_id = ? AND f.terminal = 0
         AND f.parcel = ? AND f.deleted = 'N' FOR UPDATE`,
     [institutionId, input.orderId, input.parcel]
@@ -615,6 +623,11 @@ export async function useCheckInPayment(
   if (!bal[0]) {
     throw new HttpError(404, `Título ${input.orderId}/${input.parcel} não encontrado`,
       undefined, 'TITLE_NOT_FOUND')
+  }
+  if (String(bal[0].operation) !== 'D') {
+    throw new HttpError(422,
+      `Título ${input.orderId}/${input.parcel} é a RECEBER — cheque só paga título a pagar`,
+      [{ field: 'orderId', message: 'Título não é a pagar' }], 'CHECK_TITLE_NOT_PAYABLE')
   }
   const balance = Number(bal[0].balance)
   if (check.value > balance) {

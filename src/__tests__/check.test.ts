@@ -377,7 +377,7 @@ describe('useCheckInPayment (P — D2)', () => {
   it('sem caixa aberto -> 409', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[]])
-      .mockResolvedValueOnce([[{ balance: 100 }]]) // saldo cobre o valor de face
+      .mockResolvedValueOnce([[{ balance: 100, operation: 'D' }]]) // saldo cobre o valor de face
     fs.findOpenCashierIdTx.mockResolvedValueOnce(null)
     await expect(useCheckInPayment(conn as any, 'setes_setes', 1, 7,
       { checkId: 1, dtRecord: '2026-09-10', orderId: 50, parcel: 1 }))
@@ -386,7 +386,7 @@ describe('useCheckInPayment (P — D2)', () => {
   it('paga o título PA com o valor de face na conta 0; evento P com o fornecedor derivado', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[]])
-      .mockResolvedValueOnce([[{ balance: 100 }]]) // saldo aberto do título
+      .mockResolvedValueOnce([[{ balance: 100, operation: 'D' }]]) // saldo aberto do título (a PAGAR)
       .mockResolvedValueOnce([[{ entityId: 400 }]]) // tb_order_financial do PA
       .mockResolvedValueOnce([[{ nextEvent: 1 }]]).mockResolvedValueOnce([{}])
     fs.findOpenCashierIdTx.mockResolvedValueOnce(42)
@@ -399,11 +399,23 @@ describe('useCheckInPayment (P — D2)', () => {
     const eventParams = conn.query.mock.calls[5][1]
     expect(eventParams).toContain('P')
     expect(eventParams).toContain(400)
+    // Q-A24: a leitura do título traz a operação (JOIN tb_financial_bills)
+    expect(String(conn.query.mock.calls[2][0])).toMatch(/b\.operation[\s\S]*INNER JOIN[\s\S]*tb_financial_bills[\s\S]*FOR UPDATE/)
+  })
+  it('Q-A24 (HIGH da re-prova final): título a RECEBER -> 422 CHECK_TITLE_NOT_PAYABLE, nada baixado', async () => {
+    const conn = fakeConn()
+    conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[{ balance: 100, operation: 'C' }]]) // venda de outro cliente
+    await expect(useCheckInPayment(conn as any, 'setes_setes', 1, 7,
+      { checkId: 1, dtRecord: '2026-09-10', orderId: 50, parcel: 1 }))
+      .rejects.toMatchObject({ statusCode: 422, code: 'CHECK_TITLE_NOT_PAYABLE' })
+    expect(fs.settleOneTitle).not.toHaveBeenCalled()
+    expect(conn.query.mock.calls.some(c => /INSERT INTO/.test(String(c[0])))).toBe(false)
   })
   it('cheque excede o saldo aberto do título -> 422 CHECK_EXCEEDS_BALANCE', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([CHECK_ROW]).mockResolvedValueOnce([[]])
-      .mockResolvedValueOnce([[{ balance: 30 }]]) // saldo menor que o valor de face (100)
+      .mockResolvedValueOnce([[{ balance: 30, operation: 'D' }]]) // saldo menor que o valor de face (100)
     await expect(useCheckInPayment(conn as any, 'setes_setes', 1, 7,
       { checkId: 1, dtRecord: '2026-09-10', orderId: 50, parcel: 1 }))
       .rejects.toMatchObject({ statusCode: 422, code: 'CHECK_EXCEEDS_BALANCE' })

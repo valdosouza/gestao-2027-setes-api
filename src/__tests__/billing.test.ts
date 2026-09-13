@@ -383,6 +383,21 @@ describe('validateOrder', () => {
     expect(report.branch).toBe('adjust')
     expect(report.issues.some(i => i.field === 'adjustment')).toBe(true)
   })
+
+  it('D-A31: devolução com âncora soft-deletada e ordem viva → issue de inconsistência (não vira ajuste solto)', async () => {
+    mockOrderReturn.getAnchor.mockResolvedValueOnce({ orderIdOri: 7543, deleted: 'S' })
+    mockOrderBase()
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[{ entityId: 55, direction: 'E', cfopId: 3 }]])
+    mockContext()
+    mockQuery.mockResolvedValueOnce([[]]) // itens
+    mockQuery.mockResolvedValueOnce([[]]) // links
+    const report = await validateOrder(inst as any, { orderId: 7544 })
+    expect(report.issues.some(i => i.field === 'adjustment' && /âncora cancelada/.test(i.message))).toBe(true)
+    expect(mockOrderReturn.getAnchor).toHaveBeenCalledWith('setes_setes', 1, 7544, { includeDeleted: true })
+    expect(mockOrderReturn.buildReturnPlan).not.toHaveBeenCalled()
+  })
 })
 
 // ---------------------------------------------------------------------
@@ -929,7 +944,7 @@ describe('comissão e devolução', () => {
     const report = await validateOrder(inst as any, {
       orderId: 10, adjustment: { cfopId: '1202' },
     })
-    expect(mockOrderReturn.getAnchor).toHaveBeenCalledWith('setes_setes', 1, 10)
+    expect(mockOrderReturn.getAnchor).toHaveBeenCalledWith('setes_setes', 1, 10, { includeDeleted: true })
     expect(mockOrderReturn.buildReturnPlan).toHaveBeenCalledWith(
       'setes_setes', 1, 77, 55, expect.any(Array))
     expect(report.issues.some(i =>

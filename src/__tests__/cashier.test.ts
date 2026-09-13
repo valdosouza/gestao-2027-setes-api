@@ -28,6 +28,7 @@ describe('open', () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query
+      .mockResolvedValueOnce([{}])              // regra 7: lock da institution (1º)
       .mockResolvedValueOnce([[]])              // sem caixa aberto (FOR UPDATE)
       .mockResolvedValueOnce([[{ nextId: 3 }]]) // MAX+1
       .mockResolvedValueOnce([{}])              // insert
@@ -43,7 +44,7 @@ describe('open', () => {
   it('já existe caixa aberto -> 409 CASHIER_ALREADY_OPEN, rollback', async () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
-    conn.query.mockResolvedValueOnce([[{ id: 1 }]]) // já aberto
+    conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([[{ id: 1 }]]) // lock; já aberto
 
     await expect(open(scope)).rejects.toMatchObject({
       statusCode: 409, code: 'CASHIER_ALREADY_OPEN',
@@ -98,7 +99,7 @@ describe('withdraw', () => {
   it('caixa fechado -> 409 CASHIER_NOT_OPEN', async () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
-    conn.query.mockResolvedValueOnce([[{ hr_end: '2026-08-22 18:00:00' }]])
+    conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([[{ hr_end: '2026-08-22 18:00:00' }]]) // lock; caixa fechado
 
     await expect(withdraw(scope, 5, { value: 50, history: 'Sangria' }))
       .rejects.toMatchObject({ statusCode: 409, code: 'CASHIER_NOT_OPEN' })
@@ -108,6 +109,7 @@ describe('withdraw', () => {
     const conn = fakeConn()
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query
+      .mockResolvedValueOnce([{}])                 // regra 7: lock da institution (1º)
       .mockResolvedValueOnce([[{ hr_end: null }]]) // caixa aberto
       .mockResolvedValueOnce([[{ nextId: 1 }]])    // statement id
       .mockResolvedValueOnce([{}])                 // insert
@@ -122,12 +124,12 @@ describe('withdraw', () => {
     ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     // caixa 5 existe mas pertence a outro usuário — a query com
     // tb_user_id = scope.userId não acha nenhuma linha (0 rows, não vaza)
-    conn.query.mockResolvedValueOnce([[]])
+    conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([[]]) // lock; sem caixa
 
     await expect(withdraw(scope, 5, { value: 50, history: 'Sangria' }))
       .rejects.toMatchObject({ statusCode: 404 })
 
-    const [sql, params] = conn.query.mock.calls[0]
+    const [sql, params] = conn.query.mock.calls[1]   // calls[0] = lock da institution
     expect(sql as string).toContain('tb_user_id')
     expect(params).toContain(scope.userId)
   })

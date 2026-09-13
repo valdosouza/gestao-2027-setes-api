@@ -100,6 +100,16 @@ describe('cancelInvoice — travar', () => {
 })
 
 describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
+  it('H-2 (adversarial R6): devolução com âncora SOFT-DELETADA e ordem viva NÃO cancela — a guarda lê a âncora morta também', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { anchor: [{ 1: 1 }] })
+    await expect(buildCancelPlan(conn as any, 'setes_setes', 1, 7622))
+      .rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_NOT_CANCELLABLE' })
+    const anchorSql = String(conn.query.mock.calls[3][0])
+    expect(anchorSql).toMatch(/tb_order_stock_adjust_return/)
+    expect(anchorSql).not.toMatch(/deleted = 'N'/)
+  })
+
   it('título baixado (D2), boleto liquidado (D9), cheque que TRANSITOU (D-G7a) e devolução (D10) → listados; o cheque não interfere, a BAIXA bloqueia', async () => {
     const conn = fakeConn()
     chk.isCheckEventCurrent.mockResolvedValueOnce(false)

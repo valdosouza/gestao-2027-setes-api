@@ -4,7 +4,7 @@
 // venda web com item de serviço (natureza sem ciclo) NÃO é alcançada pelo
 // módulo de OS (DELETE/itens/faturar → 404), e a lista/abertura só olham o ciclo.
 import pool from '../shared/db/connection'
-import { cancelOrder, listOrders, openOrder, addItem, updateItem } from '../modules/service-orders/service-orders.repository'
+import { cancelOrder, listOrders, openOrder, addItem, updateItem, removeItem } from '../modules/service-orders/service-orders.repository'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
@@ -27,6 +27,23 @@ function mockConn() {
   return conn
 }
 beforeEach(() => jest.clearAllMocks())
+
+describe('D-A34: remover item da OS libera a competência', () => {
+  it('o soft delete do item solta o fato contrato × produto × competência (o mês volta a ser injetável)', async () => {
+    const conn = mockConn()
+    conn.query
+      .mockResolvedValueOnce([[{ id: 50, status: 'A' }]])   // lockOpenOrder (ordem ABERTA)
+      .mockResolvedValueOnce([{ affectedRows: 1 }]) // soft delete do item
+      .mockResolvedValueOnce([{}])                  // libera a competência
+      .mockResolvedValueOnce([[{ productValue: 0, discountValue: 0 }]])
+      .mockResolvedValueOnce([{}])
+    await removeItem(50, 3, 'setes_setes', 1)
+    const free = conn.query.mock.calls.find(c => /tb_contract_item_competence/.test(String(c[0])))!
+    expect(String(free[0])).toMatch(/SET deleted = 'S'[\s\S]*tb_order_item_id = \?/)
+    expect(free[1]).toEqual([1, 50, 3])
+    expect(conn.commit).toHaveBeenCalled()
+  })
+})
 
 describe('identidade da OS = ciclo (tb_service_order)', () => {
   it('venda com item de serviço (natureza sem ciclo) → 404 no módulo de OS, nada gravado', async () => {
@@ -72,7 +89,7 @@ describe('identidade da OS = ciclo (tb_service_order)', () => {
     const conn = mockConn()
     conn.query.mockResolvedValueOnce([[{ status: 'A' }]]).mockResolvedValueOnce([[{ kind: 'S', active: 'N' }]])
     await expect(updateItem(300, 1, { productId: 15, quantity: 1, unitValue: 10 } as any, 'setes_setes', 1))
-      .rejects.toMatchObject({ statusCode: 400, code: 'ROLE_MISSING' })
+      .rejects.toMatchObject({ statusCode: 400, code: 'PRODUCT_NOT_FOUND' })
     const conn2 = mockConn()
     conn2.query.mockResolvedValueOnce([[{ status: 'A' }]]).mockResolvedValueOnce([[{ kind: 'M', active: 'S' }]])
     await expect(updateItem(300, 1, { productId: 16, quantity: 1, unitValue: 10 } as any, 'setes_setes', 1))

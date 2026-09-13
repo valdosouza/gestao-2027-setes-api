@@ -2,6 +2,7 @@ import { PoolConnection } from 'mysql2/promise'
 import { getPrincipalPaidTx, settlementCeiling } from './title-balance'
 import { HttpError } from '@shared/errors/http-error'
 import { nextSettledCode } from './financial-settlement'
+import { round2 } from '@shared/money'
 
 /**
  * Peça compartilhada: BAIXA EM LOTE (settled_code N:1), rotina de parcerias
@@ -11,8 +12,6 @@ import { nextSettledCode } from './financial-settlement'
  * APAGA — estorno é lançamento inverso (status R + origem) com marcação E.
  * Tudo aqui é transaction-aware (1º parâmetro conn).
  */
-
-const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100
 
 /** Soma dias corridos a 'YYYY-MM-DD' (DP12: venc. PA = baixa+12). */
 function addDays(date: string, days: number): string {
@@ -34,6 +33,12 @@ export interface SettleTitleInput {
   lateValue:       number
   discountAliquot: number
   paidValue:       number
+  /**
+   * D-G30 (Q-G30, Valdo 2026-09-13): desconto já em VALOR — o boleto traz o
+   * desconto CONGELADO na emissão e o honra na liquidação; a peça grava esse
+   * valor (discount_value) e o título QUITA. Omitido = % sobre o saldo (D-G28).
+   */
+  discountValue?:  number | null
 }
 
 /** Lote de baixa: N títulos → 1 settled_code → 1 statement (N:1). */
@@ -101,7 +106,18 @@ export async function settleBatchTx(
     let firstPaymentTypeId: number | null = null
 
     let paOrders = 0
-    for (const title of input.titles) {
+    // Q-A27 (re-prova adversarial final): o que se VALIDA é o que se GRAVA —
+    // valores em 2 casas pela regra do DECIMAL (peça @shared/money) ANTES de
+    // qualquer comparação; o INSERT recebe os normalizados.
+    const titles = input.titles.map(t => ({
+      ...t,
+      paidValue: round2(t.paidValue),
+      interestValue: round2(t.interestValue ?? 0),
+      lateValue: round2(t.lateValue ?? 0),
+      discountAliquot: round2(t.discountAliquot ?? 0),
+      discountValue: t.discountValue == null ? null : round2(t.discountValue),
+    }))
+    for (const title of titles) {
       const [fin] = await conn.query<any[]>(
         `SELECT f.tag_value AS tagValue, f.tb_payment_types_id AS paymentTypeId,
                 b.kind, b.operation
@@ -154,10 +170,34 @@ export async function settleBatchTx(
       // Q-G21: saldo em aberto pela peça ÚNICA (desconto abate; baixa com
       // desconto QUITA) — teto = saldo − desconto DESTA baixa + juros/multa.
       const principalPaid = await getPrincipalPaidTx(conn, schemaName, institutionId,
-        title.orderId, title.parcel, Number(fin[0].tagValue))
-      const { openBalance, ceiling } = settlementCeiling(Number(fin[0].tagValue), principalPaid, title)
-      const r2 = (n: number) => Math.round(n * 100) / 100
-      if (r2(Number(title.paidValue)) > ceiling + 0.005) {
+        title.orderId, title.parcel)
+      // D-G28 (= Q-A21, Valdo 2026-09-10 — BX-10 do legado): o desconto incide sobre
+      // o SALDO EM ABERTO no ato (a face do "título residual"), nunca sobre o tag —
+      // e o VALOR concedido é gravado na baixa (discount_value): fato do ato.
+      const { openBalance, discount, discountWanted, maxDiscount, ceiling } =
+        settlementCeiling(Number(fin[0].tagValue), principalPaid, title)
+      // M-3/L-1: desconto que não cabe no saldo é RECUSADO no campo certo, com o
+      // teto possível em `expected` (antes era clampado e a recusa culpava o saldo).
+      if (discountWanted > discount + 0.005) {
+        const maxAliquot = openBalance > 0 ? Math.floor(maxDiscount * 10000 / openBalance) / 100 : 0
+        throw new HttpError(409,
+          `Título ${title.orderId}/${title.parcel}: desconto de ${discountWanted.toFixed(2)} não cabe no saldo em aberto (${openBalance.toFixed(2)}) — o desconto nunca cobre o saldo inteiro`,
+          [{ field: 'discountAliquot', message: `Máximo ${maxAliquot.toFixed(2)} %`, expected: maxAliquot }],
+          'DISCOUNT_EXCEEDS_BALANCE')
+      }
+      // L1 (re-score socrático final): "recebimento só de encargos" não existe —
+      // a regra vive na PEÇA (toda porta: manual, boleto, futuras), o DTO só traduz.
+      const principal = round2(title.paidValue - title.interestValue - title.lateValue + discount)
+      // M1 (socrático da Rodada 6): a regra é PRINCIPAL coberto > 0 — e o desconto cobre
+      // principal. No boleto agrupado a linha cujo caixa rateado arredonda a 0,00 mas tem
+      // desconto concedido é legítima (o título quita); exigir dinheiro > 0 ali deixava o
+      // boleto sem saída. A porta MANUAL continua exigindo pago > 0 pelo DTO.
+      if (title.paidValue < 0 || !(principal > 0)) {
+        throw new HttpError(409,
+          `Título ${title.orderId}/${title.parcel}: a baixa precisa cobrir principal (juros + multa menores que o valor pago)`,
+          [{ field: 'paidValue', message: 'Principal zero ou negativo' }], 'SETTLEMENT_NO_PRINCIPAL')
+      }
+      if (title.paidValue > ceiling + 0.005) {
         throw new HttpError(409,
           `Título ${title.orderId}/${title.parcel}: valor ${Number(title.paidValue).toFixed(2)} passa do saldo em aberto (${openBalance.toFixed(2)} + juros/multa informados)`,
           [{ field: 'paidValue', message: `Máximo ${ceiling.toFixed(2)}` }], 'TITLE_EXCEEDS_BALANCE')
@@ -181,12 +221,12 @@ export async function settleBatchTx(
            (tb_institution_id, tb_order_id, terminal, parcel, event,
             interest_value, late_value, discount_aliquot, paid_value,
             dt_payment, dt_real_payment, settled, tb_financial_plans_id,
-            settled_code, tb_payment_types_id, status, created_at, updated_at)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 'S', 0, ?, ?, 'N', NOW(), NOW())`,
+            settled_code, tb_payment_types_id, status, created_at, updated_at, discount_value)
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 'S', 0, ?, ?, 'N', NOW(), NOW(), ?)`,
         [institutionId, title.orderId, title.parcel, event,
          title.interestValue, title.lateValue, title.discountAliquot,
          title.paidValue, input.dtPayment, input.dtRealPayment ?? null,
-         settledCode, fin[0].paymentTypeId]
+         settledCode, fin[0].paymentTypeId, discount]
       )
 
       // stage do título: finalizado em Banco/Caixa (5.2)
@@ -377,7 +417,7 @@ export async function reverseOnePayment(
 ): Promise<ReversalCore> {
     const [orig] = await conn.query<any[]>(
       `SELECT p.interest_value AS interestValue, p.late_value AS lateValue,
-              p.discount_aliquot AS discountAliquot, p.paid_value AS paidValue,
+              p.discount_aliquot AS discountAliquot, p.discount_value AS discountValue, p.paid_value AS paidValue,
               p.dt_payment AS dtPayment, p.dt_real_payment AS dtRealPayment,
               p.settled_code AS settledCode, p.tb_payment_types_id AS paymentTypeId,
               p.status, b.operation
@@ -420,12 +460,12 @@ export async function reverseOnePayment(
           interest_value, late_value, discount_aliquot, paid_value,
           dt_payment, dt_real_payment, settled, tb_financial_plans_id,
           settled_code, tb_payment_types_id, status, origin_event,
-          reversal_reason, created_at, updated_at)
+          reversal_reason, created_at, updated_at, discount_value)
        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, CURDATE(), CURDATE(), 'S', 0,
-               ?, ?, 'R', ?, ?, NOW(), NOW())`,
+               ?, ?, 'R', ?, ?, NOW(), NOW(), ?)`,
       [institutionId, orderId, parcel, reversalEvent,
        o.interestValue, o.lateValue, o.discountAliquot, o.paidValue,
-       reversalCode, o.paymentTypeId, event, reason]
+       reversalCode, o.paymentTypeId, event, reason, o.discountValue ?? 0]
     )
 
     // statement INVERSO compensa exatamente a parte estornada (5.5.7).

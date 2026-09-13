@@ -190,8 +190,12 @@ export async function validateOrder(
   // mesmas regras do legado, em lote — origem faturada/mesmo cliente,
   // itens ⊆ origem, qtde ≤ saldo devolvível (acumulado), valor ≤ origem.
   if (branch.branch === 'adjust') {
-    const anchor = await getAnchor(schemaName, institutionId, input.orderId)
-    if (anchor && branch.direction !== 'E') {
+    const anchor = await getAnchor(schemaName, institutionId, input.orderId, { includeDeleted: true })
+    if (anchor && anchor.deleted === 'S') {
+      // D-A31: âncora cancelada com a ordem viva = inconsistência (só por SQL) — nunca ajuste solto
+      issues.push({ scope: 'order', field: 'adjustment',
+        message: 'Devolução com âncora cancelada — ordem de ajuste inconsistente (cancele a devolução)' })
+    } else if (anchor && branch.direction !== 'E') {
       issues.push({ scope: 'order', field: 'adjustment',
         message: 'Devolução de mercadoria exige ajuste de ENTRADA' })
     } else if (anchor) {
@@ -456,7 +460,12 @@ export async function invoiceOrder(
   // só no /validate anterior). Issues = 422.
   let returnPlan: ReturnPlan | null = null
   if (branch.branch === 'adjust') {
-    const anchor = await getAnchor(schemaName, institutionId, input.orderId)
+    const anchor = await getAnchor(schemaName, institutionId, input.orderId, { includeDeleted: true })
+    if (anchor && anchor.deleted === 'S') {
+      throw new HttpError(409,
+        'Devolução com âncora cancelada — a ordem de ajuste ficou inconsistente; cancele a devolução',
+        [{ field: 'adjustment', message: 'Âncora da devolução cancelada' }], 'RETURN_ANCHOR_INCONSISTENT')
+    }
     if (anchor) {
       if (branch.direction !== 'E') {
         throw new HttpError(422, 'Devolução de mercadoria exige ajuste de ENTRADA',

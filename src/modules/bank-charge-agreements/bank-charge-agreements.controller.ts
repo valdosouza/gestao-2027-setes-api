@@ -3,6 +3,7 @@ import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
+import { assertDiscountAliquot, CHARGE_AGREEMENTS_INTERFACE } from '@modules/settlements/settlements.discount-policy'
 import { chargeAgreementDto } from './bank-charge-agreements.dto'
 import {
   ChargeAgreementScope, fetchChargeAgreements, fetchChargeAgreement, createChargeAgreement,
@@ -39,6 +40,8 @@ export async function create(req: Request, res: Response): Promise<void> {
   if (body === null) return
   try {
     await assertClientRequired(req.institution!, 'bank-charge-agreements', body)
+    // D-G36: a alíquota de desconto da carteira é desconto — mesma autoridade da baixa
+    await assertDiscountAliquot(req.institution!, Number(body.aliqDiscount ?? 0), CHARGE_AGREEMENTS_INTERFACE)
     const id = await createChargeAgreement(body, scopeOf(req))
     logger.info('Carteira de cobrança criada', {
       institutionId: req.institution!.institutionId, id,
@@ -56,6 +59,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   if (body === null) return
   try {
     await assertClientRequired(req.institution!, 'bank-charge-agreements', body)
+    await assertDiscountAliquot(req.institution!, Number(body.aliqDiscount ?? 0), CHARGE_AGREEMENTS_INTERFACE)   // D-G36
     await editChargeAgreement(id, body, scopeOf(req))
     res.json({ ok: true })
   } catch (err) {
