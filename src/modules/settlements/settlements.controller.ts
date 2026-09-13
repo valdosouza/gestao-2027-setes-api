@@ -4,10 +4,11 @@ import { handleError, parseBody } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { assertDiscountPolicy } from './settlements.discount-policy'
-import { settleBatchDto, reversalDto } from './settlements.dto'
+import { settleBatchDto, reversalDto, retargetChargeDto } from './settlements.dto'
 import {
   SettlementScope, fetchBills, settle, fetchSettled, reverse,
   fetchStatements,
+  retargetCharge,
 } from './settlements.service'
 
 /** Escopo SEMPRE do JWT (usuário assina o movimento). */
@@ -86,5 +87,33 @@ export async function statements(req: Request, res: Response): Promise<void> {
     })
   } catch (err) {
     handleError(res, err, 'settlements/statements GET')
+  }
+}
+
+/**
+ * PUT /api/settlements/bills/:orderId/:parcel/charge — redirecionar a cobrança
+ * (D17/D22). O sub-recurso é `charge` (a CONDIÇÃO de cobrança), não
+ * `payment-type`: nomear pelo campo obrigaria rota nova quando o vencimento
+ * entrar na tela.
+ */
+export async function retarget(req: Request, res: Response): Promise<void> {
+  const orderId = Number(req.params.orderId)
+  const parcel  = Number(req.params.parcel)
+  if (!Number.isInteger(orderId) || orderId <= 0 ||
+      !Number.isInteger(parcel)  || parcel  <= 0) {
+    res.status(400).json({ ok: false, error: 'Título inválido (orderId/parcel)' })
+    return
+  }
+  const body = parseBody(retargetChargeDto, req, res)
+  if (body === null) return
+  try {
+    const data = await retargetCharge(orderId, parcel, body, scopeOf(req))
+    logger.info('Cobrança redirecionada', {
+      institutionId: req.institution!.institutionId,
+      orderId, parcel, de: data.previousPaymentTypeId, para: data.paymentTypeId,
+    })
+    res.json({ ok: true, data })
+  } catch (err) {
+    handleError(res, err, 'settlements/bills/:orderId/:parcel/charge PUT')
   }
 }

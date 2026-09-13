@@ -85,10 +85,54 @@ export interface InvoiceResult {
   invoiceNumber: string
   parcels:       number
   totalValue:    number
+  /** Parcelas que nasceram BAIXADAS pelo regra de recebimento da forma. */
+  autoSettled:     number
+  /** Boletos emitidos automaticamente no faturamento. */
+  bankSlipsIssued: number
 }
 
 /** Lookup de produtos/serviços ativos (itens avulsos). */
 export interface ServiceProductLookupRow {
   id:          number
   description: string
+}
+
+/**
+ * LOTE da cobrança mensal (D6/D7 — fase Primeiro Cliente): uma linha por
+ * ordem, com o resultado REAL de cada uma. Ordem que falha não derruba as
+ * outras (D7) e sai no relatório com o motivo legível e o código do catálogo.
+ */
+export interface BatchInvoiceInput
+  extends Omit<InvoiceInput, 'dtExpiration' | 'paymentTypeId'> {
+  orderIds: number[]
+  /** D13: ausente = cada ordem vence no dia do SEU contrato. */
+  dtExpiration?: string
+  /** D14: ausente = cada ordem usa a forma do SEU contrato. */
+  paymentTypeId?: number
+}
+
+export interface BatchInvoiceEntry {
+  orderId:        number
+  ok:             boolean
+  /** Vencimento REALMENTE usado nesta ordem — com a D13 ele varia por cliente. */
+  dtExpiration?:  string
+  /** Forma REALMENTE usada nesta ordem (D14). */
+  paymentTypeId?: number
+  invoiceNumber?: string
+  totalValue?:    number
+  /** O que a automação fez nesta ordem — "faturada" não quer dizer "cobrada". */
+  autoSettled?:     number
+  bankSlipsIssued?: number
+  error?:         string
+  code?:          string
+}
+
+export interface BatchInvoiceReport {
+  requested: number
+  invoiced:  number
+  failed:    number
+  /** Faturadas que NÃO geraram baixa nem boleto — o pior caso da cobrança
+   *  mensal é o lote "100 % faturado" e nada cobrado (gate adversarial). */
+  uncharged: number
+  results:   BatchInvoiceEntry[]
 }

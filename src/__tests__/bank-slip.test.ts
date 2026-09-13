@@ -76,12 +76,14 @@ describe('issueBankSlip', () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])   // D15: formas kind='B' habilitadas
       .mockResolvedValueOnce([[TITLE({ operation: 'D' })]])
     await expect(issueBankSlip(conn as any, 'setes_setes', 1, 7, base))
       .rejects.toMatchObject({ statusCode: 409, code: 'TITLE_NOT_RECEIVABLE' })
     const conn2 = fakeConn()
     conn2.query
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])   // D15: formas kind='B' habilitadas
       .mockResolvedValueOnce([[TITLE({ principalPaid: 100 })]])
     await expect(issueBankSlip(conn2 as any, 'setes_setes', 1, 7, base))
       .rejects.toMatchObject({ statusCode: 409, code: 'TITLE_SETTLED' })
@@ -91,11 +93,12 @@ describe('issueBankSlip', () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])   // D15: formas kind='B' habilitadas
       .mockResolvedValueOnce([[TITLE()]])
       .mockResolvedValueOnce([[{ id: 5, lastKind: 'C' }, { id: 6, lastKind: 'E' }]])
     await expect(issueBankSlip(conn as any, 'setes_setes', 1, 7, base))
       .rejects.toMatchObject({ statusCode: 409, code: 'TITLE_HAS_OPEN_SLIP' })
-    expect(conn.query.mock.calls[3][0]).toContain('FOR UPDATE')
+    expect(conn.query.mock.calls[4][0]).toContain('FOR UPDATE')
   })
 
   it('agrupado: clientes diferentes -> 409; sem vencimento -> 400 (D9)', async () => {
@@ -103,6 +106,7 @@ describe('issueBankSlip', () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])   // D15: formas kind='B' habilitadas
       .mockResolvedValueOnce([[TITLE()]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[TITLE({ orderId: 11, customerId: 300 })]]).mockResolvedValueOnce([[]])
     await expect(issueBankSlip(conn as any, 'setes_setes', 1, 7, two))
@@ -110,6 +114,7 @@ describe('issueBankSlip', () => {
     const conn2 = fakeConn()
     conn2.query
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])   // D15: formas kind='B' habilitadas
       .mockResolvedValueOnce([[TITLE()]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[TITLE({ orderId: 11 })]]).mockResolvedValueOnce([[]])
     await expect(issueBankSlip(conn2 as any, 'setes_setes', 1, 7, two))
@@ -121,6 +126,7 @@ describe('issueBankSlip', () => {
     conn.query
       .mockResolvedValueOnce([[AGREEMENT]])          // carteira FOR UPDATE
       .mockResolvedValueOnce([[{ 1: 1 }]])           // conta existe
+      .mockResolvedValueOnce([[{ id: 6 }]])          // D15: formas kind='B'
       .mockResolvedValueOnce([[TITLE({ tagValue: 150, principalPaid: 50 })]]) // título
       .mockResolvedValueOnce([[]])                   // sem boleto vigente
       .mockResolvedValueOnce([[{ nextId: 12 }]])     // id MAX+1
@@ -134,12 +140,12 @@ describe('issueBankSlip', () => {
       id: 12, ourNumber: '1000', documentNumber: '10-1', value: 100,
       dtExpiration: '2026-10-10', titles: 1,
     })
-    expect(conn.query.mock.calls[5][0]).toContain('our_number_next = our_number_next + 1')
-    const slipParams = conn.query.mock.calls[6][1]
+    expect(conn.query.mock.calls[6][0]).toContain('our_number_next = our_number_next + 1')
+    const slipParams = conn.query.mock.calls[7][1]
     expect(slipParams).toContain('Pagar até o vencimento') // instrução congelada
     expect(slipParams).toContain(5)                        // protest_days
-    expect(conn.query.mock.calls[7][1]).toContain(100)     // value do vínculo = saldo
-    expect(conn.query.mock.calls[9][1]).toContain('E')
+    expect(conn.query.mock.calls[8][1]).toContain(100)     // value do vínculo = saldo
+    expect(conn.query.mock.calls[10][1]).toContain('E')
   })
 
   it('HIGH adversarial R5: face do boleto = saldo pela PEÇA (principal coberto inclui juros/multa/desconto), não tag − Σ pago', async () => {
@@ -147,6 +153,7 @@ describe('issueBankSlip', () => {
     conn.query
       .mockResolvedValueOnce([[AGREEMENT]])
       .mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])          // D15: formas kind='B'
       .mockResolvedValueOnce([[TITLE({ tagValue: 100, principalPaid: 60 })]]) // parcial 50 @ 10 % → principal 60
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ nextId: 13 }]])
@@ -154,7 +161,7 @@ describe('issueBankSlip', () => {
       .mockResolvedValueOnce([[{ nextEvent: 1 }]]).mockResolvedValueOnce([{}])
     const r = await issueBankSlip(conn as any, 'setes_setes', 1, 7, base)
     expect(r.value).toBe(40)
-    const titleSql = String(conn.query.mock.calls[2][0])
+    const titleSql = String(conn.query.mock.calls[3][0])
     expect(titleSql).toMatch(/COALESCE\(p\.discount_value, 0\)/)
     expect(titleSql).not.toMatch(/SUM\(p\.paid_value\), 0\)/)
   })
@@ -164,6 +171,7 @@ describe('issueBankSlip', () => {
     conn.query
       .mockResolvedValueOnce([[{ ...AGREEMENT, ourNumberNext: null }]])
       .mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])          // D15: formas kind='B'
       .mockResolvedValueOnce([[TITLE()]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[TITLE({ orderId: 11, tagValue: 50 })]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ nextId: 13 }]])
@@ -338,6 +346,7 @@ describe('tryIssueBankSlipsOnBilling — D-B4: source automático', () => {
       .mockResolvedValueOnce([[AGREEMENT]])
       .mockResolvedValueOnce([[{ id: 6, kind: 'B' }]])
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])   // D15: formas kind='B' habilitadas
       .mockResolvedValueOnce([[TITLE()]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ nextId: 30 }]]).mockResolvedValueOnce([{}])
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}])
@@ -346,7 +355,7 @@ describe('tryIssueBankSlipsOnBilling — D-B4: source automático', () => {
       orderId: 10, parcels: [{ parcel: 1, paymentTypeId: 6 }],
     })
     expect(r).toEqual({ issued: 1, slipIds: [30] })
-    const eventParams = conn.query.mock.calls[11][1]
+    const eventParams = conn.query.mock.calls[12][1]
     expect(eventParams).toContain('A')
   })
 })
@@ -415,6 +424,7 @@ describe('tryIssueBankSlipsOnBilling (gate 0/1/n — D18)', () => {
       .mockResolvedValueOnce([[{ id: 6, kind: 'B' }, { id: 1, kind: 'E' }]]) // kinds
       // issueBankSlip da parcela 1:
       .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]])
+      .mockResolvedValueOnce([[{ id: 6 }]])   // D15: formas kind='B' habilitadas
       .mockResolvedValueOnce([[TITLE()]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ nextId: 20 }]]).mockResolvedValueOnce([{}])
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}])

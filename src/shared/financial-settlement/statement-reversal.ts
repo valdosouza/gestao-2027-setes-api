@@ -7,7 +7,7 @@ import { insertStatement, nextSettledCode } from '@shared/financial-settlement'
  * depósito / desconto / retorno com reembolso de cheque (B/D/T).
  *
  * Espelha o que o núcleo `reverseOnePayment` (settlement-batch, D-G3 do
- * contrato financeiro) já fazia para baixas de título e seus satélites:
+ * regra de recebimento) já fazia para baixas de título e seus satélites:
  *   - cada linha viva ('N') ganha um ESPELHO com status 'R' e
  *     `tb_financial_statement_id_origin` apontando para ela;
  *   - `dt_record` é HERDADO da original (anula na MESMA data de

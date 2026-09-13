@@ -1,7 +1,9 @@
 import { assertServiceProduct } from '@shared/service-product'
 import { round2 } from '@shared/money'
 import pool from '@shared/db/connection'
+import { PoolConnection } from 'mysql2/promise'
 import { HttpError } from '@shared/errors/http-error'
+import { assertPaymentTypesEnabled } from '@shared/payment-types'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import {
@@ -64,9 +66,13 @@ export async function getContract(
             DATE_FORMAT(c.dt_start, '%Y-%m-%d') AS dtStart,
             DATE_FORMAT(c.dt_end,   '%Y-%m-%d') AS dtEnd,
             c.payment_day AS paymentDay,
+            c.tb_payment_types_id AS paymentTypeId,
+            pt.description AS paymentTypeDescription,
             c.active
      FROM \`${schemaName}\`.tb_contract c
      INNER JOIN setes_central.tb_entity e ON e.id = c.tb_customer_id
+     LEFT JOIN setes_central.tb_payment_types pt
+            ON pt.id = c.tb_payment_types_id AND pt.deleted = 'N'
      WHERE c.id = ? AND c.tb_institution_id = ? AND c.deleted = 'N'`,
     [id, institutionId]
   )
@@ -145,6 +151,24 @@ async function syncItems(
   }
 }
 
+/**
+ * A forma COMBINADA (D14) é validada NA PORTA onde o humano digita (HIGH-1 do
+ * gate socrático + MEDIUM do adversarial): antes, o contrato aceitava qualquer
+ * inteiro — inclusive forma inexistente ou desabilitada — e o erro só aparecia
+ * meses depois, no dia da cobrança, dentro do lote, depois de N ordens já
+ * faturadas. Regra da casa: o que valida é o que grava (02-VALIDACAO.md).
+ *
+ * A migration 053 deixou a coluna sem FK de propósito (a forma é central e o
+ * habilitado é o vínculo institution×forma) — então a guarda é esta.
+ */
+async function assertContractPaymentType(
+  conn: PoolConnection, schemaName: string, institutionId: number, input: ContractInput
+): Promise<void> {
+  if (input.paymentTypeId == null) return   // "informar no faturamento" — a presença decide
+  await assertPaymentTypesEnabled(
+    conn, schemaName, institutionId, [input.paymentTypeId], 'paymentTypeId')
+}
+
 export async function insertContract(
   input: ContractInput, schemaName: string, institutionId: number
 ): Promise<number> {
@@ -153,6 +177,7 @@ export async function insertContract(
   try {
     await conn.beginTransaction()
     await assertCustomerRole(conn, schemaName, institutionId, input.customerId)
+    await assertContractPaymentType(conn, schemaName, institutionId, input)
 
     const [mx] = await conn.query<any[]>(
       `SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM \`${schemaName}\`.tb_contract
@@ -164,10 +189,10 @@ export async function insertContract(
     await conn.query(
       `INSERT INTO \`${schemaName}\`.tb_contract
          (id, tb_institution_id, tb_customer_id, dt_start, dt_end,
-          payment_day, active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+          payment_day, tb_payment_types_id, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [id, institutionId, input.customerId, input.dtStart,
-       input.dtEnd ?? null, input.paymentDay, input.active]
+       input.dtEnd ?? null, input.paymentDay, input.paymentTypeId ?? null, input.active]
     )
     await syncItems(conn, schemaName, institutionId, id, input.items)
 
@@ -199,14 +224,15 @@ export async function updateContract(
       return false
     }
     await assertCustomerRole(conn, schemaName, institutionId, input.customerId)
+    await assertContractPaymentType(conn, schemaName, institutionId, input)
 
     await conn.query(
       `UPDATE \`${schemaName}\`.tb_contract
           SET tb_customer_id = ?, dt_start = ?, dt_end = ?,
-              payment_day = ?, active = ?, updated_at = NOW()
+              payment_day = ?, tb_payment_types_id = ?, active = ?, updated_at = NOW()
         WHERE id = ? AND tb_institution_id = ?`,
       [input.customerId, input.dtStart, input.dtEnd ?? null,
-       input.paymentDay, input.active, id, institutionId]
+       input.paymentDay, input.paymentTypeId ?? null, input.active, id, institutionId]
     )
     await syncItems(conn, schemaName, institutionId, id, input.items)
 

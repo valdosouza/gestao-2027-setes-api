@@ -25,6 +25,8 @@ jest.mock('../modules/state-tax-rates/state-tax-rates.repository', () => ({
 }))
 jest.mock('../shared/interface-config', () => ({
   getConfigContent: jest.fn().mockResolvedValue(null),
+  // lido pela composição @shared/title-automation (auto_bank_slip) — null = desligado
+  getConfigContentFor: jest.fn().mockResolvedValue(null),
 }))
 jest.mock('../shared/financial-settlement', () => ({
   tryAutoSettleByContract: jest.fn().mockResolvedValue({ settled: false, reason: 'NO_CONTRACT' }),

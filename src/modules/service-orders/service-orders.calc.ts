@@ -66,6 +66,24 @@ export function fifthBusinessDaySuggestion(year: number, month: number): string 
   return `${y}-${String(m).padStart(2, '0')}-07`
 }
 
+/**
+ * Vencimento no DIA DO CONTRATO, no mês SEGUINTE à competência (D12, Valdo
+ * 2026-09-13): `payment_day` era coluna informativa sem produtor de efeito —
+ * ficava no DDL prometendo um comportamento que ninguém executava. Agora é o
+ * default real da sugestão. Dia 29–31 não existe em todo mês: `payment_day` é
+ * limitado a 28 no DTO justamente por isso, mas a função fecha no último dia
+ * do mês se algum dado legado passar disso.
+ */
+export function contractDaySuggestion(
+  year: number, month: number, paymentDay: number
+): string {
+  let y = year, m = month + 1
+  if (m > 12) { m = 1; y += 1 }
+  const ultimoDia = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  const dia = Math.min(Math.max(paymentDay, 1), ultimoDia)
+  return `${y}-${String(m).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
+}
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100
 }

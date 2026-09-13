@@ -27,7 +27,7 @@ import financialPlansRoutes from '@modules/financial-plans/financial-plans.route
 import paymentTypesRoutes from '@modules/payment-types/payment-types.routes'
 import contractsRoutes from '@modules/contracts/contracts.routes'
 import bankAccountsRoutes from '@modules/bank-accounts/bank-accounts.routes'
-import financialContractsRoutes from '@modules/financial-contracts/financial-contracts.routes'
+import settlementRulesRoutes from '@modules/settlement-rules/settlement-rules.routes'
 import bankSlipsRoutes from '@modules/bank-slips/bank-slips.routes'
 import bankChargeAgreementsRoutes from '@modules/bank-charge-agreements/bank-charge-agreements.routes'
 import checksRoutes from '@modules/checks/checks.routes'
@@ -170,10 +170,10 @@ router.use('/contracts', contractsRoutes)
 // Financeiro; catálogo central tb_bank (DP2); flag 'bank-accounts'.
 router.use('/bank-accounts', bankAccountsRoutes)
 
-// Contratos financeiros (política de baixa automática por forma de
+// Regras de recebimento (política de baixa automática por forma de
 // pagamento — migration 038, prompt_contrato_financeiro_baixa_automatica.md
-// D1–D22): cadastro de CLIENTE, grupo Financeiro; flag 'financial-contracts'.
-router.use('/financial-contracts', financialContractsRoutes)
+// D1–D22): cadastro de CLIENTE, grupo Financeiro; flag 'settlement-rules'.
+router.use('/settlement-rules', settlementRulesRoutes)
 
 // Boletos (tela de processo — migration 039, prompt_boleto_emitido.md
 // D1–D11): emitir/liquidar/cancelar/estornar; flag 'bank-slips'.

@@ -495,7 +495,7 @@ export async function reverseOnePayment(
     )
     const credit = o.operation === 'D' ? Number(o.paidValue) : 0
     const debit  = o.operation === 'D' ? 0 : Number(o.paidValue)
-    // D-G3 (contrato financeiro, Rodada 4): o inverso HERDA dt_record (anula
+    // D-G3 (regra de recebimento, Rodada 4): o inverso HERDA dt_record (anula
     // na mesma data de disponibilidade — crédito futuro de cartão não deixa
     // o saldo de hoje negativo) e a sessão de caixa do original; dt_original
     // = hoje (fato gerador do estorno). Sem original: CURDATE().

@@ -14,6 +14,14 @@ jest.mock('../shared/invoice', () => ({
   __esModule: true,
   issueInvoice: jest.fn(),
 }))
+// automatismos do título (A1/D5 da fase Primeiro Cliente) têm teste próprio em
+// title-automation.test.ts — aqui só não podem tocar o mock do pool
+jest.mock('../shared/title-automation', () => ({
+  __esModule: true,
+  applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0 }),
+  resolveTitleAutomationConfig: jest.fn().mockResolvedValue({ autoBankSlip: false }),
+  localIsoDate: () => '2026-09-13',
+}))
 jest.mock('../shared/order-billing', () => ({
   __esModule: true,
   upsertOrderBilling: jest.fn().mockResolvedValue(undefined),
@@ -79,6 +87,7 @@ describe('openOrder × contenção (Q-A5)', () => {
 describe('generateInvoice × contenção (Q-A5)', () => {
   function attempt(conn: any) {
     conn.query
+      .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])                                                       // lockOpenOrder
       .mockResolvedValueOnce([[{ itemsQtde: 1, productQtde: 1, productValue: 150, discountValue: 0 }]]) // sums
       .mockResolvedValueOnce([{}])                                                                      // totalizer

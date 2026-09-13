@@ -173,11 +173,11 @@ export async function softDeleteBankAccount(
       [id, institutionId]
     )
     if (result.affectedRows > 0) {
-      // D-G2 (contrato financeiro, Rodada 4): contrato que apontava para a
+      // D-G2 (regra de recebimento, Rodada 4): contrato que apontava para a
       // conta excluída é soft-deletado junto — a forma volta a "sem baixa
       // automática" de forma visível (nunca órfão apontando para conta morta).
       await conn.query(
-        `UPDATE \`${schemaName}\`.tb_financial_contract
+        `UPDATE \`${schemaName}\`.tb_settlement_rule
             SET deleted = 'S', updated_at = NOW()
           WHERE tb_institution_id = ? AND tb_bank_account_id = ? AND deleted = 'N'`,
         [institutionId, id]

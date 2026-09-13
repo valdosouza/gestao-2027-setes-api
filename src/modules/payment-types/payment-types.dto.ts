@@ -21,8 +21,8 @@ const linkAttrs = {
   tef:                     flag.default('N'),
   financialPlansIdCre:     z.number().int().min(0).default(0),
   financialPlansIdDeb:     z.number().int().min(0).default(0),
-  // usagePreference APOSENTADA (migration 038 — D17 do contrato financeiro):
-  // destino caixa × banco vem do tb_financial_contract. Payload antigo com o
+  // usagePreference APOSENTADA (migration 038 — D17 do regra de recebimento):
+  // destino caixa × banco vem do tb_settlement_rule. Payload antigo com o
   // campo é ignorado (strip padrão do Zod).
 }
 

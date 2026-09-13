@@ -1,5 +1,7 @@
 import { Router } from 'express'
 import * as controller from './settlements.controller'
+import { requirePrivilege } from '@shared/auth/require-privilege'
+import { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 
 /**
  * Rotas do módulo settlements — montadas em /api/settlements.
@@ -183,5 +185,58 @@ router.post('/reversal', controller.reversal)
  *       401: { description: Não autenticado }
  */
 router.get('/statements', controller.statements)
+
+/**
+ * @swagger
+ * /api/settlements/bills/{orderId}/{parcel}/charge:
+ *   put:
+ *     tags: [Settlements]
+ *     summary: Redireciona a COBRANÇA do título (renegociação — D17)
+ *     description: |
+ *       "É normal que um financeiro tenha uma renegociação: o que seria dinheiro
+ *       pode ser alterado para pagamento em boleto" (Valdo, 2026-09-13). A casa
+ *       da alteração é o FINANCEIRO — o faturamento não muda, porque ele gravou
+ *       a condição que valia no ato da nota; renegociar é fato POSTERIOR.
+ *
+ *       **UPDATE simples, não evento** (D18): a negociação original já é
+ *       imutável em `tb_order_billing`/`tb_order_installment`. Dinheiro que já
+ *       entrou carrega a forma congelada no próprio pagamento, então redirecionar
+ *       nunca reescreve história.
+ *
+ *       Recusa título quitado (409 TITLE_SETTLED), forma não habilitada
+ *       (400 PAYMENT_TYPE_UNAVAILABLE) e título com boleto vigente
+ *       (409 TITLE_HAS_OPEN_SLIP — cancele o boleto antes). Redirecionar NUNCA
+ *       liquida: a baixa automática só existe no faturamento.
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema: { type: integer }
+ *       - in: path
+ *         name: parcel
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [paymentTypeId]
+ *             properties:
+ *               paymentTypeId: { type: integer, description: 'Forma que passa a valer (vinculada e habilitada)' }
+ *               dtExpiration: { type: string, example: '2026-11-30', description: 'OPCIONAL — novo vencimento (D19); ausente mantém o atual' }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data: { orderId, parcel, previousPaymentTypeId, paymentTypeId, dtExpiration, changed } }' }
+ *       400: { description: Validação / forma não habilitada }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio ALTERAR }
+ *       404: { description: Título não encontrado }
+ *       409: { description: Título quitado ou com boleto vigente }
+ */
+// D21: autoridade do ato — muda extrato e comissão futuros
+router.put('/bills/:orderId/:parcel/charge',
+  requirePrivilege('settlements', PRIVILEGE_ALTERAR), controller.retarget)
 
 export default router

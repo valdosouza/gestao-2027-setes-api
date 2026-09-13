@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isValidIsoDate } from '@shared/validation'
 import { toCents } from '@shared/money'
 
 /**
@@ -7,7 +8,11 @@ import { toCents } from '@shared/money'
  * Caixa; estorno exige motivo (5.5.4).
  */
 
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data em YYYY-MM-DD')
+// Formato E existencia no calendario (gate socratico da Onda 1, fase Primeiro
+// Cliente): regex de formato aceita '2026-13-45' e o MariaDB sem strict mode
+// grava '0000-00-00' — inclusive em artefato IMUTAVEL (boleto, cheque).
+// Regra da casa: o que valida e o que grava (setes-api/02-VALIDACAO.md).
+const dateStr = z.string().refine(isValidIsoDate, 'Data invalida (use YYYY-MM-DD)')
 
 export const settleBatchDto = z.object({
   titles: z.array(z.object({
@@ -48,3 +53,15 @@ export const reversalDto = z.object({
 
 export type SettleBatchDto = z.infer<typeof settleBatchDto>
 export type ReversalDto    = z.infer<typeof reversalDto>
+
+/**
+ * REDIRECIONAR A COBRANÇA de um título (D17/D19): forma que passa a valer e,
+ * opcionalmente, novo vencimento. A tela desta onda manda só a forma — a peça
+ * já aceita a condição inteira para o vencimento não exigir rota nova depois.
+ */
+export const retargetChargeDto = z.object({
+  paymentTypeId: z.number().int().positive(),
+  dtExpiration:  dateStr.nullable().optional(),
+})
+
+export type RetargetChargeDto = z.infer<typeof retargetChargeDto>

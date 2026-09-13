@@ -334,7 +334,7 @@ export interface ReceiveChecksResult {
  * D1: valor de FACE de todos os cheques da parcela entra na conta 0 (caixa)
  * numa ÚNICA baixa (D9: N eventos R sob o MESMO settled_code — soma dos
  * cheques = valor da parcela, validado pelo chamador ANTES/billing.service).
- * Exige caixa aberto — diferente do contrato financeiro (gate gracioso):
+ * Exige caixa aberto — diferente do regra de recebimento (gate gracioso):
  * aqui o usuário JÁ digitou os dados do cheque, então sem caixa a operação
  * é recusada (409), não silenciosamente ignorada — não há outro jeito de o
  * cheque nascer no sistema (R só existe nesta transação).

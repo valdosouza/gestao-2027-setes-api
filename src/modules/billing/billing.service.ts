@@ -10,6 +10,7 @@ import {
   serviceRuleProblemMessage, ServiceTaxRuleResolved,
 } from '@shared/service-tax-rule'
 import { getConfigContent } from '@shared/interface-config'
+import { resolveTitleAutomationConfig } from '@shared/title-automation'
 import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
 import pool from '@shared/db/connection'
@@ -799,14 +800,16 @@ export async function invoiceOrder(
     }
   }
 
-  // D18 (contrato financeiro) / D9 (boleto): "gerar boleto automaticamente
-  // no faturamento" é config da interface billing (Framework de Configurações)
-  const autoBankSlip =
-    (await getConfigContent(institution, 'billing', 'auto_bank_slip')) === 'S'
+  // D18 (regra de recebimento) / D9 (boleto): a política dos automatismos do
+  // título (baixa por contrato + boleto automático) é resolvida pela
+  // composição, SEMPRE fora da transação — ler config lá dentro pede uma 2ª
+  // conexão do pool com a 1ª presa segurando locks (gate adversarial, Onda 1).
+  const automationConfig = await resolveTitleAutomationConfig(
+    schemaName, institutionId, institution.userId)
 
   return persistInvoice(schemaName, institutionId, {
     orderId: input.orderId,
-    autoBankSlip,
+    automationConfig,
     recipientEntityId: branch.recipientEntityId,
     model, serie,
     items: computed,

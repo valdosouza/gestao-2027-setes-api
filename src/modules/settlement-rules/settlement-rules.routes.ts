@@ -1,21 +1,21 @@
 import { Router } from 'express'
-import * as controller from './financial-contracts.controller'
+import * as controller from './settlement-rules.controller'
 
 /**
- * Rotas do módulo financial-contracts — montadas em /api/financial-contracts.
+ * Rotas do módulo settlement-rules — montadas em /api/settlement-rules.
  * Cadastro de CLIENTE, grupo Financeiro (sem superGuard — escopo por
- * institution do JWT); gate técnico = flag 'financial-contracts'.
- * Espelho no app: apps/web/lib/app/modules/financial_contracts/.
+ * institution do JWT); gate técnico = flag 'settlement-rules'.
+ * Espelho no app: apps/web/lib/app/modules/settlement_rules/.
  * O {id} dos recursos é o tb_payment_types_id (1 contrato por forma — D2).
  */
 const router = Router()
 
 /**
  * @swagger
- * /api/financial-contracts:
+ * /api/settlement-rules:
  *   get:
- *     summary: Lista os contratos financeiros (baixa automática por forma) da institution
- *     tags: [FinancialContracts]
+ *     summary: Lista as regras de recebimento (baixa automática por forma) da institution
+ *     tags: [SettlementRules]
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -34,7 +34,7 @@ const router = Router()
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  *   post:
- *     summary: Cria o contrato financeiro de uma forma de pagamento
+ *     summary: Cria a regra de recebimento de uma forma de pagamento
  *     description: >
  *       Política de baixa automática (migration 038 — D1–D22): a PRESENÇA do
  *       contrato faz o faturamento baixar o título na conta indicada
@@ -42,10 +42,10 @@ const router = Router()
  *       corrente, validada) com taxa (feeRate %, débito no mesmo código de
  *       baixa) e prazo (paymentTerm dias — dt_record = faturamento + prazo ×
  *       parcela). 1 contrato por forma: existente → 409
- *       FINANCIAL_CONTRACT_EXISTS; excluído → revive. Forma precisa estar
+ *       SETTLEMENT_RULE_EXISTS; excluído → revive. Forma precisa estar
  *       vinculada à empresa (400 PAYMENT_TYPE_NOT_LINKED). Cheque/boleto:
  *       contrato aceito mas não altera o fluxo (D16/D18).
- *     tags: [FinancialContracts]
+ *     tags: [SettlementRules]
  *     security:
  *       - BearerAuth: []
  *     requestBody:
@@ -66,7 +66,7 @@ const router = Router()
  *       201: { description: 'Envelope { ok, data: { id } } — id = paymentTypeId' }
  *       400: { description: 'Validação / forma não vinculada / conta inexistente' }
  *       401: { description: Não autenticado }
- *       409: { description: 'FINANCIAL_CONTRACT_EXISTS' }
+ *       409: { description: 'SETTLEMENT_RULE_EXISTS' }
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
@@ -74,10 +74,10 @@ router.post('/', controller.create)
 
 /**
  * @swagger
- * /api/financial-contracts/payment-types:
+ * /api/settlement-rules/payment-types:
  *   get:
  *     summary: Lookup das formas de pagamento vinculadas e habilitadas (com flag hasContract)
- *     tags: [FinancialContracts]
+ *     tags: [SettlementRules]
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -93,10 +93,10 @@ router.get('/payment-types', controller.paymentTypesLookup)
 
 /**
  * @swagger
- * /api/financial-contracts/bank-accounts:
+ * /api/settlement-rules/bank-accounts:
  *   get:
  *     summary: Lookup das contas correntes da institution
- *     tags: [FinancialContracts]
+ *     tags: [SettlementRules]
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -112,10 +112,10 @@ router.get('/bank-accounts', controller.bankAccountsLookup)
 
 /**
  * @swagger
- * /api/financial-contracts/{id}:
+ * /api/settlement-rules/{id}:
  *   get:
  *     summary: Retorna o contrato pela forma de pagamento (id = paymentTypeId)
- *     tags: [FinancialContracts]
+ *     tags: [SettlementRules]
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -130,7 +130,7 @@ router.get('/bank-accounts', controller.bankAccountsLookup)
  *       500: { description: Erro interno }
  *   put:
  *     summary: Atualiza o contrato (a forma não muda — é a PK)
- *     tags: [FinancialContracts]
+ *     tags: [SettlementRules]
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -158,7 +158,7 @@ router.get('/bank-accounts', controller.bankAccountsLookup)
  *       500: { description: Erro interno }
  *   delete:
  *     summary: Exclui o contrato (soft delete — a forma volta a "sem baixa automática")
- *     tags: [FinancialContracts]
+ *     tags: [SettlementRules]
  *     security:
  *       - BearerAuth: []
  *     parameters:

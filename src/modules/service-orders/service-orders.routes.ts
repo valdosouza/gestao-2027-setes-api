@@ -104,7 +104,11 @@ router.post('/monthly-run', controller.monthly)
  * @swagger
  * /api/service-orders/expiration-suggestion:
  *   get:
- *     summary: SUGESTÃO de vencimento (5º dia útil seg–sex do mês seguinte) — o usuário decide (DP1)
+ *     summary: SUGESTÃO de vencimento — o usuário decide (DP1)
+ *     description: |
+ *       Com `orderId`, o default é o dia do CONTRATO que alimentou a ordem
+ *       (D12). Sem ele — ou quando os contratos da ordem divergem no dia —
+ *       cai no 5º dia útil seg–sex do mês seguinte à competência.
  *     tags: [ServiceOrders]
  *     security:
  *       - BearerAuth: []
@@ -117,6 +121,11 @@ router.post('/monthly-run', controller.monthly)
  *         name: month
  *         required: true
  *         schema: { type: integer }
+ *       - in: query
+ *         name: orderId
+ *         required: false
+ *         schema: { type: integer }
+ *         description: Ordem sendo faturada — traz o dia do contrato dela (D12)
  *     responses:
  *       200: { description: 'Envelope { ok, data: { dtExpiration } }' }
  *       400: { description: Parâmetros inválidos }
@@ -310,5 +319,46 @@ router.delete('/:id/items/:itemId', controller.removeOrderItem)
  */
 // Q-G23 (Valdo 2026-09-09): FATURAR na interface do ramo (seed 53) — admin/super passam
 router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR), controller.invoice)
+
+/**
+ * @swagger
+ * /api/service-orders/batch-invoice:
+ *   post:
+ *     tags: [ServiceOrders]
+ *     summary: Fatura em LOTE as ordens selecionadas (cobrança mensal)
+ *     description: |
+ *       D6/D7 da fase Primeiro Cliente (Valdo 2026-09-13): o operador
+ *       SELECIONA as ordens na tela e o lote **segue e reporta** — cada ordem
+ *       fatura na própria transação e a que falha sai no relatório com o
+ *       motivo, sem derrubar as outras. Por isso a resposta é **200 mesmo com
+ *       falhas parciais**: leia `failed` e `results[]`, nunca só o status.
+ *       **Vencimento (D13)**: OMITA `dtExpiration` e cada ordem vence no dia do
+ *       SEU contrato (`payment_day`, no mês seguinte à última competência
+ *       injetada) — é o modo normal da cobrança mensal, porque o dia combinado
+ *       é de cada cliente. Informar `dtExpiration` é OVERRIDE do operador e
+ *       vale para o lote inteiro. Ordem sem contrato (OS avulsa) ou com
+ *       contratos que divergem no dia é recusada com `ORDER_NO_CONTRACT_DUE_DAY`
+ *       — o lote nunca inventa data. Forma e parcelas seguem valendo para todas;
+ *       quem precisa de forma diferente faz dois lotes.
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [orderIds, paymentTypeId]
+ *             properties:
+ *               orderIds: { type: array, items: { type: integer }, minItems: 1, maxItems: 200 }
+ *               dtExpiration: { type: string, example: '2026-10-05', description: 'OPCIONAL (D13) — ausente = dia do contrato de cada ordem' }
+ *               paymentTypeId: { type: integer }
+ *               parcels: { type: integer, default: 1, minimum: 1, maximum: 99 }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data: { requested, invoiced, failed, uncharged, results[] } } — cada linha traz o dtExpiration REALMENTE usado' }
+ *       400: { description: Validação do lote }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio FATURAR }
+ */
+router.post('/batch-invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR), controller.batchInvoice)
 
 export default router

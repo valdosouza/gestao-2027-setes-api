@@ -3,12 +3,12 @@ import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import {
-  FinancialContractListRow, FinancialContractFull, FinancialContractInput,
-  FinancialContractCreateInput, PaymentTypeLookupRow, BankAccountLookupRow,
-} from './financial-contracts.interface'
+  SettlementRuleListRow, SettlementRuleFull, SettlementRuleInput,
+  SettlementRuleCreateInput, PaymentTypeLookupRow, BankAccountLookupRow,
+} from './settlement-rules.interface'
 
 /**
- * Repositório de Contratos Financeiros (tb_financial_contract no schema do
+ * Repositório de Regras de Recebimento (tb_settlement_rule no schema do
  * cliente — PK (institution, forma) = especialização do vínculo
  * tb_institution_has_payment_types, D2). Sem id próprio: o recurso é
  * endereçado pelo tb_payment_types_id. Conta 0 = caixa (sentinela, sem FK —
@@ -29,7 +29,7 @@ const LIST_FIELDS = `c.tb_payment_types_id AS id,
             DATE_FORMAT(c.expiration_date, '%Y-%m-%d') AS expirationDate`
 
 const FROM = (schemaName: string) =>
-  `FROM \`${schemaName}\`.tb_financial_contract c
+  `FROM \`${schemaName}\`.tb_settlement_rule c
    LEFT JOIN setes_central.tb_payment_types pt ON pt.id = c.tb_payment_types_id
    LEFT JOIN \`${schemaName}\`.tb_bank_account a
           ON a.id = c.tb_bank_account_id AND a.tb_institution_id = c.tb_institution_id
@@ -37,9 +37,9 @@ const FROM = (schemaName: string) =>
    LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id`
 
 /** Lista PAGINADA (shared/list): página + COUNT com a MESMA where (D2 da paginação). */
-export async function listFinancialContracts(
+export async function listSettlementRules(
   query: ListQuery, schemaName: string, institutionId: number
-): Promise<PagedRows<FinancialContractListRow>> {
+): Promise<PagedRows<SettlementRuleListRow>> {
   assertSchemaName(schemaName)
   const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const where =
@@ -61,9 +61,9 @@ export async function listFinancialContracts(
   return { rows, total: Number(count[0].total) }
 }
 
-export async function getFinancialContract(
+export async function getSettlementRule(
   paymentTypeId: number, schemaName: string, institutionId: number
-): Promise<FinancialContractFull | null> {
+): Promise<SettlementRuleFull | null> {
   assertSchemaName(schemaName)
   const [rows] = await pool.query<any[]>(
     `SELECT ${LIST_FIELDS}, c.note
@@ -109,18 +109,18 @@ async function assertBankAccount(
   }
 }
 
-const INPUT_FIELDS = (input: FinancialContractInput) => [
+const INPUT_FIELDS = (input: SettlementRuleInput) => [
   input.bankAccountId, input.feeRate, input.paymentTerm,
   input.expirationDate ?? null, input.note ?? null,
 ]
 
 /**
  * Cria o contrato da forma. 1 por forma (PK): existente vivo → 409
- * FINANCIAL_CONTRACT_EXISTS; soft-deletado → REVIVE com os dados novos
+ * SETTLEMENT_RULE_EXISTS; soft-deletado → REVIVE com os dados novos
  * (mesmo espírito do banks/decisão 8).
  */
-export async function insertFinancialContract(
-  input: FinancialContractCreateInput, schemaName: string, institutionId: number
+export async function insertSettlementRule(
+  input: SettlementRuleCreateInput, schemaName: string, institutionId: number
 ): Promise<number> {
   assertSchemaName(schemaName)
   const conn = await pool.getConnection()
@@ -130,18 +130,18 @@ export async function insertFinancialContract(
     await assertBankAccount(conn, schemaName, institutionId, input.bankAccountId)
 
     const [cur] = await conn.query<any[]>(
-      `SELECT deleted FROM \`${schemaName}\`.tb_financial_contract
+      `SELECT deleted FROM \`${schemaName}\`.tb_settlement_rule
         WHERE tb_institution_id = ? AND tb_payment_types_id = ? FOR UPDATE`,
       [institutionId, input.paymentTypeId]
     )
     if (cur[0] && cur[0].deleted === 'N') {
-      throw new HttpError(409, 'Esta forma de pagamento já tem contrato financeiro',
+      throw new HttpError(409, 'Esta forma de pagamento já tem regra de recebimento',
         [{ field: 'paymentTypeId', message: 'Contrato já existe' }],
-        'FINANCIAL_CONTRACT_EXISTS')
+        'SETTLEMENT_RULE_EXISTS')
     }
     if (cur[0]) {
       await conn.query(
-        `UPDATE \`${schemaName}\`.tb_financial_contract
+        `UPDATE \`${schemaName}\`.tb_settlement_rule
             SET tb_bank_account_id = ?, fee_rate = ?, payment_term = ?,
                 expiration_date = ?, note = ?, deleted = 'N', updated_at = NOW()
           WHERE tb_institution_id = ? AND tb_payment_types_id = ?`,
@@ -149,7 +149,7 @@ export async function insertFinancialContract(
       )
     } else {
       await conn.query(
-        `INSERT INTO \`${schemaName}\`.tb_financial_contract
+        `INSERT INTO \`${schemaName}\`.tb_settlement_rule
            (tb_institution_id, tb_payment_types_id, tb_bank_account_id, fee_rate,
             payment_term, expiration_date, note, created_at, updated_at, deleted)
          VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')`,
@@ -166,8 +166,8 @@ export async function insertFinancialContract(
   }
 }
 
-export async function updateFinancialContract(
-  paymentTypeId: number, input: FinancialContractInput,
+export async function updateSettlementRule(
+  paymentTypeId: number, input: SettlementRuleInput,
   schemaName: string, institutionId: number
 ): Promise<boolean> {
   assertSchemaName(schemaName)
@@ -175,7 +175,7 @@ export async function updateFinancialContract(
   try {
     await conn.beginTransaction()
     const [rows] = await conn.query<any[]>(
-      `SELECT 1 FROM \`${schemaName}\`.tb_financial_contract
+      `SELECT 1 FROM \`${schemaName}\`.tb_settlement_rule
         WHERE tb_institution_id = ? AND tb_payment_types_id = ? AND deleted = 'N' FOR UPDATE`,
       [institutionId, paymentTypeId]
     )
@@ -185,7 +185,7 @@ export async function updateFinancialContract(
     }
     await assertBankAccount(conn, schemaName, institutionId, input.bankAccountId)
     await conn.query(
-      `UPDATE \`${schemaName}\`.tb_financial_contract
+      `UPDATE \`${schemaName}\`.tb_settlement_rule
           SET tb_bank_account_id = ?, fee_rate = ?, payment_term = ?,
               expiration_date = ?, note = ?, updated_at = NOW()
         WHERE tb_institution_id = ? AND tb_payment_types_id = ?`,
@@ -202,12 +202,12 @@ export async function updateFinancialContract(
 }
 
 /** Soft delete = a forma volta a "sem contrato" (título nasce aberto — regra 4). */
-export async function softDeleteFinancialContract(
+export async function softDeleteSettlementRule(
   paymentTypeId: number, schemaName: string, institutionId: number
 ): Promise<boolean> {
   assertSchemaName(schemaName)
   const [result] = await pool.query<any>(
-    `UPDATE \`${schemaName}\`.tb_financial_contract
+    `UPDATE \`${schemaName}\`.tb_settlement_rule
         SET deleted = 'S', updated_at = NOW()
       WHERE tb_institution_id = ? AND tb_payment_types_id = ? AND deleted = 'N'`,
     [institutionId, paymentTypeId]
@@ -227,7 +227,7 @@ export async function listPaymentTypesLookup(
        FROM \`${schemaName}\`.tb_institution_has_payment_types h
        INNER JOIN setes_central.tb_payment_types pt
                ON pt.id = h.tb_payment_types_id AND pt.deleted = 'N'
-       LEFT JOIN \`${schemaName}\`.tb_financial_contract c
+       LEFT JOIN \`${schemaName}\`.tb_settlement_rule c
               ON c.tb_institution_id = h.tb_institution_id
              AND c.tb_payment_types_id = h.tb_payment_types_id AND c.deleted = 'N'
       WHERE h.tb_institution_id = ? AND h.deleted = 'N' AND h.\`enable\` = 'S'

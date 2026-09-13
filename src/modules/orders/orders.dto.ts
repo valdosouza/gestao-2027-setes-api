@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isValidIsoDate } from '@shared/validation'
 
 export const openOrderDto = z.object({
   customerId: z.number().int().positive(),
@@ -13,7 +14,11 @@ export const orderItemDto = z.object({
 })
 
 /** 'YYYY-MM-DD' de calendário real (mesma guarda do contrato/boleto/cheque). */
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data em YYYY-MM-DD')
+// Formato E existencia no calendario (gate socratico da Onda 1, fase Primeiro
+// Cliente): regex de formato aceita '2026-13-45' e o MariaDB sem strict mode
+// grava '0000-00-00' — inclusive em artefato IMUTAVEL (boleto, cheque).
+// Regra da casa: o que valida e o que grava (setes-api/02-VALIDACAO.md).
+const dateStr = z.string().refine(isValidIsoDate, 'Data invalida (use YYYY-MM-DD)')
   .refine(v => {
     const [y, m, d] = v.split('-').map(Number)
     const t = new Date(Date.UTC(y, m - 1, d))

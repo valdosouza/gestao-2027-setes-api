@@ -1,6 +1,6 @@
 import {
   prorataValue, parcelQuotas, fifthBusinessDaySuggestion,
-  firstDayOfMonth, lastDayOfMonth,
+  firstDayOfMonth, lastDayOfMonth, contractDaySuggestion,
 } from '../modules/service-orders/service-orders.calc'
 
 /**
@@ -66,5 +66,28 @@ describe('limites do mês', () => {
   it('fevereiro bissexto', () => {
     expect(firstDayOfMonth(2028, 2)).toBe('2028-02-01')
     expect(lastDayOfMonth(2028, 2)).toBe('2028-02-29')
+  })
+})
+
+// D12 (Valdo 2026-09-13): `payment_day` do contrato era coluna informativa sem
+// produtor de efeito — prometia no DDL um comportamento que ninguém executava.
+// Agora é o DEFAULT do vencimento (a decisão final continua do usuário, DP1).
+describe('contractDaySuggestion (D12)', () => {
+  it('vence no dia do contrato, no mês SEGUINTE à competência', () => {
+    expect(contractDaySuggestion(2026, 9, 10)).toBe('2026-10-10')
+    expect(contractDaySuggestion(2026, 9, 1)).toBe('2026-10-01')
+    expect(contractDaySuggestion(2026, 9, 28)).toBe('2026-10-28')
+  })
+  it('vira o ano na competência de dezembro', () => {
+    expect(contractDaySuggestion(2026, 12, 5)).toBe('2027-01-05')
+  })
+  it('dia que não existe no mês fecha no último dia (fevereiro)', () => {
+    // o DTO limita payment_day a 28 justamente por isso; aqui é o cinto para
+    // dado legado que passe disso
+    expect(contractDaySuggestion(2026, 1, 31)).toBe('2026-02-28')
+    expect(contractDaySuggestion(2024, 1, 30)).toBe('2024-02-29')  // bissexto
+  })
+  it('dia inválido (0 ou negativo) cai no dia 1', () => {
+    expect(contractDaySuggestion(2026, 9, 0)).toBe('2026-10-01')
   })
 })

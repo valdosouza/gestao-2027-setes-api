@@ -4,7 +4,7 @@
  * 039 — prompt_boleto_emitido.md D1/D8). É a contratação de cobrança com o
  * banco: define a conta de crédito e as taxas/instruções que o BOLETO
  * congela na emissão (@shared/bank-slip). `active` decide se entra no gate
- * 0/1/n do faturamento automático (D18 do contrato financeiro/D9 do
+ * 0/1/n do faturamento automático (D18 do regra de recebimento/D9 do
  * boleto). Espelho no app: apps/web/lib/app/modules/bank_charge_agreements/.
  *
  * `tb_bank_charge_kind_id`/`tb_bank_charge_ticket_id` (espécie do

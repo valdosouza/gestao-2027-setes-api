@@ -1,7 +1,8 @@
 import { z } from 'zod'
+import { isValidIsoDate } from '@shared/validation'
 
 /**
- * DTOs (Zod) do módulo financial-contracts. bankAccountId 0 = caixa (D1);
+ * DTOs (Zod) do módulo settlement-rules. bankAccountId 0 = caixa (D1);
  * feeRate em % (DECIMAL(5,2)); paymentTerm em dias; expirationDate
  * 'YYYY-MM-DD' informativa (D2/D11); note texto livre.
  */
@@ -9,7 +10,11 @@ import { z } from 'zod'
 /** 'YYYY-MM-DD' E data de calendário real (2026-02-30 é recusada — gate
  *  adversarial 2026-09-03: o MariaDB sem STRICT gravava 0000-00-00 e o
  *  contrato "válido" nunca baixava). */
-const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data em YYYY-MM-DD')
+// Formato E existencia no calendario (gate socratico da Onda 1, fase Primeiro
+// Cliente): regex de formato aceita '2026-13-45' e o MariaDB sem strict mode
+// grava '0000-00-00' — inclusive em artefato IMUTAVEL (boleto, cheque).
+// Regra da casa: o que valida e o que grava (setes-api/02-VALIDACAO.md).
+const dateStr = z.string().refine(isValidIsoDate, 'Data invalida (use YYYY-MM-DD)')
   .refine(v => {
     const [y, m, d] = v.split('-').map(Number)
     const t = new Date(Date.UTC(y, m - 1, d))
@@ -28,12 +33,12 @@ const contractFields = {
   note:           z.string().max(2000).nullable().optional(),
 }
 
-export const financialContractCreateDto = z.object({
+export const settlementRuleCreateDto = z.object({
   paymentTypeId: z.number().int().positive(),
   ...contractFields,
 })
 
-export const financialContractUpdateDto = z.object(contractFields)
+export const settlementRuleUpdateDto = z.object(contractFields)
 
-export type FinancialContractCreateDto = z.infer<typeof financialContractCreateDto>
-export type FinancialContractUpdateDto = z.infer<typeof financialContractUpdateDto>
+export type SettlementRuleCreateDto = z.infer<typeof settlementRuleCreateDto>
+export type SettlementRuleUpdateDto = z.infer<typeof settlementRuleUpdateDto>

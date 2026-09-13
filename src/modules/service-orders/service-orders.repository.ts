@@ -3,12 +3,16 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { lockInstitutionCounters } from '@shared/db/counters'
-import { assertServiceProduct, serviceProductIssue } from '@shared/service-product'   // Q-G27: guarda única virou peça
+import { assertServiceProduct, serviceProductIssue } from '@shared/service-product'
+import { toCents } from '@shared/money'   // Q-G27: guarda única virou peça
 import { isLockWaitTimeout, isDeadlock } from '@shared/db/contention'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { upsertOrderBilling } from '@shared/order-billing'
 import { issueInvoice } from '@shared/invoice'
+import {
+  applyTitleAutomation, localIsoDate, resolveTitleAutomationConfig,
+} from '@shared/title-automation'
 import { assertPaymentRules } from '@shared/order-installment'
 import {
   prorataValue, parcelQuotas, firstDayOfMonth, lastDayOfMonth,
@@ -278,9 +282,19 @@ async function createOpenOrder(
   return id
 }
 
-/** Q-A17b (Valdo 2026-09-09): item de OS sem valor não existe (sem caso real de cortesia) → 422. */
+/**
+ * Q-A17b (Valdo 2026-09-09): item de OS sem valor não existe (sem caso real de
+ * cortesia) → 422.
+ *
+ * A conferência é em CENTAVOS (gate adversarial da Onda 1, MEDIUM-3): validar
+ * em float deixava `unitValue: 0.001` passar, o DECIMAL(10,2) do total gravava
+ * 0,00 e a OS faturava uma nota de valor ZERO — consumindo número de nota, com
+ * título de 0,00, sem baixa e sem boleto, em silêncio. Mesma regra do
+ * @shared/money adotada na Q-A27: o que valida é o que grava.
+ */
 function assertItemValue(input: OrderItemInput): void {
-  if (!(Number(input.unitValue) > 0)) {
+  const centavos = toCents(Number(input.unitValue) * Number(input.quantity ?? 1))
+  if (!(Number(input.unitValue) > 0) || centavos <= 0) {
     throw new HttpError(422, 'Item da ordem de serviço precisa de valor unitário maior que zero',
       [{ field: 'unitValue', message: 'Informe o valor' }], 'SERVICE_ORDER_ITEM_VALUE_REQUIRED')
   }
@@ -694,11 +708,103 @@ export async function monthlyRun(
 // Gerar Faturamento (4.5.6/Fase 6 — transação única)
 // ---------------------------------------------------------------------
 
+/**
+ * CONDIÇÕES combinadas nos contratos que alimentaram esta ordem (D12/D13/D14,
+ * Valdo 2026-09-13): o dia de vencimento, a forma de pagamento e a ÚLTIMA
+ * competência injetada. É o contrato dizendo QUANDO e COMO o cliente paga.
+ *
+ * Por que a ÚLTIMA competência: uma OS que não foi faturada em setembro recebe
+ * também os itens de outubro — está se cobrando tudo que acumulou, então a
+ * referência é o mês mais recente, não o primeiro.
+ *
+ * Dia e forma são resolvidos INDEPENDENTES: dois contratos do mesmo cliente
+ * podem combinar no dia e divergir na forma. Cada um que DIVERGE vira null —
+ * não existe "o dia" nem "a forma", e escolher um seria decidir pelo usuário
+ * sem ele saber. Quem chama decide: a sugestão da tela cai no genérico; o lote
+ * recusa a ordem e diz por quê. Devolve null só quando a ordem não veio de
+ * contrato nenhum (OS avulsa).
+ */
+export interface ContractBillingReference {
+  /** Dia combinado; null quando os contratos divergem. */
+  paymentDay: number | null
+  /** Forma combinada; null quando divergem ou nenhum contrato a define. */
+  paymentTypeId: number | null
+  /** 'YYYY-MM' — competência mais recente injetada na ordem. */
+  competence: string
+}
+
+/** A ordem de serviço existe e está viva? (motivo honesto no lote). */
+export async function orderExists(
+  orderId: number, schemaName: string, institutionId: number
+): Promise<boolean> {
+  assertSchemaName(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT 1 FROM \`${schemaName}\`.tb_service_order
+      WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`,
+    [orderId, institutionId]
+  )
+  return rows.length > 0
+}
+
+export async function contractBillingReference(
+  orderId: number, schemaName: string, institutionId: number
+): Promise<ContractBillingReference | null> {
+  assertSchemaName(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT MAX(comp.competence) AS competence,
+            COUNT(DISTINCT c.payment_day) AS dias,
+            MIN(c.payment_day) AS paymentDay,
+            COUNT(DISTINCT c.tb_payment_types_id) AS formas,
+            -- COUNT(*) inclui as linhas com forma NULL, que o COUNT(DISTINCT)
+            -- ignora: contrato "informar no faturamento" convivendo com outro
+            -- que combinou forma fazia o lote adotar a do irmão e faturar —
+            -- com baixa automática e taxa numa forma que ninguém escolheu
+            -- (gate adversarial). Sem forma em TODOS, não há forma combinada.
+            COUNT(*) AS contratos,
+            COUNT(c.tb_payment_types_id) AS comForma,
+            MIN(c.tb_payment_types_id) AS paymentTypeId
+       FROM \`${schemaName}\`.tb_contract_item_competence comp
+       INNER JOIN \`${schemaName}\`.tb_contract c
+          ON c.id = comp.tb_contract_id AND c.tb_institution_id = comp.tb_institution_id
+         AND c.deleted = 'N'
+      WHERE comp.tb_institution_id = ? AND comp.tb_order_id = ? AND comp.deleted = 'N'`,
+    [institutionId, orderId]
+  )
+  const r = rows[0]
+  if (!r || r.competence == null) return null
+  return {
+    competence: String(r.competence),
+    paymentDay: Number(r.dias) === 1 ? Number(r.paymentDay) : null,
+    // Só existe "a forma combinada" quando TODOS os contratos da ordem
+    // combinaram a MESMA: uma forma distinta (`formas`) e nenhuma linha sem
+    // forma (`comForma` = `contratos`).
+    paymentTypeId: Number(r.formas) === 1
+      && Number(r.comForma) === Number(r.contratos)
+      && r.paymentTypeId != null
+      ? Number(r.paymentTypeId) : null,
+  }
+}
+
+/** Só o dia — atalho da sugestão da tela (D12). */
+export async function contractPaymentDay(
+  orderId: number, schemaName: string, institutionId: number
+): Promise<number | null> {
+  const ref = await contractBillingReference(orderId, schemaName, institutionId)
+  return ref?.paymentDay ?? null
+}
+
 export async function generateInvoice(
   orderId: number, input: InvoiceInput,
   schemaName: string, institutionId: number, userId: number
 ): Promise<InvoiceResult> {
   assertSchemaName(schemaName)
+
+  // Configuração da automação resolvida ANTES da transação (gate adversarial
+  // da Onda 1, achado 1): dentro dela, a leitura pediria uma 2ª conexão do
+  // pool com a 1ª presa segurando locks — travamento permanente sob carga.
+  const automationConfig = await resolveTitleAutomationConfig(
+    schemaName, institutionId, userId)
+
   // Q-A5 (3ª rodada adversarial do cancelamento, 2026-09-09): os locks da
   // Rodada 2 (trava D5 no plano do cancelamento; MAX(number_seq) na sequência
   // 'SE') deadlockam com este módulo — vítima reexecuta, nunca 500 (mesma peça
@@ -707,6 +813,13 @@ export async function generateInvoice(
     const conn = await pool.getConnection()
     try {
       await conn.beginTransaction()
+      // Regra 7 do PADROES §9 (Q-A12): esta transação CUNHA número de nota
+      // (MAX(number_seq) da série 'SE') e, pela automação, settled_code e
+      // nosso número — o lock da institution é o PRIMEIRO lock exclusivo, nunca
+      // no meio. Sem ele, os gap locks do MAX são compatíveis entre si e N
+      // faturamentos concorrentes deadlockavam além dos 3 retries (o gate
+      // adversarial provou 6 de 12 morrendo com 1213).
+      await lockInstitutionCounters(conn, institutionId)
       await lockOpenOrder(conn, schemaName, institutionId, orderId)
 
       // forma VINCULADA/habilitada + nº de parcelas ≤ max_parcels do vínculo —
@@ -797,6 +910,24 @@ export async function generateInvoice(
         )
       }
 
+      // AUTOMATISMOS do nascimento do título (achado A1 da Onda 0 / D5 da fase
+      // Primeiro Cliente, Valdo 2026-09-13): até aqui o faturamento da OS
+      // gravava os títulos e parava — a baixa por regra de recebimento e o
+      // boleto automático só existiam no billing da VENDA. Como a receita de
+      // contrato mensal nasce toda por este caminho, a cobrança da Setes saía
+      // sem boleto e sem baixa. Mesma composição, mesma política, dois
+      // chamadores (a OS NÃO delega ao módulo billing — D5).
+      const automation = await applyTitleAutomation(
+        conn, schemaName, institutionId, userId, {
+          orderId,
+          dtPayment: localIsoDate(),
+          parcels: Array.from({ length: input.parcels }, (_, i) => ({
+            parcel: i + 1,
+            paymentTypeId: input.paymentTypeId,
+            amount: quotas[i],
+          })),
+        }, automationConfig)
+
       // A→F no backbone (DP7) + libera a trava D5
       await conn.query(
         `UPDATE \`${schemaName}\`.tb_order
@@ -812,7 +943,14 @@ export async function generateInvoice(
       )
 
       await conn.commit()
-      return { invoiceNumber, parcels: input.parcels, totalValue: total }
+      // O que a automação FEZ volta no resultado (gate adversarial, achado 5):
+      // "faturada" sem dizer se houve baixa ou boleto esconde o pior caso da
+      // cobrança mensal — lote 100 % faturado e zero cobrado.
+      return {
+        invoiceNumber, parcels: input.parcels, totalValue: total,
+        autoSettled: automation.autoSettled,
+        bankSlipsIssued: automation.bankSlipsIssued,
+      }
     } catch (err) {
       await conn.rollback()
       throw err

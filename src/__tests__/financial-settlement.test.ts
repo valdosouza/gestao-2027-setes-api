@@ -1,11 +1,11 @@
 /// <reference types="jest" />
-// Peça compartilhada do movimento financeiro (W3.2 + contrato financeiro —
+// Peça compartilhada do movimento financeiro (W3.2 + regra de recebimento —
 // migration 038, D1–D22). bankAccountId=0 = sentinela de CAIXA (mesma
 // convenção de settlements.settleBatch); cashierId amarra o movimento à
 // sessão (migration 033).
 import pool from '../shared/db/connection'
 import {
-  settleOneTitle, tryAutoSettleByContract, getFinancialContract, addDaysIso,
+  settleOneTitle, tryAutoSettleByContract, getSettlementRule, addDaysIso,
   writeManualCashierMovement, findOpenCashierId, nextSettledCode,
 } from '../shared/financial-settlement'
 
@@ -167,11 +167,11 @@ describe('addDaysIso', () => {
   })
 })
 
-describe('getFinancialContract', () => {
+describe('getSettlementRule', () => {
   it('sem contrato vivo -> null', async () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([[]])
-    expect(await getFinancialContract(conn as any, 'setes_setes', 1, 5)).toBeNull()
+    expect(await getSettlementRule(conn as any, 'setes_setes', 1, 5)).toBeNull()
   })
   it('normaliza números e planos do vínculo', async () => {
     const conn = fakeConn()
@@ -180,7 +180,7 @@ describe('getFinancialContract', () => {
       bankAccountId: 8, feeRate: '2.50', paymentTerm: 30, expirationDate: null,
       financialPlanCreId: 11, financialPlanDebId: null,
     }]])
-    expect(await getFinancialContract(conn as any, 'setes_setes', 1, 5)).toEqual({
+    expect(await getSettlementRule(conn as any, 'setes_setes', 1, 5)).toEqual({
       paymentTypeId: 5, paymentTypeDescription: 'CARTÃO', paymentTypeKind: 'C',
       bankAccountId: 8, feeRate: 2.5, paymentTerm: 30, expirationDate: null,
       financialPlanCreId: 11, financialPlanDebId: 0,

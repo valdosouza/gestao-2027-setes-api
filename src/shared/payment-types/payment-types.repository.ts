@@ -53,7 +53,7 @@ export interface PaymentTypeLinkAttrs {
   tef:                     'S' | 'N'
   financialPlansIdCre:     number
   financialPlansIdDeb:     number
-  // usagePreference APOSENTADA (migration 038 — D17 do contrato financeiro)
+  // usagePreference APOSENTADA (migration 038 — D17 do regra de recebimento)
 }
 
 export const DEFAULT_LINK_ATTRS: PaymentTypeLinkAttrs = {

@@ -17,8 +17,8 @@ import { HttpError } from '@shared/errors/http-error'
  * `cashierId` (migration 033) amarra o movimento à SESSÃO de caixa —
  * preenchido só quando `bankAccountId=0`.
  *
- * Contrato financeiro (migration 038 — prompt_contrato_financeiro_
- * baixa_automatica.md, D1–D22): a PRESENÇA de `tb_financial_contract` na
+ * Regra de recebimento (migration 038 — prompt_contrato_financeiro_
+ * baixa_automatica.md, D1–D22): a PRESENÇA de `tb_settlement_rule` na
  * forma de pagamento é o ÚNICO gatilho de baixa automática no faturamento
  * (D1/D9). `tryAutoSettleByContract` substituiu a antiga baixa por kind='E'
  * (absorvida — D1/D22: espécie também exige contrato, com conta 0).
@@ -199,7 +199,16 @@ export async function insertStatement(
   return statementId
 }
 
-/** Sessão de caixa ABERTA (`hr_end IS NULL`) do usuário — terminal web fixo 0. */
+/**
+ * Sessão de caixa ABERTA (`hr_end IS NULL`) do usuário — terminal web fixo 0.
+ *
+ * ⚠️ Usa o `pool`: NUNCA chame com transação aberta na sua conexão — use a
+ * gêmea `findOpenCashierIdTx(conn, ...)`. Pedir 2ª conexão com a 1ª presa
+ * segurando locks travou a API PERMANENTEMENTE no gate adversarial da Onda 1
+ * (fase Primeiro Cliente): 0 de 40 faturamentos em 45 s. Hoje esta versão não
+ * tem chamador em produção — se você for o primeiro, é porque está FORA de
+ * transação (gate adversarial, LOW-6).
+ */
 export async function findOpenCashierId(
   schemaName: string, institutionId: number, userId: number
 ): Promise<number | null> {
@@ -235,10 +244,10 @@ export async function findOpenCashierIdTx(
 }
 
 // ---------------------------------------------------------------------
-// Contrato financeiro (migration 038) — política de baixa automática
+// Regra de recebimento (migration 038) — política de baixa automática
 // ---------------------------------------------------------------------
 
-export interface FinancialContractPolicy {
+export interface SettlementRulePolicy {
   paymentTypeId: number
   paymentTypeDescription: string
   paymentTypeKind: string | null
@@ -255,10 +264,10 @@ export interface FinancialContractPolicy {
  * Contrato VIVO da forma de pagamento nesta institution (presença =
  * política de baixa automática). Lê na MESMA transação do faturamento.
  */
-export async function getFinancialContract(
+export async function getSettlementRule(
   conn: PoolConnection, schemaName: string, institutionId: number,
   paymentTypeId: number
-): Promise<FinancialContractPolicy | null> {
+): Promise<SettlementRulePolicy | null> {
   const s = assertSchema(schemaName)
   const [rows] = await conn.query<any[]>(
     `SELECT c.tb_payment_types_id AS paymentTypeId,
@@ -270,7 +279,7 @@ export async function getFinancialContract(
             DATE_FORMAT(c.expiration_date, '%Y-%m-%d') AS expirationDate,
             h.tb_financial_plans_id_cre AS financialPlanCreId,
             h.tb_financial_plans_id_deb AS financialPlanDebId
-       FROM \`${s}\`.tb_financial_contract c
+       FROM \`${s}\`.tb_settlement_rule c
        INNER JOIN \`${s}\`.tb_institution_has_payment_types h
           ON h.tb_institution_id = c.tb_institution_id
          AND h.tb_payment_types_id = c.tb_payment_types_id AND h.deleted = 'N'
@@ -321,6 +330,18 @@ export interface AutoSettleContractResult {
 }
 
 /** Formas cujo comportamento é FIXO por kind — o contrato não muda o fluxo (D16/D18). */
+/**
+ * Formas cujo fluxo é FIXO e não obedece à regra de recebimento: cheque ('Q')
+ * baixa no caixa quando o papel é recebido, boleto ('B') só na liquidação.
+ *
+ * LIMITE CONHECIDO, deliberado (D16 do regra de recebimento + Valdo 2026-09-13,
+ * rodada da confusão "contrato"): o CADASTRO aceita gravar regra nessas duas
+ * formas — "o usuário assume" —, e aqui ela é ignorada. Ou seja, é possível
+ * salvar uma política que não produz efeito nenhum. A tela avisava isso por
+ * texto de ajuda; o aviso saiu de lá e virou este comentário, porque instrução
+ * ao usuário não é o lugar de uma regra do motor. Se um dia o cadastro passar a
+ * RECUSAR kind 'Q'/'B', esta contradição morre por construção e este bloco some.
+ */
 const KIND_FIXED = new Set(['Q', 'B'])
 
 /** Soma dias a 'YYYY-MM-DD' sem depender do fuso (aritmética em UTC). */
@@ -359,7 +380,7 @@ export async function tryAutoSettleByContract(
   )
   if (pt[0] && KIND_FIXED.has(pt[0].kind)) return { settled: false, reason: 'KIND_FIXED' }
 
-  const contract = await getFinancialContract(conn, schemaName, institutionId, input.paymentTypeId)
+  const contract = await getSettlementRule(conn, schemaName, institutionId, input.paymentTypeId)
   if (!contract) return { settled: false, reason: 'NO_CONTRACT' }
   if (contract.expirationDate && contract.expirationDate < input.dtPayment) {
     return { settled: false, reason: 'CONTRACT_EXPIRED' }

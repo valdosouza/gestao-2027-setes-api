@@ -1,0 +1,26 @@
+-- 052 — "Contrato financeiro" vira REGRA DE RECEBIMENTO (Valdo 2026-09-13:
+-- "foi feita uma confusão entre contrato financeiro para baixa automática e
+-- contrato no cliente para faturamento recorrente").
+--
+-- A D15 do prompt_contrato_financeiro_baixa_automatica.md tinha MANTIDO o nome
+-- `tb_financial_contract` com UMA condição: "rótulo da tela deve distinguir do
+-- contrato comercial do Software House (tb_contract)". A condição não foi
+-- cumprida — as telas saíram como "Contratos" e "Contratos Financeiros", que
+-- não distinguem nada. Esta migration reabre a D15 e adota o nome que a própria
+-- casa já usa para previsão configurada: tb_tax_rule → "Regras de Tributação",
+-- logo tb_settlement_rule → "Regras de Recebimento".
+--
+-- O objeto NÃO muda: mesma PK (institution × forma de pagamento), mesma FK ao
+-- vínculo, mesmas colunas, mesmo efeito (a PRESENÇA da regra é o gatilho da
+-- baixa automática no faturamento). Só o nome deixa de precisar de comentário.
+--
+-- Por que agora: o Banco Inter (credencial da CONTA) e o recorrente chegam em
+-- seguida e multiplicariam as ocorrências; e o setes-sync NÃO consome nenhuma
+-- das duas tabelas (grep zero), então o rename não toca o outro grupo.
+
+-- Uma instrução só, como a 039 fez com tb_bank_charge_slip →
+-- tb_bank_charge_agreement: o runner grava a versão em `_migrations` por
+-- schema, então a migration roda UMA vez por base (a idempotência é do runner,
+-- não do SQL). Schema novo nasce por migrations (001..052), então aqui a 038
+-- cria e esta renomeia — nunca falta origem.
+RENAME TABLE `tb_financial_contract` TO `tb_settlement_rule`;

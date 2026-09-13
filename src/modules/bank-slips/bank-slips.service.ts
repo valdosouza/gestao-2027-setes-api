@@ -59,7 +59,13 @@ export async function fetchOpenTitles(
 export async function issueSlip(input: IssueBankSlipDto, scope: BankSlipScope): Promise<IssueBankSlipResult> {
   return issue({
     agreementId: input.agreementId, titles: input.titles,
-    dtExpiration: input.dtExpiration ?? null, source: 'M',
+    dtExpiration: input.dtExpiration ?? null,
+    // D15: a forma explícita tem que CHEGAR à peça. Ela era validada no DTO e
+    // descartada aqui (gate adversarial): com 2+ formas kind='B' a peça pedia
+    // "informe qual" e informar dava o mesmo 422 — beco sem saída, e nenhum
+    // teste pegava porque todos chamavam a peça direto, nunca o service.
+    paymentTypeId: input.paymentTypeId,
+    source: 'M',
   }, scope.schemaName, scope.institutionId, scope.userId)
 }
 

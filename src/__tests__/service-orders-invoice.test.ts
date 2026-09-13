@@ -13,6 +13,14 @@ jest.mock('../shared/invoice', () => ({
   __esModule: true,
   issueInvoice: jest.fn(async () => ({ invoiceNumber: '12', event: 1 })),
 }))
+// automatismos do título (A1/D5 da fase Primeiro Cliente) têm teste próprio em
+// title-automation.test.ts — aqui só não podem tocar o mock do pool
+jest.mock('../shared/title-automation', () => ({
+  __esModule: true,
+  applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0 }),
+  resolveTitleAutomationConfig: jest.fn().mockResolvedValue({ autoBankSlip: false }),
+  localIsoDate: () => '2026-09-13',
+}))
 jest.mock('../shared/order-billing', () => ({
   __esModule: true,
   upsertOrderBilling: jest.fn().mockResolvedValue(undefined),
@@ -23,6 +31,7 @@ jest.mock('../shared/order-installment', () => ({
   assertPaymentRules: jest.fn().mockResolvedValue(undefined),
 }))
 const inv = jest.requireMock('../shared/invoice') as any
+const auto = jest.requireMock('../shared/title-automation') as any
 
 function mockConn() {
   const conn = {
@@ -38,6 +47,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
   it('fatura pela peça: issueInvoice(model SE, série 1, sem ramos) + financeiro com revive + OS fecha (open_lock NULL)', async () => {
     const conn = mockConn()
     conn.query
+      .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])                                           // lockOpenOrder
       .mockResolvedValueOnce([[{ itemsQtde: 1, productQtde: 1, productValue: 150, discountValue: 0 }]]) // recalc sums
       .mockResolvedValueOnce([{}])                                                          // totalizer upsert
@@ -47,7 +57,12 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
 
     const r = await generateInvoice(300, { dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 2 }, 'setes_setes', 1, 7)
 
-    expect(r).toEqual({ invoiceNumber: '12', parcels: 2, totalValue: 150 })
+    // o resultado passou a dizer o que a automação FEZ (gate adversarial,
+    // achado 5): "faturada" sem baixa nem boleto é o pior caso da cobrança
+    expect(r).toEqual({
+      invoiceNumber: '12', parcels: 2, totalValue: 150,
+      autoSettled: 0, bankSlipsIssued: 0,
+    })
     expect(inv.issueInvoice).toHaveBeenCalledWith(conn, 'setes_setes', 1, 7, {
       orderId: 300, recipientEntityId: 55, model: 'SE', serie: '1', totalValue: 150,
       noteText: null, merchandise: null, serviceTotal: null,
@@ -70,6 +85,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
   it('Q-A20 (cinto): item com produto inativo/mercadoria/inexistente → 422 antes da nota', async () => {
     const conn = mockConn()
     conn.query
+      .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])
       .mockResolvedValueOnce([[{ itemsQtde: 1, productQtde: 1, productValue: 150, discountValue: 0 }]])
       .mockResolvedValueOnce([{}])
@@ -83,6 +99,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
   it('OS sem itens → 400 ORDER_NO_ITEMS antes da nota', async () => {
     const conn = mockConn()
     conn.query
+      .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])
       .mockResolvedValueOnce([[{ itemsQtde: 0, productQtde: 0, productValue: 0, discountValue: 0 }]])
       .mockResolvedValueOnce([{}])
@@ -91,5 +108,59 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
       .rejects.toMatchObject({ statusCode: 400, code: 'ORDER_NO_ITEMS' })
     expect(inv.issueInvoice).not.toHaveBeenCalled()
     expect(conn.rollback).toHaveBeenCalled()
+  })
+
+  // ACHADO A1 da Onda 0 (fase Primeiro Cliente, 2026-09-13): até aqui o
+  // faturamento da OS gravava os títulos e parava — baixa por contrato e
+  // boleto automático só existiam no billing da VENDA, e a receita de
+  // contrato mensal nasce TODA por este caminho.
+  it('A1/D5: os títulos da OS passam pelos automatismos da forma (mesma composição da venda)', async () => {
+    const conn = mockConn()
+    conn.query
+      .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
+      .mockResolvedValueOnce([[{ status: 'A' }]])
+      .mockResolvedValueOnce([[{ itemsQtde: 1, productQtde: 1, productValue: 150, discountValue: 0 }]])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([[{ n: 1 }]])
+      .mockResolvedValueOnce([[{ n: 0 }]])
+      .mockResolvedValueOnce([[{ customerId: 55 }]])
+
+    await generateInvoice(300, { dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 2 }, 'setes_setes', 1, 7)
+
+    expect(auto.applyTitleAutomation).toHaveBeenCalledTimes(1)
+    const [, schema, institutionId, userId, input] = auto.applyTitleAutomation.mock.calls[0]
+    expect([schema, institutionId, userId]).toEqual(['setes_setes', 1, 7])
+    // uma entrada por parcela, com a MESMA forma e as quotas do rateio
+    expect(input).toMatchObject({
+      orderId: 300,
+      dtPayment: '2026-09-13',
+      parcels: [
+        { parcel: 1, paymentTypeId: 6, amount: 75 },
+        { parcel: 2, paymentTypeId: 6, amount: 75 },
+      ],
+    })
+  })
+
+  it('A1: a composição roda DEPOIS de os títulos existirem (senão não haveria o que baixar)', async () => {
+    const conn = mockConn()
+    conn.query
+      .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
+      .mockResolvedValueOnce([[{ status: 'A' }]])
+      .mockResolvedValueOnce([[{ itemsQtde: 1, productQtde: 1, productValue: 150, discountValue: 0 }]])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([[{ n: 1 }]])
+      .mockResolvedValueOnce([[{ n: 0 }]])
+      .mockResolvedValueOnce([[{ customerId: 55 }]])
+
+    let titulosNaChamada = -1
+    auto.applyTitleAutomation.mockImplementation(async () => {
+      titulosNaChamada = conn.query.mock.calls
+        .filter(c => /INSERT INTO `setes_setes`\.tb_financial\s/.test(String(c[0]))).length
+      return { autoSettled: 0, bankSlipsIssued: 0 }
+    })
+
+    await generateInvoice(300, { dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 2 }, 'setes_setes', 1, 7)
+
+    expect(titulosNaChamada).toBe(2)
   })
 })

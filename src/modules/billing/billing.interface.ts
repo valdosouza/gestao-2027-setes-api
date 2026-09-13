@@ -32,6 +32,9 @@ export interface InvoiceResult {
   totalValue: number
   parcels: number
   autoSettled: number   // parcelas baixadas automaticamente por CONTRATO FINANCEIRO (migration 038)
+  // simetria com o faturamento da OS (gate adversarial da Onda 1, LOW-8):
+  // "faturada" não quer dizer "cobrada" — quem chama precisa saber dos dois
+  bankSlipsIssued: number
 }
 
 /** Linha viva de tb_order_item para o faturamento. */

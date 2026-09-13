@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isValidIsoDate } from '@shared/validation'
 import { entityFiscalBody, withFiscalRefinements } from '@shared/entity'
 
 /**
@@ -9,7 +10,11 @@ import { entityFiscalBody, withFiscalRefinements } from '@shared/entity'
  */
 
 const flag    = z.enum(['S', 'N'])
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data deve ser AAAA-MM-DD')
+// Formato E existencia no calendario (gate socratico da Onda 1, fase Primeiro
+// Cliente): regex de formato aceita '2026-13-45' e o MariaDB sem strict mode
+// grava '0000-00-00' — inclusive em artefato IMUTAVEL (boleto, cheque).
+// Regra da casa: o que valida e o que grava (setes-api/02-VALIDACAO.md).
+const isoDate = z.string().refine(isValidIsoDate, 'Data invalida (use YYYY-MM-DD)')
 
 const collaboratorBase = entityFiscalBody.extend({
   dtAdmission:         isoDate.nullable().optional(),

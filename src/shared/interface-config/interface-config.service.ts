@@ -147,6 +147,28 @@ export async function getResolvedConfigsByKey(
 export async function getConfigContent(
   institution: InstitutionPayload, moduleKey: string, name: string
 ): Promise<string | null> {
-  const configs = await getResolvedConfigsByKey(institution, moduleKey)
+  return getConfigContentFor(
+    institution.schemaName, institution.institutionId, institution.userId, moduleKey, name)
+}
+
+/**
+ * Mesma resolução, para quem NÃO tem o payload do JWT em mãos — peça ou
+ * composição shared que já recebe schema/institution/usuário (ex.:
+ * `@shared/title-automation` resolvendo `auto_bank_slip`).
+ *
+ * ⚠️ NUNCA chame com uma transação aberta na sua conexão: isto vai ao `pool`,
+ * isto é, pede uma SEGUNDA conexão enquanto a primeira segura locks. Com
+ * `connectionLimit: 20`, N operações concorrentes prendem as 20 esperando uma
+ * 21ª que ninguém libera — o gate adversarial da Onda 1 (fase Primeiro
+ * Cliente) travou a API PERMANENTEMENTE assim (0 de 40 faturamentos em 45 s).
+ * Resolva ANTES do `beginTransaction` e passe o valor adiante.
+ */
+export async function getConfigContentFor(
+  schemaName: string, institutionId: number, userId: number,
+  moduleKey: string, name: string
+): Promise<string | null> {
+  const interfaceId = await findInterfaceIdByKeyCached(moduleKey)
+  if (interfaceId === null) return null
+  const configs = await getResolvedConfigs(schemaName, institutionId, interfaceId, userId)
   return configs.find(c => c.name === name)?.content ?? null
 }

@@ -1,18 +1,18 @@
 /**
- * Tipos do módulo financial-contracts — Contratos Financeiros (política de
+ * Tipos do módulo settlement-rules — Regras de Recebimento (política de
  * baixa automática por forma de pagamento; migration 038 —
  * Infra-IA/prompts/prompt_contrato_financeiro_baixa_automatica.md, D1–D22,
- * Valdo 2026-09-03). tb_financial_contract no SCHEMA DO CLIENTE é
+ * Valdo 2026-09-03). tb_settlement_rule no SCHEMA DO CLIENTE é
  * ESPECIALIZAÇÃO do vínculo institution × forma (PK compartilhada = 1
  * contrato por forma — D2); por isso o "id" do recurso na URL é o
  * tb_payment_types_id. A PRESENÇA do contrato é o gatilho da baixa
  * automática no faturamento (D1/D9): conta 0 = caixa (exige caixa aberto),
  * > 0 = conta corrente; fee_rate = taxa da operadora; payment_term = dias
  * até o dinheiro cair. Espelho no app: apps/web/lib/app/modules/
- * financial_contracts/.
+ * settlement_rules/.
  */
 
-export interface FinancialContractListRow {
+export interface SettlementRuleListRow {
   /** = tb_payment_types_id (PK compartilhada com o vínculo). */
   id:                     number
   paymentTypeId:          number
@@ -25,11 +25,11 @@ export interface FinancialContractListRow {
   expirationDate:         string | null
 }
 
-export interface FinancialContractFull extends FinancialContractListRow {
+export interface SettlementRuleFull extends SettlementRuleListRow {
   note: string | null
 }
 
-export interface FinancialContractInput {
+export interface SettlementRuleInput {
   bankAccountId:   number
   feeRate:         number
   paymentTerm:     number
@@ -37,7 +37,7 @@ export interface FinancialContractInput {
   note?:           string | null
 }
 
-export interface FinancialContractCreateInput extends FinancialContractInput {
+export interface SettlementRuleCreateInput extends SettlementRuleInput {
   paymentTypeId: number
 }
 

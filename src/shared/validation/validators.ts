@@ -71,3 +71,20 @@ export function matchesMask(mask: string | null | undefined, value: string): boo
 export function stripNonDigits(value: string): string {
   return value.replace(/\D/g, '')
 }
+
+/**
+ * Data de CALENDÁRIO em 'YYYY-MM-DD'. O regex de formato sozinho aceita
+ * '2026-13-45', e o MariaDB sem strict mode grava isso como '0000-00-00' —
+ * o gate adversarial da Onda 1 (fase Primeiro Cliente) faturou uma ordem com
+ * vencimento zerado no título E no BOLETO, que é imutável por decisão.
+ * Aqui a data tem que EXISTIR: o round-trip prova mês e dia.
+ */
+export function isValidIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const [y, m, d] = value.split('-').map(Number)
+  if (m < 1 || m > 12 || d < 1) return false
+  const date = new Date(Date.UTC(y, m - 1, d))
+  return date.getUTCFullYear() === y
+      && date.getUTCMonth() === m - 1
+      && date.getUTCDate() === d
+}

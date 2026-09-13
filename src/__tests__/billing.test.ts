@@ -29,6 +29,8 @@ jest.mock('../modules/state-tax-rates/state-tax-rates.repository', () => ({
 // isola o Framework de Configurações (série default '1')
 jest.mock('../shared/interface-config', () => ({
   getConfigContent: jest.fn().mockResolvedValue(null),
+  // lido pela composição @shared/title-automation (auto_bank_slip) — null = desligado
+  getConfigContentFor: jest.fn().mockResolvedValue(null),
 }))
 
 // isola a baixa automática à vista (W3.2 — testada isoladamente em

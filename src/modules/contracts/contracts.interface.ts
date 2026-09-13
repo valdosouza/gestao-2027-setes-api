@@ -35,6 +35,9 @@ export interface ContractFull {
   dtStart:      string
   dtEnd:        string | null
   paymentDay:   number
+  /** D14: forma combinada no contrato (null = informar no faturamento). */
+  paymentTypeId: number | null
+  paymentTypeDescription: string | null
   active:       'S' | 'N'
   items:        ContractItemRow[]
 }
@@ -50,6 +53,8 @@ export interface ContractInput {
   dtStart:    string
   dtEnd?:     string | null
   paymentDay: number
+  /** D14: forma combinada (null/ausente = informar no faturamento). */
+  paymentTypeId?: number | null
   active:     'S' | 'N'
   items:      ContractItemInput[]
 }

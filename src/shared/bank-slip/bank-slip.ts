@@ -1,6 +1,7 @@
 import { PoolConnection } from 'mysql2/promise'
 import { assertSchema } from '@shared/db/schema'
 import { HttpError } from '@shared/errors/http-error'
+import { retargetTitleCharge } from '@shared/title-charge'
 import { round2 } from '@shared/money'
 import { localTodayIso } from '@shared/invoice/invoice'   // D-G36: liquidação não é no futuro   // L2: um arredondador por ponta (regra do DECIMAL)
 import { PRINCIPAL_PAID_SQL } from '@shared/financial-settlement/title-balance'
@@ -16,7 +17,7 @@ import {
  * HISTÓRIA append-only (E emitido · L liquidado · C cancelado · X estornado).
  * Estado = derivado do ÚLTIMO evento — nunca coluna. Tudo transaction-aware
  * (1º parâmetro conn); consumida pelo módulo `bank-slips` e pelo billing
- * (emissão automática — D18 do contrato financeiro).
+ * (emissão automática — D18 do regra de recebimento).
  *
  * O que morreu do legado: BLT_CODQTC (vínculo + nosso número + código da
  * baixa num inteiro) → vínculo = tb_bank_slip_title; código da baixa =
@@ -55,6 +56,11 @@ export interface BankSlipTitleRef {
 }
 
 export interface IssueBankSlipInput {
+  /**
+   * Forma de cobrança a DESTINAR aos títulos (D15 — regra BOL-02 do legado).
+   * Opcional: com uma única forma kind='B' habilitada, a peça resolve sozinha.
+   */
+  paymentTypeId?: number
   agreementId: number
   titles: BankSlipTitleRef[]
   /** Obrigatório no agrupado; no individual default = vencimento do título. */
@@ -149,6 +155,65 @@ interface LockedTitle {
   paymentTypeId: number
 }
 
+/**
+ * DESTINAR o título (D15, Valdo 2026-09-13 — regra BOL-02 do legado): emitir
+ * boleto é o ato que decide COMO aquela dívida será cobrada, então a forma de
+ * cobrança do título passa a ser a de boleto.
+ *
+ * Não é cosmético: a baixa grava no PAGAMENTO a forma que está no título
+ * (`settlement-batch`), e é por ela que saem extrato e comissão. Sem destinar,
+ * um título faturado em "dinheiro" e pago por boleto registrava o recebimento
+ * como dinheiro.
+ *
+ * Resolução: forma explícita > única forma kind='B' habilitada na institution.
+ * Com 2+ formas de boleto não há como adivinhar — quem emite informa.
+ */
+async function resolveBankSlipPaymentType(
+  conn: PoolConnection, s: string, institutionId: number, explicit?: number
+): Promise<number> {
+  if (explicit !== undefined) {
+    const [row] = await conn.query<any[]>(
+      `SELECT pt.id FROM \`${s}\`.tb_institution_has_payment_types v
+         INNER JOIN setes_central.tb_payment_types pt
+            ON pt.id = v.tb_payment_types_id AND pt.deleted = 'N'
+        WHERE v.tb_institution_id = ? AND v.tb_payment_types_id = ?
+          AND v.enable = 'S' AND v.deleted = 'N' AND pt.kind = 'B'`,
+      [institutionId, explicit]
+    )
+    if (!row[0]) {
+      throw new HttpError(422,
+        'Forma de pagamento informada não é uma forma de boleto habilitada',
+        [{ field: 'paymentTypeId', message: 'Forma de boleto inválida' }],
+        'BANK_SLIP_PAYMENT_TYPE_INVALID')
+    }
+    return Number(row[0].id)
+  }
+
+  const [rows] = await conn.query<any[]>(
+    `SELECT pt.id, pt.description FROM \`${s}\`.tb_institution_has_payment_types v
+       INNER JOIN setes_central.tb_payment_types pt
+          ON pt.id = v.tb_payment_types_id AND pt.deleted = 'N'
+      WHERE v.tb_institution_id = ? AND v.enable = 'S' AND v.deleted = 'N'
+        AND pt.kind = 'B' ORDER BY pt.id`,
+    [institutionId]
+  )
+  if (rows.length === 0) {
+    throw new HttpError(422,
+      'Nenhuma forma de pagamento de boleto habilitada — configure a forma antes de emitir',
+      [{ field: 'paymentTypeId', message: 'Sem forma de boleto' }],
+      'BANK_SLIP_NO_PAYMENT_TYPE')
+  }
+  if (rows.length > 1) {
+    throw new HttpError(422,
+      'Há mais de uma forma de boleto habilitada — informe qual destina os títulos',
+      rows.map((r: any) => ({
+        field: 'paymentTypeId', message: `${r.id} - ${r.description}`,
+      })),
+      'BANK_SLIP_PAYMENT_TYPE_AMBIGUOUS')
+  }
+  return Number(rows[0].id)
+}
+
 /** Título travado (FOR UPDATE) com saldo e cliente derivado da cadeia da ordem. */
 async function lockTitle(
   conn: PoolConnection, s: string, institutionId: number, ref: BankSlipTitleRef
@@ -196,6 +261,18 @@ async function lockTitle(
 }
 
 /** Existe boleto VIGENTE (último evento ≠ L/C) cobrando este título? */
+/**
+ * Guarda do INSTRUMENTO, exportada para quem compõe (o módulo do financeiro):
+ * título com boleto vigente não pode ser redirecionado, senão a cobrança em
+ * curso e a forma do título se contradizem. Mora aqui porque é regra do boleto
+ * — a peça `@shared/title-charge` não conhece instrumento nenhum.
+ */
+export async function findOpenSlip(
+  conn: PoolConnection, schemaName: string, institutionId: number, ref: BankSlipTitleRef
+): Promise<number | null> {
+  return hasOpenSlip(conn, assertSchema(schemaName), institutionId, ref)
+}
+
 async function hasOpenSlip(
   conn: PoolConnection, s: string, institutionId: number, ref: BankSlipTitleRef
 ): Promise<number | null> {
@@ -271,8 +348,17 @@ function todayIso(): string {
  * EMISSÃO (evento E): valida carteira ativa, títulos a RECEBER abertos do
  * MESMO cliente sem boleto vigente (D9), congela taxas/instruções da
  * carteira, reserva o nosso número (D3: sequência da carteira; sem faixa =
- * id) e grava cabeçalho + vínculos + evento E. NÃO toca tb_financial* —
- * "destinado a boleto" é derivado do vínculo com boleto aberto.
+ * id) e grava cabeçalho + vínculos + evento E.
+ *
+ * DESTINA o título (D15, Valdo 2026-09-13 — regra BOL-02 do legado): emitir é o
+ * ato que decide COMO a dívida será cobrada, então a forma de cobrança do
+ * título passa a ser a de boleto, pela peça @shared/title-charge. Este
+ * comentário já afirmou o contrário ("não toca tb_financial") depois de a D15
+ * ter entrado — o gate cobrou, e com razão: comentário que mente é onde o
+ * próximo bug mora.
+ *
+ * D20 (Valdo): cancelar ou estornar o boleto NÃO desfaz a destinação — o
+ * título fica em boleto até alguém redirecionar pela tela do financeiro.
  */
 export async function issueBankSlip(
   conn: PoolConnection, schemaName: string, institutionId: number,
@@ -322,6 +408,17 @@ export async function issueBankSlip(
       [{ field: 'agreementId', message: 'Conta da carteira excluída' }], 'BANK_NOT_FOUND')
   }
 
+  // formas de BOLETO habilitadas — usadas para saber quem já está destinado
+  const [slipTypeRows] = await conn.query<any[]>(
+    `SELECT pt.id FROM \`${s}\`.tb_institution_has_payment_types v
+       INNER JOIN setes_central.tb_payment_types pt
+          ON pt.id = v.tb_payment_types_id AND pt.deleted = 'N'
+      WHERE v.tb_institution_id = ? AND v.enable = 'S' AND v.deleted = 'N'
+        AND pt.kind = 'B'`,
+    [institutionId]
+  )
+  const slipPaymentTypes = new Set<number>(slipTypeRows.map((r: any) => Number(r.id)))
+
   const locked: LockedTitle[] = []
   for (const ref of input.titles) {
     const t = await lockTitle(conn, s, institutionId, ref)
@@ -344,6 +441,24 @@ export async function issueBankSlip(
   if (locked.length > 1 && customers.size > 1) {
     throw new HttpError(409, 'Boleto agrupado só com títulos do MESMO cliente',
       [{ field: 'titles', message: 'Clientes diferentes' }], 'BANK_SLIP_MIXED_CUSTOMERS')
+  }
+
+  // DESTINAR (D15 / BOL-02): o título que vai ser cobrado por boleto passa a
+  // dizer isso. Só toca quem ainda não está numa forma de boleto — título que
+  // já nasceu em boleto (emissão automática do faturamento) fica como está,
+  // com a forma que o faturamento escolheu.
+  const aDestinar = locked.filter(t => !slipPaymentTypes.has(t.paymentTypeId))
+  if (aDestinar.length > 0) {
+    const destino = await resolveBankSlipPaymentType(
+      conn, s, institutionId, input.paymentTypeId)
+    for (const t of aDestinar) {
+      // O ato é o MESMO do financeiro (D17): emitir boleto é o caso PARTICULAR
+      // de redirecionar a cobrança. A peça geral escreve; aqui fica só a
+      // política de QUAL forma, que é do instrumento.
+      await retargetTitleCharge(conn, s, institutionId, {
+        orderId: t.orderId, parcel: t.parcel, paymentTypeId: destino,
+      })
+    }
   }
 
   let dtExpiration = input.dtExpiration ?? null
@@ -664,7 +779,7 @@ export interface AutoIssueResult {
 }
 
 /**
- * Gancho do FATURAMENTO (D18 do contrato financeiro / D9 do boleto): com a
+ * Gancho do FATURAMENTO (D18 do regra de recebimento / D9 do boleto): com a
  * config `auto_bank_slip` ligada, conta as carteiras ATIVAS — 0: nada; 1:
  * emite 1 boleto POR PARCELA cuja forma é kind='B'; 2..n: nada (a tela de
  * Boletos emite depois — Q20=b). Nunca bloqueia a nota (chamado dentro do

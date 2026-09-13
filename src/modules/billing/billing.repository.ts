@@ -3,8 +3,9 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchema } from '@shared/db/schema'
 import { ItemTaxCalcResult } from '@shared/tax-rule'
-import { tryAutoSettleByContract } from '@shared/financial-settlement'
-import { tryIssueBankSlipsOnBilling } from '@shared/bank-slip'
+import {
+  applyTitleAutomation, localIsoDate, TitleAutomationConfig,
+} from '@shared/title-automation'
 import { receiveChecksOnBilling, CheckReceiveItem } from '@shared/check'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { insertCommissions, CommissionEntryInput } from '@shared/commission'
@@ -416,10 +417,10 @@ export interface PersistInvoiceParams {
   financialOperation: string // 'C' crédito | 'D' débito (R5-Q1 — resolveFinancialPolarity)
   noteText: string           // motor de observações (T6/P11) — já concatenado
   approxTaxByItem: Map<string, number> // `${orderItemId}|${kind}` -> % aproximado (Lei 12.741/2012)
-  userId: number             // autor da baixa automática (contrato financeiro) e dos boletos
+  userId: number             // autor da baixa automática (regra de recebimento) e dos boletos
   /** Config `auto_bank_slip` da interface billing (D18 do contrato / D9 do
    *  boleto): com 1 carteira ATIVA emite 1 boleto por parcela em boleto. */
-  autoBankSlip: boolean
+  automationConfig: TitleAutomationConfig
   /** Lançamentos de comissão por item (rodada 2026-08-24 — positivos na
    *  venda, NEGATIVOS na devolução; imutáveis, mesma transação da nota). */
   commissions: CommissionEntryInput[]
@@ -546,57 +547,8 @@ async function persistInvoiceOnce(
     // positivos (venda) ou negativos (devolução); id reservado UMA vez
     await insertCommissions(conn, schemaName, institutionId, params.commissions)
 
-    // baixa automática por CONTRATO FINANCEIRO (migration 038 — D1–D22 do
-    // prompt_contrato_financeiro_baixa_automatica.md): a PRESENÇA do
-    // contrato na forma de pagamento decide; sem contrato o título nasce
-    // aberto (regra 4). NUNCA bloqueia o faturamento (regra 3): os gates
-    // de negócio (NO_CONTRACT/KIND_FIXED/CONTRACT_EXPIRED/NO_OPEN_CASHIER/
-    // BANK_ACCOUNT_NOT_FOUND) voltam graciosos e vão só a log (D14 — a
-    // resposta é apenas "faturado com sucesso"); qualquer falha TÉCNICA
-    // inesperada (bug, deadlock, conexão) é isolada com SAVEPOINT: desfaz
-    // só a baixa parcial, a nota segue vigente (achado do gate socrático,
-    // rodada 2026-08-22). Fato gerador = data do faturamento (D6/D12).
-    let autoSettled = 0
-    // data LOCAL do faturamento (toISOString seria UTC — à noite em Brasília
-    // viraria o dia seguinte e divergiria do CURDATE() do estorno)
-    const now = new Date()
-    const invoiceDate = [
-      now.getFullYear(),
-      String(now.getMonth() + 1).padStart(2, '0'),
-      String(now.getDate()).padStart(2, '0'),
-    ].join('-')
-    for (const p of parcels) {
-      await conn.query('SAVEPOINT auto_settle')
-      try {
-        const result = await tryAutoSettleByContract(conn, schemaName, institutionId, params.userId, {
-          orderId: params.orderId, parcel: p.parcel, paidValue: p.amount,
-          dtPayment: invoiceDate, paymentTypeId: p.paymentTypeId,
-        })
-        if (result.settled) {
-          autoSettled += 1
-        } else if (result.reason !== 'NO_CONTRACT' && result.reason !== 'KIND_FIXED') {
-          logger.warn('Baixa automática não realizada — título fica aberto p/ baixa manual', {
-            institutionId, orderId: params.orderId, parcel: p.parcel, reason: result.reason,
-          })
-        }
-      } catch (err) {
-        // ER_LOCK_DEADLOCK (1213) desfaz a transação INTEIRA no InnoDB — o
-        // savepoint já não existe e a nota não pode ser salva: propaga o
-        // erro original (gate socrático 2026-09-03; retry = Q-G4 da rodada).
-        // ER_LOCK_WAIT_TIMEOUT (1205) e falhas de código respeitam o savepoint.
-        try {
-          await conn.query('ROLLBACK TO SAVEPOINT auto_settle')
-        } catch (rollbackErr) {
-          logger.error('Transação do faturamento perdida na baixa automática — nota NÃO emitida', {
-            institutionId, orderId: params.orderId, parcel: p.parcel, err, rollbackErr,
-          })
-          throw err
-        }
-        logger.error('Baixa automática por contrato falhou — título fica aberto p/ baixa manual', {
-          institutionId, orderId: params.orderId, parcel: p.parcel, err,
-        })
-      }
-    }
+    // data LOCAL do faturamento — fato gerador dos automatismos e do cheque
+    const invoiceDate = localIsoDate()
 
     // recebimento de CHEQUES (D8/D9 do cheque — Infra-IA/prompts/prompt_
     // cheque_rastreabilidade.md): nasce SÓ aqui, na transação da baixa —
@@ -613,36 +565,26 @@ async function persistInvoiceOnce(
       })
     }
 
-    // emissão AUTOMÁTICA de boletos (D18 do contrato financeiro / D9 do
-    // boleto): config auto_bank_slip ligada + exatamente 1 carteira ativa →
-    // 1 boleto por parcela cuja forma é kind='B'. Nunca bloqueia a nota
-    // (SAVEPOINT); 0 ou 2..n carteiras = nada (a tela de Boletos emite).
-    if (params.autoBankSlip) {
-      await conn.query('SAVEPOINT auto_bank_slip')
-      try {
-        const r = await tryIssueBankSlipsOnBilling(conn, schemaName, institutionId, params.userId, {
-          orderId: params.orderId,
-          parcels: parcels.map(p => ({ parcel: p.parcel, paymentTypeId: p.paymentTypeId })),
-        })
-        if (r.reason === 'MULTIPLE_AGREEMENTS') {
-          logger.warn('Boleto automático não emitido — várias carteiras ativas (emitir na tela de Boletos)', {
-            institutionId, orderId: params.orderId,
-          })
-        }
-      } catch (err) {
-        try {
-          await conn.query('ROLLBACK TO SAVEPOINT auto_bank_slip')
-        } catch (rollbackErr) {
-          logger.error('Transação do faturamento perdida na emissão de boleto — nota NÃO emitida', {
-            institutionId, orderId: params.orderId, err, rollbackErr,
-          })
-          throw err
-        }
-        logger.error('Emissão automática de boleto falhou — emitir na tela de Boletos', {
-          institutionId, orderId: params.orderId, err,
-        })
-      }
-    }
+    // AUTOMATISMOS do nascimento do título — composição @shared/title-automation
+    // (extraída na Onda 1 da fase Primeiro Cliente, 2026-09-13): baixa por
+    // regra de recebimento + boleto automático, com a MESMA política nas duas
+    // portas que faturam (venda aqui, ordem de serviço no módulo service-orders).
+    // Nada aqui bloqueia a nota; a data do fato gerador é a data LOCAL de hoje.
+    // Roda DEPOIS do cheque, na ordem canônica de locks da regra 3 do
+    // PADROES §9 (título → cheque → baixa → extrato; boleto DEPOIS): as telas
+    // de Cheques e de Boletos adquirem nessa ordem, e faturar em sentido
+    // contrário abriria cruzamento de locks com elas (gate socrático, M1).
+    // O resultado de negócio não muda: as parcelas são disjuntas por kind — a
+    // auto-baixa recusa 'Q' e 'B' (KIND_FIXED), o boleto só emite em 'B' e o
+    // cheque só nasce em 'Q'.
+    const automation = await applyTitleAutomation(
+      conn, schemaName, institutionId, params.userId, {
+        orderId: params.orderId,
+        dtPayment: invoiceDate,
+        parcels: parcels.map(p => ({
+          parcel: p.parcel, paymentTypeId: p.paymentTypeId, amount: p.amount,
+        })),
+      }, params.automationConfig)
 
     await conn.query(
       `UPDATE \`${s}\`.tb_order SET status = 'F', updated_at = NOW()
@@ -654,7 +596,9 @@ async function persistInvoiceOnce(
     return {
       orderId: params.orderId, invoiceNumber, serie: params.serie,
       model: params.model, totalValue: params.totalValue,
-      parcels: parcels.length, autoSettled,
+      parcels: parcels.length,
+      autoSettled: automation.autoSettled,
+      bankSlipsIssued: automation.bankSlipsIssued,
     }
   } catch (err) {
     await conn.rollback()

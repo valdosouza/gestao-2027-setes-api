@@ -40,7 +40,7 @@ const router = Router()
  *       renomeada de tb_bank_charge_slip — migration 039). O BOLETO congela
  *       estas taxas/instruções na emissão (@shared/bank-slip); `active`
  *       decide se a carteira entra no gate 0/1/n do faturamento automático
- *       (D18 do contrato financeiro). `protest='S'` exige `dayProtest`.
+ *       (D18 do regra de recebimento). `protest='S'` exige `dayProtest`.
  *     tags: [BankChargeAgreements]
  *     security:
  *       - BearerAuth: []

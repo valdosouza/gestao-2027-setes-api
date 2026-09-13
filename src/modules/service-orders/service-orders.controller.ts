@@ -4,12 +4,12 @@ import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import {
-  openOrderDto, orderItemDto, monthlyRunDto, invoiceDto,
+  openOrderDto, orderItemDto, monthlyRunDto, invoiceDto, batchInvoiceDto,
 } from './service-orders.dto'
 import {
   ServiceOrderScope, fetchOrders, fetchOrder, createOrder, createItem,
   editItem, deleteItem, removeOrder, runMonthly, invoiceOrder,
-  expirationSuggestion, fetchProductsLookup,
+  invoiceOrderBatch, expirationSuggestion, fetchProductsLookup,
 } from './service-orders.service'
 
 /** Escopo SEMPRE do JWT (institution + usuário que assina a tb_order). */
@@ -146,6 +146,27 @@ export async function invoice(req: Request, res: Response): Promise<void> {
   }
 }
 
+/**
+ * LOTE da cobrança mensal (D6/D7). Responde 200 mesmo com falhas parciais: o
+ * lote NÃO é uma operação única — é N faturamentos independentes, e o
+ * relatório diz o que aconteceu com cada um. 4xx aqui só para o lote inteiro
+ * inválido (corpo malformado, sem privilégio).
+ */
+export async function batchInvoice(req: Request, res: Response): Promise<void> {
+  const body = parseBody(batchInvoiceDto, req, res)
+  if (body === null) return
+  try {
+    const report = await invoiceOrderBatch(body, scopeOf(req))
+    logger.info('Lote de faturamento de OS', {
+      institutionId: req.institution!.institutionId,
+      requested: report.requested, invoiced: report.invoiced, failed: report.failed,
+    })
+    res.json({ ok: true, data: report })
+  } catch (err) {
+    handleError(res, err, 'service-orders/batch-invoice POST')
+  }
+}
+
 export async function suggestion(req: Request, res: Response): Promise<void> {
   try {
     const year  = Number(req.query.year)
@@ -155,7 +176,16 @@ export async function suggestion(req: Request, res: Response): Promise<void> {
       res.status(400).json({ ok: false, error: 'Informe year e month válidos' })
       return
     }
-    res.json({ ok: true, data: { dtExpiration: expirationSuggestion(year, month) } })
+    // D12: com a ordem em mãos, o default vem do dia do CONTRATO que a
+    // alimentou; sem ela (ou com contratos divergentes), 5º dia útil.
+    const orderId = req.query.orderId === undefined ? undefined : Number(req.query.orderId)
+    if (orderId !== undefined && (!Number.isInteger(orderId) || orderId <= 0)) {
+      res.status(400).json({ ok: false, error: 'orderId inválido' })
+      return
+    }
+    res.json({ ok: true, data: {
+      dtExpiration: await expirationSuggestion(year, month, scopeOf(req), orderId),
+    } })
   } catch (err) {
     handleError(res, err, 'service-orders/expiration-suggestion GET')
   }

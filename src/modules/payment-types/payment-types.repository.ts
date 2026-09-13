@@ -203,13 +203,13 @@ export async function unlinkPaymentType(
         WHERE tb_institution_id = ? AND tb_payment_types_id = ?`,
       [`${schemaName}.tb_institution_has_payment_types`, institutionId, id]
     )
-    // D-G2 (contrato financeiro, Rodada 4): o contrato é especialização do
+    // D-G2 (regra de recebimento, Rodada 4): o contrato é especialização do
     // vínculo — desvincular a forma soft-deleta o contrato junto (nunca fica
     // órfão; revincular NÃO revive o contrato — recriar pelo cadastro).
     await conn.query(
       `UPDATE ?? SET deleted = 'S', updated_at = NOW()
         WHERE tb_institution_id = ? AND tb_payment_types_id = ? AND deleted = 'N'`,
-      [`${schemaName}.tb_financial_contract`, institutionId, id]
+      [`${schemaName}.tb_settlement_rule`, institutionId, id]
     )
     await conn.commit()
   } catch (err) {
