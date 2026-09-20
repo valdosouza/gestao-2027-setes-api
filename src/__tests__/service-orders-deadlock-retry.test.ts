@@ -18,7 +18,7 @@ jest.mock('../shared/invoice', () => ({
 // title-automation.test.ts — aqui só não podem tocar o mock do pool
 jest.mock('../shared/title-automation', () => ({
   __esModule: true,
-  applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0 }),
+  applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0, chargeable: 1 }),
   resolveTitleAutomationConfig: jest.fn().mockResolvedValue({ autoBankSlip: false }),
   localIsoDate: () => '2026-09-13',
 }))

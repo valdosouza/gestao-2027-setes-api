@@ -227,7 +227,14 @@ export async function buildCancelPlan(
     checksToReverse.push({ checkId: members[0].checkId, event: members[0].event, number: members[0].number })
   }
 
-  // 2c. títulos com baixa VIVA que não seja o R de cheque acima (D2/D7 — estornar antes)
+  // 2c. títulos com baixa VIVA que não seja o R de cheque acima (D2/D7 — estornar antes).
+  // D28 (Q-P7 da fase Primeiro Cliente, Valdo 2026-09-19 — MANTER): a baixa
+  // AUTOMÁTICA (título que nasceu baixado pela regra de recebimento da forma —
+  // caso da mensalidade em espécie/PIX) bloqueia IGUAL à manual. Não é
+  // cascata como a do cheque em custódia: o cheque é PORTADOR da dívida e
+  // ainda não virou dinheiro; a baixa por regra é dinheiro que ENTROU conforme
+  // o combinado, e desfazê-la é ato do financeiro com rastro próprio (estorno),
+  // não efeito colateral de cancelar a nota. O 409 diz exatamente o que fazer.
   for (const p of payments) {
     const key = `${Number(p.parcel)}|${Number(p.event)}`
     if (chequePaymentKeys.has(key)) continue

@@ -533,7 +533,7 @@ export async function issueBankSlip(
   return { id, ourNumber, documentNumber, value, dtExpiration, titles: locked.length }
 }
 
-interface LockedSlip {
+export interface LockedSlip {
   id: number
   bankAccountId: number
   ourNumber: string
@@ -547,7 +547,12 @@ interface LockedSlip {
   lastSettledCode: number | null
 }
 
-async function lockSlip(
+/**
+ * Exportada para a composição @shared/bank-slip-registration (Onda 2): a voz do
+ * banco é gravada SOB o lock do boleto — dois webhooks simultâneos serializam
+ * aqui (regra 2 do PADROES §9). `s` já validado por assertSchema.
+ */
+export async function lockSlip(
   conn: PoolConnection, s: string, institutionId: number, slipId: number
 ): Promise<LockedSlip> {
   const [rows] = await conn.query<any[]>(
@@ -701,7 +706,11 @@ export async function settleBankSlip(
 /** CANCELAMENTO (evento C — D6/D10): só boleto aberto; libera os títulos para reemissão. */
 export async function cancelBankSlip(
   conn: PoolConnection, schemaName: string, institutionId: number,
-  userId: number, slipId: number, note?: string | null
+  userId: number, slipId: number, note?: string | null,
+  // Onda 2 (D-I7): o banco também cancela/expira — o efeito aqui é o MESMO C,
+  // com `source='A'` para a história dizer quem falou. Default 'M' preserva os
+  // chamadores antigos.
+  source: BankSlipSource = 'M'
 ): Promise<number> {
   const s = assertSchema(schemaName)
   const slip = await lockSlip(conn, s, institutionId, slipId)
@@ -709,7 +718,7 @@ export async function cancelBankSlip(
     throw new HttpError(409, `Boleto ${slip.id} não está em aberto`, undefined, 'BANK_SLIP_NOT_OPEN')
   }
   return insertEvent(conn, s, institutionId, slip.id, userId, {
-    kind: 'C', dtRecord: todayIso(), source: 'M', note: note ?? null,
+    kind: 'C', dtRecord: todayIso(), source, note: note ?? null,
   })
 }
 

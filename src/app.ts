@@ -12,6 +12,7 @@ import { featureFlagMiddleware } from '@gateway/feature-flag.middleware'
 import { rateLimitMiddleware }   from '@gateway/rate-limit.middleware'
 import apiRouter                 from '@gateway/router'
 import authRoutes                from '@modules/auth/auth.routes'
+import bankChannelWebhookRoutes  from '@modules/bank-channel-webhook/bank-channel-webhook.routes'
 import logger                    from '@shared/logger/logger'
 import { contentionToHttpError } from '@shared/db/contention'
 import { swaggerSpec }           from '@shared/swagger/swagger-config'
@@ -62,6 +63,10 @@ app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOStri
 
 // Login unificado multi-institution (público, rate limit por IP)
 app.use('/auth', rateLimitMiddleware, authRoutes)
+
+// Webhook do banco (Onda 2 — D-I9/D-I15): público, autenticado pelo token do
+// canal no path; só GATILHO de consulta — nunca liquida pelo payload.
+app.use('/hooks/bank-channel', rateLimitMiddleware, bankChannelWebhookRoutes)
 
 // Auth JWT em todas as rotas /api
 app.use('/api', authMiddleware)

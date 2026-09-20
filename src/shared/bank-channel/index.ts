@@ -1,0 +1,5 @@
+export * from './types'
+export * from './bank-channel'
+export * from './bank-channel.repository'
+export { BankHttpError, bankErrorMessage } from './https-json'
+export { interAdapter, interCallbackToStatus, resetInterTokenCache, INTER_BANK_NUMBER, INTER_NUM_DIAS_AGENDA } from './adapters/inter'

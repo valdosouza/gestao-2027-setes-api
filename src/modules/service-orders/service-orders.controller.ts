@@ -151,6 +151,13 @@ export async function invoice(req: Request, res: Response): Promise<void> {
  * lote NÃO é uma operação única — é N faturamentos independentes, e o
  * relatório diz o que aconteceu com cada um. 4xx aqui só para o lote inteiro
  * inválido (corpo malformado, sem privilégio).
+ *
+ * D24 (Q-P2, Valdo 2026-09-19 — MANTER): `ok: true` e 200 MESMO com
+ * `invoiced: 0, failed: N`. `ok` no envelope significa "a operação pedida
+ * executou" (convenção do Framework de Mensagens), e a operação pedida foi
+ * "tentar N faturamentos e relatar" — ela executou. Derivar `ok` de
+ * `failed === 0` ou responder 207/422 faria a ponte do app tratar o relatório
+ * como erro e descartá-lo; a tela já mostra ordem a ordem. Não "consertar".
  */
 export async function batchInvoice(req: Request, res: Response): Promise<void> {
   const body = parseBody(batchInvoiceDto, req, res)

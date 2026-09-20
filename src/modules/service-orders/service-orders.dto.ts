@@ -53,10 +53,22 @@ export type InvoiceDto    = z.infer<typeof invoiceDto>
  * As condições (vencimento, forma, parcelas) são as MESMAS para o lote — quem
  * precisa de forma diferente faz dois lotes (Q8).
  */
+export const BATCH_INVOICE_MAX_ORDERS = 50
+
 export const batchInvoiceDto = invoiceDto.extend({
+  /**
+   * D27 (Q-P6/A-8, Valdo 2026-09-19): teto 50 por REQUISIÇÃO. O lote é síncrono
+   * e cada ordem sob contenção custa até ~11 s (`FOR UPDATE WAIT 10`) — e até
+   * ~22 s com a passada extra da D25 (gate adversarial R5 mediu 22,4 s com a
+   * linha da institution travada): 200 numa requisição passava de meia hora e,
+   * se o cliente desistisse, o relatório — única prova do que foi cobrado — se
+   * perdia. A tela fatia a seleção em blocos de 50 e agrega os relatórios; lote
+   * assíncrono só se a Onda 4 provar necessidade. O pior caso (bloco inteiro
+   * atrás do MESMO lock ≈ 18 min) é a Q-R5.1, aberta para o Valdo.
+   */
   orderIds: z.array(z.number().int().positive())
              .min(1, 'Selecione ao menos uma ordem')
-             .max(200, 'No máximo 200 ordens por lote'),
+             .max(BATCH_INVOICE_MAX_ORDERS, `No máximo ${BATCH_INVOICE_MAX_ORDERS} ordens por lote`),
   /**
    * D13 (Valdo 2026-09-13): "cada ordem vencer no dia do seu contrato".
    * OMITIR o vencimento é o modo normal da cobrança mensal — cada ordem vence
@@ -69,6 +81,17 @@ export const batchInvoiceDto = invoiceDto.extend({
    * override do operador para o lote inteiro.
    */
   paymentTypeId: z.number().int().positive().optional(),
+  /**
+   * D30 (Valdo 2026-09-19, resposta ao P0.1): "cobranças recorrentes não têm
+   * parcelas" — o lote cobra o valor do contrato do mês em UMA parcela, sempre.
+   * Parcelamento é do faturamento INDIVIDUAL da ordem (`POST /:id/invoice`),
+   * onde `max_parcels` da forma governa. Aqui qualquer valor ≠ 1 é recusado
+   * (não silenciado): quem manda 3 parcelas para um lote está na porta errada.
+   */
+  parcels: z.number().int().optional().default(1)
+            .refine(v => v === 1, {
+              message: 'Cobrança recorrente não tem parcelas — parcelamento só no faturamento individual da ordem',
+            }),
 })
 
 export type BatchInvoiceDto = z.infer<typeof batchInvoiceDto>

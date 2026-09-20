@@ -146,8 +146,8 @@ describe('rotina mensal × competência (D-A29) e OS só com item (D-G33)', () =
     expect(conn.query.mock.calls.some(c => /tb_service_order|tb_order_item/.test(String(c[0])))).toBe(false)
     expect(conn.commit).toHaveBeenCalled()
   })
-  it('item injetável → trava a institution, RECONFERE a competência travante, abre a OS, injeta e grava o fato', async () => {
-    mockQuery.mockResolvedValueOnce([[{ contractId: 4, customerId: 209, dtStart: '2026-01-01', dtEnd: null, productId: 5, value: 100 }]])
+  it('item injetável → trava a institution, RECONFERE a competência travante, abre a OS, injeta e grava o fato COM as condições do contrato (D23)', async () => {
+    mockQuery.mockResolvedValueOnce([[{ contractId: 4, customerId: 209, dtStart: '2026-01-01', dtEnd: null, paymentDay: 10, paymentTypeId: 6, productId: 5, value: 100 }]])
     const conn = mockConn()
     conn.query
       .mockResolvedValueOnce([[]])                              // varredura: competência livre (sem lock ainda)
@@ -167,7 +167,10 @@ describe('rotina mensal × competência (D-A29) e OS só com item (D-G33)', () =
     expect(String(conn.query.mock.calls[3][0])).toMatch(/tb_contract_item_competence[\s\S]*FOR UPDATE/)
     const fact = conn.query.mock.calls.find(c => /INSERT INTO[\s\S]*tb_contract_item_competence/.test(String(c[0])))!
     expect(String(fact[0])).toMatch(/ON DUPLICATE KEY UPDATE[\s\S]*deleted = 'N'/)
-    expect(fact[1]).toEqual([1, 4, 5, '2026-09', 50, 3])
+    // D23 (Q-R1): dia e forma do contrato NO ATO viajam para o fato — e o revive
+    // (ON DUPLICATE) também os atualiza, porque reinjetar é ato novo
+    expect(String(fact[0])).toMatch(/payment_day = VALUES\(payment_day\)[\s\S]*tb_payment_types_id = VALUES\(tb_payment_types_id\)/)
+    expect(fact[1]).toEqual([1, 4, 5, '2026-09', 50, 3, 10, 6])
   })
 
   it('D-A35: nada a injetar → NENHUM lock da institution é tomado (a varredura não trava)', async () => {

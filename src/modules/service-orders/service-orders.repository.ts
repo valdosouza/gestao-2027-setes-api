@@ -15,7 +15,11 @@ import {
 } from '@shared/title-automation'
 import { assertPaymentRules } from '@shared/order-installment'
 import {
-  prorataValue, parcelQuotas, firstDayOfMonth, lastDayOfMonth,
+  ORDER_NO_CONTRACT_DUE_DAY_MSG, ORDER_NO_CONTRACT_PAYMENT_TYPE_MSG,
+  ORDER_STANDALONE_DUE_DAY_MSG, ORDER_STANDALONE_PAYMENT_TYPE_MSG,
+} from './service-orders.messages'
+import {
+  prorataValue, parcelQuotas, firstDayOfMonth, lastDayOfMonth, contractDaySuggestion,
 } from './service-orders.calc'
 import {
   ServiceOrderListRow, ServiceOrderFull, OpenOrderInput, OrderItemInput,
@@ -543,6 +547,7 @@ export async function monthlyRun(
     `SELECT c.id AS contractId, c.tb_customer_id AS customerId,
             DATE_FORMAT(c.dt_start, '%Y-%m-%d') AS dtStart,
             DATE_FORMAT(c.dt_end,   '%Y-%m-%d') AS dtEnd,
+            c.payment_day AS paymentDay, c.tb_payment_types_id AS paymentTypeId,
             i.tb_product_id AS productId, i.value
      FROM \`${schemaName}\`.tb_contract c
      INNER JOIN \`${schemaName}\`.tb_contract_item i
@@ -660,15 +665,23 @@ export async function monthlyRun(
             const itemId = await insertServiceItem(conn, schemaName, institutionId, orderId,
               { productId: Number(row.productId), quantity: 1, unitValue: value })
             // fato do ato: contrato × produto × competência → item da OS (revive se a
-            // OS anterior da competência foi cancelada — cancelOrder soft-deleta aqui)
+            // OS anterior da competência foi cancelada — cancelOrder soft-deleta aqui).
+            // D23 (Q-R1, Valdo 2026-09-19): o fato carrega as CONDIÇÕES que o contrato
+            // tinha NESTE ato (dia e forma) — o lote lê daqui, e editar/excluir o
+            // contrato depois não reescreve a cobrança de um mês já gerado (D-A36). A
+            // reinjeção após cancelar a OS é ato NOVO: as condições de então valem.
             await conn.query(
               `INSERT INTO \`${schemaName}\`.tb_contract_item_competence
                  (tb_institution_id, tb_contract_id, tb_product_id, competence,
-                  tb_order_id, terminal, tb_order_item_id, created_at, updated_at, deleted)
-               VALUES (?, ?, ?, ?, ?, 0, ?, NOW(), NOW(), 'N')
+                  tb_order_id, terminal, tb_order_item_id, payment_day, tb_payment_types_id,
+                  created_at, updated_at, deleted)
+               VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, NOW(), NOW(), 'N')
                ON DUPLICATE KEY UPDATE tb_order_id = VALUES(tb_order_id),
-                 tb_order_item_id = VALUES(tb_order_item_id), deleted = 'N', updated_at = NOW()`,
-              [institutionId, row.contractId, row.productId, competence, orderId, itemId]
+                 tb_order_item_id = VALUES(tb_order_item_id),
+                 payment_day = VALUES(payment_day), tb_payment_types_id = VALUES(tb_payment_types_id),
+                 deleted = 'N', updated_at = NOW()`,
+              [institutionId, row.contractId, row.productId, competence, orderId, itemId,
+               row.paymentDay ?? null, row.paymentTypeId ?? null]
             )
             local.injected += 1
           }
@@ -713,6 +726,13 @@ export async function monthlyRun(
  * Valdo 2026-09-13): o dia de vencimento, a forma de pagamento e a ÚLTIMA
  * competência injetada. É o contrato dizendo QUANDO e COMO o cliente paga.
  *
+ * D23 (Q-R1, Valdo 2026-09-19): a fonte é o FATO da competência
+ * (`tb_contract_item_competence.payment_day/tb_payment_types_id`, gravados NO ATO
+ * da injeção — migration 054), NÃO o contrato vivo. Editar ou excluir o contrato
+ * depois não muda a cobrança do mês que ele já gerou; por isso a consulta nem
+ * faz JOIN com tb_contract — o fato basta, e a competência soft-deletada
+ * (item removido / OS cancelada) sai sozinha pelo `deleted`.
+ *
  * Por que a ÚLTIMA competência: uma OS que não foi faturada em setembro recebe
  * também os itens de outubro — está se cobrando tudo que acumulou, então a
  * referência é o mês mais recente, não o primeiro.
@@ -746,31 +766,25 @@ export async function orderExists(
   return rows.length > 0
 }
 
-export async function contractBillingReference(
-  orderId: number, schemaName: string, institutionId: number
-): Promise<ContractBillingReference | null> {
-  assertSchemaName(schemaName)
-  const [rows] = await pool.query<any[]>(
-    `SELECT MAX(comp.competence) AS competence,
-            COUNT(DISTINCT c.payment_day) AS dias,
-            MIN(c.payment_day) AS paymentDay,
-            COUNT(DISTINCT c.tb_payment_types_id) AS formas,
+function billingReferenceSql(schemaName: string, forUpdate: boolean): string {
+  return `SELECT MAX(comp.competence) AS competence,
+            COUNT(DISTINCT comp.payment_day) AS dias,
+            MIN(comp.payment_day) AS paymentDay,
+            COUNT(DISTINCT comp.tb_payment_types_id) AS formas,
             -- COUNT(*) inclui as linhas com forma NULL, que o COUNT(DISTINCT)
             -- ignora: contrato "informar no faturamento" convivendo com outro
             -- que combinou forma fazia o lote adotar a do irmão e faturar —
             -- com baixa automática e taxa numa forma que ninguém escolheu
             -- (gate adversarial). Sem forma em TODOS, não há forma combinada.
             COUNT(*) AS contratos,
-            COUNT(c.tb_payment_types_id) AS comForma,
-            MIN(c.tb_payment_types_id) AS paymentTypeId
+            COUNT(comp.tb_payment_types_id) AS comForma,
+            MIN(comp.tb_payment_types_id) AS paymentTypeId
        FROM \`${schemaName}\`.tb_contract_item_competence comp
-       INNER JOIN \`${schemaName}\`.tb_contract c
-          ON c.id = comp.tb_contract_id AND c.tb_institution_id = comp.tb_institution_id
-         AND c.deleted = 'N'
-      WHERE comp.tb_institution_id = ? AND comp.tb_order_id = ? AND comp.deleted = 'N'`,
-    [institutionId, orderId]
-  )
-  const r = rows[0]
+      WHERE comp.tb_institution_id = ? AND comp.tb_order_id = ? AND comp.terminal = 0
+        AND comp.deleted = 'N'${forUpdate ? ' FOR UPDATE' : ''}`
+}
+
+function mapBillingReference(r: any): ContractBillingReference | null {
   if (!r || r.competence == null) return null
   return {
     competence: String(r.competence),
@@ -783,6 +797,83 @@ export async function contractBillingReference(
       && r.paymentTypeId != null
       ? Number(r.paymentTypeId) : null,
   }
+}
+
+/**
+ * Variante TRANSACIONAL e TRAVANTE (M1 — regra 2 do PADROES §9: leitura que
+ * decide trava): usada por `generateInvoice` depois do lock da ordem, para que
+ * a condição gravada no título seja a dos fatos que a nota realmente cobre.
+ */
+export async function contractBillingReferenceTx(
+  conn: PoolConnection, schemaName: string, institutionId: number, orderId: number
+): Promise<ContractBillingReference | null> {
+  const [rows] = await conn.query<any[]>(
+    billingReferenceSql(schemaName, true), [institutionId, orderId])
+  return mapBillingReference(rows[0])
+}
+
+export async function contractBillingReference(
+  orderId: number, schemaName: string, institutionId: number
+): Promise<ContractBillingReference | null> {
+  assertSchemaName(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT MAX(comp.competence) AS competence,
+            COUNT(DISTINCT comp.payment_day) AS dias,
+            MIN(comp.payment_day) AS paymentDay,
+            COUNT(DISTINCT comp.tb_payment_types_id) AS formas,
+            -- COUNT(*) inclui as linhas com forma NULL, que o COUNT(DISTINCT)
+            -- ignora: contrato "informar no faturamento" convivendo com outro
+            -- que combinou forma fazia o lote adotar a do irmão e faturar —
+            -- com baixa automática e taxa numa forma que ninguém escolheu
+            -- (gate adversarial). Sem forma em TODOS, não há forma combinada.
+            COUNT(*) AS contratos,
+            COUNT(comp.tb_payment_types_id) AS comForma,
+            MIN(comp.tb_payment_types_id) AS paymentTypeId
+       FROM \`${schemaName}\`.tb_contract_item_competence comp
+      WHERE comp.tb_institution_id = ? AND comp.tb_order_id = ? AND comp.terminal = 0
+        AND comp.deleted = 'N'`,
+    [institutionId, orderId]
+  )
+  return mapBillingReference(rows[0])
+}
+
+/**
+ * Condições que a nota vai GRAVAR (M1). Sem `termsFromContract` (faturamento
+ * avulso, ou lote com override total) são as do corpo. Com ele, a condição que
+ * veio do fato é re-resolvida AQUI — sob o lock da ordem, com FOR UPDATE nos
+ * fatos — e, se sumiu ou divergiu (item removido, competência nova de outro
+ * contrato injetada entre a leitura do lote e o lock), a ordem é RECUSADA com o
+ * mesmo código da porta de fora. Nunca se fatura com a condição envelhecida.
+ */
+async function resolveInvoiceTermsTx(
+  conn: PoolConnection, schemaName: string, institutionId: number, orderId: number,
+  input: InvoiceInput
+): Promise<{ dtExpiration: string; paymentTypeId: number }> {
+  const t = input.termsFromContract
+  if (!t?.dtExpiration && !t?.paymentTypeId) {
+    return { dtExpiration: input.dtExpiration, paymentTypeId: input.paymentTypeId }
+  }
+  const ref = await contractBillingReferenceTx(conn, schemaName, institutionId, orderId)
+  let dtExpiration = input.dtExpiration
+  let paymentTypeId = input.paymentTypeId
+  if (t.dtExpiration) {
+    if (!ref?.paymentDay) {
+      throw new HttpError(422, ref ? ORDER_NO_CONTRACT_DUE_DAY_MSG : ORDER_STANDALONE_DUE_DAY_MSG,
+        [{ field: 'dtExpiration', message: 'Sem dia de vencimento combinado' }],
+        'ORDER_NO_CONTRACT_DUE_DAY')
+    }
+    const [ano, mes] = ref.competence.split('-').map(Number)
+    dtExpiration = contractDaySuggestion(ano, mes, ref.paymentDay)
+  }
+  if (t.paymentTypeId) {
+    if (!ref?.paymentTypeId) {
+      throw new HttpError(422, ref ? ORDER_NO_CONTRACT_PAYMENT_TYPE_MSG : ORDER_STANDALONE_PAYMENT_TYPE_MSG,
+        [{ field: 'paymentTypeId', message: 'Sem forma de pagamento combinada' }],
+        'ORDER_NO_CONTRACT_PAYMENT_TYPE')
+    }
+    paymentTypeId = ref.paymentTypeId
+  }
+  return { dtExpiration, paymentTypeId }
 }
 
 /** Só o dia — atalho da sugestão da tela (D12). */
@@ -822,10 +913,15 @@ export async function generateInvoice(
       await lockInstitutionCounters(conn, institutionId)
       await lockOpenOrder(conn, schemaName, institutionId, orderId)
 
+      // M1 (gate socrático R5): condições vindas do fato da competência são
+      // reconferidas AQUI, sob o lock da ordem — o mesmo padrão fixado na
+      // negociação do pedido ("resolver DENTRO da transação, após o FOR UPDATE")
+      const terms = await resolveInvoiceTermsTx(conn, schemaName, institutionId, orderId, input)
+
       // forma VINCULADA/habilitada + nº de parcelas ≤ max_parcels do vínculo —
       // a MESMA regra das três portas (Q-N1 da negociação do pedido, 2026-09-07)
       await assertPaymentRules(conn, schemaName, institutionId, {
-        headerPaymentTypeId: input.paymentTypeId, parcels: [], nParcels: input.parcels,
+        headerPaymentTypeId: terms.paymentTypeId, parcels: [], nParcels: input.parcels,
         limitField: 'parcels',
       })
 
@@ -868,7 +964,7 @@ export async function generateInvoice(
       // peça @shared/order-billing (D2 da negociação): OS informa o nº de
       // parcelas do contrato, sem prazo (deadline NULL = "não se aplica").
       await upsertOrderBilling(conn, schemaName, institutionId, orderId, {
-        paymentTypeId: input.paymentTypeId, deadline: null, plots: input.parcels,
+        paymentTypeId: terms.paymentTypeId, deadline: null, plots: input.parcels,
       })
 
       // fatura INTERNA (DP8: model 'SE', série '1'; emissão OFICIAL da NFS-e =
@@ -893,8 +989,8 @@ export async function generateInvoice(
            ON DUPLICATE KEY UPDATE
              dt_expiration = VALUES(dt_expiration), tb_payment_types_id = VALUES(tb_payment_types_id),
              tag_value = VALUES(tag_value), deleted = 'N', updated_at = NOW()`,
-          [institutionId, orderId, parcel, input.dtExpiration,
-           input.paymentTypeId, quotas[parcel - 1]]
+          [institutionId, orderId, parcel, terms.dtExpiration,
+           terms.paymentTypeId, quotas[parcel - 1]]
         )
         await conn.query(
           `INSERT INTO \`${schemaName}\`.tb_financial_bills
@@ -923,7 +1019,7 @@ export async function generateInvoice(
           dtPayment: localIsoDate(),
           parcels: Array.from({ length: input.parcels }, (_, i) => ({
             parcel: i + 1,
-            paymentTypeId: input.paymentTypeId,
+            paymentTypeId: terms.paymentTypeId,
             amount: quotas[i],
           })),
         }, automationConfig)
@@ -948,8 +1044,10 @@ export async function generateInvoice(
       // cobrança mensal — lote 100 % faturado e zero cobrado.
       return {
         invoiceNumber, parcels: input.parcels, totalValue: total,
+        dtExpiration: terms.dtExpiration, paymentTypeId: terms.paymentTypeId,
         autoSettled: automation.autoSettled,
         bankSlipsIssued: automation.bankSlipsIssued,
+        chargeableParcels: automation.chargeable,
       }
     } catch (err) {
       await conn.rollback()

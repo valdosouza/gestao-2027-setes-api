@@ -38,7 +38,7 @@ describe('DTOs que geram TÍTULO não aceitam data inexistente', () => {
     expect(invoiceDto.safeParse({ ...base, dtExpiration: '2026-10-05' }).success).toBe(true)
   })
 
-  it('LOTE — a data ruim contaminaria as 200 ordens de uma vez', () => {
+  it('LOTE — a data ruim contaminaria as 50 ordens de uma vez', () => {
     const lote = { ...base, orderIds: [1, 2, 3] }
     expect(batchInvoiceDto.safeParse({ ...lote, dtExpiration: '2026-13-45' }).success).toBe(false)
     expect(batchInvoiceDto.safeParse({ ...lote, dtExpiration: '2026-10-05' }).success).toBe(true)

@@ -13,6 +13,11 @@ lerna-debug.log*
 .env.*.local
 .env.production.local
 
+# Cofre de segredos (SECRETS_PATH — certificados mTLS, chaves, client_secret) e
+# storage de arquivos (STORAGE_PATH — logomarcas): NUNCA versionar (Onda 2, D-I3)
+secrets/
+storage/
+
 # Arquivos de compilação
 dist/
 build/

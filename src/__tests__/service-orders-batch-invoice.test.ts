@@ -110,6 +110,8 @@ describe('lote de faturamento da OS (D6/D7)', () => {
 
     for (const call of mockInvoice.mock.calls) {
       expect(call[1]).toMatchObject({ dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 1 })
+      // override total do operador: NADA a reconferir na transação (M1)
+      expect(call[1].termsFromContract).toEqual({ dtExpiration: false, paymentTypeId: false })
       expect(call[2]).toBe('setes_setes')
       expect(call[3]).toBe(1)
     }
@@ -210,7 +212,7 @@ describe('vencimento por ordem no lote (D13)', () => {
   })
 
   it('ordem SEM dia de contrato é recusada — o lote não inventa data', async () => {
-    mockRef.mockResolvedValue(null)   // OS avulsa, ou contratos que divergem no dia
+    mockRef.mockResolvedValue(null)   // OS avulsa (nenhuma competência de contrato)
     mockInvoice.mockResolvedValue({ invoiceNumber: '1', parcels: 1, totalValue: 100, autoSettled: 0, bankSlipsIssued: 0 })
 
     const r = await invoiceOrderBatch({ orderIds: [10], paymentTypeId: 6, parcels: 1 } as any, scope)
@@ -218,7 +220,21 @@ describe('vencimento por ordem no lote (D13)', () => {
     expect(mockInvoice).not.toHaveBeenCalled()
     expect(r).toMatchObject({ requested: 1, invoiced: 0, failed: 1 })
     expect(r.results[0]).toMatchObject({ ok: false, code: 'ORDER_NO_CONTRACT_DUE_DAY' })
-    expect(r.results[0].error).toMatch(/informe o vencimento do lote ou acerte o contrato/i)
+    // M2 (gate R5): avulsa recebe a mensagem da AVULSA — sem mandar "acertar o contrato"
+    expect(r.results[0].error).toMatch(/Ordem avulsa[\s\S]*informe o vencimento do lote/i)
+  })
+
+  // Achado 1 do gate adversarial R5 (efeito da D23): contrato editado entre dois
+  // meses não faturados deixa fatos DIVERGENTES na mesma OS — "acerte o contrato"
+  // não resolve mais (o fato é imutável); a mensagem aponta as saídas reais.
+  it('fatos que DIVERGEM no dia → recusa aponta lote / item / cancelar a OS, nunca "acerte o contrato"', async () => {
+    mockRef.mockResolvedValue({ paymentDay: null, paymentTypeId: 6, competence: '2026-08' })
+
+    const r = await invoiceOrderBatch({ orderIds: [10], parcels: 1 } as any, scope)
+
+    expect(r.results[0]).toMatchObject({ ok: false, code: 'ORDER_NO_CONTRACT_DUE_DAY' })
+    expect(r.results[0].error).not.toMatch(/acerte o contrato|combine a forma no contrato/i)
+    expect(r.results[0].error).toMatch(/informe o vencimento do lote[\s\S]*(remova o item|cancele a OS)/i)
   })
 
   it('recusa por falta de dia NÃO derruba as outras ordens (D7 continua valendo)', async () => {

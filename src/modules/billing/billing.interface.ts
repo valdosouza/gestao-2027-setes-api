@@ -35,6 +35,7 @@ export interface InvoiceResult {
   // simetria com o faturamento da OS (gate adversarial da Onda 1, LOW-8):
   // "faturada" não quer dizer "cobrada" — quem chama precisa saber dos dois
   bankSlipsIssued: number
+  chargeableParcels: number   // denominador da cobrança (D26) — simetria com a OS
 }
 
 /** Linha viva de tb_order_item para o faturamento. */

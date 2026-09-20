@@ -112,22 +112,35 @@ async function p0(): Promise<void> {
       WHERE v.tb_institution_id = ? AND v.enable = 'S' AND v.deleted = 'N'
       ORDER BY pt.id`, [INST]
   ).then(([r]) => r)
+  // D30 (Valdo 2026-09-19): a cobrança RECORRENTE é sempre 1 parcela — o limite 1
+  // das formas basta para a Setes; parcelamento é do faturamento individual, e
+  // subir `max_parcels` é configuração de quem precisar dele, não pré-requisito.
   const travadas = formas.filter(f => Number(f.max_parcels ?? 1) <= 1)
-  reporta('P0.1', 'max_parcels das formas',
-    travadas.length === formas.length ? 'PENDENTE' : 'OK',
-    travadas.length
-      ? `${travadas.length}/${formas.length} forma(s) com limite 1 — parcelamento bloqueado: ${travadas.map(f => f.description).join(', ')}`
-      : `${formas.length} formas configuradas`)
+  reporta('P0.1', 'max_parcels das formas', formas.length > 0 ? 'OK' : 'PENDENTE',
+    formas.length === 0
+      ? 'nenhuma forma habilitada'
+      : travadas.length === formas.length
+        ? `${formas.length} forma(s) com limite 1 — basta para a cobrança recorrente (D30: 1 parcela); parcelamento só no faturamento individual`
+        : `${formas.length} formas; ${formas.length - travadas.length} com parcelamento habilitado`)
 
-  // 2. Privilégios de AÇÃO (FATURAR 5 / CANCELAR 7) para usuários REGULARES.
+  // 2. Privilégios de AÇÃO (FATURAR 5 / CANCELAR 7). D32 (Valdo 2026-09-19): são
+  // PRIVILÉGIOS atribuídos por usuário na tela de Usuários e atingem SÓ usuário
+  // não admin — admin pode tudo. O pré-requisito da fase é o CATÁLOGO (seeds
+  // 51–54: FATURAR/CANCELAR nas interfaces orders, service-orders e
+  // order-returns); quantos usuários regulares os têm é decisão de operação da
+  // Setes, não pendência de implantação.
+  const catalogo = await uma<any>(
+    `SELECT COUNT(*) q FROM setes_central.tb_interface_has_privilege ihp
+       INNER JOIN setes_central.tb_interface i ON i.id = ihp.tb_interface_id AND i.deleted = 'N'
+      WHERE ihp.tb_privilege_id IN (5, 7) AND ihp.active = 'S' AND ihp.deleted = 'N'
+        AND i.i18n_key IN ('orders', 'service-orders', 'order-returns')`)
   const regulares = await uma<any>(
     `SELECT COUNT(*) q FROM \`${SCHEMA}\`.tb_user_has_privilege
       WHERE tb_privilege_id IN (5, 7) AND active = 'S' AND deleted = 'N'`)
-  reporta('P0.2', 'privilégios FATURAR/CANCELAR',
-    Number(regulares?.q ?? 0) > 0 ? 'OK' : 'PENDENTE',
-    Number(regulares?.q ?? 0) > 0
-      ? `${regulares.q} vínculo(s) ativo(s)`
-      : 'nenhum usuário regular fatura/cancela — só admin/super passam (403 PRIVILEGE_REQUIRED)')
+  reporta('P0.2', 'privilégios FATURAR/CANCELAR (D32)',
+    Number(catalogo?.q ?? 0) >= 5 ? 'OK' : 'PENDENTE',
+    `${catalogo?.q ?? 0} vínculo(s) interface×privilégio no catálogo (esperado ≥ 5: FATURAR+CANCELAR em orders e service-orders, FATURAR em order-returns) · `
+    + `${regulares?.q ?? 0} usuário(s) regular(es) com o privilégio neste schema — admin passa sempre`)
 
   // 3. Catálogo central da política de desconto (seed 55) — pré-requisito do app.
   const desconto = await uma<any>(
@@ -137,15 +150,23 @@ async function p0(): Promise<void> {
     Number(desconto?.q ?? 0) >= 2 ? 'OK' : 'PENDENTE',
     `privilégio DESCONTO vinculado a ${desconto?.q ?? 0} interface(s) — esperado 2 (settlements + bank-charge-agreements)`)
 
-  // 4. Teto do desconto: 0 (default) = ninguém dá desconto sem o privilégio 8.
+  // 4. Teto do desconto. D31 (Valdo 2026-09-19): `max_discount_aliquot` governa
+  // quem NÃO tem o privilégio DESCONTO; quem tem, desconto liberado (é a D-G32 do
+  // cancelamento confirmada para a Setes). O default 0 é política válida ("sem
+  // privilégio, nenhum desconto") — a trilha só exige que a chave exista no
+  // catálogo (seed 55) e reporta o valor em vigor.
+  const catalogoTeto = await uma<any>(
+    `SELECT COUNT(*) q FROM setes_central.tb_interface_has_config
+      WHERE name = 'max_discount_aliquot' AND deleted = 'N'`)
   const teto = await uma<any>(
     `SELECT content FROM \`${SCHEMA}\`.tb_institution_has_config
       WHERE tb_institution_id = ? AND name = 'max_discount_aliquot'
         AND tb_user_id = 0 AND deleted = 'N'`, [INST])
-  reporta('P0.4', 'teto do desconto configurado',
-    teto ? 'OK' : 'PENDENTE',
-    teto ? `max_discount_aliquot = ${teto.content}%`
-         : 'sem valor na institution → default 0: operador regular recebe 403 ao dar qualquer desconto')
+  reporta('P0.4', 'teto do desconto (D31)',
+    Number(catalogoTeto?.q ?? 0) > 0 ? 'OK' : 'PENDENTE',
+    Number(catalogoTeto?.q ?? 0) > 0
+      ? `max_discount_aliquot = ${teto?.content ?? '0 (default)'}% para quem NÃO tem o privilégio DESCONTO; com o privilégio, liberado`
+      : 'chave max_discount_aliquot ausente do catálogo — aplicar o seed 55')
 
   // 5. Boleto automático no faturamento (config auto_bank_slip da interface billing).
   const autoSlip = await uma<any>(
@@ -265,7 +286,40 @@ async function p2_cliente(a: Apoio): Promise<number | null> {
   return a.customerId
 }
 
+/**
+ * Resíduo da PRÓPRIA trilha (Rodada 5, 2026-09-19): cada corrida cria um
+ * contrato novo para o MESMO cliente, e os contratos das corridas anteriores à
+ * D14 nasceram sem forma combinada. A rotina injeta todos na mesma OS aberta e
+ * a regra "só há forma combinada quando TODOS combinaram a mesma" recusa o
+ * lote — comportamento CERTO do produto, mas a régua não pode depender do
+ * lixo que ela mesma deixou. Antes de contratar de novo: cancela a OS aberta do
+ * cliente da trilha (pela API — libera as competências) e DESATIVA os contratos
+ * antigos dele (deixam de ser vigentes; a história fica).
+ */
+async function limpaResiduoDaTrilha(customerId: number): Promise<void> {
+  const abertas = await pool.query<any[]>(
+    `SELECT so.id FROM \`${SCHEMA}\`.tb_order_service so
+       INNER JOIN \`${SCHEMA}\`.tb_order o
+          ON o.id = so.id AND o.tb_institution_id = so.tb_institution_id AND o.terminal = 0
+       INNER JOIN \`${SCHEMA}\`.tb_service_order c
+          ON c.id = so.id AND c.tb_institution_id = so.tb_institution_id AND c.deleted = 'N'
+      WHERE so.tb_institution_id = ? AND so.tb_customer_id = ?
+        AND o.status = 'A' AND o.deleted = 'N'`, [INST, customerId])
+  for (const os of abertas[0]) {
+    const r = await api('DELETE', `/service-orders/${os.id}`)
+    if (r.status >= 300) console.log(`  (resíduo) não consegui cancelar a OS aberta ${os.id}: ${motivo(r)}`)
+  }
+  const [r] = await pool.query<any>(
+    `UPDATE \`${SCHEMA}\`.tb_contract SET active = 'N', updated_at = NOW()
+      WHERE tb_institution_id = ? AND tb_customer_id = ? AND active = 'S' AND deleted = 'N'`,
+    [INST, customerId])
+  if (abertas[0].length || r.affectedRows) {
+    console.log(`  (resíduo da trilha) OS abertas canceladas: ${abertas[0].length} · contratos antigos desativados: ${r.affectedRows}`)
+  }
+}
+
 async function p3_contrato(customerId: number, produtoId: number, a: Apoio): Promise<number | null> {
+  await limpaResiduoDaTrilha(customerId)
   const hoje = new Date()
   const dtStart = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-01`
   const r = await api('POST', '/contracts', {
@@ -345,19 +399,31 @@ async function p6_faturamento(ordemId: number, a: Apoio): Promise<boolean> {
   reporta('P6', 'Faturamento da cobrança (lote)', 'OK',
     `pedidas ${rel.requested}, faturadas ${rel.invoiced}, recusadas ${rel.failed} — nota ${linha.invoiceNumber}`)
 
-  // D13: o vencimento veio do DIA DO CONTRATO da ordem, não de uma data do lote.
-  const contrato = await uma<any>(
-    `SELECT c.payment_day AS dia, c.tb_payment_types_id AS forma
-       FROM \`${SCHEMA}\`.tb_contract c
-      WHERE c.id = ? AND c.tb_institution_id = ?`, [criados.contratoId, INST])
+  // D13/D14 + D23 (Rodada 5): o vencimento e a forma vieram das condições
+  // CONGELADAS no fato da competência (gravadas quando a rotina injetou o item),
+  // não do contrato vivo — o contrato de hoje só governa meses futuros.
+  const fato = await uma<any>(
+    `SELECT comp.payment_day AS dia, comp.tb_payment_types_id AS forma
+       FROM \`${SCHEMA}\`.tb_contract_item_competence comp
+      WHERE comp.tb_contract_id = ? AND comp.tb_institution_id = ? AND comp.tb_order_id = ?
+        AND comp.deleted = 'N'
+      ORDER BY comp.competence DESC LIMIT 1`, [criados.contratoId, INST, ordemId])
   const diaUsado = Number(String(linha.dtExpiration ?? '').slice(8, 10))
-  const okDia   = contrato && diaUsado === Number(contrato.dia)
-  const okForma = contrato && Number(linha.paymentTypeId) === Number(contrato.forma)
-  reporta('P6c', 'Condições do contrato (D13/D14)',
+  const okDia   = fato && diaUsado === Number(fato.dia)
+  const okForma = fato && Number(linha.paymentTypeId) === Number(fato.forma)
+  reporta('P6c', 'Condições do contrato congeladas na competência (D13/D14/D23)',
     okDia && okForma ? 'OK' : 'FALHA',
-    contrato
-      ? `contrato: dia ${contrato.dia} forma ${contrato.forma} → título: ${linha.dtExpiration} forma ${linha.paymentTypeId}`
-      : 'contrato da trilha não encontrado')
+    fato
+      ? `fato: dia ${fato.dia} forma ${fato.forma} → título: ${linha.dtExpiration} forma ${linha.paymentTypeId}`
+      : 'fato da competência da trilha não encontrado (a rotina não gravou as condições — migration 054?)')
+
+  // D26 (Rodada 5): o relatório diz a cobrança POR PARCELA — "faturada" não é
+  // "cobrada", e "cobrada" não é "inteira".
+  const cobrancaOk = Number.isInteger(linha.chargedParcels) && Number.isInteger(linha.chargeableParcels)
+    && linha.chargeableParcels >= 1 && linha.chargedParcels <= linha.chargeableParcels
+  reporta('P6d', 'Cobrança por parcela no relatório (D26)',
+    cobrancaOk ? 'OK' : 'FALHA',
+    `cobradas ${linha.chargedParcels}/${linha.chargeableParcels} (baixa ${linha.autoSettled}, boleto ${linha.bankSlipsIssued}) · uncharged ${rel.uncharged} · parcial ${rel.partiallyCharged} · retryable ${rel.retryable}`)
 
   // D7: a MESMA ordem no lote de novo tem que sair recusada COM MOTIVO, sem
   // derrubar o lote — é o comportamento que sustenta a cobrança em massa.
@@ -382,10 +448,15 @@ async function p7_boleto(ordemId: number | null): Promise<void> {
   // O boleto sai do FINANCEIRO, não do faturamento (processo do Valdo,
   // rodada 3): o título nasce e depois se decide como a dívida será cobrada —
   // inclusive juntando parcelas ou faturamentos num boleto só.
+  // Onda 2: se alguma conta tem CANAL API ativo, a carteira dela é a que prova o P7b
   const carteira = await uma<any>(
-    `SELECT id FROM \`${SCHEMA}\`.tb_bank_charge_agreement
-      WHERE tb_institution_id = ? AND active = 'S' AND deleted = 'N'
-      ORDER BY id LIMIT 1`, [INST])
+    `SELECT a.id, a.tb_bank_account_id AS contaId, (c.tb_bank_account_id IS NOT NULL) AS comCanal
+       FROM \`${SCHEMA}\`.tb_bank_charge_agreement a
+       LEFT JOIN \`${SCHEMA}\`.tb_bank_account_channel c
+         ON c.tb_bank_account_id = a.tb_bank_account_id AND c.tb_institution_id = a.tb_institution_id
+        AND c.active = 'S' AND c.deleted = 'N'
+      WHERE a.tb_institution_id = ? AND a.active = 'S' AND a.deleted = 'N'
+      ORDER BY comCanal DESC, a.id LIMIT 1`, [INST])
   if (!carteira) {
     reporta('P7', 'Boleto (do financeiro)', 'PENDENTE', 'nenhuma carteira de cobrança ativa')
     reporta('P7b', 'Boleto → Banco Inter', 'PENDENTE', PENDENCIA_INTER)
@@ -422,7 +493,37 @@ async function p7_boleto(ordemId: number | null): Promise<void> {
     formaDepois?.kind === 'B' ? 'OK' : 'FALHA',
     `forma do título ${formaAntes?.forma} → ${formaDepois?.forma} (kind ${formaDepois?.kind})`)
 
-  reporta('P7b', 'Boleto → Banco Inter', 'PENDENTE', PENDENCIA_INTER)
+  await p7b_registro_no_banco(Number(r.body?.data?.id), Number(carteira.contaId), !!Number(carteira.comCanal))
+}
+
+/**
+ * P7b — Onda 2 (D-I1…D-I19): o boleto é APRESENTADO ao banco pelo canal API da
+ * conta da carteira; a consulta traz a situação. OK exige apresentação com
+ * codigoSolicitacao e voz do banco gravada. Sem canal/credenciais na conta
+ * (D-I16), fica PENDENTE com o motivo exato — a régua não inventa.
+ */
+async function p7b_registro_no_banco(boletoId: number, contaId: number, comCanal: boolean): Promise<void> {
+  if (!boletoId) { reporta('P7b', 'Boleto → Banco Inter', 'PENDENTE', PENDENCIA_INTER); return }
+  if (!comCanal) {
+    reporta('P7b', 'Boleto → Banco Inter', 'PENDENTE',
+      `conta ${contaId} da carteira sem canal API ativo — configure a aba Canal API (ambiente S, client_id) e os segredos em SECRETS_PATH (D-I3/D-I16)`)
+    return
+  }
+  const reg = await api('POST', `/bank-slips/${boletoId}/register`)
+  if (reg.status !== 201) {
+    reporta('P7b', 'Boleto → Banco Inter', reg.body?.code === 'BANK_CHANNEL_SECRET_MISSING' || reg.body?.code === 'BANK_UNAVAILABLE' ? 'PENDENTE' : 'FALHA',
+      `apresentação recusada: ${motivo(reg)}`)
+    return
+  }
+  const codigo = reg.body?.data?.requestCode
+  // o banco processa assíncrono — uma consulta basta para a régua (a situação pode ser EM_PROCESSAMENTO)
+  await new Promise(r => setTimeout(r, 3000))
+  const ref = await api('POST', `/bank-slips/${boletoId}/refresh`)
+  const det = await api('GET', `/bank-slips/${boletoId}`)
+  const apres = det.body?.data?.registrations?.at?.(-1)
+  const vozes = (det.body?.data?.registrationEvents ?? []).length
+  reporta('P7b', 'Boleto → Banco Inter', apres?.requestCode ? 'OK' : 'FALHA',
+    `apresentação ${apres?.attempt} · codigoSolicitacao ${codigo} · situação ${ref.body?.data?.bankStatus ?? '?'} · ${vozes} evento(s) do banco · linha digitável ${apres?.digitableLine ? 'ok' : 'ainda não'}`)
 }
 
 const PENDENCIA_INTER =

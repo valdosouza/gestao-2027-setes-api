@@ -17,7 +17,7 @@ jest.mock('../shared/invoice', () => ({
 // title-automation.test.ts — aqui só não podem tocar o mock do pool
 jest.mock('../shared/title-automation', () => ({
   __esModule: true,
-  applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0 }),
+  applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0, chargeable: 2 }),
   resolveTitleAutomationConfig: jest.fn().mockResolvedValue({ autoBankSlip: false }),
   localIsoDate: () => '2026-09-13',
 }))
@@ -61,7 +61,8 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
     // achado 5): "faturada" sem baixa nem boleto é o pior caso da cobrança
     expect(r).toEqual({
       invoiceNumber: '12', parcels: 2, totalValue: 150,
-      autoSettled: 0, bankSlipsIssued: 0,
+      dtExpiration: '2026-10-05', paymentTypeId: 6,
+      autoSettled: 0, bankSlipsIssued: 0, chargeableParcels: 2,
     })
     expect(inv.issueInvoice).toHaveBeenCalledWith(conn, 'setes_setes', 1, 7, {
       orderId: 300, recipientEntityId: 55, model: 'SE', serie: '1', totalValue: 150,
@@ -156,7 +157,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
     auto.applyTitleAutomation.mockImplementation(async () => {
       titulosNaChamada = conn.query.mock.calls
         .filter(c => /INSERT INTO `setes_setes`\.tb_financial\s/.test(String(c[0]))).length
-      return { autoSettled: 0, bankSlipsIssued: 0 }
+      return { autoSettled: 0, bankSlipsIssued: 0, chargeable: 2 }
     })
 
     await generateInvoice(300, { dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 2 }, 'setes_setes', 1, 7)

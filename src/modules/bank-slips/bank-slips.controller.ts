@@ -6,7 +6,7 @@ import {
   issueBankSlipDto, settleBankSlipDto, cancelBankSlipDto, reverseBankSlipDto,
 } from './bank-slips.dto'
 import {
-  BankSlipScope, parseState, fetchBankSlips, fetchBankSlip, fetchAgreementsLookup,
+  BankSlipScope, parseState, fetchBankSlips, fetchBankSlipWithRegistrations, fetchAgreementsLookup,
   fetchOpenTitles, issueSlip, settleSlip, cancelSlip, reverseSlip,
 } from './bank-slips.service'
 
@@ -30,7 +30,7 @@ export async function getOne(req: Request, res: Response): Promise<void> {
   const id = parseId(req, res)
   if (id === null) return
   try {
-    res.json({ ok: true, data: await fetchBankSlip(id, scopeOf(req)) })
+    res.json({ ok: true, data: await fetchBankSlipWithRegistrations(id, scopeOf(req)) })
   } catch (err) {
     handleError(res, err, 'bank-slips/:id GET')
   }

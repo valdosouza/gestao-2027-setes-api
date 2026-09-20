@@ -22,7 +22,13 @@ function fakeConn() { return { query: jest.fn() } }
 
 const DAY = 86400000
 /** D-G36: a liquidação não acontece no futuro — datas dos testes são relativas a HOJE. */
-const iso = (offsetDays: number) => new Date(Date.now() + offsetDays * DAY).toISOString().slice(0, 10)
+// Data LOCAL (não toISOString/UTC): à noite em Brasília o UTC já é amanhã e a
+// peça, que usa a data local, recusaria "hoje" como pagamento futuro (D-G36) —
+// a suíte quebrava só depois das 21h (achado ao rodar a Onda 2 à noite).
+const iso = (offsetDays: number) => {
+  const d = new Date(Date.now() + offsetDays * DAY)
+  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-')
+}
 const TODAY = iso(0)
 
 beforeEach(() => jest.clearAllMocks())

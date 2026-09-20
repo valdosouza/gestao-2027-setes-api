@@ -160,7 +160,7 @@ describe('automatismos do nascimento do título', () => {
     const c = conn()
     const r = await applyTitleAutomation(c, 'setes_setes', 1, 9, entrada([]), cfg(true))
 
-    expect(r).toEqual({ autoSettled: 0, bankSlipsIssued: 0 })
+    expect(r).toEqual({ autoSettled: 0, bankSlipsIssued: 0, chargeable: 0 })
     expect(mockSettle).not.toHaveBeenCalled()
     expect(mockSlips).not.toHaveBeenCalled()
     expect(c.query).not.toHaveBeenCalled()
@@ -184,7 +184,8 @@ describe('automatismos do nascimento do título', () => {
     expect(mockSettle).toHaveBeenCalledTimes(1)
     expect(mockSettle.mock.calls[0][4]).toMatchObject({ parcel: 3, paidValue: 0.01 })
     expect(mockSlips.mock.calls[0][4].parcels).toEqual([{ parcel: 3, paymentTypeId: 6 }])
-    expect(r).toEqual({ autoSettled: 1, bankSlipsIssued: 1 })
+    // D26: o denominador da cobrança conta só a parcela COM valor
+    expect(r).toEqual({ autoSettled: 1, bankSlipsIssued: 1, chargeable: 1 })
   })
 
   it('ordem TODA zerada nao chama nada (nao ha o que cobrar)', async () => {
@@ -192,7 +193,7 @@ describe('automatismos do nascimento do título', () => {
     const r = await applyTitleAutomation(c, 'setes_setes', 1, 9,
       entrada([{ parcel: 1, paymentTypeId: 6, amount: 0 }]), cfg(true))
 
-    expect(r).toEqual({ autoSettled: 0, bankSlipsIssued: 0 })
+    expect(r).toEqual({ autoSettled: 0, bankSlipsIssued: 0, chargeable: 0 })
     expect(c.query).not.toHaveBeenCalled()
   })
 })

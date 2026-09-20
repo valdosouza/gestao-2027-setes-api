@@ -45,6 +45,14 @@ export interface TitleAutomationInput {
 export interface TitleAutomationResult {
   autoSettled:     number
   bankSlipsIssued: number
+  /**
+   * Parcelas que HAVIA para cobrar (valor > 0). D26 (Q-P5, Valdo 2026-09-19):
+   * "faturada" não quer dizer "cobrada", e "cobrada" não quer dizer "inteira" —
+   * nota de 3 parcelas com 1 boleto é cobrança PARCIAL. Quem lê compara
+   * `autoSettled + bankSlipsIssued` com este número; os dois desfechos são
+   * disjuntos por `kind`, então a soma nunca conta a mesma parcela duas vezes.
+   */
+  chargeable:      number
 }
 
 /**
@@ -82,6 +90,15 @@ export function localIsoDate(now: Date = new Date()): string {
 /**
  * "Emitir boleto automaticamente no faturamento" é config da interface
  * `billing` (seed 48). Chame SEMPRE antes de `beginTransaction`.
+ *
+ * D29 (Q-P1/Q9, Valdo 2026-09-19 — MANTER): a chave mora na interface `billing`
+ * mas governa também o faturamento da OS (ramo `service-orders`). É política da
+ * EMPRESA sobre o nascimento do título, não da tela de venda — e esta função é
+ * a fonte ÚNICA de qual chave governa, então mover a config um dia é trocar UMA
+ * linha aqui. Limite conhecido e aceito: cliente que contratou OS SEM a
+ * interface `billing` tem o boleto automático regido por config de interface
+ * que ele não possui (resolve pelo default do catálogo = 'N'). Reabrir só se
+ * esse cliente existir.
  */
 export async function resolveTitleAutomationConfig(
   schemaName: string, institutionId: number, userId: number
@@ -96,7 +113,7 @@ export async function applyTitleAutomation(
   conn: PoolConnection, schemaName: string, institutionId: number, userId: number,
   input: TitleAutomationInput, config: TitleAutomationConfig
 ): Promise<TitleAutomationResult> {
-  const result: TitleAutomationResult = { autoSettled: 0, bankSlipsIssued: 0 }
+  const result: TitleAutomationResult = { autoSettled: 0, bankSlipsIssued: 0, chargeable: 0 }
 
   // Parcela de valor ZERO é resíduo do rateio (0,01 em 3 parcelas → 0/0/0,01),
   // não é cobrança: não há o que baixar nem o que cobrar. Emitir boleto dela
@@ -104,6 +121,7 @@ export async function applyTitleAutomation(
   // com 409 TITLE_SETTLED, o erro subia pelo savepoint e a ordem acabava SEM
   // boleto nenhum, em silêncio (gate adversarial, achado 4).
   const cobraveis = input.parcels.filter(p => p.amount > 0)
+  result.chargeable = cobraveis.length
   if (cobraveis.length === 0) return result
 
   // 1. Baixa automática por CONTRATO FINANCEIRO, parcela a parcela (D1–D22 do

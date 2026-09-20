@@ -79,16 +79,29 @@ export interface InvoiceInput {
   dtExpiration:  string
   paymentTypeId: number
   parcels:       number
+  /**
+   * M1 do gate socrático da Rodada 5 (D23): quais condições vieram do FATO da
+   * competência (lote sem override) e por isso são RECONFERIDAS dentro da
+   * transação, depois do lock da ordem — a leitura fora da transação serve ao
+   * relatório e à recusa antecipada, a de dentro é a que grava (a rotina mensal
+   * escreve na mesma tabela e na mesma OS aberta entre as duas).
+   */
+  termsFromContract?: { dtExpiration: boolean; paymentTypeId: boolean }
 }
 
 export interface InvoiceResult {
   invoiceNumber: string
   parcels:       number
   totalValue:    number
+  /** Condições REALMENTE gravadas no título (as reconferidas na transação — M1). */
+  dtExpiration:  string
+  paymentTypeId: number
   /** Parcelas que nasceram BAIXADAS pelo regra de recebimento da forma. */
   autoSettled:     number
   /** Boletos emitidos automaticamente no faturamento. */
   bankSlipsIssued: number
+  /** Parcelas com valor > 0 — o denominador da cobrança (D26). */
+  chargeableParcels: number
 }
 
 /** Lookup de produtos/serviços ativos (itens avulsos). */
@@ -123,16 +136,33 @@ export interface BatchInvoiceEntry {
   /** O que a automação fez nesta ordem — "faturada" não quer dizer "cobrada". */
   autoSettled?:     number
   bankSlipsIssued?: number
+  /**
+   * D26 (Q-P5): cobrança POR PARCELA — `chargedParcels` = baixadas + com boleto,
+   * `chargeableParcels` = parcelas com valor. Menor que o total = cobrança PARCIAL
+   * (nota de 3 parcelas com 1 boleto), que antes passava por "cobrada".
+   */
+  chargedParcels?:    number
+  chargeableParcels?: number
   error?:         string
   code?:          string
+  /**
+   * D25 (Q-P3): a ordem recusada por CONTENÇÃO já foi reexecutada UMA vez ao
+   * final do lote e continuou ocupada — "tente de novo" é decisão do operador.
+   */
+  retryable?:     boolean
 }
 
 export interface BatchInvoiceReport {
   requested: number
   invoiced:  number
   failed:    number
-  /** Faturadas que NÃO geraram baixa nem boleto — o pior caso da cobrança
-   *  mensal é o lote "100 % faturado" e nada cobrado (gate adversarial). */
+  /** Faturadas com QUALQUER parcela sem baixa e sem boleto — o pior caso da
+   *  cobrança mensal é o lote "100 % faturado" e nada cobrado (gate adversarial);
+   *  D26: a parcial (1 de 3 parcelas cobrada) também conta aqui. */
   uncharged: number
+  /** Subconjunto de `uncharged`: faturadas com cobrança PARCIAL (0 < cobradas < cobráveis). */
+  partiallyCharged: number
+  /** Recusadas por contenção que a passada extra (D25) NÃO resolveu — repetir é do operador. */
+  retryable: number
   results:   BatchInvoiceEntry[]
 }

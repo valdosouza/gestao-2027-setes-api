@@ -340,6 +340,14 @@ router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR
  *       contratos que divergem no dia é recusada com `ORDER_NO_CONTRACT_DUE_DAY`
  *       — o lote nunca inventa data. Forma e parcelas seguem valendo para todas;
  *       quem precisa de forma diferente faz dois lotes.
+ *       **Rodada 5 (2026-09-19)**: D23 — as condições vêm do FATO da competência
+ *       (congeladas na injeção), não do contrato vivo; D24 — `ok: true` e 200
+ *       mesmo com `invoiced: 0` (a operação "tentar e relatar" executou); D25 —
+ *       ordem recusada por contenção é reexecutada UMA vez ao final e, se ainda
+ *       ocupada, volta com `retryable: true` (repetir é do operador); D26 — cada
+ *       linha traz `chargedParcels/chargeableParcels` e `uncharged` conta a
+ *       cobrança PARCIAL (`partiallyCharged` é o subconjunto); D27 — teto de
+ *       **50** ordens por requisição (a tela fatia e agrega).
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
@@ -347,14 +355,14 @@ router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR
  *         application/json:
  *           schema:
  *             type: object
- *             required: [orderIds, paymentTypeId]
+ *             required: [orderIds]
  *             properties:
- *               orderIds: { type: array, items: { type: integer }, minItems: 1, maxItems: 200 }
+ *               orderIds: { type: array, items: { type: integer }, minItems: 1, maxItems: 50 }
  *               dtExpiration: { type: string, example: '2026-10-05', description: 'OPCIONAL (D13) — ausente = dia do contrato de cada ordem' }
- *               paymentTypeId: { type: integer }
- *               parcels: { type: integer, default: 1, minimum: 1, maximum: 99 }
+ *               paymentTypeId: { type: integer, description: 'OPCIONAL (D14) — ausente = forma combinada no contrato de cada ordem' }
+ *               parcels: { type: integer, enum: [1], default: 1, description: 'D30 — cobrança recorrente é sempre 1 parcela; outro valor → 400 (parcelamento só no faturamento individual)' }
  *     responses:
- *       200: { description: 'Envelope { ok, data: { requested, invoiced, failed, uncharged, results[] } } — cada linha traz o dtExpiration REALMENTE usado' }
+ *       200: { description: 'Envelope { ok, data: { requested, invoiced, failed, uncharged, partiallyCharged, retryable, results[] } } — cada linha traz dtExpiration/paymentTypeId REALMENTE usados, chargedParcels/chargeableParcels e retryable' }
  *       400: { description: Validação do lote }
  *       401: { description: Não autenticado }
  *       403: { description: Sem o privilégio FATURAR }

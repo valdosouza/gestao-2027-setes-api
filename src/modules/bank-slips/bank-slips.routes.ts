@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import * as controller from './bank-slips.controller'
+import * as registration from './bank-slips.registration.controller'
 
 /**
  * Rotas do módulo bank-slips — montadas em /api/bank-slips (tela de
@@ -131,6 +132,28 @@ router.get('/open-titles', controller.openTitlesLookup)
  *       404: { description: Boleto não encontrado }
  *       500: { description: Erro interno }
  */
+/**
+ * @swagger
+ * /api/bank-slips/refresh:
+ *   post:
+ *     tags: [BankSlips]
+ *     summary: Consulta ativa — atualiza com o banco as apresentações vivas (Onda 2, D-I9)
+ *     description: |
+ *       Gatilho da Onda 2 (sem URL pública para webhook até a Onda 4): a tela chama ao
+ *       abrir e no botão "Atualizar com o banco". THROTTLE — só apresentações cujo
+ *       último evento tem mais de `minMinutes` (default 5), no máximo `limit` (default 8)
+ *       por chamada (rate limit do sandbox: 10/min). Antes, reconcilia envios
+ *       interrompidos por seuNumero (D-I13). Banco fora → para cedo (fail-closed).
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema: { type: object, properties: { minMinutes: { type: integer }, limit: { type: integer } } }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data: { checked, changed, reconciled, errors[], stoppedEarly } }' }
+ */
+router.post('/refresh', registration.refreshOpen)
+
 router.get('/:id', controller.getOne)
 
 /**
@@ -231,5 +254,63 @@ router.post('/:id/cancel', controller.cancel)
  *       500: { description: Erro interno }
  */
 router.post('/:id/reverse', controller.reverse)
+
+/**
+ * @swagger
+ * /api/bank-slips/{id}/register:
+ *   post:
+ *     tags: [BankSlips]
+ *     summary: Apresenta o boleto ao banco (registro) — Onda 2, D-I5…D-I7
+ *     description: |
+ *       Cria a apresentação `attempt` N (`tb_bank_slip_registration`) e envia ao banco
+ *       pelo canal API da CONTA do boleto. Emissão ASSÍNCRONA: volta `requestCode`
+ *       (codigoSolicitacao); linha digitável/Pix chegam na consulta. Pagador vem da
+ *       cadeia do cliente — incompleto → 422 BANK_PAYER_INCOMPLETE com o campo.
+ *       Boleto com apresentação vigente → 409 BANK_SLIP_ALREADY_REGISTERED. Banco
+ *       recusou → a tentativa fica como F e o erro do banco volta (422/503).
+ *     security: [{ bearerAuth: [] }]
+ *     parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+ *     responses:
+ *       201: { description: 'Envelope { ok, data: { slipId, attempt, requestCode, environment } }' }
+ *       409: { description: Já registrado / canal ausente / boleto não aberto }
+ *       422: { description: Pagador incompleto / banco recusou }
+ *       503: { description: Banco indisponível }
+ * /api/bank-slips/{id}/refresh:
+ *   post:
+ *     tags: [BankSlips]
+ *     summary: Consulta o banco e grava a VOZ dele sobre a apresentação vigente
+ *     description: Idempotente — mesma situação e data não geram evento. RECEBIDO → liquidação (L, source A); CANCELADO/EXPIRADO → C; efeito recusado pelas nossas regras fica como pendência (`effectRefused`).
+ *     security: [{ bearerAuth: [] }]
+ *     parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+ *     responses:
+ *       200: { description: 'Envelope { ok, data: { changed, kind, bankStatus, slipEvent, effectRefused } }' }
+ *       409: { description: Nunca apresentado }
+ * /api/bank-slips/{id}/pdf:
+ *   get:
+ *     tags: [BankSlips]
+ *     summary: PDF oficial do banco (base64)
+ *     security: [{ bearerAuth: [] }]
+ *     parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+ *     responses:
+ *       200: { description: 'Envelope { ok, data: { pdfBase64, requestCode } }' }
+ *       409: { description: Não registrado }
+ * /api/bank-slips/{id}/pay-sandbox:
+ *   post:
+ *     tags: [BankSlips]
+ *     summary: SANDBOX — simula o pagamento no banco e consulta (prova do critério 2 da Onda 2)
+ *     security: [{ bearerAuth: [] }]
+ *     parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema: { type: object, properties: { via: { type: string, enum: [BOLETO, PIX] } } }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } (forma do refresh)' }
+ *       409: { description: Fora do sandbox / sem apresentação }
+ */
+router.post('/:id/register', registration.register)
+router.post('/:id/refresh', registration.refresh)
+router.get('/:id/pdf', registration.pdf)
+router.post('/:id/pay-sandbox', registration.paySandboxHandler)
 
 export default router

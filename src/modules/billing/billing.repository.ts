@@ -599,6 +599,7 @@ async function persistInvoiceOnce(
       parcels: parcels.length,
       autoSettled: automation.autoSettled,
       bankSlipsIssued: automation.bankSlipsIssued,
+      chargeableParcels: automation.chargeable,
     }
   } catch (err) {
     await conn.rollback()

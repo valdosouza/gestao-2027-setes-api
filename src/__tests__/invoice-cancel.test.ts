@@ -100,6 +100,26 @@ describe('cancelInvoice — travar', () => {
 })
 
 describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
+  // D28 (Q-P7 da fase Primeiro Cliente, Valdo 2026-09-19 — MANTER): a mensalidade
+  // que nasceu BAIXADA pela regra de recebimento bloqueia o cancelamento igual à
+  // baixa manual — o plano não distingue (nem deve) baixa automática de manual, e
+  // NÃO estorna em cascata como faz com o cheque em custódia. Conhecimento
+  // negativo: este teste existe para ninguém "consertar" isso depois.
+  it('D28: nota com baixa AUTOMÁTICA (título nasceu baixado) → bloqueio legível pelo título, nada estornado', async () => {
+    const conn = fakeConn()
+    planQueries(conn, {
+      payments: [{ parcel: 1, event: 1, paidValue: '55.50' }],   // baixa por regra de recebimento: mesma linha de uma baixa manual
+    })
+    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 7927)
+    expect(plan.blocks).toEqual([expect.objectContaining({
+      field: 'title', ref: '7927/1',
+      message: 'Título 7927/1 tem baixa de 55.50 — estorne a baixa antes',
+    })])
+    expect(plan.checksToReverse).toEqual([])
+    expect(plan.bankSlipsToCancel).toEqual([])
+    expect(plan.commissionEntries).toEqual([])
+  })
+
   it('H-2 (adversarial R6): devolução com âncora SOFT-DELETADA e ordem viva NÃO cancela — a guarda lê a âncora morta também', async () => {
     const conn = fakeConn()
     planQueries(conn, { anchor: [{ 1: 1 }] })

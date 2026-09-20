@@ -6,11 +6,12 @@ import {
 } from './bank-slips.interface'
 import {
   listBankSlips, getBankSlip, listAgreementsLookup, listOpenTitles,
-  issue, settle, cancel, reverse,
+  issue, settle, reverse,
 } from './bank-slips.repository'
 import {
   IssueBankSlipDto, SettleBankSlipDto, CancelBankSlipDto, ReverseBankSlipDto,
 } from './bank-slips.dto'
+import { cancelRegisteredBankSlip, listSlipRegistrations } from '@shared/bank-slip-registration'
 
 /**
  * Regras do módulo bank-slips: escopo SEMPRE da institution/usuário do
@@ -76,11 +77,23 @@ export async function settleSlip(
     scope.schemaName, scope.institutionId, scope.userId)
 }
 
+/**
+ * Onda 2 (D-I8): cancelar aqui cancela no BANCO primeiro quando há apresentação
+ * vigente — 202 do banco = aceite; banco fora → 409/503 e nada muda. Sem
+ * apresentação, é o cancelamento local de sempre (a composição decide).
+ */
 export async function cancelSlip(
   id: number, input: CancelBankSlipDto, scope: BankSlipScope
-): Promise<{ event: number }> {
-  const event = await cancel(id, input.note ?? null, scope.schemaName, scope.institutionId, scope.userId)
-  return { event }
+): Promise<{ event: number; bankNotified: boolean }> {
+  const r = await cancelRegisteredBankSlip(scope.schemaName, scope.institutionId, scope.userId, id, input.note ?? null)
+  return { event: r.slipEvent, bankNotified: r.bankNotified }
+}
+
+/** Detalhe do boleto + apresentações ao banco e a voz dele (tela de processo). */
+export async function fetchBankSlipWithRegistrations(id: number, scope: BankSlipScope) {
+  const slip = await fetchBankSlip(id, scope)
+  const reg = await listSlipRegistrations(scope.schemaName, scope.institutionId, id)
+  return { ...slip, registrations: reg.registrations, registrationEvents: reg.events }
 }
 
 export async function reverseSlip(id: number, input: ReverseBankSlipDto, scope: BankSlipScope) {

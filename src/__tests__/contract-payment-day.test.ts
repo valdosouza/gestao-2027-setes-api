@@ -35,6 +35,23 @@ describe('contractBillingReference (D12/D13/D14)', () => {
     })
   })
 
+  // D23 (Q-R1, Valdo 2026-09-19): editar ou excluir o contrato NÃO muda a cobrança
+  // de um mês que ele já gerou — as condições vêm do FATO da competência, gravadas
+  // no ato da injeção. Este teste cai se alguém voltar a ler do contrato vivo.
+  it('D23: lê dia e forma do FATO da competência, sem JOIN com o contrato vivo', async () => {
+    mockQuery.mockResolvedValueOnce(agregado())
+    await contractBillingReference(7953, 'setes_setes', 1)
+    const sql = String(mockQuery.mock.calls[0][0])
+    expect(sql).toMatch(/tb_contract_item_competence comp/)
+    expect(sql).toMatch(/MIN\(comp\.payment_day\)/)
+    expect(sql).toMatch(/MIN\(comp\.tb_payment_types_id\)/)
+    expect(sql).toMatch(/COUNT\(comp\.tb_payment_types_id\) AS comForma/)
+    expect(sql).not.toMatch(/JOIN[\s\S]*tb_contract/)
+    expect(sql).not.toMatch(/c\.payment_day|c\.tb_payment_types_id|c\.deleted/)
+    expect(sql).toMatch(/comp\.deleted = 'N'/)
+    expect(mockQuery.mock.calls[0][1]).toEqual([1, 7953])
+  })
+
   it('DIA diverge → só o dia vira null; a forma continua valendo', async () => {
     mockQuery.mockResolvedValueOnce(agregado({ dias: 2, paymentDay: 5 }))
     expect(await contractBillingReference(7953, 'setes_setes', 1)).toEqual({
