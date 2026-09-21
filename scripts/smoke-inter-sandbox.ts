@@ -38,6 +38,18 @@ async function api(method: string, path: string, body?: unknown) {
   try { json = await res.json() } catch { /* sem corpo */ }
   return { status: res.status, body: json }
 }
+// Janela do sandbox do Inter (cadastro do Valdo em developers.inter.co, 2026-09-20): o
+// ambiente de testes só responde das 8h às 20h, de SEGUNDA a SEXTA (horário de Brasília).
+// Fora disso toda chamada cai em BANK_UNAVAILABLE — avisar antes de confundir com defeito.
+function sandboxWindowWarning(now = new Date()): string | null {
+  const dow = now.getDay(), h = now.getHours()
+  if (dow === 0 || dow === 6) return `hoje é ${dow === 0 ? 'domingo' : 'sábado'}`
+  if (h < 8 || h >= 20) return `são ${String(h).padStart(2, '0')}h${String(now.getMinutes()).padStart(2, '0')}`
+  return null
+}
+const fora = sandboxWindowWarning()
+if (fora) console.log(`[ AVISO ] sandbox do Inter só atende seg–sex 8h–20h — ${fora}; espere BANK_UNAVAILABLE`)
+
 const step = (id: string, ok: boolean | 'skip', detail: string) =>
   console.log(`[${ok === 'skip' ? ' SKIP ' : ok ? '  OK  ' : ' FALHA'}] ${id.padEnd(6)} ${detail}`)
 const motivo = (r: any) => `${r.status} ${r.body?.code ?? ''} ${r.body?.error ?? ''}`.trim()
@@ -91,17 +103,19 @@ async function main(): Promise<void> {
   if (t.status !== 200) return
 
   // 4. carteira da conta Inter + boleto de um título aberto
-  const ags = await api('GET', '/bank-slips/agreements')
+  const ags = await api('GET', '/bank-charge-agreements')   // o lookup /bank-slips/agreements não traz bankAccountId
   let agreement = (ags.body?.data ?? []).find((a: any) => Number(a.bankAccountId) === accountId)
   if (!agreement) {
-    const r = await api('POST', '/bank-charge-agreements', { bankAccountId: accountId, description: 'Inter sandbox (smoke)', active: 'S', ourNumberNext: null })
+    const r = await api('POST', '/bank-charge-agreements', { bankAccountId: accountId, agreement: 'INTER-SANDBOX', active: 'S', ourNumberNext: null })
     if (r.status !== 201) { step('C4', false, `carteira: ${motivo(r)}`); return }
     agreement = { id: r.body.data.id }
   }
   const titles = await api('GET', '/bank-slips/open-titles')
   const title = (titles.body?.data ?? [])[0]
   if (!title) { step('C4', false, 'nenhum título aberto sem boleto — rode a trilha antes'); return }
-  const issued = await api('POST', '/bank-slips', { agreementId: Number(agreement.id), titles: [{ orderId: title.orderId, parcel: title.parcel }] })
+  // vencimento SEMPRE futuro: o banco recusa dataVencimento < hoje (400) e o título do dev pode estar vencido há anos
+  const due = new Date(Date.now() + 30 * 86_400_000); const dueIso = [due.getFullYear(), String(due.getMonth() + 1).padStart(2, '0'), String(due.getDate()).padStart(2, '0')].join('-')
+  const issued = await api('POST', '/bank-slips', { agreementId: Number(agreement.id), dtExpiration: dueIso, titles: [{ orderId: title.orderId, parcel: title.parcel }] })
   if (issued.status !== 201) { step('C4', false, `emitir boleto: ${motivo(issued)}`); return }
   const slipId = Number(issued.body.data.slipId ?? issued.body.data.id)
   step('C4', true, `boleto ${slipId} emitido aqui (título ${title.orderId}/${title.parcel}) pela carteira ${agreement.id}`)
@@ -125,8 +139,10 @@ async function main(): Promise<void> {
 
   // 7. pagamento simulado (critério 2) → RECEBIDO → L source A
   const pay = await api('POST', `/bank-slips/${slipId}/pay-sandbox`, { via: 'BOLETO' })
+  if (pay.status !== 200) { step('C7', false, `pagamento simulado: ${motivo(pay)}`); return }
+  // o sandbox processa o pagamento de forma ASSÍNCRONA (~20 s): poll com folga do rate limit (10/min)
   let fin = pay
-  for (let i = 0; i < 4 && (fin.body?.data?.bankStatus !== 'RECEBIDO'); i++) {
+  for (let i = 0; i < 8 && (fin.body?.data?.bankStatus !== 'RECEBIDO'); i++) {
     await new Promise(r => setTimeout(r, 6000))
     fin = await api('POST', `/bank-slips/${slipId}/refresh`)
   }

@@ -8,8 +8,10 @@ import {
   openBankChannel, openBankChannelForDiagnostics,
 } from '@shared/bank-channel'
 import {
-  writeSecret, deleteSecret, looksLikeCertificatePem, looksLikePrivateKeyPem, certificateInfo,
+  writeSecret, deleteSecret, looksLikeCertificatePem, certificateInfo,
+  validatePrivateKeyPem, keyMatchesCertificate, hasSecret, readSecret,
 } from '@shared/secret-store'
+import { countLiveRegistrationsForAccount } from '@shared/bank-slip-registration'
 import { getBankAccount } from './bank-accounts.repository'
 import { BankChannelDto, BankChannelSecretsDto } from './bank-accounts.channel.dto'
 
@@ -60,6 +62,17 @@ export async function saveChannel(bankAccountId: number, input: BankChannelDto, 
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
+    // D-I27 (Q-I11): virar o ambiente com apresentação VIVA no ambiente atual deixaria
+    // cobrança viva no banco que este canal não alcança mais (segredos do sandbox saem
+    // do cofre, consulta e cancelamento ficam sem porta). Encerra-as primeiro.
+    const current = await getBankChannel(conn, scope.schemaName, scope.institutionId, bankAccountId, true)
+    if (current && current.environment !== input.environment) {
+      const live = await countLiveRegistrationsForAccount(conn, scope.schemaName, scope.institutionId, bankAccountId, current.environment)
+      if (live > 0) {
+        throw new HttpError(409, `Conta tem ${live} boleto(s) com apresentação viva no ambiente ${current.environment === 'S' ? 'sandbox' : 'produção'} — encerre-os (liquidar/cancelar) antes de mudar o ambiente`,
+          [{ field: 'environment', message: `${live} apresentação(ões) viva(s) em ${current.environment}` }], 'BANK_CHANNEL_HAS_LIVE_REGISTRATIONS')
+      }
+    }
     await upsertBankChannel(conn, scope.schemaName, scope.institutionId, bankAccountId, {
       environment: input.environment, clientId: input.clientId ?? null, active: input.active,
     })
@@ -73,10 +86,23 @@ export async function saveChannel(bankAccountId: number, input: BankChannelDto, 
   return fetchChannel(bankAccountId, scope)
 }
 
+/**
+ * D-I26 (Q-I8): excluir o canal com apresentação VIVA no banco é recusado (409) —
+ * a cobrança seguiria viva lá sem porta de consulta/cancelamento aqui. Sem viva:
+ * soft delete + os segredos dos DOIS ambientes saem do cofre (o PUT seguinte
+ * revive o canal com token NOVO — repositório).
+ */
 export async function removeChannel(bankAccountId: number, scope: ChannelScope): Promise<void> {
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
+    const channel = await getBankChannel(conn, scope.schemaName, scope.institutionId, bankAccountId, true)
+    if (!channel) throw new HttpError(404, 'Canal não encontrado', undefined, 'BANK_CHANNEL_MISSING')
+    const live = await countLiveRegistrationsForAccount(conn, scope.schemaName, scope.institutionId, bankAccountId)
+    if (live > 0) {
+      throw new HttpError(409, `Conta tem ${live} boleto(s) com apresentação viva no banco — encerre-os (liquidar/cancelar) antes de excluir o canal`,
+        undefined, 'BANK_CHANNEL_HAS_LIVE_REGISTRATIONS')
+    }
     const ok = await softDeleteBankChannel(conn, scope.schemaName, scope.institutionId, bankAccountId)
     if (!ok) throw new HttpError(404, 'Canal não encontrado', undefined, 'BANK_CHANNEL_MISSING')
     await conn.commit()
@@ -85,6 +111,11 @@ export async function removeChannel(bankAccountId: number, scope: ChannelScope):
   } finally {
     conn.release()
   }
+  // fora da transação (disco): segredos de S e de P — canal excluído não guarda credencial
+  for (const environment of ['S', 'P'] as const) {
+    for (const name of Object.values(SECRET_NAMES)) deleteSecret(secretRef({ bankAccountId, environment }, scope.schemaName, name))
+  }
+  logger.info('Canal API da conta excluído (segredos removidos do cofre)', { institutionId: scope.institutionId, bankAccountId })
 }
 
 export async function rotateChannelToken(bankAccountId: number, scope: ChannelScope): Promise<ChannelView> {
@@ -116,15 +147,28 @@ export async function saveChannelSecrets(bankAccountId: number, input: BankChann
     try { certificateInfo(input.certificatePem) } catch {
       throw new HttpError(400, 'Certificado PEM ilegível', [{ field: 'certificatePem', message: 'Não pôde ser interpretado' }], 'BANK_CHANNEL_SECRET_INVALID')
     }
-    writeSecret(secretRef(channel, scope.schemaName, SECRET_NAMES.cert), input.certificatePem)
+    // NÃO grava aqui: só depois de o par cert × chave fechar (M1 do re-score — gravar o
+    // cert antes deixava cert novo × chave velha no disco quando o par não casava)
   }
   if (input.privateKeyPem !== undefined) {
-    if (!looksLikePrivateKeyPem(input.privateKeyPem)) {
-      throw new HttpError(400, 'Chave privada não está em PEM (-----BEGIN PRIVATE KEY-----)',
-        [{ field: 'privateKeyPem', message: 'PEM inválido' }], 'BANK_CHANNEL_SECRET_INVALID')
-    }
-    writeSecret(secretRef(channel, scope.schemaName, SECRET_NAMES.key), input.privateKeyPem)
+    // conteúdo, não só a forma (A7 do gate adversarial / A1 da sonda ao vivo): chave
+    // ilegível entrava por cima da boa e toda chamada virava "banco indisponível"
+    const why = validatePrivateKeyPem(input.privateKeyPem)
+    if (why) throw new HttpError(400, why, [{ field: 'privateKeyPem', message: 'PEM inválido' }], 'BANK_CHANNEL_SECRET_INVALID')
   }
+  // par mTLS coerente: chave (nova ou já no cofre) × certificado (novo ou já no cofre)
+  const certRef = secretRef(channel, scope.schemaName, SECRET_NAMES.cert)
+  const keyRef = secretRef(channel, scope.schemaName, SECRET_NAMES.key)
+  const certPem = input.certificatePem ?? (hasSecret(certRef) ? readSecret(certRef).toString() : null)
+  const keyPem = input.privateKeyPem ?? (hasSecret(keyRef) ? readSecret(keyRef).toString() : null)
+  if (certPem && keyPem && !keyMatchesCertificate(certPem, keyPem)) {
+    const field = input.privateKeyPem !== undefined ? 'privateKeyPem' : 'certificatePem'
+    throw new HttpError(400, 'A chave privada não corresponde ao certificado — envie o par emitido junto pelo banco',
+      [{ field, message: 'Chave e certificado não formam um par' }], 'BANK_CHANNEL_SECRET_INVALID')
+  }
+  // invariante: cofre = último par VÁLIDO — as duas escritas só depois de toda validação
+  if (input.certificatePem !== undefined) writeSecret(certRef, input.certificatePem)
+  if (input.privateKeyPem !== undefined) writeSecret(keyRef, input.privateKeyPem)
   if (input.clientSecret !== undefined) {
     writeSecret(secretRef(channel, scope.schemaName, SECRET_NAMES.clientSecret), input.clientSecret.trim())
   }

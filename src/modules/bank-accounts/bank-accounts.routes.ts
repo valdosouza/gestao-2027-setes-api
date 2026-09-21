@@ -277,7 +277,7 @@ router.delete('/:id/channel/secrets', adminGuard, channel.deleteSecrets)
  *       503: { description: Banco indisponível }
  */
 router.post('/:id/channel/rotate-token', adminGuard, channel.rotateToken)
-router.post('/:id/channel/test', channel.test)
+router.post('/:id/channel/test', adminGuard, channel.test)   // gasta cota do banco: só admin (LOW-3 do gate, assunção Q-I7)
 
 /**
  * @swagger

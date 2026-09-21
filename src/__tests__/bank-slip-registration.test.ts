@@ -142,13 +142,20 @@ describe('registerBankSlip — apresentar ao banco', () => {
     ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: null, lastEvent: null, requestCode: null, createdAt: fmt(recent) }))
     await expect(registerBankSlip(S.schema, S.inst, S.user, 262)).rejects.toMatchObject({ code: 'BANK_SLIP_REGISTRATION_IN_PROGRESS' })
 
+    // mais velha: HIGH-3 do gate — pergunta ao banco por seuNumero ANTES de dar por F
+    // (nada lá → F source Q e a nova tentativa segue; ver onda2-gate-rework.test.ts)
+    jest.clearAllMocks()
     const old = new Date(Date.now() - 30 * 60_000)
-    ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: null, lastEvent: null, requestCode: null, createdAt: fmt(old) }))
+    ;(repo.latestRegistration as jest.Mock)
+      .mockResolvedValueOnce(regLive({ lastKind: null, lastEvent: null, requestCode: null, createdAt: fmt(old) }))
+      .mockResolvedValue(regLive({ lastKind: 'F', lastEvent: 1, requestCode: null, createdAt: fmt(old) }))
     ;(repo.insertRegistration as jest.Mock).mockResolvedValue(2)
+    adapter.findByReference.mockResolvedValue([])
     adapter.register.mockResolvedValue({ requestCode: 'uuid-2' })
     await registerBankSlip(S.schema, S.inst, S.user, 262)
+    expect(adapter.findByReference.mock.invocationCallOrder[0]).toBeLessThan(adapter.register.mock.invocationCallOrder[0])
     expect(repo.insertRegistrationEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, 262, 1, S.user,
-      expect.objectContaining({ kind: 'F', message: expect.stringMatching(/interrompido/) }))
+      expect.objectContaining({ kind: 'F', source: 'Q', message: expect.stringMatching(/interrompido/) }))
   })
 
   it('banco RECUSA → tentativa grava F com a mensagem do banco e o erro do banco sobe (422)', async () => {
@@ -282,24 +289,28 @@ describe('refreshRegistration — a voz do banco', () => {
 })
 
 describe('cancelRegisteredBankSlip — banco primeiro, fail-closed (D-I8)', () => {
-  it('com apresentação vigente: cancel no banco ANTES; aceito → C no boleto (source M) + evento K ligado', async () => {
-    ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: 'G' }))
+  it('com apresentação vigente: estado local → CONSULTA → cancel no banco → C no boleto (source M) + evento K ligado', async () => {
+    ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: 'G', lastBankStatus: 'A_RECEBER', lastDtBankStatus: null }))
+    adapter.query.mockResolvedValue({ requestCode: 'uuid-1', reference: '262', status: 'A_RECEBER', statusAt: null, amount: 250, paidValue: null, paidBy: null, bankOurNumber: null, digitableLine: null, barcode: null, pixCopyPaste: null, pixTxid: null, cancelReason: null })
     adapter.cancel.mockResolvedValue(undefined)
     ;(slipPiece.cancelBankSlip as jest.Mock).mockResolvedValue(4)
     const r = await cancelRegisteredBankSlip(S.schema, S.inst, S.user, 262, 'cliente desistiu')
     expect(r).toEqual({ slipEvent: 4, bankNotified: true, attempt: 1 })
     expect(adapter.cancel).toHaveBeenCalledWith(opened.ctx, 'uuid-1', 'cliente desistiu')
-    expect(adapter.cancel.mock.invocationCallOrder[0]).toBeLessThan(conn.beginTransaction.mock.invocationCallOrder[0])
+    // gates da onda (MED-2/A4): consulta prévia antes do pedido; o C local só depois do aceite do banco
+    expect(adapter.query.mock.invocationCallOrder[0]).toBeLessThan(adapter.cancel.mock.invocationCallOrder[0])
+    expect(adapter.cancel.mock.invocationCallOrder[0]).toBeLessThan((slipPiece.cancelBankSlip as jest.Mock).mock.invocationCallOrder[0])
     expect(slipPiece.cancelBankSlip).toHaveBeenCalledWith(conn, S.schema, S.inst, S.user, 262, 'cliente desistiu', 'M')
     expect(repo.insertRegistrationEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, 262, 1, S.user,
       expect.objectContaining({ kind: 'K', source: 'P', slipEvent: 4 }))
   })
 
   it('banco INDISPONÍVEL → 503 e NADA muda aqui (sem C, sem K)', async () => {
-    ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: 'G' }))
+    ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: 'G', lastBankStatus: 'A_RECEBER', lastDtBankStatus: null }))
+    adapter.query.mockResolvedValue({ requestCode: 'uuid-1', reference: '262', status: 'A_RECEBER', statusAt: null, amount: 250, paidValue: null, paidBy: null, bankOurNumber: null, digitableLine: null, barcode: null, pixCopyPaste: null, pixTxid: null, cancelReason: null })
     adapter.cancel.mockRejectedValue(new BankHttpError(503, 'fora', 'BANK_UNAVAILABLE', 0, ''))
     await expect(cancelRegisteredBankSlip(S.schema, S.inst, S.user, 262, null)).rejects.toMatchObject({ code: 'BANK_UNAVAILABLE' })
-    expect(slipPiece.cancelBankSlip).not.toHaveBeenCalled(); expect(conn.beginTransaction).not.toHaveBeenCalled()
+    expect(slipPiece.cancelBankSlip).not.toHaveBeenCalled(); expect(repo.insertRegistrationEvent).not.toHaveBeenCalled()
   })
 
   it('sem apresentação (nunca enviado ou já encerrada) → cancelamento local de sempre, banco não é chamado', async () => {

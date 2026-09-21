@@ -41,6 +41,8 @@ describe('token OAuth', () => {
     const call = mockHttp.mock.calls[1][0]
     expect(call.headers.Authorization).toBe('Bearer tok')
     expect(call.headers['x-conta-corrente']).toBe('123456')  // D-I14: derivado de number + dv, só dígitos
+    // smoke do sandbox 2026-09-21: sem problem+json no Accept o /pagar responde 406 (negociação de conteúdo)
+    expect(call.headers.Accept).toContain('application/problem+json')
   })
 
   it('produção usa o host cdpj.partners.bancointer.com.br', async () => {

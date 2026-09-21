@@ -6,7 +6,7 @@ import {
   issueBankSlipDto, settleBankSlipDto, cancelBankSlipDto, reverseBankSlipDto,
 } from './bank-slips.dto'
 import {
-  BankSlipScope, parseState, fetchBankSlips, fetchBankSlipWithRegistrations, fetchAgreementsLookup,
+  BankSlipScope, parseState, parsePendingOnly, fetchBankSlips, fetchBankSlipWithRegistrations, fetchAgreementsLookup,
   fetchOpenTitles, issueSlip, settleSlip, cancelSlip, reverseSlip,
 } from './bank-slips.service'
 
@@ -19,8 +19,9 @@ function scopeOf(req: Request): BankSlipScope {
 export async function list(req: Request, res: Response): Promise<void> {
   try {
     const status = parseState(req.query.status)
+    const pendingOnly = parsePendingOnly(req.query.pending)
     const query = await parseListQuery(req, 'bank-slips')
-    res.json(pagedEnvelope(query, await fetchBankSlips(status, query, scopeOf(req))))
+    res.json(pagedEnvelope(query, await fetchBankSlips(status, query, scopeOf(req), pendingOnly)))
   } catch (err) {
     handleError(res, err, 'bank-slips GET')
   }

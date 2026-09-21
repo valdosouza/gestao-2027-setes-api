@@ -11,11 +11,19 @@ import { ChannelEnvironment } from '@shared/bank-channel'
 
 type Q = PoolConnection | typeof pool
 
-export type RegistrationEventKind = 'S' | 'G' | 'R' | 'M' | 'A' | 'P' | 'C' | 'V' | 'F' | 'K'
+export type RegistrationEventKind = 'S' | 'G' | 'R' | 'M' | 'A' | 'P' | 'C' | 'V' | 'F' | 'K' | 'E'
 export type RegistrationSource = 'W' | 'Q' | 'P'
 
-/** Apresentação ENCERRADA: o banco não vai dizer mais nada útil sobre ela. */
-export const FINAL_REGISTRATION_KINDS: ReadonlySet<string> = new Set(['R', 'C', 'V', 'F'])
+/**
+ * Apresentação ENCERRADA: o banco não vai dizer mais nada útil sobre ela.
+ * 'E' (efeito reaplicado — ato manual da D-I25/Q-I1) só nasce DEPOIS de um
+ * R/C/V com efeito recusado; encerra como a voz que reaplica.
+ */
+export const FINAL_REGISTRATION_KINDS: ReadonlySet<string> = new Set(['R', 'C', 'V', 'F', 'E'])
+/** Vozes do banco que produzem EFEITO no boleto (D-I7) — só elas podem ficar pendentes. */
+export const EFFECT_KINDS: ReadonlySet<string> = new Set(['R', 'C', 'V'])
+/** SQL da pendência: voz com efeito e sem `slip_event` (D-I10) — usado na lista e no detalhe. */
+export const PENDING_EFFECT_WHERE = `deleted = 'N' AND kind IN ('R','C','V') AND slip_event IS NULL`
 
 export interface RegistrationRow {
   institutionId:  number
@@ -29,6 +37,8 @@ export interface RegistrationRow {
   pixCopyPaste:   string | null
   pixTxid:        string | null
   createdAt:      string | null
+  /** Última vez que NÓS consultamos o banco (migration 056) — rodízio/throttle; null = nunca. */
+  lastQueriedAt:  string | null
   /** Último evento da apresentação (null = envio em andamento/interrompido). */
   lastEvent:      number | null
   lastKind:       RegistrationEventKind | null
@@ -57,6 +67,7 @@ const REG_SELECT = (s: string) => `
          r.request_code AS requestCode, r.bank_our_number AS bankOurNumber, r.digitable_line AS digitableLine,
          r.barcode, r.pix_copy_paste AS pixCopyPaste, r.pix_txid AS pixTxid,
          DATE_FORMAT(r.created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
+         DATE_FORMAT(r.last_queried_at, '%Y-%m-%d %H:%i:%s') AS lastQueriedAt,
          le.event AS lastEvent, le.kind AS lastKind, le.bank_status AS lastBankStatus,
          DATE_FORMAT(le.dt_bank_status, '%Y-%m-%d %H:%i:%s') AS lastDtBankStatus,
          DATE_FORMAT(le.created_at, '%Y-%m-%d %H:%i:%s') AS lastEventAt
@@ -74,6 +85,7 @@ function mapReg(r: any): RegistrationRow {
     environment: r.environment === 'P' ? 'P' : 'S', requestCode: r.requestCode ?? null,
     bankOurNumber: r.bankOurNumber ?? null, digitableLine: r.digitableLine ?? null, barcode: r.barcode ?? null,
     pixCopyPaste: r.pixCopyPaste ?? null, pixTxid: r.pixTxid ?? null, createdAt: r.createdAt ?? null,
+    lastQueriedAt: r.lastQueriedAt ?? null,
     lastEvent: r.lastEvent == null ? null : Number(r.lastEvent), lastKind: r.lastKind ?? null,
     lastBankStatus: r.lastBankStatus ?? null, lastDtBankStatus: r.lastDtBankStatus ?? null,
     lastEventAt: r.lastEventAt ?? null,
@@ -94,6 +106,32 @@ export async function latestRegistration(
       WHERE r.tb_institution_id = ? AND r.tb_bank_slip_id = ? AND r.deleted = 'N'
       ORDER BY r.attempt DESC LIMIT 1${forUpdate ? ' FOR UPDATE' : ''}`,
     [institutionId, slipId]
+  )
+  return rows[0] ? mapReg(rows[0]) : null
+}
+
+/** Pendências do boleto: vozes R/C/V (qualquer tentativa) cujo efeito a nossa regra recusou e ninguém reaplicou. */
+export async function countPendingEffects(
+  q: Q, schemaName: string, institutionId: number, slipId: number
+): Promise<number> {
+  const s = assertSchema(schemaName)
+  const [rows] = await q.query<any[]>(
+    `SELECT COUNT(*) AS n FROM \`${s}\`.tb_bank_slip_registration_event
+      WHERE tb_institution_id = ? AND tb_bank_slip_id = ? AND ${PENDING_EFFECT_WHERE}`,
+    [institutionId, slipId]
+  )
+  return Number(rows?.[0]?.n ?? 0)
+}
+
+/** Uma tentativa específica (a reaplicação do efeito mira o evento de UMA apresentação, não a última). */
+export async function getRegistration(
+  q: Q, schemaName: string, institutionId: number, slipId: number, attempt: number, forUpdate = false
+): Promise<RegistrationRow | null> {
+  const s = assertSchema(schemaName)
+  const [rows] = await q.query<any[]>(
+    `${REG_SELECT(s)}
+      WHERE r.tb_institution_id = ? AND r.tb_bank_slip_id = ? AND r.attempt = ? AND r.deleted = 'N'${forUpdate ? ' FOR UPDATE' : ''}`,
+    [institutionId, slipId, attempt]
   )
   return rows[0] ? mapReg(rows[0]) : null
 }
@@ -177,7 +215,7 @@ export async function fillBankData(
             pix_txid        = COALESCE(pix_txid, ?),
             updated_at = NOW()
       WHERE tb_institution_id = ? AND tb_bank_slip_id = ? AND attempt = ?`,
-    [data.bankOurNumber ?? null, data.digitableLine?.slice(0, 47) ?? null, data.barcode?.slice(0, 44) ?? null,
+    [data.bankOurNumber?.slice(0, 11) ?? null, data.digitableLine?.slice(0, 47) ?? null, data.barcode?.slice(0, 44) ?? null,
      data.pixCopyPaste ?? null, data.pixTxid?.slice(0, 35) ?? null, institutionId, slipId, attempt]
   )
 }
@@ -232,8 +270,11 @@ export async function setRegistrationEventEffect(
 
 /**
  * Apresentações VIVAS com código, para a consulta ativa (D-I9, throttle): as
- * mais antigas primeiro; `minMinutes` desde o último evento evita bater no
- * rate limit do sandbox (10/min) a cada abertura de tela.
+ * consultadas há mais tempo primeiro (nunca consultadas na frente), e só quem
+ * não foi consultado há `minMinutes` — pela marca `last_queried_at` (migration
+ * 056), NÃO pelo último evento: consulta sem novidade não gera evento, e filtrar
+ * pelo evento reconsultava sempre os mesmos 8 e nunca chegava ao 9º (HIGH-2 do
+ * gate socrático da Onda 2). Evita bater no rate limit do sandbox (10/min).
  */
 export async function listLiveRegistrationsToRefresh(
   schemaName: string, institutionId: number, minMinutes: number, limit: number
@@ -242,13 +283,105 @@ export async function listLiveRegistrationsToRefresh(
   const [rows] = await pool.query<any[]>(
     `${REG_SELECT(s)}
       WHERE r.tb_institution_id = ? AND r.deleted = 'N' AND r.request_code IS NOT NULL
-        AND (le.kind IS NULL OR le.kind NOT IN ('R','C','V','F'))
-        AND (le.created_at IS NULL OR le.created_at < DATE_SUB(NOW(), INTERVAL ? MINUTE))
-      ORDER BY le.created_at ASC, r.tb_bank_slip_id ASC
+        AND (le.kind IS NULL OR le.kind NOT IN ('R','C','V','F','E'))
+        AND (r.last_queried_at IS NULL OR r.last_queried_at < DATE_SUB(NOW(), INTERVAL ? MINUTE))
+      ORDER BY (r.last_queried_at IS NULL) DESC, r.last_queried_at ASC, r.tb_bank_slip_id ASC
       LIMIT ?`,
     [institutionId, minMinutes, limit]
   )
   return rows.map(mapReg)
+}
+
+/** Já existe esta fala (kind, dt) na tentativa? Idempotência por TODOS os eventos, não só o último (A3). */
+export async function hasRegistrationEvent(
+  q: Q, schemaName: string, institutionId: number, slipId: number, attempt: number,
+  kind: RegistrationEventKind, dtBankStatus: string | null
+): Promise<boolean> {
+  const s = assertSchema(schemaName)
+  const [rows] = await q.query<any[]>(
+    `SELECT COUNT(*) AS n FROM \`${s}\`.tb_bank_slip_registration_event
+      WHERE tb_institution_id = ? AND tb_bank_slip_id = ? AND attempt = ? AND deleted = 'N'
+        AND kind = ? AND ${dtBankStatus === null ? 'dt_bank_status IS NULL' : 'dt_bank_status = ?'}`,
+    dtBankStatus === null ? [institutionId, slipId, attempt, kind] : [institutionId, slipId, attempt, kind, dtBankStatus]
+  )
+  return Number(rows?.[0]?.n ?? 0) > 0
+}
+
+/** Marca "nós olhamos o banco" (com ou sem novidade) — o fato que sustenta o rodízio. */
+export async function touchQueriedAt(
+  q: Q, schemaName: string, institutionId: number, slipId: number, attempt: number
+): Promise<void> {
+  const s = assertSchema(schemaName)
+  await q.query(
+    `UPDATE \`${s}\`.tb_bank_slip_registration SET last_queried_at = NOW()
+      WHERE tb_institution_id = ? AND tb_bank_slip_id = ? AND attempt = ?`,
+    [institutionId, slipId, attempt]
+  )
+}
+
+/** Códigos do banco JÁ conhecidos por este boleto (todas as tentativas) — a reconciliação nunca os adota de novo. */
+export async function listSlipRequestCodes(
+  schemaName: string, institutionId: number, slipId: number
+): Promise<string[]> {
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT request_code AS requestCode FROM \`${s}\`.tb_bank_slip_registration
+      WHERE tb_institution_id = ? AND tb_bank_slip_id = ? AND request_code IS NOT NULL`,
+    [institutionId, slipId]
+  )
+  return rows.map(r => String(r.requestCode))
+}
+
+/** Um evento da voz do banco (para a reaplicação do efeito — D-I25). Sob o lock do boleto quando forUpdate. */
+export async function getRegistrationEvent(
+  q: Q, schemaName: string, institutionId: number, slipId: number, attempt: number, event: number, forUpdate = false
+): Promise<RegistrationEventRow | null> {
+  const s = assertSchema(schemaName)
+  const [rows] = await q.query<any[]>(
+    `SELECT attempt, event, kind, bank_status AS bankStatus,
+            DATE_FORMAT(dt_bank_status, '%Y-%m-%d %H:%i:%s') AS dtBankStatus, source,
+            paid_value AS paidValue, paid_by AS paidBy, slip_event AS slipEvent, message,
+            tb_user_id AS userId, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt
+       FROM \`${s}\`.tb_bank_slip_registration_event
+      WHERE tb_institution_id = ? AND tb_bank_slip_id = ? AND attempt = ? AND event = ? AND deleted = 'N'${forUpdate ? ' FOR UPDATE' : ''}`,
+    [institutionId, slipId, attempt, event]
+  )
+  const r = rows[0]
+  if (!r) return null
+  return {
+    attempt: Number(r.attempt), event: Number(r.event), kind: r.kind, bankStatus: r.bankStatus ?? null,
+    dtBankStatus: r.dtBankStatus ?? null, source: r.source, paidValue: r.paidValue == null ? null : Number(r.paidValue),
+    paidBy: r.paidBy ?? null, slipEvent: r.slipEvent == null ? null : Number(r.slipEvent), message: r.message ?? null,
+    userId: r.userId == null ? null : Number(r.userId), createdAt: r.createdAt ?? null,
+  }
+}
+
+/**
+ * Apresentações VIVAS (em voo ou com voz não final) dos boletos de UMA conta —
+ * opcionalmente só as congeladas num ambiente. É o que prende o canal: não se
+ * exclui o canal nem se muda o ambiente com cobrança viva no banco (D-I26/D-I27).
+ */
+export async function countLiveRegistrationsForAccount(
+  q: Q, schemaName: string, institutionId: number, bankAccountId: number, environment?: ChannelEnvironment
+): Promise<number> {
+  const s = assertSchema(schemaName)
+  const [rows] = await q.query<any[]>(
+    `SELECT COUNT(*) AS n
+       FROM \`${s}\`.tb_bank_slip_registration r
+       INNER JOIN \`${s}\`.tb_bank_slip bs
+          ON bs.id = r.tb_bank_slip_id AND bs.tb_institution_id = r.tb_institution_id AND bs.deleted = 'N'
+       LEFT JOIN \`${s}\`.tb_bank_slip_registration_event le
+         ON le.tb_institution_id = r.tb_institution_id AND le.tb_bank_slip_id = r.tb_bank_slip_id
+        AND le.attempt = r.attempt AND le.deleted = 'N'
+        AND le.event = (SELECT MAX(x.event) FROM \`${s}\`.tb_bank_slip_registration_event x
+                         WHERE x.tb_institution_id = r.tb_institution_id AND x.tb_bank_slip_id = r.tb_bank_slip_id
+                           AND x.attempt = r.attempt AND x.deleted = 'N')
+      WHERE r.tb_institution_id = ? AND r.deleted = 'N' AND bs.tb_bank_account_id = ?
+        AND (? IS NULL OR r.environment = ?)
+        AND (le.kind IS NULL OR le.kind NOT IN ('R','C','V','F','E'))`,
+    [institutionId, bankAccountId, environment ?? null, environment ?? null]
+  )
+  return Number(rows?.[0]?.n ?? 0)
 }
 
 /** Envios INTERROMPIDOS (D-I13): reservados sem código nem evento há mais de N minutos. */

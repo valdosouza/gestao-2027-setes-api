@@ -51,6 +51,7 @@ export function httpsRequest(call: HttpsCall): Promise<HttpsResult> {
     }, res => {
       const chunks: Buffer[] = []
       res.on('data', c => chunks.push(c))
+      res.on('error', reject)                                   // reset no meio do corpo: nunca pendente
       res.on('end', () => resolve({
         status: res.statusCode ?? 0, headers: res.headers, text: Buffer.concat(chunks).toString('utf8'),
       }))
@@ -90,12 +91,32 @@ export function bankErrorMessage(text: string): string {
  */
 export const transport: { request: (call: HttpsCall) => Promise<HttpsResult> } = { request: httpsRequest }
 
+/** Códigos do Node/OpenSSL que só acontecem por certificado/chave errados no handshake. */
+const TLS_CREDENTIAL_CODES = new Set([
+  'EPROTO', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID',
+  'ERR_TLS_HANDSHAKE_TIMEOUT', 'ERR_OSSL_PEM_NO_START_LINE', 'ERR_OSSL_PEM_BAD_END_LINE', 'ERR_OSSL_EVP_BAD_DECRYPT',
+  'ERR_OSSL_X509_KEY_VALUES_MISMATCH', 'ERR_OSSL_UNSUPPORTED', 'ERR_OSSL_ASN1_WRONG_TAG',
+])
+export function isTlsCredentialError(err: any): boolean {
+  const code = String(err?.code ?? '')
+  if (TLS_CREDENTIAL_CODES.has(code) || code.startsWith('ERR_OSSL_') || code.startsWith('ERR_TLS_')) return true
+  return /SSL routines|tlsv1 alert|certificate|PEM routines|key values mismatch/i.test(String(err?.message ?? ''))
+}
+
 export async function bankJson<T = any>(call: HttpsCall, label: string): Promise<{ status: number; data: T | null }> {
   let res: HttpsResult
   try {
     res = await transport.request(call)
   } catch (err: any) {
-    logger.warn('Banco indisponível', { label, url: call.url, err: err?.message })
+    if (isTlsCredentialError(err)) {
+      // handshake mTLS recusado (CA desconhecida, chave ≠ certificado, PEM ilegível,
+      // vencido): é CREDENCIAL do canal, não indisponibilidade — "tente de novo"
+      // só empilhava tentativas F (sonda ao vivo do gate da Onda 2, A2).
+      logger.warn('Banco recusou o certificado do canal (TLS)', { label, url: call.url, code: err?.code, err: err?.message })
+      throw new BankHttpError(409, 'Banco recusou o certificado/chave do canal (mTLS) — confira os segredos na aba Canal API', 'BANK_AUTH_FAILED', 0, String(err?.code ?? ''))
+    }
+    logger.warn('Banco indisponível', { label, url: call.url, code: err?.code, err: err?.message })
     throw new BankHttpError(503, 'Banco indisponível no momento — tente novamente em alguns minutos', 'BANK_UNAVAILABLE', 0, '')
   }
   if (res.status >= 200 && res.status < 300) {

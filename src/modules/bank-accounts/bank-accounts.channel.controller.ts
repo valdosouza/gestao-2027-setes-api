@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { isAdmin } from '@shared/auth/roles'
 import { bankChannelDto, bankChannelSecretsDto, bankChannelWebhookDto } from './bank-accounts.channel.dto'
 import {
   ChannelScope, fetchChannel, saveChannel, removeChannel, rotateChannelToken,
@@ -14,8 +15,16 @@ function scopeOf(req: Request): ChannelScope {
 
 export async function getChannel(req: Request, res: Response): Promise<void> {
   const id = parseId(req, res); if (id === null) return
-  try { res.json({ ok: true, data: await fetchChannel(id, scopeOf(req)) }) }
-  catch (err) { handleError(res, err, 'bank-accounts/:id/channel GET') }
+  try {
+    const view = await fetchChannel(id, scopeOf(req))
+    // A6 do gate adversarial: o inbound_token AUTENTICA o banco no webhook (precedente
+    // tb_sync_api_key, só admin) — usuário comum vê presença/validade, nunca a chave
+    if (!isAdmin(req.institution)) {
+      if (view.channel) view.channel = { ...view.channel, inboundToken: '' }
+      view.webhookPath = null
+    }
+    res.json({ ok: true, data: view })
+  } catch (err) { handleError(res, err, 'bank-accounts/:id/channel GET') }
 }
 
 export async function putChannel(req: Request, res: Response): Promise<void> {

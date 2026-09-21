@@ -4,7 +4,7 @@ import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { BankSlipScope } from './bank-slips.service'
 import {
-  registerSlip, refreshSlip, refreshAll, fetchSlipPdf, paySandbox,
+  registerSlip, refreshSlip, refreshAll, fetchSlipPdf, paySandbox, reapplyEffect,
 } from './bank-slips.registration.service'
 
 function scopeOf(req: Request): BankSlipScope {
@@ -28,7 +28,7 @@ export async function refresh(req: Request, res: Response): Promise<void> {
 }
 
 const refreshAllDto = z.object({
-  minMinutes: z.number().int().min(0).max(1440).optional(),
+  minMinutes: z.number().int().min(1).max(1440).optional(),   // piso do servidor: 0 deixava o throttle na mão do cliente (LOW do gate)
   limit:      z.number().int().min(1).max(50).optional(),
 }).default({})
 
@@ -54,4 +54,19 @@ export async function paySandboxHandler(req: Request, res: Response): Promise<vo
   const body = parseBody(payDto, req, res); if (body === null) return
   try { res.json({ ok: true, data: await paySandbox(id, body.via, scopeOf(req)) }) }
   catch (err) { handleError(res, err, 'bank-slips/:id/pay-sandbox POST') }
+}
+
+const reapplyDto = z.object({
+  attempt: z.number().int().min(1),
+  event:   z.number().int().min(1),
+})
+
+export async function reapply(req: Request, res: Response): Promise<void> {
+  const id = parseId(req, res); if (id === null) return
+  const body = parseBody(reapplyDto, req, res); if (body === null) return
+  try {
+    const r = await reapplyEffect(id, body.attempt, body.event, scopeOf(req))
+    logger.info('Efeito da voz do banco reaplicado', { institutionId: req.institution!.institutionId, ...r })
+    res.status(201).json({ ok: true, data: r })
+  } catch (err) { handleError(res, err, 'bank-slips/:id/reapply POST') }
 }

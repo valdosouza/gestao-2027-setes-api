@@ -5,6 +5,7 @@ import { HttpError, FieldError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { runIsolated } from '@shared/db/savepoint'
+import { isDeadlock, isLockWaitTimeout } from '@shared/db/contention'
 import {
   lockSlip, stateFromLastEvent, settleBankSlip, cancelBankSlip, LockedSlip,
 } from '@shared/bank-slip'
@@ -16,7 +17,9 @@ import {
   RegistrationRow, RegistrationEventKind, RegistrationSource, isLive,
   latestRegistration, insertRegistration, setRequestCode, fillBankData,
   insertRegistrationEvent, setRegistrationEventEffect, findRegistrationByRequestCode,
-  listLiveRegistrationsToRefresh, listInFlightRegistrations,
+  listLiveRegistrationsToRefresh, listInFlightRegistrations, touchQueriedAt, listSlipRequestCodes,
+  hasRegistrationEvent, FINAL_REGISTRATION_KINDS, EFFECT_KINDS, getRegistration, getRegistrationEvent,
+  countPendingEffects,
 } from './registration.repository'
 
 /**
@@ -31,6 +34,7 @@ import {
  *                            EXPIRADO → C; o resto só fato)
  *  D. cancelRegistered     — banco PRIMEIRO, fail-closed
  *  E. refreshOpen/reconcile — consulta ativa throttled + órfãos por seuNumero
+ *  F. reapplyEffect        — ato MANUAL sobre um R/C/V com efeito recusado (D-I25)
  *
  * Regras de transação: a chamada ao banco fica FORA da transação (nunca um lock
  * segurado esperando o Inter); tudo que grava roda sob `lockSlip` (FOR UPDATE)
@@ -49,6 +53,8 @@ export const IN_FLIGHT_MINUTES = 10
 /** Consulta ativa: não reconsulta apresentação vista há menos de N minutos (rate limit do sandbox: 10/min). */
 export const REFRESH_MIN_MINUTES = 5
 export const REFRESH_MAX_PER_RUN = 8
+/** Orçamento TOTAL de uma passada da consulta ativa — é a requisição de quem abriu a tela (MED-3 do gate). */
+export const REFRESH_BUDGET_MS = 20_000
 
 // ---------------------------------------------------------------------------
 // Pagador — da cadeia da entidade, na hora do envio (nunca coluna)
@@ -188,12 +194,45 @@ export async function registerBankSlip(
   schemaName: string, institutionId: number, userId: number, slipId: number
 ): Promise<RegisterResult> {
   const header = await readSlipHeader(schemaName, institutionId, slipId)
-  // 0. tudo que é NOSSO e pode faltar falha ANTES de reservar e antes do banco
+  // 0. tudo que é NOSSO e pode faltar falha ANTES de reservar e antes do banco.
+  // Socrático da Rodada 2: R recusado deixa o boleto 'open' com uma apresentação
+  // FINAL — sem esta guarda, "Registrar" de novo criava uma 2ª cobrança viva no
+  // banco para dinheiro JÁ recebido. A pendência se resolve pelo ato manual
+  // (D-I25), nunca por nova apresentação.
+  const pending = await countPendingEffects(pool, schemaName, institutionId, slipId)
+  if (pending > 0) {
+    throw new HttpError(409, `Boleto ${slipId} tem ${pending} voz(es) do banco com efeito pendente — reaplique ou resolva a pendência antes de nova apresentação`,
+      undefined, 'BANK_SLIP_EFFECT_PENDING')
+  }
+  // Smoke do sandbox (2026-09-21): o banco recusa `dataVencimento` anterior a hoje (400) —
+  // o vencimento é NOSSO e imutável no boleto, então falha aqui, com o campo, antes do
+  // pagador, do canal e da reserva (evita uma tentativa F só para ouvir o óbvio).
+  if (header.dtExpiration < localTodayIso()) {
+    throw new HttpError(422, `Vencimento ${header.dtExpiration} anterior a hoje — o banco não registra boleto vencido; cancele e emita outro com vencimento futuro`,
+      [{ field: 'dtExpiration', message: 'Anterior a hoje' }], 'BANK_SLIP_EXPIRATION_PAST')
+  }
   const payer = await buildPayer(schemaName, institutionId, slipId)
   const opened = await openBankChannel(schemaName, institutionId, header.bankAccountId)
   if (header.ourNumber.length > 15) {
     throw new HttpError(422, `Nosso número ${header.ourNumber} excede 15 caracteres (limite do seuNumero)`,
       [{ field: 'ourNumber', message: 'Máximo 15' }], 'BANK_SLIP_REFERENCE_TOO_LONG')
+  }
+
+  // 0b. tentativa INTERROMPIDA há mais de 10 min: pergunta ao banco ANTES de dar por
+  // falha (HIGH-3 do gate socrático: marcar F sem consultar e reenviar o MESMO
+  // seuNumero podia deixar duas cobranças vivas no Inter, e a que pagasse não teria
+  // por onde entrar). Achou = apresentação retroativa (S) → cai no 409 abaixo;
+  // não achou = F; banco fora = este registro falha aqui (fail-closed, D-I8).
+  // Também quando a última tentativa foi dada por FALHA sem código do banco (F de
+  // 4xx, ou F das versões anteriores desta peça que fechavam timeout em F — A1 do
+  // gate adversarial): antes de apresentar DE NOVO, um GET por seuNumero garante que
+  // o banco não tem uma cobrança viva que nós desconhecemos.
+  const latest0 = await latestRegistration(pool, schemaName, institutionId, slipId)
+  if (latest0 && !latest0.requestCode && (isInterruptedInFlight(latest0) || latest0.lastKind === 'F')) {
+    // o canal aberto é o ATUAL; a tentativa antiga tem o ambiente CONGELADO (S→P): a
+    // pergunta vai ao ambiente dela, senão "não achou" seria mentira
+    const sameEnv = opened.channel.environment === latest0.environment
+    await reconcileInFlightRegistration(schemaName, institutionId, userId, latest0, header, sameEnv ? opened : undefined)
   }
 
   // 1. RESERVA sob o lock do boleto: aberto, sem apresentação vigente
@@ -206,15 +245,10 @@ export async function registerBankSlip(
     const latest = await latestRegistration(conn, schemaName, institutionId, slipId, true)
     if (latest && isLive(latest)) {
       if (latest.lastKind === null) {
-        // reservada sem evento: envio em andamento ou interrompido (crash)
-        const ageMin = latest.createdAt ? (Date.now() - new Date(latest.createdAt.replace(' ', 'T')).getTime()) / 60_000 : Infinity
-        if (ageMin < IN_FLIGHT_MINUTES) {
-          throw new HttpError(409, 'Registro deste boleto no banco já está em andamento — aguarde e atualize',
-            undefined, 'BANK_SLIP_REGISTRATION_IN_PROGRESS')
-        }
-        await insertRegistrationEvent(conn, schemaName, institutionId, slipId, latest.attempt, userId, {
-          kind: 'F', source: 'P', message: 'Envio interrompido sem resposta do banco — reconciliar por seuNumero',
-        })
+        // reservada sem evento: envio em andamento (ou interrompido e reconciliado por
+        // outra requisição neste exato instante — quem chega depois só aguarda)
+        throw new HttpError(409, 'Registro deste boleto no banco já está em andamento — aguarde e atualize',
+          undefined, 'BANK_SLIP_REGISTRATION_IN_PROGRESS')
       } else {
         throw new HttpError(409, `Boleto ${slipId} já está registrado no banco (tentativa ${latest.attempt}, ${latest.lastBankStatus ?? latest.lastKind})`,
           undefined, 'BANK_SLIP_ALREADY_REGISTERED')
@@ -236,7 +270,11 @@ export async function registerBankSlip(
     })
     requestCode = r.requestCode
   } catch (err) {
-    // 3a. recusa/indisponibilidade: a tentativa recusada também é história (F)
+    // 3a. desfecho AMBÍGUO (timeout/5xx/limite, ou 2xx sem código legível): o banco
+    // PODE ter registrado — a reserva fica em voo para a reconciliação por seuNumero
+    // (D-I13; A1 do gate adversarial). Só recusa EXPLÍCITA (4xx do banco) vira F.
+    if (isAmbiguousBankOutcome(err)) throw err
+    // recusa explícita: a tentativa recusada também é história (F)
     await withSlipTx('apresentação recusada', institutionId, slipId, async conn => {
       const s = assertSchema(schemaName)
       await lockSlip(conn, s, institutionId, slipId)
@@ -247,15 +285,36 @@ export async function registerBankSlip(
     throw err
   }
 
-  // 3b. aceite: código + evento S
-  await withSlipTx('apresentação aceita', institutionId, slipId, async conn => {
+  // 3b. aceite: código + evento S (o fato: o banco aceitou — grava mesmo que o boleto
+  // tenha mudado de estado no intervalo; a apresentação NUNCA fica sem código)
+  const stillOpen = await withSlipTx('apresentação aceita', institutionId, slipId, async conn => {
     const s = assertSchema(schemaName)
-    await lockSlip(conn, s, institutionId, slipId)
+    const slip = await lockSlip(conn, s, institutionId, slipId)
     await setRequestCode(conn, schemaName, institutionId, slipId, attempt, requestCode)
     await insertRegistrationEvent(conn, schemaName, institutionId, slipId, attempt, userId, {
       kind: 'S', source: 'P', bankStatus: 'EM_PROCESSAMENTO', message: `codigoSolicitacao ${requestCode}`,
     })
+    return stateFromLastEvent(slip.lastKind) === 'open'
   })
+  if (!stillOpen) {
+    // A2 do gate adversarial: boleto cancelado/liquidado por outro fluxo entre a reserva
+    // e o aceite — não pode sobrar cobrança VIVA no banco para um boleto que não está
+    // aberto aqui. Pede o cancelamento ao banco e registra K; se o banco falhar, a
+    // apresentação segue viva e visível (a voz seguinte cai em "efeito recusado").
+    try {
+      await opened.adapter.cancel(opened.ctx, requestCode, 'Boleto encerrado durante o registro')
+      await withSlipTx('cancelamento da apresentação órfã', institutionId, slipId, async conn => {
+        const s = assertSchema(schemaName)
+        await lockSlip(conn, s, institutionId, slipId)
+        await insertRegistrationEvent(conn, schemaName, institutionId, slipId, attempt, userId, {
+          kind: 'K', source: 'P', message: 'Boleto deixou de estar aberto durante o registro — cancelamento solicitado ao banco',
+        })
+      })
+    } catch (err) {
+      logger.error('Apresentação aceita para boleto que não está mais aberto — cancelamento no banco falhou', { institutionId, slipId, attempt, requestCode, err: errMsg(err) })
+    }
+    throw new HttpError(409, `Boleto ${slipId} deixou de estar em aberto durante o registro — cobrança cancelada no banco`, undefined, 'BANK_SLIP_NOT_OPEN')
+  }
   logger.info('Boleto apresentado ao banco', { institutionId, slipId, attempt, requestCode })
   return { slipId, attempt, requestCode, environment: opened.channel.environment }
 }
@@ -270,6 +329,30 @@ export interface RefreshResult {
   /** Evento L/C produzido no boleto (null = sem efeito ou efeito recusado). */
   slipEvent: number | null
   effectRefused: string | null
+}
+
+/** Recusa de REGRA nossa (HttpError 4xx) × falha transitória/de programa (tudo o mais). */
+function isRuleRefusal(err: unknown): boolean {
+  if (isLockWaitTimeout(err) || isDeadlock(err)) return false
+  if (!(err instanceof HttpError)) return false
+  if (err.code === 'RESOURCE_BUSY') return false
+  return err.statusCode >= 400 && err.statusCode < 500
+}
+
+/** O banco pode ter aceitado sem nos dizer: rede/timeout/5xx/429 (bankStatus 0 ou ≥ 500) ou 2xx sem JSON. */
+function isAmbiguousBankOutcome(err: unknown): boolean {
+  if (!(err instanceof BankHttpError)) return !(err instanceof HttpError)   // erro de programa/rede cru = ambíguo
+  if (err.code === 'BANK_UNAVAILABLE' || err.code === 'BANK_RATE_LIMITED') return true
+  return err.bankStatus >= 200 && err.bankStatus < 300
+}
+
+function inFlightAgeMinutes(reg: RegistrationRow): number {
+  return reg.createdAt ? (Date.now() - new Date(reg.createdAt.replace(' ', 'T')).getTime()) / 60_000 : Infinity
+}
+
+/** Reservada, sem código, sem evento, há mais de IN_FLIGHT_MINUTES: envio interrompido (crash/timeout). */
+function isInterruptedInFlight(reg: RegistrationRow): boolean {
+  return isLive(reg) && reg.lastKind === null && !reg.requestCode && inFlightAgeMinutes(reg) >= IN_FLIGHT_MINUTES
 }
 
 export function kindForBankStatus(status: string): RegistrationEventKind {
@@ -341,6 +424,17 @@ export async function refreshRegistration(
     const s = assertSchema(schemaName)
     const slip = await lockSlip(conn, s, institutionId, slipId)
     const reg = (await latestRegistration(conn, schemaName, institutionId, slipId, true))!
+    const unchanged = (bankStatus: string) => ({ slipId, attempt: reg.attempt, changed: false, kind, bankStatus, slipEvent: null, effectRefused: null })
+    // A5 do gate adversarial: a consulta foi feita para a tentativa `reg0`; se outra
+    // nasceu nesse intervalo, a voz é de uma apresentação que já não é a vigente —
+    // nada é gravado na nova (a consulta ativa da vigente traz a voz certa).
+    if (reg.attempt !== reg0.attempt || reg.requestCode !== reg0.requestCode) return unchanged(status.status)
+    // "nós olhamos o banco" — com ou sem novidade (HIGH-2: sustenta o rodízio da consulta ativa)
+    await touchQueriedAt(conn, schemaName, institutionId, slipId, reg.attempt)
+    // A3 do gate adversarial: voz ATRASADA (consulta que leu A_RECEBER antes de outra
+    // que já gravou RECEBIDO) não regride apresentação ENCERRADA — nem grava G depois
+    // de R (o UNIQUE (kind, dt) então estourava a cada consulta seguinte → 500).
+    if (reg.lastKind && FINAL_REGISTRATION_KINDS.has(reg.lastKind) && kind !== reg.lastKind) return unchanged(status.status)
     // write-once: preenche o que chegou (mesmo sem evento novo)
     if (status.digitableLine || status.barcode || status.pixCopyPaste || status.bankOurNumber) {
       await fillBankData(conn, schemaName, institutionId, slipId, reg.attempt, {
@@ -348,20 +442,27 @@ export async function refreshRegistration(
         pixCopyPaste: status.pixCopyPaste, pixTxid: status.pixTxid,
       })
     }
-    // idempotência: mesma situação e mesma data → nada a dizer
-    if (reg.lastKind === kind && (reg.lastDtBankStatus ?? null) === (dt ?? null)) {
-      return { slipId, attempt: reg.attempt, changed: false, kind, bankStatus: status.status, slipEvent: null, effectRefused: null }
-    }
+    // idempotência: mesma situação e mesma data → nada a dizer (último evento OU qualquer
+    // evento da tentativa — o UNIQUE de idempotência é cinto, não porta: A3)
+    if (reg.lastKind === kind && (reg.lastDtBankStatus ?? null) === (dt ?? null)) return unchanged(status.status)
+    if (await hasRegistrationEvent(conn, schemaName, institutionId, slipId, reg.attempt, kind, dt)) return unchanged(status.status)
     const event = await insertRegistrationEvent(conn, schemaName, institutionId, slipId, reg.attempt, userId, {
       kind, bankStatus: status.status, dtBankStatus: dt, source,
       paidValue: status.paidValue, paidBy: status.paidBy === 'PIX' ? 'X' : status.paidBy === 'BOLETO' ? 'B' : null,
     })
     let refused: string | null = null
+    let transient: unknown = null
     const slipEvent = await runIsolated(conn, 'bank_status_effect', 'Efeito da voz do banco',
       async () => {
         try { return await applyBankStatus(conn, schemaName, institutionId, userId ?? 0, slip, reg, status, kind) }
-        catch (e) { refused = errMsg(e); throw e }
+        catch (e) { if (isRuleRefusal(e)) refused = errMsg(e); else transient = e; throw e }
       }, { institutionId, slipId, attempt: reg.attempt, status: status.status })
+    // HIGH-1 do gate: só RECUSA DE REGRA vira "efeito recusado" (fato + pendência, D-I10).
+    // Contenção (lock wait/deadlock) ou erro de programa desfaz a transação INTEIRA — o
+    // fato não é gravado, e a próxima consulta vê a mesma situação e tenta o efeito de novo.
+    // (Antes, o R ficava gravado com slip_event NULL e a idempotência por (kind, dt)
+    // nunca mais tentava a baixa: título pago no banco, aberto aqui para sempre.)
+    if (transient) throw transient
     if (slipEvent != null || refused) {
       await setRegistrationEventEffect(conn, schemaName, institutionId, slipId, reg.attempt, event,
         slipEvent ?? null, refused ? `Efeito recusado: ${refused}` : null)
@@ -380,11 +481,47 @@ export async function cancelRegisteredBankSlip(
   schemaName: string, institutionId: number, userId: number, slipId: number, note: string | null
 ): Promise<CancelRegisteredResult> {
   const header = await readSlipHeader(schemaName, institutionId, slipId)
-  const reg = await latestRegistration(pool, schemaName, institutionId, slipId)
-  const live = reg && isLive(reg) && reg.requestCode ? reg : null
+  let reg = await latestRegistration(pool, schemaName, institutionId, slipId)
+  // A2 do gate adversarial: reserva EM VOO (POST ao banco sem resposta ainda) — cancelar
+  // "às cegas" deixava cobrança viva no banco para boleto C aqui. Interrompida há mais de
+  // 10 min: reconcilia primeiro; recente: aguarde.
+  if (reg && isInterruptedInFlight(reg)) {
+    await reconcileInFlightRegistration(schemaName, institutionId, userId, reg, header)
+    reg = await latestRegistration(pool, schemaName, institutionId, slipId)
+  }
+  if (reg && isLive(reg) && reg.lastKind === null && !reg.requestCode) {
+    throw new HttpError(409, 'Registro deste boleto no banco está em andamento — aguarde e atualize antes de cancelar',
+      undefined, 'BANK_SLIP_REGISTRATION_IN_PROGRESS')
+  }
+  let live = reg && isLive(reg) && reg.requestCode ? reg : null
+  if (live) {
+    // A4 do gate adversarial: estado LOCAL antes de qualquer ato no banco — boleto já
+    // liquidado/cancelado aqui não dispara pedido irreversível para uma requisição que
+    // vai falhar (leitura sob lock, transação só de leitura)
+    const state = await withSlipTx('estado do boleto antes de cancelar', institutionId, slipId, async conn =>
+      stateFromLastEvent((await lockSlip(conn, assertSchema(schemaName), institutionId, slipId)).lastKind))
+    if (state !== 'open') {
+      throw new HttpError(409, `Boleto ${slipId} não está em aberto (${state}) — nada a cancelar`, undefined, 'BANK_SLIP_NOT_OPEN')
+    }
+    // MED-2 do gate: CONSULTA antes de pedir — o cliente pode ter pago desde a última
+    // consulta. Pago → o efeito (L source A) já foi aplicado pela consulta e o
+    // cancelamento é recusado; encerrado no banco (C/V/F) → não há o que pedir lá.
+    const seen = await refreshRegistration(schemaName, institutionId, userId, slipId, 'Q')
+    if (seen.kind && FINAL_REGISTRATION_KINDS.has(seen.kind)) {
+      if (seen.kind === 'R') {
+        throw new HttpError(409, `Banco informou ${seen.bankStatus} para o boleto ${slipId} — pago, nada a cancelar`
+          + (seen.slipEvent == null ? ' (efeito recusado aqui: veja as pendências do boleto)' : ''), undefined, 'BANK_SLIP_NOT_OPEN')
+      }
+      // C/V: a própria consulta já cancelou o boleto aqui (source A) — é ESSE o cancelamento
+      // (L1 do re-score: repetir cancelBankSlip 'M' num boleto já C devolvia 409 indevido)
+      if (seen.slipEvent != null) return { slipEvent: seen.slipEvent, bankNotified: false, attempt: live.attempt }
+      live = null                                                 // F, ou efeito recusado: cancela só local
+    }
+  }
   if (live) {
     const opened = await openForRegistration(schemaName, institutionId, header.bankAccountId, live)
-    // 202 = pedido ACEITO; a confirmação (CANCELADO) chega pela consulta. Falhou/indisponível → nada muda aqui.
+    // 202 = pedido ACEITO; a confirmação (CANCELADO) chega pela consulta (Q-I4 aberta:
+    // gravar C aqui no aceite × só na confirmação). Falhou/indisponível → nada muda aqui.
     await opened.adapter.cancel(opened.ctx, live.requestCode!, (note ?? 'Cancelado pelo emissor').slice(0, 50))
   }
   return withSlipTx('cancelamento do boleto registrado', institutionId, slipId, async conn => {
@@ -399,6 +536,66 @@ export async function cancelRegisteredBankSlip(
 }
 
 // ---------------------------------------------------------------------------
+// F. Reaplicar efeito recusado — ato MANUAL (D-I25 / Q-I1)
+// ---------------------------------------------------------------------------
+
+export interface ReapplyEffectResult {
+  slipId: number; attempt: number; event: number
+  /** Evento E gravado na apresentação (o ATO). */
+  reapplyEvent: number
+  /** Evento L/C produzido no boleto (ou o já existente, quando o estado já era o que o banco disse). */
+  slipEvent: number
+}
+
+/**
+ * O banco disse R/C/V, a NOSSA regra recusou o efeito na hora (D-I10: fato gravado,
+ * `slip_event` NULL, pendência visível). Corrigida a causa (caixa aberto, boleto
+ * reaberto...), o operador REAPLICA: a mesma porta de efeitos (`applyBankStatus`)
+ * recebe a voz gravada — nunca uma nova consulta, nunca um R duplicado (a
+ * idempotência por (kind, dt) impede o 2º R; por isso a reaplicação é evento
+ * PRÓPRIO 'E', final como a voz que reaplica). Recusa de novo → 409 legível e
+ * NADA gravado (transação inteira desfeita). Nunca automático nesta onda.
+ */
+export async function reapplyRegistrationEffect(
+  schemaName: string, institutionId: number, userId: number, slipId: number, attempt: number, event: number
+): Promise<ReapplyEffectResult> {
+  return withSlipTx('reaplicação do efeito', institutionId, slipId, async conn => {
+    const s = assertSchema(schemaName)
+    const slip = await lockSlip(conn, s, institutionId, slipId)
+    const reg = await getRegistration(conn, schemaName, institutionId, slipId, attempt, true)
+    if (!reg) throw new HttpError(404, `Apresentação ${attempt} do boleto ${slipId} não encontrada`, undefined, 'BANK_SLIP_REGISTRATION_EVENT_NOT_FOUND')
+    const ev = await getRegistrationEvent(conn, schemaName, institutionId, slipId, attempt, event, true)
+    if (!ev) throw new HttpError(404, `Evento ${event} da apresentação ${attempt} não encontrado`, undefined, 'BANK_SLIP_REGISTRATION_EVENT_NOT_FOUND')
+    if (!EFFECT_KINDS.has(ev.kind)) {
+      throw new HttpError(409, `Evento ${event} (${ev.bankStatus ?? ev.kind}) não produz efeito no boleto — só RECEBIDO, CANCELADO e EXPIRADO`,
+        [{ field: 'event', message: 'Sem efeito a reaplicar' }], 'BANK_SLIP_EFFECT_NOT_PENDING')
+    }
+    if (ev.slipEvent != null) {
+      throw new HttpError(409, `Efeito do evento ${event} já está aplicado (evento ${ev.slipEvent} do boleto)`,
+        [{ field: 'event', message: 'Já aplicado' }], 'BANK_SLIP_EFFECT_NOT_PENDING')
+    }
+    // a voz GRAVADA vira a situação — sem consultar o banco de novo
+    const status: ChargeStatus = {
+      requestCode: reg.requestCode ?? '', reference: null, status: ev.bankStatus ?? ev.kind,
+      statusAt: ev.dtBankStatus ? ev.dtBankStatus.replace(' ', 'T') : null, amount: null,
+      paidValue: ev.paidValue, paidBy: ev.paidBy === 'X' ? 'PIX' : ev.paidBy === 'B' ? 'BOLETO' : null,
+      bankOurNumber: null, digitableLine: null, barcode: null, pixCopyPaste: null, pixTxid: null, cancelReason: null,
+    }
+    // recusa de regra PROPAGA (409 com o motivo) e desfaz tudo — sem SAVEPOINT aqui de propósito
+    const slipEvent = await applyBankStatus(conn, schemaName, institutionId, userId, slip, reg, status, ev.kind)
+    if (slipEvent == null) throw new HttpError(500, `Reaplicação do evento ${event} não produziu efeito`)
+    const reapplyEvent = await insertRegistrationEvent(conn, schemaName, institutionId, slipId, attempt, userId, {
+      kind: 'E', source: 'P', bankStatus: ev.bankStatus, slipEvent,
+      message: `Efeito do evento ${event} (${ev.bankStatus ?? ev.kind}) reaplicado manualmente`,
+    })
+    await setRegistrationEventEffect(conn, schemaName, institutionId, slipId, attempt, event, slipEvent,
+      `Efeito reaplicado (evento ${reapplyEvent})`)
+    logger.info('Efeito da voz do banco reaplicado', { institutionId, slipId, attempt, event, reapplyEvent, slipEvent })
+    return { slipId, attempt, event, reapplyEvent, slipEvent }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // E. Consulta ativa (throttled) + reconciliação de órfãos
 // ---------------------------------------------------------------------------
 
@@ -408,14 +605,41 @@ export interface RefreshRunReport {
   stoppedEarly: boolean
 }
 
+const stopsTheRun = (err: unknown): boolean =>
+  err instanceof BankHttpError && (err.code === 'BANK_UNAVAILABLE' || err.code === 'BANK_RATE_LIMITED')
+
+/** Erro que vai se repetir na próxima corrida (4xx/502 nosso ou do banco) — não é contenção nem indisponibilidade. */
+const isPersistentRefreshFailure = (err: unknown): boolean =>
+  err instanceof HttpError && !stopsTheRun(err) && err.code !== 'RESOURCE_BUSY'
+  && !isLockWaitTimeout(err) && !isDeadlock(err) && err.statusCode !== 503
+
+/** Uma varredura por institution de cada vez: duas telas abertas = UMA passada (MED-3). */
+const runningRefresh = new Map<string, Promise<RefreshRunReport>>()
+
 export async function refreshOpenRegistrations(
   schemaName: string, institutionId: number, userId: number | null,
-  opts: { minMinutes?: number; limit?: number } = {}
+  opts: { minMinutes?: number; limit?: number; budgetMs?: number } = {}
 ): Promise<RefreshRunReport> {
+  const key = `${schemaName}:${institutionId}`
+  const running = runningRefresh.get(key)
+  if (running) return running
+  const run = runRefresh(schemaName, institutionId, userId, opts).finally(() => { runningRefresh.delete(key) })
+  runningRefresh.set(key, run)
+  return run
+}
+
+async function runRefresh(
+  schemaName: string, institutionId: number, userId: number | null,
+  opts: { minMinutes?: number; limit?: number; budgetMs?: number }
+): Promise<RefreshRunReport> {
+  const deadline = Date.now() + (opts.budgetMs ?? REFRESH_BUDGET_MS)
   const report: RefreshRunReport = { checked: 0, changed: 0, reconciled: 0, errors: [], stoppedEarly: false }
-  report.reconciled = await reconcileInFlightRegistrations(schemaName, institutionId, userId, report)
+  report.reconciled = await reconcileInFlightRegistrations(schemaName, institutionId, userId, report, deadline)
+  if (report.stoppedEarly) return report
   const list = await listLiveRegistrationsToRefresh(schemaName, institutionId, opts.minMinutes ?? REFRESH_MIN_MINUTES, opts.limit ?? REFRESH_MAX_PER_RUN)
   for (const reg of list) {
+    // orçamento TOTAL: banco lento (14 s sem erro) não pode segurar a tela por minutos
+    if (Date.now() >= deadline) { report.stoppedEarly = true; break }
     try {
       report.checked += 1
       const r = await refreshRegistration(schemaName, institutionId, userId, reg.slipId, 'Q')
@@ -424,44 +648,73 @@ export async function refreshOpenRegistrations(
       const code = err instanceof HttpError ? err.code ?? null : null
       report.errors.push({ slipId: reg.slipId, code, message: errMsg(err) })
       // banco fora/limite: insistir nas outras só piora (D-I8 fail-closed; rate limit 10/min)
-      if (err instanceof BankHttpError && (err.code === 'BANK_UNAVAILABLE' || err.code === 'BANK_RATE_LIMITED')) {
-        report.stoppedEarly = true; break
+      if (stopsTheRun(err)) { report.stoppedEarly = true; break }
+      // M2 do re-score (Q-I10 como assunção): falha PERSISTENTE desta apresentação antes da
+      // voz do banco (canal inativo, segredo do sandbox removido, situação desconhecida 502)
+      // também conta como "tentamos olhar" — senão ela monopoliza a cabeça do rodízio para
+      // sempre e a starvation da HIGH-2 volta. Transitório (lock/deadlock/RESOURCE_BUSY)
+      // preserva a marca: a próxima corrida deve tentar de novo.
+      if (isPersistentRefreshFailure(err)) {
+        try { await touchQueriedAt(pool, schemaName, institutionId, reg.slipId, reg.attempt) }
+        catch (touchErr) { logger.warn('Consulta ativa: não marcou last_queried_at após falha persistente', { institutionId, slipId: reg.slipId, err: errMsg(touchErr) }) }
       }
     }
   }
   return report
 }
 
-/** D-I13: envio interrompido → procura no banco por seuNumero; achou = apresentação retroativa; não achou = F. */
+/**
+ * D-I13: envio interrompido → procura no banco por seuNumero; achou = apresentação
+ * retroativa (código + S, e a situação atual entra como voz); não achou = F.
+ * Erros PROPAGAM (quem chama decide: a rotina anota, o registro falha fechado).
+ */
+export async function reconcileInFlightRegistration(
+  schemaName: string, institutionId: number, userId: number | null, reg: RegistrationRow,
+  header?: SlipHeader, opened?: OpenedChannel
+): Promise<boolean> {
+  const h = header ?? await readSlipHeader(schemaName, institutionId, reg.slipId)
+  const o = opened ?? await openForRegistration(schemaName, institutionId, h.bankAccountId, reg)
+  const from = (reg.createdAt ?? localTodayIso()).slice(0, 10)
+  const found = (await o.adapter.findByReference(o.ctx, h.ourNumber, from, localTodayIso())) ?? []
+  // MED-1 do gate: o banco lista TODAS as cobranças com este seuNumero, inclusive as
+  // de tentativas anteriores (FALHA_EMISSAO, canceladas) — código já conhecido nunca é
+  // adotado de novo (daria ER_DUP_ENTRY e a tentativa ficaria em voo para sempre).
+  const known = new Set(await listSlipRequestCodes(schemaName, institutionId, reg.slipId))
+  const candidates = found.filter(f => !!f.requestCode && !known.has(f.requestCode))
+  const match = candidates.length === 0 ? null
+    : candidates.reduce((best, f) => (String(f.statusAt ?? '') >= String(best.statusAt ?? '') ? f : best))
+  await withSlipTx('reconciliação de órfão', institutionId, reg.slipId, async conn => {
+    const s = assertSchema(schemaName)
+    await lockSlip(conn, s, institutionId, reg.slipId)
+    if (match) {
+      await setRequestCode(conn, schemaName, institutionId, reg.slipId, reg.attempt, match.requestCode)
+      await insertRegistrationEvent(conn, schemaName, institutionId, reg.slipId, reg.attempt, userId, {
+        kind: 'S', source: 'Q', bankStatus: 'EM_PROCESSAMENTO', message: `Reconciliado por seuNumero: ${match.requestCode}`,
+      })
+    } else if (reg.lastKind === null) {
+      // só a tentativa SEM evento ganha o F; uma já dada por F não repete a história
+      await insertRegistrationEvent(conn, schemaName, institutionId, reg.slipId, reg.attempt, userId, {
+        kind: 'F', source: 'Q', message: 'Sem resposta do banco e nenhuma cobrança nova com este seuNumero — envio interrompido',
+      })
+    }
+  })
+  if (match) await refreshRegistration(schemaName, institutionId, userId, reg.slipId, 'Q', { status: match })
+  return !!match
+}
+
+/** Varredura dos órfãos (rotina): anota erros no relatório; banco fora/limite ou orçamento estourado param cedo. */
 export async function reconcileInFlightRegistrations(
-  schemaName: string, institutionId: number, userId: number | null, report?: RefreshRunReport
+  schemaName: string, institutionId: number, userId: number | null, report?: RefreshRunReport, deadline = Infinity
 ): Promise<number> {
   const stuck = await listInFlightRegistrations(schemaName, institutionId, IN_FLIGHT_MINUTES, 10)
   let reconciled = 0
   for (const reg of stuck) {
+    if (Date.now() >= deadline) { if (report) report.stoppedEarly = true; break }
     try {
-      const header = await readSlipHeader(schemaName, institutionId, reg.slipId)
-      const opened = await openForRegistration(schemaName, institutionId, header.bankAccountId, reg)
-      const from = (reg.createdAt ?? localTodayIso()).slice(0, 10)
-      const found = await opened.adapter.findByReference(opened.ctx, header.ourNumber, from, localTodayIso())
-      const match = found.find(f => !!f.requestCode)
-      await withSlipTx('reconciliação de órfão', institutionId, reg.slipId, async conn => {
-        const s = assertSchema(schemaName)
-        await lockSlip(conn, s, institutionId, reg.slipId)
-        if (match) {
-          await setRequestCode(conn, schemaName, institutionId, reg.slipId, reg.attempt, match.requestCode)
-          await insertRegistrationEvent(conn, schemaName, institutionId, reg.slipId, reg.attempt, userId, {
-            kind: 'S', source: 'Q', bankStatus: 'EM_PROCESSAMENTO', message: `Reconciliado por seuNumero: ${match.requestCode}`,
-          })
-        } else {
-          await insertRegistrationEvent(conn, schemaName, institutionId, reg.slipId, reg.attempt, userId, {
-            kind: 'F', source: 'Q', message: 'Sem resposta do banco e nenhuma cobrança com este seuNumero — envio interrompido',
-          })
-        }
-      })
-      if (match) { reconciled += 1; await refreshRegistration(schemaName, institutionId, userId, reg.slipId, 'Q', { status: match }) }
+      if (await reconcileInFlightRegistration(schemaName, institutionId, userId, reg)) reconciled += 1
     } catch (err) {
       report?.errors.push({ slipId: reg.slipId, code: err instanceof HttpError ? err.code ?? null : null, message: errMsg(err) })
+      if (stopsTheRun(err)) { if (report) report.stoppedEarly = true; break }
     }
   }
   return reconciled

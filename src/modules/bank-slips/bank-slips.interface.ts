@@ -20,6 +20,8 @@ export interface BankSlipListRow {
   bankAccountLabel: string | null
   customerName:    string | null
   titles:          number
+  /** Vozes do banco (R/C/V) com efeito RECUSADO aqui e ainda não reaplicado (D-I10/D-I25) — sinal na lista (D-I28). */
+  pendingBankEffects: number
 }
 
 export interface BankSlipTitleRow {

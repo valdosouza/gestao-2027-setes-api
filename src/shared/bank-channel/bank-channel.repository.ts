@@ -64,7 +64,9 @@ export function newInboundToken(): string {
 /**
  * Cria ou altera o canal da conta. O `inbound_token` nasce UMA vez (a URL do
  * webhook cadastrada no banco depende dele — trocá-lo é ato explícito,
- * `rotateInboundToken`). Conta precisa existir viva.
+ * `rotateInboundToken`) — EXCETO no revive de um canal excluído (D-I26): quem
+ * apagou o canal apagou os segredos, e o token velho pode estar cadastrado no
+ * banco por engano; o canal revivido nasce com token NOVO. Conta precisa existir viva.
  */
 export async function upsertBankChannel(
   conn: PoolConnection, schemaName: string, institutionId: number, bankAccountId: number,
@@ -80,7 +82,9 @@ export async function upsertBankChannel(
     `INSERT INTO \`${schemaName}\`.tb_bank_account_channel
        (tb_bank_account_id, tb_institution_id, environment, client_id, inbound_token, active, created_at, updated_at, deleted)
      VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
-     ON DUPLICATE KEY UPDATE environment = VALUES(environment), client_id = VALUES(client_id),
+     ON DUPLICATE KEY UPDATE
+       inbound_token = IF(deleted = 'S', VALUES(inbound_token), inbound_token),
+       environment = VALUES(environment), client_id = VALUES(client_id),
        active = VALUES(active), deleted = 'N', updated_at = NOW()`,
     [bankAccountId, institutionId, input.environment, input.clientId, newInboundToken(), input.active]
   )

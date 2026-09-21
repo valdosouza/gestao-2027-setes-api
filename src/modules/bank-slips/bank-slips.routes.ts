@@ -28,13 +28,17 @@ const router = Router()
  *         schema: { type: string }
  *         description: Nosso número ou nº do documento
  *       - in: query
+ *         name: pending
+ *         schema: { type: boolean, default: false }
+ *         description: 'true = só boletos com voz do banco de efeito RECUSADO ainda não reaplicado (D-I28)'
+ *       - in: query
  *         name: page
  *         schema: { type: integer, minimum: 1, default: 1 }
  *       - in: query
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *     responses:
- *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, ourNumber, documentNumber, dtEmission, dtExpiration, value, state, bankAccountLabel, customerName, titles }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, ourNumber, documentNumber, dtEmission, dtExpiration, value, state, bankAccountLabel, customerName, titles, pendingBankEffects }' }
  *       400: { description: status inválido }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
@@ -140,15 +144,18 @@ router.get('/open-titles', controller.openTitlesLookup)
  *     summary: Consulta ativa — atualiza com o banco as apresentações vivas (Onda 2, D-I9)
  *     description: |
  *       Gatilho da Onda 2 (sem URL pública para webhook até a Onda 4): a tela chama ao
- *       abrir e no botão "Atualizar com o banco". THROTTLE — só apresentações cujo
- *       último evento tem mais de `minMinutes` (default 5), no máximo `limit` (default 8)
- *       por chamada (rate limit do sandbox: 10/min). Antes, reconcilia envios
- *       interrompidos por seuNumero (D-I13). Banco fora → para cedo (fail-closed).
+ *       abrir e no botão "Atualizar com o banco". THROTTLE/RODÍZIO — só apresentações NÃO
+ *       consultadas há `minMinutes` (default 5, mínimo 1; marca `last_queried_at`, migration
+ *       056 — nunca consultadas primeiro), no máximo `limit` (default 8) por chamada (rate
+ *       limit do sandbox: 10/min), orçamento TOTAL de 20 s e UMA varredura por institution de
+ *       cada vez (chamadas simultâneas recebem o mesmo relatório). Antes, reconcilia envios
+ *       interrompidos por seuNumero (D-I13). Banco fora/limite → para cedo (fail-closed,
+ *       `stoppedEarly`).
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       content:
  *         application/json:
- *           schema: { type: object, properties: { minMinutes: { type: integer }, limit: { type: integer } } }
+ *           schema: { type: object, properties: { minMinutes: { type: integer, minimum: 1, maximum: 1440 }, limit: { type: integer, minimum: 1, maximum: 50 } } }
  *     responses:
  *       200: { description: 'Envelope { ok, data: { checked, changed, reconciled, errors[], stoppedEarly } }' }
  */
@@ -312,5 +319,33 @@ router.post('/:id/register', registration.register)
 router.post('/:id/refresh', registration.refresh)
 router.get('/:id/pdf', registration.pdf)
 router.post('/:id/pay-sandbox', registration.paySandboxHandler)
+
+/**
+ * @swagger
+ * /api/bank-slips/{id}/reapply:
+ *   post:
+ *     tags: [BankSlips]
+ *     summary: REAPLICA o efeito de uma voz do banco (R/C/V) recusada na hora — ato manual (D-I25); grava evento E
+ *     description: 'A mesma porta de efeitos recebe a voz JÁ GRAVADA (sem consultar o banco). Recusa de novo = 409 com o motivo e nada gravado.'
+ *     security: [{ bearerAuth: [] }]
+ *     parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [attempt, event]
+ *             properties:
+ *               attempt: { type: integer, description: Nº da apresentação }
+ *               event: { type: integer, description: Nº do evento R/C/V com slip_event nulo }
+ *     responses:
+ *       201: { description: 'Envelope { ok, data: { slipId, attempt, event, reapplyEvent, slipEvent } }' }
+ *       404: { description: BANK_SLIP_REGISTRATION_EVENT_NOT_FOUND }
+ *       409: { description: 'BANK_SLIP_EFFECT_NOT_PENDING (sem efeito / já aplicado) ou a recusa da regra (ex.: BANK_SLIP_NOT_OPEN, caixa fechado)' }
+ */
+router.post('/:id/reapply', registration.reapply)
+// Nota: POST /:id/register devolve 409 BANK_SLIP_EFFECT_PENDING enquanto houver voz R/C/V
+// com efeito recusado — a pendência se resolve pelo reapply, nunca por nova apresentação.
 
 export default router

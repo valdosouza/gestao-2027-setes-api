@@ -37,8 +37,9 @@ const HOSTS = {
 
 interface TokenEntry { accessToken: string; expiresAt: number }
 const tokenCache = new Map<string, TokenEntry>()
+// client_id na chave: trocar a aplicação no PUT /channel invalida o token antigo (LOW do gate)
 const cacheKey = (ctx: AdapterContext) =>
-  `${ctx.channel.institutionId}:${ctx.channel.bankAccountId}:${ctx.channel.environment}`
+  `${ctx.channel.institutionId}:${ctx.channel.bankAccountId}:${ctx.channel.environment}:${ctx.channel.clientId ?? ''}`
 
 /** Testes/reset: esvazia o cache de tokens. */
 export function resetInterTokenCache(): void { tokenCache.clear() }
@@ -67,30 +68,42 @@ async function getToken(ctx: AdapterContext, force = false): Promise<string> {
   if (!data?.access_token) {
     throw new BankHttpError(409, 'Banco não devolveu token', 'BANK_AUTH_FAILED', 200, JSON.stringify(data ?? {}))
   }
-  const ttl = Math.max(60, Number(data.expires_in ?? 3600) - 60) * 1000
+  // expires_in ausente/não numérico → 1 h (antes, NaN nunca cacheava: 1 token por chamada, limite 5/min — LOW do gate)
+  const rawExpires: unknown = data.expires_in
+  const expiresIn = rawExpires !== null && rawExpires !== '' && Number.isFinite(Number(rawExpires)) ? Number(rawExpires) : 3600
+  const ttl = Math.max(60, expiresIn - 60) * 1000
   tokenCache.set(key, { accessToken: data.access_token, expiresAt: Date.now() + ttl })
   return data.access_token
 }
 
 /** Chamada autenticada com UMA retentativa em 401 (token invalidado). */
 async function call<T>(ctx: AdapterContext, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', pathAndQuery: string, body?: unknown, label = pathAndQuery): Promise<{ status: number; data: T | null }> {
-  const run = async (force: boolean) => {
-    const token = await getToken(ctx, force)
+  const run = async (token: string) => {
     const text = body === undefined ? undefined : JSON.stringify(body)
     return bankJson<T>({
       url: `${HOSTS[ctx.channel.environment]}/cobranca/v3${pathAndQuery}`, method,
       headers: {
-        Authorization: `Bearer ${token}`, Accept: 'application/json',
+        // problem+json TAMBÉM: o /pagar do sandbox (204) responde 406 a `Accept: application/json`
+        // puro — "Supported types: [application/problem+json]" (smoke 2026-09-21; C7 saía como 500/406)
+        Authorization: `Bearer ${token}`, Accept: 'application/json, application/problem+json',
         ...(text ? { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(text)) } : {}),
         ...accountHeader(ctx),
       },
       body: text, cert: ctx.secrets.cert, key: ctx.secrets.key,
     }, `inter ${label}`)
   }
+  // token FORA do bloco que retenta: 401 do próprio /oauth/v2/token (secret errado)
+  // propaga na hora — antes gerava 2 chamadas de token por operação (LOW-1 do gate
+  // da Onda 2; o sandbox limita o token a 5/min).
+  const token = await getToken(ctx, false)
   try {
-    return await run(false)
+    return await run(token)
   } catch (err) {
-    if (err instanceof BankHttpError && err.bankStatus === 401) { tokenCache.delete(cacheKey(ctx)); return run(true) }
+    // só o 401 da CHAMADA (token do cache invalidado pelo banco) refaz UMA vez
+    if (err instanceof BankHttpError && err.bankStatus === 401) {
+      if (tokenCache.get(cacheKey(ctx))?.accessToken === token) tokenCache.delete(cacheKey(ctx))
+      return run(await getToken(ctx, true))
+    }
     throw err
   }
 }

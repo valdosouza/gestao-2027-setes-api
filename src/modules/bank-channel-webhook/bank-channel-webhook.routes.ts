@@ -19,14 +19,39 @@ import { handleWebhookItems } from '@shared/bank-slip-registration'
  * desconhecido → 404 sem distinguir "institution não existe" de "token errado".
  */
 
+/**
+ * Teto de códigos aceitos por chamada (MED-5 do gate): o corpo vai até os 2 MB do
+ * express.json — sem teto, quem tiver o token faria a API queimar a cota do Inter
+ * contra si mesma. O banco manda lotes pequenos; o excedente é ignorado (a consulta
+ * ativa alcança o que ficou de fora). 50 = teto do próprio reenvio do Inter; com a fila
+ * serial por institution, o pior caso (50 × 15 s) fica em ~12 min, não 25.
+ */
+export const MAX_WEBHOOK_CODES = 50
+
 export function extractRequestCodes(body: unknown): string[] {
   const items = Array.isArray(body) ? body : body && typeof body === 'object' ? [body] : []
   const codes: string[] = []
   for (const it of items) {
     const c = (it as any)?.codigoSolicitacao ?? (it as any)?.requestCode
     if (typeof c === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(c)) codes.push(c)
+    if (codes.length >= MAX_WEBHOOK_CODES) break
   }
   return codes
+}
+
+/**
+ * Processamento SERIAL por institution (MED-5): cada chamada aceita já disparava um
+ * processador em paralelo — 300 chamadas/min = 300 consultas mTLS e 300 conexões do
+ * pool ao mesmo tempo. Uma fila em memória por institution basta nesta onda (uma
+ * instância; a Onda 4 decide fila compartilhada e trust proxy — Q-I6).
+ */
+const queues = new Map<number, Promise<unknown>>()
+function enqueue(institutionId: number, task: () => Promise<unknown>): Promise<unknown> {
+  const prev = queues.get(institutionId) ?? Promise.resolve()
+  const next = prev.catch(() => undefined).then(task)
+  queues.set(institutionId, next)
+  next.finally(() => { if (queues.get(institutionId) === next) queues.delete(institutionId) }).catch(() => undefined)
+  return next
 }
 
 async function institutionSchema(institutionId: number): Promise<string | null> {
@@ -55,11 +80,10 @@ export async function receive(req: Request, res: Response): Promise<void> {
     const codes = extractRequestCodes(req.body)
     res.json({ ok: true, received: codes.length })
     if (codes.length === 0) return
-    setImmediate(() => {
+    void enqueue(institutionId, () =>
       processor(schemaName, institutionId, codes)
         .then(r => logger.info('Webhook do banco processado', { institutionId, bankAccountId: channel.bankAccountId, ...(r as object) }))
-        .catch(err => logger.error('Webhook do banco falhou no processamento', { institutionId, err }))
-    })
+        .catch(err => logger.error('Webhook do banco falhou no processamento', { institutionId, err })))
   } catch (err) {
     logger.error('Webhook do banco: erro ao receber', { institutionId, err })
     if (!res.headersSent) res.status(500).json({ error: 'Erro interno', code: 'INTERNAL' })

@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { X509Certificate } from 'crypto'
+import { X509Certificate, createPrivateKey } from 'crypto'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/db/schema'
 
@@ -121,4 +121,22 @@ export function looksLikeCertificatePem(content: Buffer | string): boolean {
 }
 export function looksLikePrivateKeyPem(content: Buffer | string): boolean {
   return /-----BEGIN (RSA |EC )?PRIVATE KEY-----[\s\S]+-----END (RSA |EC )?PRIVATE KEY-----/.test(content.toString())
+}
+
+/**
+ * A chave ABRE no OpenSSL? null = ok; string = motivo. Só o cabeçalho PEM era
+ * conferido no upload: uma chave com corpo lixo entrava no cofre por cima da boa, o
+ * canal parecia "completo" e toda chamada ao banco virava "indisponível" (sonda ao
+ * vivo do gate da Onda 2, A1). Write-only exige validar ANTES de gravar.
+ */
+export function validatePrivateKeyPem(content: Buffer | string): string | null {
+  if (!looksLikePrivateKeyPem(content)) return 'Chave privada não está em PEM (-----BEGIN PRIVATE KEY-----)'
+  try { createPrivateKey({ key: content.toString(), format: 'pem' }); return null }
+  catch (e: any) { return `Chave privada ilegível (${String(e?.code ?? e?.message ?? 'PEM inválido')})` }
+}
+
+/** A chave é a deste certificado? (par mTLS coerente antes de ir ao banco) */
+export function keyMatchesCertificate(certPem: Buffer | string, keyPem: Buffer | string): boolean {
+  try { return new X509Certificate(certPem).checkPrivateKey(createPrivateKey({ key: keyPem.toString(), format: 'pem' })) }
+  catch { return false }
 }

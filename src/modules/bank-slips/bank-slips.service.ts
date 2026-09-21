@@ -35,10 +35,17 @@ export function parseState(raw: unknown): BankSlipState | '' {
     [{ field: 'status', message: 'Valor inválido' }], 'INVALID_STATUS')
 }
 
+export function parsePendingOnly(raw: unknown): boolean {
+  const v = String(raw ?? '').toLowerCase()
+  if (v === '' || v === 'false' || v === '0') return false
+  if (v === 'true' || v === '1') return true
+  throw new HttpError(400, 'pending inválido (true | false)', [{ field: 'pending', message: 'Valor inválido' }], 'INVALID_STATUS')
+}
+
 export async function fetchBankSlips(
-  status: BankSlipState | '', query: ListQuery, scope: BankSlipScope
+  status: BankSlipState | '', query: ListQuery, scope: BankSlipScope, pendingOnly = false
 ): Promise<PagedRows<BankSlipListRow>> {
-  return listBankSlips(status, query, scope.schemaName, scope.institutionId)
+  return listBankSlips(status, query, scope.schemaName, scope.institutionId, { pendingOnly })
 }
 
 export async function fetchBankSlip(id: number, scope: BankSlipScope): Promise<BankSlipFull> {

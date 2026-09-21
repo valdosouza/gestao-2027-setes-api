@@ -3,8 +3,8 @@ import { HttpError } from '@shared/errors/http-error'
 import { openBankChannel } from '@shared/bank-channel'
 import {
   registerBankSlip, refreshRegistration, refreshOpenRegistrations, cancelRegisteredBankSlip,
-  latestRegistration, isLive, listSlipRegistrations,
-  RegisterResult, RefreshResult, RefreshRunReport, CancelRegisteredResult,
+  reapplyRegistrationEffect, latestRegistration, isLive, listSlipRegistrations,
+  RegisterResult, RefreshResult, RefreshRunReport, CancelRegisteredResult, ReapplyEffectResult,
 } from '@shared/bank-slip-registration'
 import { BankSlipScope } from './bank-slips.service'
 
@@ -23,6 +23,11 @@ export async function refreshSlip(id: number, scope: BankSlipScope): Promise<Ref
 
 export async function refreshAll(scope: BankSlipScope, opts: { minMinutes?: number; limit?: number }): Promise<RefreshRunReport> {
   return refreshOpenRegistrations(scope.schemaName, scope.institutionId, scope.userId, opts)
+}
+
+/** D-I25: ato manual — reaplica o efeito de uma voz R/C/V recusada na hora (nunca automático). */
+export async function reapplyEffect(id: number, attempt: number, event: number, scope: BankSlipScope): Promise<ReapplyEffectResult> {
+  return reapplyRegistrationEffect(scope.schemaName, scope.institutionId, scope.userId, id, attempt, event)
 }
 
 export async function cancelRegistered(id: number, note: string | null, scope: BankSlipScope): Promise<CancelRegisteredResult> {

@@ -3,6 +3,7 @@ import { assertSchemaName } from '@shared/field-config'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { OPEN_BALANCE_SQL } from '@shared/financial-settlement'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { PENDING_EFFECT_WHERE } from '@shared/bank-slip-registration'
 import {
   LAST_EVENT_KIND_SQL, stateFromLastEvent, BankSlipState,
   issueBankSlip, settleBankSlip, cancelBankSlip, reverseBankSlipSettlement,
@@ -40,17 +41,25 @@ const CUSTOMER_NAME_SQL = (s: string) => `
 const STATE_SQL = (s: string) =>
   `CASE ${LAST_EVENT_KIND_SQL(s)} WHEN 'L' THEN 'settled' WHEN 'C' THEN 'cancelled' ELSE 'open' END`
 
+/** D-I28: "o banco disse e nós não aplicamos" — a única regra vive em PENDING_EFFECT_WHERE (peça). */
+const PENDING_EFFECTS_SQL = (s: string) =>
+  `(SELECT COUNT(*) FROM \`${s}\`.tb_bank_slip_registration_event re
+     WHERE re.tb_institution_id = bs.tb_institution_id AND re.tb_bank_slip_id = bs.id
+       AND re.${PENDING_EFFECT_WHERE.replace(/ AND /g, ' AND re.')})`
+
 /**
  * Lista PAGINADA por estado derivado (HAVING sobre alias — COUNT via
  * subquery, molde settlements.listBills). ORDER BY estável (D8).
  */
 export async function listBankSlips(
-  status: BankSlipState | '', query: ListQuery, schemaName: string, institutionId: number
+  status: BankSlipState | '', query: ListQuery, schemaName: string, institutionId: number,
+  opts: { pendingOnly?: boolean } = {}
 ): Promise<PagedRows<BankSlipListRow>> {
   assertSchemaName(schemaName)
   const s = schemaName
   const like = query.filter ? `%${escapeLike(query.filter)}%` : null
-  const having = status ? 'HAVING state = ?' : ''
+  const havingParts = [status ? 'state = ?' : '', opts.pendingOnly ? 'pendingBankEffects > 0' : ''].filter(Boolean)
+  const having = havingParts.length ? `HAVING ${havingParts.join(' AND ')}` : ''
   const where =
     `FROM \`${s}\`.tb_bank_slip bs
      LEFT JOIN \`${s}\`.tb_bank_account a
@@ -70,7 +79,8 @@ export async function listBankSlips(
             ${CUSTOMER_NAME_SQL(s)} AS customerName,
             (SELECT COUNT(*) FROM \`${s}\`.tb_bank_slip_title t
               WHERE t.tb_institution_id = bs.tb_institution_id AND t.tb_bank_slip_id = bs.id
-                AND t.deleted = 'N') AS titles
+                AND t.deleted = 'N') AS titles,
+            ${PENDING_EFFECTS_SQL(s)} AS pendingBankEffects
      ${where}
      ${having}
      ORDER BY bs.dt_expiration DESC, bs.id DESC
@@ -79,7 +89,7 @@ export async function listBankSlips(
   )
   const [count] = await pool.query<any[]>(
     `SELECT COUNT(*) AS total FROM (
-       SELECT ${STATE_SQL(s)} AS state ${where} ${having}
+       SELECT ${STATE_SQL(s)} AS state, ${PENDING_EFFECTS_SQL(s)} AS pendingBankEffects ${where} ${having}
      ) t`,
     [...params, ...havingParams]
   )
