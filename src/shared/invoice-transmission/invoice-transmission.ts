@@ -22,7 +22,7 @@ import {
   readServiceInvoice, lockDpsNumber, buildDpsBase, buildSignedDps, buildSignedCancel, buildEmitter,
   openServiceIssuer, authorityContextFor, serviceAdapter, classifyAuthorityError, OUTCOME_KIND,
   firstAuthorityCode, authorityMessage, municipalTermsCached, saveFiscalXml, findFiscalXml,
-  dpsFileName, nfseFileName, nowIsoLocal, ServiceInvoiceHeader, EMITTER_FAILURE_CODES,
+  dpsFileName, nfseFileName, nowIsoLocal, ServiceInvoiceHeader, EMITTER_FAILURE_CODES, emitterCnpj,
 } from './branches/service'
 
 /**
@@ -224,9 +224,9 @@ export async function transmitServiceInvoice(
     const cls = classifyAuthorityError(err)
     // (g') AMBÍGUO (rede/timeout/5xx/2xx ilegível/erro cru): o fisco PODE ter gerado a
     // NFS-e — a reserva fica em voo; a consulta por dps_id reconcilia (nada gravado).
-    // D-N30: par PEM recusado LOCALMENTE (antes do socket) também não é voz — nada gravado;
-    // a reserva reconcilia como as demais (GET /dps → 404 → F "sem resposta" depois de 10 min)
-    if (cls === 'ambiguous' || cls === 'local') throw err
+    // Q-N30b: par PEM recusado LOCALMENTE (antes do socket) fecha a tentativa NA HORA com F
+    // "credencial local" — o fisco comprovadamente não foi chamado; nada fica em voo
+    if (cls === 'ambiguous') throw err
     const aerr = err as AuthorityHttpError
     await withInvoiceTx('voz do fisco (recusa)', institutionId, invoiceId, async conn => {
       await lockInvoice(conn, s, institutionId, invoiceId)
@@ -493,9 +493,9 @@ export async function refreshServiceTransmission(
   // XML autorizado em disco (regrava se faltar — o transmit pode ter falhado ao gravar)
   if (nfse.nfseXml && result.accessKey) {
     try {
-      const { identity } = await buildEmitter(s, institutionId)
-      if (!findFiscalXml(identity.cnpj, nfseFileName(result.accessKey), [target.dhProc, target.createdAt])) {
-        saveFiscalXml(identity.cnpj, nfseFileName(result.accessKey), nfse.nfseXml, target.dhProc ? new Date(target.dhProc.replace(' ', 'T')) : new Date())
+      const cnpj = await emitterCnpj(institutionId)
+      if (!findFiscalXml(cnpj, nfseFileName(result.accessKey), [target.dhProc, target.createdAt])) {
+        saveFiscalXml(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, target.dhProc ? new Date(target.dhProc.replace(' ', 'T')) : new Date())
       }
     } catch (err) {
       logger.warn('XML da NFS-e não gravado na consulta', { institutionId, invoiceId, err: errMsg(err) })
@@ -722,8 +722,7 @@ export async function getServiceFiscalView(schemaName: string, institutionId: nu
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (withKey?.accessKey) {
     try {
-      const { identity } = await buildEmitter(s, institutionId)
-      xmlAvailable = !!findFiscalXml(identity.cnpj, nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])
+      xmlAvailable = !!findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])   // L4
     } catch { xmlAvailable = false }
   }
   return { invoiceId, state: fiscalStateOf(latest), transmissions, events, pendingEffects, xmlAvailable, danfseAvailable: xmlAvailable }
@@ -737,8 +736,7 @@ export async function readNfseXml(schemaName: string, institutionId: number, inv
   if (!withKey?.accessKey) {
     throw new HttpError(404, `Nota ${invoiceId} sem NFS-e autorizada no fisco`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   }
-  const { identity } = await buildEmitter(s, institutionId)
-  const file = findFiscalXml(identity.cnpj, nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])
+  const file = findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])   // L4
   if (!file) {
     throw new HttpError(404, `XML da NFS-e ${withKey.accessKey} não está em disco — consulte a nota para regravar`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   }

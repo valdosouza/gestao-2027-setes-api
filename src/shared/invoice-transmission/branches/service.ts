@@ -152,6 +152,21 @@ async function cityIbge(cityId: number | null | undefined): Promise<string | nul
   return ibge.length === 7 ? ibge : null
 }
 
+/**
+ * L4 (socrático, Valdo 2026-09-28): as LEITURAS (XML em disco, DANFSe, tela) só precisam do CNPJ do
+ * emitente — passar por `buildEmitter` exigia regime do Simples e IBGE e tornava um XML já autorizado
+ * ilegível (422) quando alguém limpava a aba Tributação. Aqui: só o CNPJ (14 dígitos) ou 422.
+ */
+export async function emitterCnpj(institutionId: number): Promise<string> {
+  const full = await getEntityFiscalFull(institutionId)
+  const cnpj = digitsOf(full?.company?.cnpj)
+  if (cnpj.length !== 14) {
+    throw new HttpError(422, 'Estabelecimento sem CNPJ (pessoa jurídica) — complete no Meu Estabelecimento',
+      [{ field: 'emitter.cnpj', message: 'Estabelecimento sem CNPJ' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
+  }
+  return cnpj
+}
+
 export interface EmitterIdentity {
   cnpj:    string
   im:      string | null
@@ -273,6 +288,13 @@ export async function buildDpsBase(
       [{ field: 'municipalCode', message: 'Esperado 3 dígitos' }], ErrorCodes.FISCAL_DPS_INVALID)
   }
   const tribISSQN = b.liability
+  // L8 (socrático, Valdo 2026-09-28): o DPS não tem campo de base — vServ É a base que o fisco tributa. Se
+  // um dia dedução/redução entrar no cálculo e a base congelada divergir do valor, a NFS-e do fisco e o ISS
+  // da nota passam a contar histórias diferentes em silêncio: 422 antes de reservar.
+  if (tribISSQN === '1' && Math.abs(Number(b.baseIss) - Number(b.totalValue)) > 0.005) {
+    throw new HttpError(422, `Base do ISS (${b.baseIss}) diferente do valor do serviço (${b.totalValue}) — o DPS não tem campo de base; confira a nota`,
+      [{ field: 'baseIss', message: 'Base do ISS ≠ valor do serviço' }], ErrorCodes.FISCAL_DPS_INVALID)
+  }
   const input: Omit<DpsInput, 'serie' | 'nDps'> = {
     environment, dhEmi: nowIsoLocal(), verAplic: VER_APLIC, dCompet: header.dtEmission,
     tpEmit: '1', cLocEmi: identity.cMunEmi, prest, toma,
@@ -403,7 +425,8 @@ export function classifyAuthorityError(err: unknown): AuthorityOutcome {
   return 'ambiguous'
 }
 
-export const OUTCOME_KIND: Record<Exclude<AuthorityOutcome, 'ambiguous' | 'local'>, TransmissionEventKind> = { rejected: 'R', auth_failed: 'F' }
+/** Q-N30b (Valdo 2026-09-28): falha LOCAL também fecha a tentativa com F — o fisco comprovadamente NÃO foi chamado (nada em voo). */
+export const OUTCOME_KIND: Record<Exclude<AuthorityOutcome, 'ambiguous'>, TransmissionEventKind> = { rejected: 'R', auth_failed: 'F', local: 'F' }
 
 /** 1º código E0xxx das rejeições (fields[] "E0718: …"), para `authority_code`. */
 export function firstAuthorityCode(err: AuthorityHttpError): string | null {

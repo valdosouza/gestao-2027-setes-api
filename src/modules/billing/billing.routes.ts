@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import * as controller from './billing.controller'
 import * as fiscal from './billing.fiscal.controller'
-import { requirePrivilegeFor, requirePrivilege } from '@shared/auth/require-privilege'
+import { requirePrivilegeFor, requirePrivilege, requireInterfaceFor } from '@shared/auth/require-privilege'
 import { resolveFromBody, resolveFromParam } from './billing.interface-resolver'
 import { PRIVILEGE_FATURAR, PRIVILEGE_CANCELAR, PRIVILEGE_TRANSMITIR } from '@shared/auth/privileges'
 
@@ -331,7 +331,7 @@ router.post('/fiscal/:orderId/refresh', requirePrivilegeFor(PRIVILEGE_TRANSMITIR
  *     responses:
  *       200: { description: "{ ok, data: { invoiceId, state: none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight, transmissions[], events[], pendingEffects, xmlAvailable, danfseAvailable } }" }
  */
-router.get('/fiscal/:orderId', fiscal.view)
+router.get('/fiscal/:orderId', requireInterfaceFor(resolveFromParam), fiscal.view)                 // Q-N32
 
 /**
  * @swagger
@@ -346,7 +346,7 @@ router.get('/fiscal/:orderId', fiscal.view)
  *       200: { description: "{ ok, data: { accessKey, xml } }" }
  *       404: { description: FISCAL_NFSE_NOT_FOUND }
  */
-router.get('/fiscal/:orderId/xml', fiscal.xml)
+router.get('/fiscal/:orderId/xml', requireInterfaceFor(resolveFromParam), fiscal.xml)              // Q-N32
 
 /**
  * @swagger
@@ -361,6 +361,6 @@ router.get('/fiscal/:orderId/xml', fiscal.xml)
  *       200: { description: "{ ok, data: { accessKey, pdfBase64 } }" }
  *       404: { description: FISCAL_NFSE_NOT_FOUND }
  */
-router.get('/fiscal/:orderId/danfse', fiscal.danfse)
+router.get('/fiscal/:orderId/danfse', requireInterfaceFor(resolveFromParam), fiscal.danfse)        // Q-N32
 
 export default router

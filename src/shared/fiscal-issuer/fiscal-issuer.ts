@@ -271,6 +271,13 @@ export function storeIssuerCertificate(
     throw new HttpError(409, 'Certificado é um e-CPF — sem procuração (D-N12) o A1 tem que ser o e-CNPJ do emitente',
       [{ field: 'pfx', message: 'e-CPF não serve para o emitente' }], ErrorCodes.FISCAL_CERT_INVALID)
   }
+  // Q-N29 reforço (Valdo 2026-09-28, "siga as recomendações"): fail-closed — CN sem os 14 dígitos do padrão
+  // ICP-Brasil não é e-CNPJ; sem procuração, só o e-CNPJ do emitente serve. Entra apenas quando não há
+  // com o que comparar (expectedCnpj ausente — testes de peça).
+  if (expected.length === 14 && !info.cnpj) {
+    throw new HttpError(409, 'Certificado sem CNPJ no CN (padrão ICP-Brasil "RAZÃO SOCIAL:CNPJ") — o A1 tem que ser o e-CNPJ do emitente',
+      [{ field: 'pfx', message: 'Não é um e-CNPJ' }], ErrorCodes.FISCAL_CERT_INVALID)
+  }
   writeSecret(issuerSecretRef(schemaName, institutionId, ISSUER_SECRET_NAMES.cert), certPem)
   writeSecret(issuerSecretRef(schemaName, institutionId, ISSUER_SECRET_NAMES.key), keyPem)
   return issuerCertificateStatus(schemaName, institutionId)

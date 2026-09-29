@@ -482,12 +482,13 @@ describe('ACHADO R3-5 (LOW) — `cnpjFromSubject` atravessa a fronteira da RDN: 
   it('CN sem CNPJ seguido de OU com ":14 dígitos" → null (não é o CNPJ do titular)', () => {
     expect(cnpjFromSubject('CN=SETES SISTEMAS, OU=AR TESTE:99887766000155')).toBeNull()
   })
-  it('certificado REAL com esse subject e expectedCnpj do emitente → entra (não há como comparar), como no D-N29 "CN sem CNPJ"', () => {
+  it('certificado REAL com esse subject e expectedCnpj do emitente → 409 "não é um e-CNPJ" (Q-N29 reforço) — a OU alheia NÃO vira o CNPJ do titular', () => {
     const c = selfSigned('SETES SISTEMAS', YEAR, undefined, undefined, [{ shortName: 'OU', value: 'AR TESTE:99887766000155' }])
     let out: any
     try { out = storeIssuerCertificate(S.schema, S.inst, toPfx(c.keyPem, [c.cert], 'senha'), 'senha', { expectedCnpj: CNPJ }) } catch (e) { out = e } finally { clearIssuerCertificate(S.schema, S.inst) }
-    expect(out).not.toBeInstanceOf(Error)
-    expect(out.certificateInfo?.cnpj).toBeNull()
+    expect(out).toBeInstanceOf(HttpError)
+    expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_CERT_INVALID })
+    expect(String(out.message)).toMatch(/sem CNPJ no CN/)
   })
 })
 
@@ -655,13 +656,14 @@ describe('P5. D-N30 nos outros caminhos — consulta ativa, erro cru no transmit
     const out = await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))
     expect(out).toBe(boom); expect(repo.insertTransmission).toHaveBeenCalledTimes(1); expect(events).toHaveLength(0)
   })
-  it('falha LOCAL no transmit deixa a reserva em voo: transmitir de novo (cofre já corrigido) → 409 IN_PROGRESS por 10 min, fisco não chamado — consequência documentada da D-N30 (Q-R3.1)', async () => {
+  it('falha LOCAL no transmit fecha a reserva NA HORA com F "credencial local" (Q-N30b): transmitir de novo com o cofre corrigido vai ao fisco', async () => {
     const st = multiAttemptStore([])
     adapter.transmit.mockRejectedValueOnce(localCertInvalid()).mockResolvedValue(authorized())
     await expect(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ code: ErrorCodes.FISCAL_CERT_INVALID })
-    expect(st.latest()).toMatchObject({ attempt: 1, lastKind: null })
-    await expect(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS })
-    expect(adapter.transmit).toHaveBeenCalledTimes(1)
+    expect(st.latest()).toMatchObject({ attempt: 1, lastKind: 'F' })
+    const r = await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(r).toMatchObject({ attempt: 2, kind: 'A' })
+    expect(adapter.transmit).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -673,16 +675,16 @@ describe('P6. D-N29 — formas do CN que o padrão ICP-Brasil produz', () => {
     try { out = storeIssuerCertificate(S.schema, S.inst, toPfx(c.keyPem, [c.cert], 'senha'), 'senha', { expectedCnpj: '12.345.678/0001-99' }) } catch (e) { out = e } finally { clearIssuerCertificate(S.schema, S.inst) }
     expect(out.certificateInfo?.cnpj).toBe(CNPJ)
   })
-  it('CN com o CNPJ PONTUADO ("NOME:12.345.678/0001-99") de OUTRA empresa → sem 14 dígitos contíguos: entra sem comparar (fora do padrão ICP-Brasil — aceito, LOW analisado)', () => {
+  it('CN com o CNPJ PONTUADO ("NOME:12.345.678/0001-99") de OUTRA empresa → sem 14 dígitos contíguos = não é e-CNPJ → 409 (Q-N29 reforço, fail-closed)', () => {
     const c = selfSigned('OUTRA EMPRESA:99.887.766/0001-55', YEAR)
     let out: any
     try { out = storeIssuerCertificate(S.schema, S.inst, toPfx(c.keyPem, [c.cert], 'senha'), 'senha', { expectedCnpj: CNPJ }) } catch (e) { out = e } finally { clearIssuerCertificate(S.schema, S.inst) }
-    expect(out).not.toBeInstanceOf(Error); expect(out.certificateInfo?.cnpj).toBeNull()
+    expect(out).toBeInstanceOf(HttpError); expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_CERT_INVALID })
   })
 })
 
 describe('P7. lote com o 1º item 409 FISCAL_CERT_INVALID vindo do ADAPTADOR (transporte, não do openIssuer)', () => {
-  it('ADN real, par recusado antes do socket → 1 tentativa ao transporte, stoppedEarly, item 1 sem F (reserva em voo), 2º e 3º retryable', async () => {
+  it('ADN real, par recusado antes do socket → 1 tentativa ao transporte, stoppedEarly, item 1 com F "credencial local" (Q-N30b), 2º e 3º retryable', async () => {
     useRealAdn()
     for (const id of [6301, 6302]) headerRows.set(id, header({ id, branchId: id }))
     mockHttp.mockImplementation(async () => { throw osslMismatch() })
@@ -691,7 +693,7 @@ describe('P7. lote com o 1º item 409 FISCAL_CERT_INVALID vindo do ADAPTADOR (tr
     expect(r.results[0]).toMatchObject({ orderId: INVOICE, ok: false, code: ErrorCodes.FISCAL_CERT_INVALID, retryable: false })
     expect(r.results[1]).toMatchObject({ ok: false, code: null, retryable: true }); expect(r.results[2]).toMatchObject({ ok: false, code: null, retryable: true })
     expect(mockHttp).toHaveBeenCalledTimes(1)
-    expect(repo.insertTransmission).toHaveBeenCalledTimes(1); expect(events).toHaveLength(0)
+    expect(repo.insertTransmission).toHaveBeenCalledTimes(1); expect(events).toEqual([expect.objectContaining({ kind: 'F', source: 'P' })])
   })
 })
 

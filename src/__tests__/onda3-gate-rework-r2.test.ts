@@ -230,11 +230,13 @@ describe('D-N29 (MEDIUM-3) — o A1 tem que ser do CNPJ do EMITENTE', () => {
     expect(err).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_CERT_INVALID, fields: [expect.objectContaining({ field: 'pfx' })] })
     expect(issuer.issuerCertificateStatus(S.schema, S.inst).certificate).toBe(false)
   })
-  it('.pfx do CNPJ do emitente → entra; CN sem CNPJ (padrão fora do ICP-Brasil) → entra (não há como comparar)', () => {
+  it('.pfx do CNPJ do emitente → entra; CN sem CNPJ → 409 (Q-N29 reforço: fail-closed); sem expectedCnpj (peça) → entra', () => {
     const mine = selfSigned('SETES SISTEMAS:12345678000199', year)
     expect(issuer.storeIssuerCertificate(S.schema, S.inst, mine.pfx, 'senha', { expectedCnpj: '12345678000199' }).certificateInfo?.cnpj).toBe('12345678000199')
     const noCnpj = selfSigned('SETES SISTEMAS', year)
-    expect(issuer.storeIssuerCertificate(S.schema, S.inst, noCnpj.pfx, 'senha', { expectedCnpj: '12345678000199' }).certificateInfo?.cnpj).toBeNull()
+    expect(() => issuer.storeIssuerCertificate(S.schema, S.inst, noCnpj.pfx, 'senha', { expectedCnpj: '12345678000199' }))
+      .toThrow(expect.objectContaining({ statusCode: 409, code: ErrorCodes.FISCAL_CERT_INVALID }))
+    expect(issuer.storeIssuerCertificate(S.schema, S.inst, noCnpj.pfx, 'senha').certificateInfo?.cnpj).toBeNull()
     issuer.clearIssuerCertificate(S.schema, S.inst)
   })
 })
@@ -248,11 +250,11 @@ describe('D-N30 (MEDIUM-4) — credencial LOCAL recusada (par PEM não abre) = 4
     transport.request = jest.fn().mockRejectedValue(Object.assign(new Error('alert'), { code: 'EPROTO' })) as any
     await expect(authorityJson({ url: 'https://x/y', method: 'GET' }, 'adn x')).rejects.toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_AUTHORITY_AUTH_FAILED })
   })
-  it('transmit: par local inválido → 409 sobe, NENHUMA voz gravada (nem F) — a reserva reconcilia como as demais', async () => {
+  it('transmit: par local inválido → 409 sobe e a tentativa fecha NA HORA com F "credencial local" (Q-N30b) — nada fica em voo', async () => {
     adapter.transmit.mockRejectedValue(new AuthorityHttpError(409, 'par inválido', ErrorCodes.FISCAL_CERT_INVALID, 0, 'ERR_OSSL_X509_KEY_VALUES_MISMATCH'))
     await expect(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_CERT_INVALID })
     expect(repo.insertTransmission).toHaveBeenCalledTimes(1)
-    expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, S.user, expect.objectContaining({ kind: 'F', source: 'P' }))
   })
 })
 

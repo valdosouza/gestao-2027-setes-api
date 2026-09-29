@@ -200,6 +200,7 @@ const evMatch = (attempt: number, kind: string, dh: string | null) => events.fil
 let headerRows: Map<number, any>
 let ibgeByCity: Map<number, string | null>
 let privilegeInterfaces: Set<number>
+let contractedInterfaces = true
 const INTERFACE_IDS: Record<string, number> = { 'service-orders': 40, orders: 30, 'order-returns': 31 }
 function poolDefaults() {
   q.mockImplementation(async (sql: string, params: any[]) => {
@@ -207,6 +208,7 @@ function poolDefaults() {
     if (/setes_central\.tb_city/.test(sql)) { const ib = ibgeByCity.has(Number(params?.[0])) ? ibgeByCity.get(Number(params?.[0])) : '4106902'; return [ib ? [{ ibge: ib }] : []] }
     if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) { const id = INTERFACE_IDS[String(params?.[0])]; return [id ? [{ id }] : []] }
     if (/tb_user_has_privilege/.test(sql)) return [privilegeInterfaces.has(Number(params?.[1])) ? [{ 1: 1 }] : []]
+    if (/tb_institution_has_interface/.test(sql)) return [contractedInterfaces ? [{ 1: 1 }] : []]      // D-N32: leituras fiscais exigem a interface do ramo no contrato
     return [[]]
   })
 }
@@ -225,6 +227,7 @@ beforeEach(() => {
   headerRows = new Map([[INVOICE, header()]])
   ibgeByCity = new Map()
   privilegeInterfaces = new Set()
+  contractedInterfaces = true
   poolDefaults(); connDefaults()
   ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
   installVault()
@@ -832,6 +835,15 @@ describe('D. transmit-batch — bordas de entrada, isolamento por item, privilé
     expect(res.status).toBe(403); expect(adapter.transmit).toHaveBeenCalledTimes(1)
   })
 
+  it('D-N32: leituras fiscais (visão, XML, DANFSe) exigem a interface do RAMO no contrato da institution — usuário regular sem contrato → 403; admin passa', async () => {
+    contractedInterfaces = false
+    for (const u of ['/api/billing/fiscal/6200', '/api/billing/fiscal/6200/xml', '/api/billing/fiscal/6200/danfse']) {
+      const res = await request(app).get(u).set('Authorization', asUser())
+      expect(res.status).toBe(403); expect(res.body.code).toBe('INTERFACE_NOT_ALLOWED')
+    }
+    const res = await request(app).get('/api/billing/fiscal/6200/xml').set('Authorization', asAdmin())
+    expect(res.status).toBe(404)                                              // passou do guard: chegou ao negócio
+  })
   it('rotas fiscais: sem JWT → 401; :orderId não numérico → 400 INVALID_ID; XML de nota sem NFS-e → 404; pending limit fora de forma → clamp', async () => {
     for (const [m, u] of [['post', '/api/billing/transmit'], ['post', '/api/billing/fiscal/transmit-batch'], ['post', '/api/billing/fiscal/cancel'], ['get', '/api/billing/fiscal/1/xml'], ['get', '/api/billing/fiscal/1/danfse']] as const) {
       expect((await (request(app) as any)[m](u)).status).toBe(401)

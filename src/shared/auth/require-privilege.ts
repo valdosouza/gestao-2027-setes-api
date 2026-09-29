@@ -111,6 +111,45 @@ export function requirePrivilegeFor(
   }
 }
 
+/**
+ * Q-N32 (Valdo 2026-09-28, "siga as recomendações"): LEITURAS fiscais (visão "No fisco", XML, DANFSe — o
+ * XML carrega dados do tomador) passam pelo ACESSO À INTERFACE do ramo, sem privilégio novo: a interface
+ * resolvida por requisição tem que estar no contrato da institution (`tb_institution_has_interface`
+ * ativa). Admin passa. Não existe acesso por usuário a interface no modelo — o contrato é da institution.
+ */
+export async function institutionHasInterface(schemaName: string, institutionId: number, interfaceKey: string): Promise<boolean> {
+  const s = assertSchema(schemaName)
+  const interfaceId = await resolveInterfaceId(interfaceKey)
+  if (interfaceId == null) return false
+  const [rows] = await pool.query<any[]>(
+    `SELECT 1 FROM \`${s}\`.tb_institution_has_interface
+      WHERE tb_institution_id = ? AND tb_interface_id = ? AND (active IS NULL OR active = 'S') AND deleted = 'N' LIMIT 1`,
+    [institutionId, interfaceId]
+  )
+  return rows.length > 0
+}
+
+export function requireInterfaceFor(resolveInterface: (req: Request) => Promise<string>) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const inst = req.institution
+    if (!inst) {
+      res.status(401).json({ error: 'Não autenticado', code: 'UNAUTHORIZED', fields: [] })
+      return
+    }
+    if (isAdmin(inst)) { next(); return }
+    try {
+      const key = await resolveInterface(req)
+      if (!(await institutionHasInterface(inst.schemaName, inst.institutionId, key))) {
+        res.status(403).json({ error: `Interface ${key} não contratada para este estabelecimento`, code: 'INTERFACE_NOT_ALLOWED', fields: [] })
+        return
+      }
+      next()
+    } catch (err) {
+      next(err)
+    }
+  }
+}
+
 /** Testes / catálogo alterado em runtime. */
 export function resetPrivilegeCache(): void {
   interfaceIdCache.clear()
