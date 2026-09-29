@@ -154,7 +154,7 @@ describe('transmitServiceInvoice — reserva sob lock → fisco FORA da transaç
     expect(sent).toContain('<toma><CNPJ>98765432000188</CNPJ><xNome>Cliente Ltda</xNome><end><endNac><cMun>4106902</cMun><CEP>80010000</CEP></endNac>')
     expect(sent).toContain('<cTribNac>010201</cTribNac>')
     expect(sent).toContain('<vServ>1234.50</vServ>')
-    expect(sent).toContain('<pAliq>2.00</pAliq>')
+    expect(sent).not.toContain('<pAliq>')   // ME/EPP pelo Simples sem retenção: alíquota PROIBIDA no DPS (E0625) — o ISS vai no DAS
     expect(sent).toContain('<dCompet>2026-09-21</dCompet>')
     // voz A (source P, dh = dhProc) + write-once do fisco
     expect(repo.fillAuthorityData).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 10:15:30' })

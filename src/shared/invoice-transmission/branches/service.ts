@@ -288,6 +288,12 @@ export async function buildDpsBase(
       [{ field: 'municipalCode', message: 'Esperado 3 dígitos' }], ErrorCodes.FISCAL_DPS_INVALID)
   }
   const tribISSQN = b.liability
+  // Anexo I, E0625/E0621 (1ª sessão real, 2026-09-28 — a NFS-e emitida no portal mostrou alíquota 0): para o
+  // optante ME/EPP (opSimpNac 3) com ISSQN apurado PELO Simples (regApTribSN 1 ou omitido) e município de
+  // incidência conveniado, `pAliq` é PROIBIDA sem retenção (o ISS vai no DAS) e OBRIGATÓRIA (≥ 1,8 %) com
+  // retenção. Fora do Simples ou apuração por fora (regApTribSN 2/3) a alíquota da regra segue no DPS.
+  const issInDas = prest.regTrib.opSimpNac === '3' && (prest.regTrib.regApTribSN ?? '1') === '1'
+  const sendAliq = tribISSQN === '1' && !(issInDas && b.issWithheld === 'N')
   // L8 (socrático, Valdo 2026-09-28): o DPS não tem campo de base — vServ É a base que o fisco tributa. Se
   // um dia dedução/redução entrar no cálculo e a base congelada divergir do valor, a NFS-e do fisco e o ISS
   // da nota passam a contar histórias diferentes em silêncio: 422 antes de reservar.
@@ -310,7 +316,7 @@ export async function buildDpsBase(
       vServ: b.totalValue,
       trib: {
         // D-N8: retenção/exigibilidade vêm congeladas no ramo; alíquota só quando tributável
-        tribMun: { tribISSQN, tpRetISSQN: b.issWithheld === 'S' ? '2' : '1', ...(tribISSQN === '1' ? { pAliq: b.aliqIss } : {}) },
+        tribMun: { tribISSQN, tpRetISSQN: b.issWithheld === 'S' ? '2' : '1', ...(sendAliq ? { pAliq: b.aliqIss } : {}) },
         totTrib: { indTotTrib: '0' },
       },
     },

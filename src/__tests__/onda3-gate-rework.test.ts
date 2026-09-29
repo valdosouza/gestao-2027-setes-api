@@ -429,6 +429,7 @@ describe('MEDIUM-7 / D-N22 — consultar exige TRANSMITIR; minMinutes ≥ 1', ()
 // ---------------------------------------------------------------------------
 describe('LOW-1 / LOW-3 / LOW-6 / LOW-9', () => {
   it('LOW-1: dado fora do leiaute (pAliq 12 > TSDec1V2) → 422 FISCAL_DPS_INVALID com campo, sem reservar', async () => {
+    emitterTax = { ...emitterTax, simplesRegime: '1' }   // não optante: a alíquota VAI no DPS (para ME/EPP pelo SN ela é omitida — E0625)
     headerRow = header({ aliqIss: 12 })
     await expect(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ statusCode: 422, code: 'FISCAL_DPS_INVALID', fields: [expect.objectContaining({ field: 'dps', message: expect.stringMatching(/pAliq/) })] })
     expect(repo.insertTransmission).not.toHaveBeenCalled()

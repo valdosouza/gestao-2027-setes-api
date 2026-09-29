@@ -323,7 +323,7 @@ describe('ACHADO 2 (MEDIUM) — dado do RAMO/emissor fora da forma estoura Error
   // regra da casa é 500 só para erro de PROGRAMA; dado que o usuário corrige é 4xx.
   const cases: [string, () => void][] = [
     ['municipal_code com 2 dígitos', () => { headerRows.set(INVOICE, header({ municipalCode: '12' })) }],
-    ['aliq_iss 10 % (TSDec1V2 0–9.99)', () => { headerRows.set(INVOICE, header({ aliqIss: 10 })) }],
+    ['aliq_iss 10 % (TSDec1V2 0–9.99)', () => { headerRows.set(INVOICE, header({ aliqIss: 10 })); (entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '1', specialTaxRegime: '0' }) }],   // não optante: a alíquota vai no DPS
     ['total_value negativo', () => { headerRows.set(INVOICE, header({ totalValue: -1 })) }],
     ['série "0" na linha do emissor', () => { (issuerRepo.getIssuer as jest.Mock).mockResolvedValue(issuerRow({ serie: '0' })) }],
     ['série não numérica na linha do emissor', () => { (issuerRepo.getIssuer as jest.Mock).mockResolvedValue(issuerRow({ serie: 'A1' })) }],

@@ -272,6 +272,23 @@ describe('D-N19a — ME/EPP (opSimpNac 3): regApTribSN vai no DPS quando informa
     await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
     expect(adapter.transmit.mock.calls[2][1]).not.toContain('regApTribSN')
   })
+  it('E0625/E0621 (Anexo I): ME/EPP pelo Simples sem retenção → SEM pAliq; com retenção → pAliq; apuração por fora (2) ou não optante → pAliq', async () => {
+    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    const tax = (regime: string, assessment: string | null) =>
+      (entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: regime, simplesAssessment: assessment, specialTaxRegime: null, issExigibilidade: '01' })
+    tax('3', null); headerRow = header({ issWithheld: 'N' })
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.transmit.mock.calls[0][1]).toContain('<tribMun><tribISSQN>1</tribISSQN><tpRetISSQN>1</tpRetISSQN></tribMun>')
+    tax('3', '1'); headerRow = header({ issWithheld: 'S' })
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.transmit.mock.calls[1][1]).toContain('<tpRetISSQN>2</tpRetISSQN><pAliq>2.00</pAliq>')
+    tax('3', '2'); headerRow = header({ issWithheld: 'N' })
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.transmit.mock.calls[2][1]).toContain('<pAliq>2.00</pAliq>')
+    tax('1', null); headerRow = header({ issWithheld: 'N' })
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.transmit.mock.calls[3][1]).toContain('<pAliq>2.00</pAliq>')
+  })
 })
 
 describe('L5/L6 — kinds numa fonte só; lote pára em 409 do EMISSOR', () => {
