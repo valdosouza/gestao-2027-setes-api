@@ -9,7 +9,13 @@ import { isLockWaitTimeout, isDeadlock } from '@shared/db/contention'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { upsertOrderBilling } from '@shared/order-billing'
-import { issueInvoice } from '@shared/invoice'
+import { issueInvoice, InvoiceServiceInput } from '@shared/invoice'
+import { resolveServiceTaxRule, checkServiceRule, serviceRuleProblemMessage, ServiceTaxRuleResolved } from '@shared/service-tax-rule'
+import { calcIssqn } from '@shared/tax-rule'
+import { getEntityFiscalFull } from '@shared/entity'
+import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
+import { liabilityFromExigibilidade, IssLiability } from '@shared/entity-tax/entity-tax.types'
+import { getIssuer } from '@shared/fiscal-issuer'
 import {
   applyTitleAutomation, localIsoDate, resolveTitleAutomationConfig,
 } from '@shared/title-automation'
@@ -884,6 +890,117 @@ export async function contractPaymentDay(
   return ref?.paymentDay ?? null
 }
 
+interface ServiceOrderFiscal {
+  customerId: number
+  /** Regra resolvida por produto (serviço) da OS. */
+  ruleByProduct: Map<number, ServiceTaxRuleResolved>
+  descriptionByProduct: Map<number, string>
+  /** D-N20: tribISSQN pela exigibilidade do ISS do EMITENTE (a OS fica no formato 'I' de descrição). */
+  liability: IssLiability
+  /** ISS retido pelo tomador (tb_entity_tax.iss_retido do cliente) — D-N8. */
+  withheld: boolean
+}
+
+/**
+ * Regra de ISS de cada serviço da OS + cidade do tomador (D12) + retenção, lidas
+ * pelo pool ANTES da transação. Sem regra / inativa / cidade ≠ tomador / sem
+ * código nacional = 422 SERVICE_ORDER_ITEM_NO_RULE com o campo por item (o
+ * cadastro se corrige no serviço/na regra, nunca "fatura com o que há").
+ * Mais de um código nacional na mesma OS = 422 INVOICE_SERVICE_MULTI_CODE (D-N2).
+ */
+export async function resolveServiceOrderFiscal(
+  schemaName: string, institutionId: number, orderId: number
+): Promise<ServiceOrderFiscal> {
+  const [svc] = await pool.query<any[]>(
+    `SELECT tb_customer_id AS customerId FROM \`${schemaName}\`.tb_order_service
+      WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+    [orderId, institutionId])
+  if (!svc[0]) throw new HttpError(404, `Ordem de serviço ${orderId} não encontrada`, undefined, 'ORDER_NOT_FOUND')
+  const customerId = Number(svc[0].customerId)
+  const [items] = await pool.query<any[]>(
+    `SELECT DISTINCT i.tb_product_id AS productId, p.description
+       FROM \`${schemaName}\`.tb_order_item i
+       LEFT JOIN \`${schemaName}\`.tb_product p ON p.id = i.tb_product_id AND p.tb_institution_id = i.tb_institution_id
+      WHERE i.tb_order_id = ? AND i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N'`,
+    [orderId, institutionId])
+  const customer = await getEntityFiscalFull(customerId)
+  const mainAddr = customer?.addresses.find(a => a.main === 'S') ?? customer?.addresses[0] ?? null
+  const recipientCityId = mainAddr?.tbCityId ?? null
+  const tax = await getEntityTax(schemaName, institutionId, customerId)
+  const ruleByProduct = new Map<number, ServiceTaxRuleResolved>()
+  const descriptionByProduct = new Map<number, string>()
+  const problems: { field: string; message: string }[] = []
+  for (const it of items) {
+    const productId = Number(it.productId)
+    descriptionByProduct.set(productId, String(it.description ?? `Serviço ${productId}`))
+    const rule = await resolveServiceTaxRule(schemaName, institutionId, productId)
+    const problem = checkServiceRule(rule, recipientCityId)
+    if (problem) { problems.push({ field: `product.${productId}`, message: serviceRuleProblemMessage(productId, problem, rule) }); continue }
+    ruleByProduct.set(productId, rule!)
+  }
+  if (problems.length > 0) {
+    throw new HttpError(422, 'Serviço da OS sem regra de ISS válida — corrija o cadastro do serviço/regra antes de faturar',
+      problems, 'SERVICE_ORDER_ITEM_NO_RULE')
+  }
+  const codes = new Set([...ruleByProduct.values()].map(r => r.nationalCode))
+  if (codes.size > 1) {
+    throw new HttpError(422, 'OS com serviços de códigos de tributação nacional diferentes — um DPS declara UM serviço; separe em ordens',
+      [...ruleByProduct.entries()].map(([pid, r]) => ({ field: `product.${pid}`, message: `Código nacional ${r.nationalCode}` })),
+      'INVOICE_SERVICE_MULTI_CODE')
+  }
+  // D-N20: exigibilidade do EMITENTE (institution = entity) decide o tribISSQN — mesma função do billing
+  const emitterTax = await getEntityTax(schemaName, institutionId, institutionId)
+  return { customerId, ruleByProduct, descriptionByProduct, withheld: tax?.issRetido === 'S', liability: liabilityFromExigibilidade(emitterTax?.issExigibilidade) }
+}
+
+/** Sob o lock da ordem: ISS por item em tb_order_item_issqn + ramo de serviço agregado. */
+export async function freezeServiceOrderIss(
+  conn: PoolConnection, schemaName: string, institutionId: number, orderId: number, fiscal: ServiceOrderFiscal
+): Promise<InvoiceServiceInput> {
+  const [items] = await conn.query<any[]>(
+    `SELECT i.id, i.tb_product_id AS productId, i.quantity, i.unit_value AS unitValue,
+            COALESCE(i.discount_value, 0) AS discountValue
+       FROM \`${schemaName}\`.tb_order_item i
+      WHERE i.tb_order_id = ? AND i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N'
+      ORDER BY i.id`,
+    [orderId, institutionId])
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  let baseIss = 0, issValue = 0, total = 0
+  let first: ServiceTaxRuleResolved | null = null
+  const parts: string[] = []
+  for (const it of items) {
+    const productId = Number(it.productId)
+    const rule = fiscal.ruleByProduct.get(productId)
+    if (!rule) {
+      throw new HttpError(422, 'Item da OS mudou durante o faturamento (serviço sem regra resolvida) — valide de novo',
+        [{ field: `item.${it.id}`, message: 'Serviço sem regra resolvida' }], 'SERVICE_ORDER_ITEM_NO_RULE')
+    }
+    first = first ?? rule
+    const value = r2(Number(it.quantity) * Number(it.unitValue) - Number(it.discountValue))
+    const iss = calcIssqn({ aliqPct: rule.aliq, deductionValue: Number(it.discountValue), withheld: fiscal.withheld }, value)
+    await conn.query(
+      `INSERT INTO \`${schemaName}\`.tb_order_item_issqn
+         (tb_order_id, tb_order_item_id, tb_institution_id, terminal,
+          base_value, aliq_value, tag_value, listservice, tax_code, created_at, updated_at, deleted)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+       ON DUPLICATE KEY UPDATE
+         base_value = VALUES(base_value), aliq_value = VALUES(aliq_value), tag_value = VALUES(tag_value),
+         listservice = VALUES(listservice), tax_code = VALUES(tax_code), deleted = 'N', updated_at = NOW()`,
+      [orderId, it.id, institutionId, iss.base, iss.aliq, iss.value, rule.serviceListId, rule.municipalCode])
+    baseIss += iss.base; issValue += iss.value; total += value
+    const q = Number(it.quantity)
+    parts.push(`${q > 1 ? q + ' x ' : ''}${fiscal.descriptionByProduct.get(productId) ?? `Serviço ${productId}`}`)
+  }
+  if (!first) throw new HttpError(400, 'Ordem sem itens — nada a faturar', [{ field: 'items', message: 'Inclua ao menos um item' }], 'ORDER_NO_ITEMS')
+  return {
+    totalValue: r2(total), serviceListId: first.serviceListId, nationalCode: first.nationalCode,
+    municipalCode: first.municipalCode, cityId: first.cityId,
+    baseIss: r2(baseIss), aliqIss: first.aliq, issValue: r2(issValue),
+    issWithheld: fiscal.withheld ? 'S' : 'N', liability: fiscal.liability,
+    description: parts.join('; ').slice(0, 2000) || null,
+  }
+}
+
 export async function generateInvoice(
   orderId: number, input: InvoiceInput,
   schemaName: string, institutionId: number, userId: number
@@ -895,6 +1012,17 @@ export async function generateInvoice(
   // pool com a 1ª presa segurando locks — travamento permanente sob carga.
   const automationConfig = await resolveTitleAutomationConfig(
     schemaName, institutionId, userId)
+
+  // Onda 3 (A2 da Onda 0): a nota da OS nasce COM o ramo de serviço — regra de ISS
+  // por item (FK literal do serviço, D1/D6/D12 da regra de tributação de serviço),
+  // resolvida ANTES da transação (mesmo motivo da config: nunca uma 2ª conexão
+  // do pool com a 1ª presa). Dentro da transação os itens são relidos sob o lock
+  // da ordem e conferidos contra o que foi resolvido (TOCTOU: item trocado no
+  // intervalo = recusa, nunca ISS de outra regra).
+  const fiscal = await resolveServiceOrderFiscal(schemaName, institutionId, orderId)
+  // D-E2: série da habilitação do emissor (linha SE); sem linha = '1'
+  const issuerLine = await getIssuer(pool, schemaName, institutionId, 'SE')
+  const invoiceSerie = (issuerLine?.serie ?? '1').slice(0, 10)
 
   // Q-A5 (3ª rodada adversarial do cancelamento, 2026-09-09): os locks da
   // Rodada 2 (trava D5 no plano do cancelamento; MAX(number_seq) na sequência
@@ -959,6 +1087,13 @@ export async function generateInvoice(
         [orderId, institutionId]
       )
       const customerId = Number(svc[0].customerId)
+      if (customerId !== fiscal.customerId) {
+        throw new HttpError(409, 'Cliente da OS mudou durante o faturamento — tente de novo', undefined, 'RESOURCE_BUSY')
+      }
+
+      // ISS por item congelado (tb_order_item_issqn — mesma tabela e forma da venda com
+      // serviço) + ramo de serviço da nota (migration 058). Itens relidos SOB o lock.
+      const service = await freezeServiceOrderIss(conn, schemaName, institutionId, orderId, fiscal)
 
       // condições de cobrança (passo 5 da sequência — tb_order_billing) pela
       // peça @shared/order-billing (D2 da negociação): OS informa o nº de
@@ -973,8 +1108,8 @@ export async function generateInvoice(
       // modelo/série, cabeçalho REVIVIDO no refaturamento; o cancelamento
       // (POST /billing/cancel) reabre a OS devolvendo a trava D5.
       const { invoiceNumber } = await issueInvoice(conn, schemaName, institutionId, userId, {
-        orderId, recipientEntityId: customerId, model: 'SE', serie: '1', totalValue: total,
-        noteText: null, merchandise: null, serviceTotal: null,
+        orderId, recipientEntityId: customerId, model: 'SE', serie: invoiceSerie, totalValue: total,
+        noteText: null, merchandise: null, service,
       })
 
       // financeiro: 1 tb_financial + 1 bill 'RA' POR PARCELA (P7 — PK natural);

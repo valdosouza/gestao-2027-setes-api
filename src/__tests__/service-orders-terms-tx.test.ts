@@ -13,6 +13,7 @@ jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
 }))
+jest.mock('../shared/fiscal-issuer', () => ({ __esModule: true, ...jest.requireActual('../shared/fiscal-issuer'), getIssuer: jest.fn().mockResolvedValue(null) }))
 jest.mock('../shared/invoice', () => ({
   __esModule: true,
   issueInvoice: jest.fn(async () => ({ invoiceNumber: '12', event: 1 })),
@@ -32,15 +33,35 @@ jest.mock('../shared/order-installment', () => ({
   ...jest.requireActual('../shared/order-installment'),
   assertPaymentRules: jest.fn().mockResolvedValue(undefined),
 }))
+
+// Onda 3 (A2): a nota da OS nasce COM o ramo de serviço — regra de ISS por item
+// resolvida ANTES da transação e itens relidos SOB o lock; fronteira mockada.
+jest.mock('../shared/service-tax-rule', () => ({
+  __esModule: true,
+  ...jest.requireActual('../shared/service-tax-rule'),
+  resolveServiceTaxRule: jest.fn(),
+}))
+jest.mock('../shared/entity', () => ({ __esModule: true, getEntityFiscalFull: jest.fn() }))
+jest.mock('../shared/entity-tax/entity-tax.repository', () => ({ __esModule: true, getEntityTax: jest.fn().mockResolvedValue(null) }))
+const TX_ITEMS = [[{ id: 1, productId: 40, quantity: 1, unitValue: 150, discountValue: 0 }]]
+const FISCAL_RULE = { id: 2, cityId: 4004, cityName: 'CURITIBA', serviceListId: '1.02', aliq: 5, municipalCode: '0102', nationalCode: '010201', active: 'S' }
+function mockFiscal(customerId: number) {
+  ;((pool as any).query as jest.Mock).mockImplementation(async (sql: string) =>
+    /tb_order_service/.test(String(sql)) ? [[{ customerId }]]
+      : /tb_order_item/.test(String(sql)) ? [[{ productId: 40, description: 'Suporte mensal' }]] : [[]])
+  ;(jest.requireMock('../shared/service-tax-rule') as any).resolveServiceTaxRule.mockResolvedValue(FISCAL_RULE)
+  ;(jest.requireMock('../shared/entity') as any).getEntityFiscalFull.mockResolvedValue({ addresses: [{ main: 'S', tbCityId: 4004 }] })
+}
 const rules = jest.requireMock('../shared/order-installment') as any
 const billing = jest.requireMock('../shared/order-billing') as any
 
 function mockConn() {
   const conn = {
-    beginTransaction: jest.fn(), query: jest.fn().mockResolvedValue([{}]),
+    beginTransaction: jest.fn(), query: jest.fn(async (sql: string, ..._params: any[]) => (/tb_order_item i\s+WHERE i\.tb_order_id/.test(String(sql)) ? TX_ITEMS : [{}])),
     commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
   }
   ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+  mockFiscal(263)
   return conn
 }
 /** Linha do agregado dos fatos (como a leitura de dentro da transação a vê). */
@@ -56,6 +77,8 @@ function restante(conn: any) {
     .mockResolvedValueOnce([[{ n: 1 }]])
     .mockResolvedValueOnce([[{ n: 0 }]])
     .mockResolvedValueOnce([[{ customerId: 263 }]])
+      .mockResolvedValueOnce(TX_ITEMS)                                                      // itens sob o lock (Onda 3)
+      .mockResolvedValueOnce([{}])                                                          // tb_order_item_issqn
 }
 // o que o LOTE viu fora da transação: dia 10 / forma 6 (já envelhecido)
 const deFora = { dtExpiration: '2026-10-10', paymentTypeId: 6, parcels: 1 }

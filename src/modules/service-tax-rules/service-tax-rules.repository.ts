@@ -1,5 +1,6 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
+import { DERIVED_NATIONAL_CODE_SQL } from '@shared/service-tax-rule'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
@@ -20,6 +21,10 @@ const FIELDS = `r.id, r.tb_city_id AS cityId, c.name AS cityName,
             sl.description AS serviceListDescription,
             sl.local_incidence AS localIncidence,
             r.aliq, r.municipal_code AS municipalCode,
+            r.national_code AS nationalCode,
+            COALESCE(r.national_code, ${DERIVED_NATIONAL_CODE_SQL}) AS effectiveNationalCode,
+            (SELECT COUNT(*) FROM setes_central.tb_service_national_code n
+              WHERE n.tb_service_list_id = r.tb_service_list_id AND n.deleted = 'N' AND n.active = 'S') AS nationalCodeOptions,
             COALESCE(r.active, 'S') AS active`
 
 const JOINS = (schemaName: string) =>
@@ -98,11 +103,26 @@ async function assertRule(
       [{ field: 'serviceListId', message: `Regra ${dup[0].id} já cobre este item nesta cidade` }],
       'SERVICE_TAX_RULE_DUPLICATE')
   }
+  // D-N11a: o código nacional, quando informado, tem que ser um desdobro DO subitem
+  if (input.nationalCode) {
+    const [nc] = await conn.query<any[]>(
+      `SELECT tb_service_list_id AS listId FROM setes_central.tb_service_national_code
+        WHERE code = ? AND deleted = 'N' AND active = 'S'`,
+      [input.nationalCode])
+    if (nc.length === 0) {
+      throw new HttpError(400, 'Código de tributação nacional inexistente',
+        [{ field: 'nationalCode', message: 'Código não encontrado no Anexo B' }])
+    }
+    if (String(nc[0].listId) !== input.serviceListId) {
+      throw new HttpError(422, `Código nacional ${input.nationalCode} pertence ao subitem ${nc[0].listId}, não ao ${input.serviceListId}`,
+        [{ field: 'nationalCode', message: `É desdobro do subitem ${nc[0].listId}` }], 'SERVICE_TAX_RULE_NATIONAL_CODE_MISMATCH')
+    }
+  }
 }
 
 const INPUT = (input: ServiceTaxRuleInput) => [
   input.cityId, input.serviceListId, input.aliq,
-  input.municipalCode ?? null, input.active ?? 'S',
+  input.municipalCode ?? null, input.nationalCode ?? null, input.active ?? 'S',
 ]
 
 export async function insertServiceTaxRule(
@@ -122,8 +142,8 @@ export async function insertServiceTaxRule(
     await conn.query(
       `INSERT INTO \`${schemaName}\`.tb_service_tax_rule
          (id, tb_institution_id, tb_city_id, tb_service_list_id, aliq,
-          municipal_code, active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+          municipal_code, national_code, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [id, institutionId, ...INPUT(input)])
     await conn.commit()
     return id
@@ -154,7 +174,7 @@ export async function updateServiceTaxRule(
     await conn.query(
       `UPDATE \`${schemaName}\`.tb_service_tax_rule
           SET tb_city_id = ?, tb_service_list_id = ?, aliq = ?,
-              municipal_code = ?, active = ?, updated_at = NOW()
+              municipal_code = ?, national_code = ?, active = ?, updated_at = NOW()
         WHERE id = ? AND tb_institution_id = ?`,
       [...INPUT(input), id, institutionId])
     await conn.commit()
@@ -195,6 +215,17 @@ export async function softDeleteServiceTaxRule(
 }
 
 /** Lookup dos itens ATIVOS da Lista de Serviços (form da regra). */
+/** Lookup dos desdobros nacionais (cTribNac) de UM subitem — o form da regra escolhe quando há mais de um. */
+export async function listNationalCodeLookup(serviceListId: string): Promise<ServiceTaxRuleLookupRow[]> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT code AS id, description
+       FROM setes_central.tb_service_national_code
+      WHERE tb_service_list_id = ? AND deleted = 'N' AND active = 'S'
+      ORDER BY code`,
+    [serviceListId])
+  return rows
+}
+
 export async function listServiceListLookup(filter: string): Promise<ServiceTaxRuleLookupRow[]> {
   const like = filter ? `%${escapeLike(filter)}%` : null
   const [rows] = await pool.query<any[]>(

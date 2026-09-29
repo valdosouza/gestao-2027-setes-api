@@ -27,6 +27,30 @@ export const TAX_REGIMES = [
 /** Indicador de IE do destinatário (NFe). */
 export const IND_IE_DEST_CODES = ['1', '2', '9'] as const
 
+/** opSimpNac da DPS (Onda 3 NFS-e, D-E3): 1 não optante · 2 MEI · 3 ME/EPP. */
+export const SIMPLES_REGIME_CODES = ['1', '2', '3'] as const
+/** regEspTrib da DPS (D-E23; CRET do legado): 0 nenhum · 1 ato cooperado · 2 estimativa ·
+ *  3 microempresa municipal · 4 notário/registrador · 5 profissional autônomo · 6 sociedade de profissionais. */
+export const SPECIAL_TAX_REGIME_CODES = ['0', '1', '2', '3', '4', '5', '6'] as const
+
+/**
+ * D-N20 (MEDIUM-5 do gate): `tribISSQN` do DPS DERIVADO da exigibilidade do ISS
+ * do EMITENTE (`iss_exigibilidade`, códigos do legado): 01 exigível → 1
+ * tributável · 05 imunidade → 2 imune · 04 exportação → 3 · 02 não incidência
+ * → 4; demais (suspensa por decisão judicial/processo administrativo, isenção)
+ * e NULL → 1 (o fisco não tem código para elas no tribISSQN; a alíquota/retenção
+ * continuam falando). Uma função só, consumida pelas DUAS portas (billing e OS).
+ */
+export type IssLiability = '1' | '2' | '3' | '4'
+export function liabilityFromExigibilidade(code: string | null | undefined): IssLiability {
+  switch (String(code ?? '').padStart(2, '0')) {
+    case '05': return '2'
+    case '04': return '3'
+    case '02': return '4'
+    default:   return '1'
+  }
+}
+
 /** CRT = 1º caractere do tax_regime ("1 - Simples Nacional" → '1'). */
 export function parseCrt(taxRegime: string | null | undefined): string | null {
   const first = (taxRegime ?? '').trim().charAt(0)
@@ -36,6 +60,10 @@ export function parseCrt(taxRegime: string | null | undefined): string | null {
 export interface EntityTaxInput {
   consumer?:               SN | null
   taxRegime?:              string | null
+  /** Fatos do EMITENTE (só fazem sentido quando entity = institution — Onda 3). */
+  simplesRegime?:          string | null
+  specialTaxRegime?:       string | null
+  cnae?:                   string | null
   byPassSt?:               SN | null
   indIeDest?:              string | null
   issExigibilidade?:       string | null
@@ -49,6 +77,9 @@ export interface EntityTaxInput {
 export interface EntityTaxRow {
   consumer:               SN | null
   taxRegime:              string | null
+  simplesRegime:          string | null
+  specialTaxRegime:       string | null
+  cnae:                   string | null
   byPassSt:               SN | null
   indIeDest:              string | null
   issExigibilidade:       string | null

@@ -9,7 +9,8 @@ import {
 import { receiveChecksOnBilling, CheckReceiveItem } from '@shared/check'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { insertCommissions, CommissionEntryInput } from '@shared/commission'
-import { issueInvoice } from '@shared/invoice'
+import { issueInvoice, InvoiceServiceInput } from '@shared/invoice'
+import { IssLiability } from '@shared/entity-tax/entity-tax.types'
 import { persistReturn, assertReturnableInTx, ReturnPlan } from '@shared/order-return'
 import logger from '@shared/logger/logger'
 import {
@@ -103,7 +104,7 @@ export async function listBillingItems(
             i.quantity, i.unit_value AS unitValue,
             COALESCE(i.discount_value, 0) AS discountValue,
             mi.tb_price_list_id AS priceListId,
-            p.kind AS productKind,
+            p.kind AS productKind, p.description AS productDescription,
             m.ncm, m.source AS origin, m.cest,
             m.kind_tributary AS purpose
        FROM \`${s}\`.tb_order_item i
@@ -124,6 +125,7 @@ export async function listBillingItems(
     quantity: Number(r.quantity ?? 0), unitValue: Number(r.unitValue ?? 0),
     discountValue: Number(r.discountValue ?? 0),
     productKind: (r.productKind ?? 'P') as 'P' | 'M' | 'S',
+    productDescription: r.productDescription ?? null,
     ncm: r.ncm || null, origin: r.origin || null,
     merchandiseSt: (r.cest ?? '').trim() !== '' ? 'S' : 'N',
     purpose: r.purpose || null,
@@ -395,8 +397,12 @@ export interface ComputedItem {
     mvaPct: number | null
     stAliq: number | null   // alíquota INTERNA do destino usada no value_st
   }
-  /** Serviço: item LC 116 + código municipal da regra (D4) → tb_order_item_issqn. */
-  issqnExtras: { serviceListId: string; municipalCode: string | null } | null
+  /** Serviço: item LC 116 + códigos da regra (D4; Onda 3: nacional, cidade de incidência,
+   *  alíquota) → tb_order_item_issqn e o ramo de serviço congelado. */
+  issqnExtras: {
+    serviceListId: string; municipalCode: string | null
+    nationalCode: string | null; cityId: number; aliq: number
+  } | null
 }
 
 export interface PersistInvoiceParams {
@@ -424,6 +430,10 @@ export interface PersistInvoiceParams {
   /** Lançamentos de comissão por item (rodada 2026-08-24 — positivos na
    *  venda, NEGATIVOS na devolução; imutáveis, mesma transação da nota). */
   commissions: CommissionEntryInput[]
+  /** D-N20: tribISSQN do ramo de serviço, derivado da exigibilidade do ISS do EMITENTE (billing.service). */
+  serviceLiability?: IssLiability
+  /** LOW-9: config `dps_description_format` ('I' itens · 'O' observação · 'A' ambos); default 'I'. */
+  dpsDescriptionFormat?: 'I' | 'O' | 'A'
   /** Devolução de mercadoria: âncora + elos por item (presença = é devolução). */
   returnPlan: ReturnPlan | null
 }
@@ -496,8 +506,8 @@ async function persistInvoiceOnce(
         ipi: agg.ipi, totalValue: params.totalValue, freight: agg.freight,
         expenses: agg.expenses, discount: agg.discount, quantity: agg.quantity,
       } : null,
-      serviceTotal: serviceItems.length > 0
-        ? Math.round(serviceItems.reduce((sum, ci) => sum + ci.merchandiseValue, 0) * 100) / 100
+      service: serviceItems.length > 0
+        ? buildServiceBranch(serviceItems, { liability: params.serviceLiability, descriptionFormat: params.dpsDescriptionFormat, noteText: params.noteText || null })
         : null,
     })
     const invoiceNumber = issued.invoiceNumber
@@ -731,6 +741,57 @@ async function persistItemTaxes(
       [...key, t.issqn.base, t.issqn.aliq, t.issqn.value,
        ci.issqnExtras?.serviceListId ?? null, ci.issqnExtras?.municipalCode ?? null]
     )
+  }
+}
+
+/**
+ * Ramo de SERVIÇO congelado (Onda 3 — migration 058): um DPS declara UM serviço
+ * (D-N2), então os itens de serviço da nota têm que partilhar o MESMO código
+ * nacional (e, por construção, a mesma regra: subitem/cidade/alíquota/municipal).
+ * Divergência = 422 INVOICE_SERVICE_MULTI_CODE — fature em ordens separadas.
+ * Retenção: qualquer item com ISS retido marca o ramo (fonte = tomador, D-N8).
+ */
+export interface ServiceBranchOptions {
+  /** D-N20: tribISSQN pela exigibilidade do EMITENTE; ausente = '1' tributável. */
+  liability?: IssLiability
+  /** LOW-9: 'I' itens (qtd x nome) · 'O' observação da nota · 'A' ambos. */
+  descriptionFormat?: 'I' | 'O' | 'A'
+  noteText?: string | null
+}
+
+/** xDescServ conforme a config (LOW-9); observação vazia cai nos itens para o DPS nunca sair sem descrição. */
+export function serviceDescription(items: string, noteText: string | null | undefined, format: 'I' | 'O' | 'A' = 'I'): string | null {
+  const note = (noteText ?? '').trim()
+  const text = format === 'O' ? (note || items) : format === 'A' ? [items, note].filter(Boolean).join('\n') : items
+  return text.slice(0, 2000) || null
+}
+
+export function buildServiceBranch(serviceItems: ComputedItem[], opts: ServiceBranchOptions = {}): InvoiceServiceInput {
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  const codes = new Set(serviceItems.map(ci => ci.issqnExtras?.nationalCode ?? ''))
+  if (codes.size > 1) {
+    throw new HttpError(422, 'Nota de serviço com mais de um código de tributação nacional — um DPS declara UM serviço; fature em ordens separadas',
+      serviceItems.map(ci => ({ field: `item.${ci.item.id}`, message: `Código nacional ${ci.issqnExtras?.nationalCode ?? '—'}` })),
+      'INVOICE_SERVICE_MULTI_CODE')
+  }
+  const first = serviceItems[0].issqnExtras
+  if (!first || !first.nationalCode) {
+    throw new HttpError(422, 'Regra de ISS sem código de tributação nacional — escolha o desdobro do Anexo B na regra',
+      [{ field: `item.${serviceItems[0].item.id}`, message: 'Regra sem código nacional' }], 'SERVICE_RULE_NATIONAL_CODE_REQUIRED')
+  }
+  const baseIss = r2(serviceItems.reduce((sum, ci) => sum + (ci.taxes.issqn?.base ?? 0), 0))
+  const issValue = r2(serviceItems.reduce((sum, ci) => sum + (ci.taxes.issqn?.value ?? 0), 0))
+  const withheld = serviceItems.some(ci => (ci.taxes.issqn?.withheldValue ?? 0) > 0)
+  const itemsText = serviceItems
+    .map(ci => `${ci.item.quantity > 1 ? ci.item.quantity + ' x ' : ''}${(ci.item.productDescription ?? `Serviço ${ci.item.productId}`).trim()}`)
+    .join('; ')
+  const description = serviceDescription(itemsText, opts.noteText, opts.descriptionFormat ?? 'I')
+  return {
+    totalValue: r2(serviceItems.reduce((sum, ci) => sum + ci.merchandiseValue, 0)),
+    serviceListId: first.serviceListId, nationalCode: first.nationalCode,
+    municipalCode: first.municipalCode, cityId: first.cityId,
+    baseIss, aliqIss: first.aliq, issValue, issWithheld: withheld ? 'S' : 'N', liability: opts.liability ?? '1',
+    description,
   }
 }
 

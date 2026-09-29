@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   ISS_EXIGIBILIDADE_CODES, TAX_REGIMES, IND_IE_DEST_CODES,
+  SIMPLES_REGIME_CODES, SPECIAL_TAX_REGIME_CODES,
 } from './entity-tax.types'
 
 /**
@@ -16,6 +17,9 @@ const sn = z.enum(['S', 'N'])
 export const entityTaxBody = z.object({
   consumer:               sn.nullable().optional(),
   taxRegime:              z.enum(TAX_REGIMES).nullable().optional(),
+  simplesRegime:          z.enum(SIMPLES_REGIME_CODES).nullable().optional(),
+  specialTaxRegime:       z.enum(SPECIAL_TAX_REGIME_CODES).nullable().optional(),
+  cnae:                   z.string().regex(/^\d{7}$/, 'CNAE com 7 dígitos').nullable().optional(),
   byPassSt:               sn.nullable().optional(),
   indIeDest:              z.enum(IND_IE_DEST_CODES).nullable().optional(),
   issExigibilidade:       z.enum(ISS_EXIGIBILIDADE_CODES).nullable().optional(),

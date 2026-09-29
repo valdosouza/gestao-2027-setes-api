@@ -9,6 +9,7 @@ jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
 }))
+jest.mock('../shared/fiscal-issuer', () => ({ __esModule: true, ...jest.requireActual('../shared/fiscal-issuer'), getIssuer: jest.fn().mockResolvedValue(null) }))
 jest.mock('../shared/invoice', () => ({
   __esModule: true,
   issueInvoice: jest.fn(async () => ({ invoiceNumber: '12', event: 1 })),
@@ -30,6 +31,29 @@ jest.mock('../shared/order-installment', () => ({
   ...jest.requireActual('../shared/order-installment'),   // parcelQuotas real (o calc da OS reexporta daqui)
   assertPaymentRules: jest.fn().mockResolvedValue(undefined),
 }))
+// Onda 3 (A2): a nota da OS nasce COM o ramo de serviço — regra de ISS por item
+// resolvida ANTES da transação (peça @shared/service-tax-rule) e cidade do
+// tomador pela cadeia; aqui a fronteira é mockada (calcIssqn é real).
+jest.mock('../shared/service-tax-rule', () => ({
+  __esModule: true,
+  ...jest.requireActual('../shared/service-tax-rule'),
+  resolveServiceTaxRule: jest.fn(),
+}))
+jest.mock('../shared/entity', () => ({ __esModule: true, getEntityFiscalFull: jest.fn() }))
+jest.mock('../shared/entity-tax/entity-tax.repository', () => ({ __esModule: true, getEntityTax: jest.fn().mockResolvedValue(null) }))
+const rulePiece = jest.requireMock('../shared/service-tax-rule') as any
+const entityPiece = jest.requireMock('../shared/entity') as any
+const RULE = { id: 2, cityId: 4004, cityName: 'CURITIBA', serviceListId: '1.02', aliq: 5, municipalCode: '0102', nationalCode: '010201', active: 'S' }
+/** pool.query ANTES da transação: cliente da OS + itens (produtos) — resolveServiceOrderFiscal. */
+function mockFiscal(items: any[] = [{ productId: 40, description: 'Suporte mensal' }]) {
+  ;((pool as any).query as jest.Mock)
+    .mockResolvedValueOnce([[{ customerId: 55 }]])
+    .mockResolvedValueOnce([items])
+  rulePiece.resolveServiceTaxRule.mockResolvedValue(RULE)
+  entityPiece.getEntityFiscalFull.mockResolvedValue({ addresses: [{ main: 'S', tbCityId: 4004 }] })
+}
+/** conn.query DENTRO da transação, depois do cliente: itens sob o lock + ISS por item. */
+const TX_ITEMS = [[{ id: 1, productId: 40, quantity: 1, unitValue: 150, discountValue: 0 }]]
 const inv = jest.requireMock('../shared/invoice') as any
 const auto = jest.requireMock('../shared/title-automation') as any
 
@@ -44,8 +68,9 @@ function mockConn() {
 beforeEach(() => jest.clearAllMocks())
 
 describe('service-orders.generateInvoice (Q-G3)', () => {
-  it('fatura pela peça: issueInvoice(model SE, série 1, sem ramos) + financeiro com revive + OS fecha (open_lock NULL)', async () => {
+  it('fatura pela peça: issueInvoice(model SE, série 1, COM o ramo de serviço) + financeiro com revive + OS fecha (open_lock NULL)', async () => {
     const conn = mockConn()
+    mockFiscal()
     conn.query
       .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])                                           // lockOpenOrder
@@ -54,6 +79,8 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
       .mockResolvedValueOnce([[{ n: 1 }]])                                                  // itens vivos
       .mockResolvedValueOnce([[{ n: 0 }]])                                                  // Q-A20: nenhum item inválido
       .mockResolvedValueOnce([[{ customerId: 55 }]])                                        // cliente da OS
+      .mockResolvedValueOnce(TX_ITEMS)                                                      // itens sob o lock (Onda 3)
+      .mockResolvedValueOnce([{}])                                                          // tb_order_item_issqn
 
     const r = await generateInvoice(300, { dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 2 }, 'setes_setes', 1, 7)
 
@@ -66,8 +93,17 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
     })
     expect(inv.issueInvoice).toHaveBeenCalledWith(conn, 'setes_setes', 1, 7, {
       orderId: 300, recipientEntityId: 55, model: 'SE', serie: '1', totalValue: 150,
-      noteText: null, merchandise: null, serviceTotal: null,
+      noteText: null, merchandise: null,
+      // Onda 3 (A2 fechado): ramo de serviço CONGELADO — regra do serviço, ISS por item
+      service: {
+        totalValue: 150, serviceListId: '1.02', nationalCode: '010201', municipalCode: '0102', cityId: 4004,
+        baseIss: 150, aliqIss: 5, issValue: 7.5, issWithheld: 'N', liability: '1', description: 'Suporte mensal',
+      },
     })
+    // ISS por item na MESMA tabela da venda com serviço
+    const issqn = conn.query.mock.calls.filter(c => /tb_order_item_issqn/.test(String(c[0])))
+    expect(issqn).toHaveLength(1)
+    expect(issqn[0][1]).toEqual([300, 1, 1, 150, 5, 7.5, '1.02', '0102'])
     const sqls = conn.query.mock.calls.map(c => String(c[0]))
     expect(sqls.some(q => /INSERT INTO `setes_setes`\.tb_invoice\b/.test(q))).toBe(false)   // nada inline
     const fin = conn.query.mock.calls.filter(c => /INSERT INTO `setes_setes`\.tb_financial\s/.test(String(c[0])))
@@ -85,6 +121,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
 
   it('Q-A20 (cinto): item com produto inativo/mercadoria/inexistente → 422 antes da nota', async () => {
     const conn = mockConn()
+    mockFiscal()
     conn.query
       .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])
@@ -99,6 +136,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
 
   it('OS sem itens → 400 ORDER_NO_ITEMS antes da nota', async () => {
     const conn = mockConn()
+    mockFiscal([])
     conn.query
       .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])
@@ -117,6 +155,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
   // contrato mensal nasce TODA por este caminho.
   it('A1/D5: os títulos da OS passam pelos automatismos da forma (mesma composição da venda)', async () => {
     const conn = mockConn()
+    mockFiscal()
     conn.query
       .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])
@@ -125,6 +164,8 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
       .mockResolvedValueOnce([[{ n: 1 }]])
       .mockResolvedValueOnce([[{ n: 0 }]])
       .mockResolvedValueOnce([[{ customerId: 55 }]])
+      .mockResolvedValueOnce(TX_ITEMS)                                                      // itens sob o lock (Onda 3)
+      .mockResolvedValueOnce([{}])                                                          // tb_order_item_issqn
 
     await generateInvoice(300, { dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 2 }, 'setes_setes', 1, 7)
 
@@ -144,6 +185,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
 
   it('A1: a composição roda DEPOIS de os títulos existirem (senão não haveria o que baixar)', async () => {
     const conn = mockConn()
+    mockFiscal()
     conn.query
       .mockResolvedValueOnce([{}])                                        // regra 7: lockInstitutionCounters (1o lock)
       .mockResolvedValueOnce([[{ status: 'A' }]])
@@ -152,6 +194,8 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
       .mockResolvedValueOnce([[{ n: 1 }]])
       .mockResolvedValueOnce([[{ n: 0 }]])
       .mockResolvedValueOnce([[{ customerId: 55 }]])
+      .mockResolvedValueOnce(TX_ITEMS)                                                      // itens sob o lock (Onda 3)
+      .mockResolvedValueOnce([{}])                                                          // tb_order_item_issqn
 
     let titulosNaChamada = -1
     auto.applyTitleAutomation.mockImplementation(async () => {

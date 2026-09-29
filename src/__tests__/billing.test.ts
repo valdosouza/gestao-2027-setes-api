@@ -13,6 +13,7 @@ jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
 }))
+jest.mock('../shared/fiscal-issuer', () => ({ __esModule: true, ...jest.requireActual('../shared/fiscal-issuer'), getIssuer: jest.fn().mockResolvedValue(null) }))
 
 // isola o motor (testado em tax-rules/tax-calc) — o billing orquestra
 jest.mock('../shared/tax-rule', () => {
@@ -580,7 +581,7 @@ describe('invoiceOrder', () => {
     mockQuery.mockResolvedValueOnce([[]])                 // links (mercadoria)
     // Onda 3: serviço exige vínculo irmão + regra viva/coerente (cidade 2 = tomador)
     mockQuery.mockResolvedValueOnce([[{ orderItemId: 1, kind: 'Sale', serviceTaxRuleId: 2, origin: 'A' }]])
-    mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, active: 'S' }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, nationalCode: '010201', active: 'S' }]])
     mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
     mockQuery.mockResolvedValueOnce([[]])                 // getGeneralObservations
@@ -608,7 +609,8 @@ describe('invoiceOrder', () => {
     const inv = jest.requireMock('../shared/invoice') as any
     expect(inv.issueInvoice).toHaveBeenCalledTimes(1)
     expect(inv.issueInvoice.mock.calls[0][4]).toMatchObject({ merchandise: null })
-    expect(inv.issueInvoice.mock.calls[0][4].serviceTotal).toBeGreaterThan(0)
+    expect(inv.issueInvoice.mock.calls[0][4].service.totalValue).toBeGreaterThan(0)
+    expect(inv.issueInvoice.mock.calls[0][4].service.nationalCode).toBe('010201')
     expect(sqls.some(s => s.includes('tb_invoice_merchandise'))).toBe(false)
   })
 
@@ -620,7 +622,7 @@ describe('invoiceOrder', () => {
     mockQuery.mockResolvedValueOnce([[]])                 // links (mercadoria)
     // Onda 3: serviço exige vínculo irmão + regra viva/coerente (cidade 2 = tomador)
     mockQuery.mockResolvedValueOnce([[{ orderItemId: 1, kind: 'Sale', serviceTaxRuleId: 2, origin: 'A' }]])
-    mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, active: 'S' }]])
+    mockQuery.mockResolvedValueOnce([[{ id: 2, cityId: 2, cityName: 'X', serviceListId: '1.02', aliq: 5, municipalCode: null, nationalCode: '010201', active: 'S' }]])
     mockQuery.mockResolvedValueOnce([[{ freight: 0 }]])
     mockQuery.mockResolvedValueOnce([[{ expenses: 0 }]])
     mockQuery.mockResolvedValueOnce([[]])                 // getGeneralObservations

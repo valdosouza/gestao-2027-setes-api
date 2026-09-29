@@ -10,6 +10,7 @@ jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
 }))
+jest.mock('../shared/fiscal-issuer', () => ({ __esModule: true, ...jest.requireActual('../shared/fiscal-issuer'), getIssuer: jest.fn().mockResolvedValue(null) }))
 jest.mock('../shared/invoice', () => ({
   __esModule: true,
   issueInvoice: jest.fn(),
@@ -31,6 +32,25 @@ jest.mock('../shared/order-installment', () => ({
   ...jest.requireActual('../shared/order-installment'),
   assertPaymentRules: jest.fn().mockResolvedValue(undefined),
 }))
+
+// Onda 3 (A2): a nota da OS nasce COM o ramo de serviço — regra de ISS por item
+// resolvida ANTES da transação e itens relidos SOB o lock; fronteira mockada.
+jest.mock('../shared/service-tax-rule', () => ({
+  __esModule: true,
+  ...jest.requireActual('../shared/service-tax-rule'),
+  resolveServiceTaxRule: jest.fn(),
+}))
+jest.mock('../shared/entity', () => ({ __esModule: true, getEntityFiscalFull: jest.fn() }))
+jest.mock('../shared/entity-tax/entity-tax.repository', () => ({ __esModule: true, getEntityTax: jest.fn().mockResolvedValue(null) }))
+const TX_ITEMS = [[{ id: 1, productId: 40, quantity: 1, unitValue: 150, discountValue: 0 }]]
+const FISCAL_RULE = { id: 2, cityId: 4004, cityName: 'CURITIBA', serviceListId: '1.02', aliq: 5, municipalCode: '0102', nationalCode: '010201', active: 'S' }
+function mockFiscal(customerId: number) {
+  ;((pool as any).query as jest.Mock).mockImplementation(async (sql: string) =>
+    /tb_order_service/.test(String(sql)) ? [[{ customerId }]]
+      : /tb_order_item/.test(String(sql)) ? [[{ productId: 40, description: 'Suporte mensal' }]] : [[]])
+  ;(jest.requireMock('../shared/service-tax-rule') as any).resolveServiceTaxRule.mockResolvedValue(FISCAL_RULE)
+  ;(jest.requireMock('../shared/entity') as any).getEntityFiscalFull.mockResolvedValue({ addresses: [{ main: 'S', tbCityId: 4004 }] })
+}
 jest.mock('../shared/logger/logger', () => ({
   __esModule: true, default: { error: jest.fn(), warn: jest.fn(), info: jest.fn() },
 }))
@@ -39,10 +59,11 @@ const dead = () => Object.assign(new Error('Deadlock found when trying to get lo
 
 function mockConn() {
   const conn = {
-    beginTransaction: jest.fn(), query: jest.fn().mockResolvedValue([{}]),
+    beginTransaction: jest.fn(), query: jest.fn(async (sql: string, ..._params: any[]) => (/tb_order_item i\s+WHERE i\.tb_order_id/.test(String(sql)) ? TX_ITEMS : [{}])),
     commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
   }
   ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+  mockFiscal(55)
   return conn
 }
 beforeEach(() => jest.clearAllMocks())
@@ -94,6 +115,8 @@ describe('generateInvoice × contenção (Q-A5)', () => {
       .mockResolvedValueOnce([[{ n: 1 }]])                                                              // itens vivos
       .mockResolvedValueOnce([[{ n: 0 }]])                                                              // Q-A20: itens válidos
       .mockResolvedValueOnce([[{ customerId: 55 }]])                                                    // cliente
+      .mockResolvedValueOnce(TX_ITEMS)                                                      // itens sob o lock (Onda 3)
+      .mockResolvedValueOnce([{}])                                                          // tb_order_item_issqn
   }
   const input = { dtExpiration: '2026-10-05', paymentTypeId: 6, parcels: 1 }
 

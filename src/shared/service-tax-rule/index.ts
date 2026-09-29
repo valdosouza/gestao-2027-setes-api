@@ -22,20 +22,32 @@ export interface ServiceTaxRuleResolved {
   serviceListId: string
   aliq:          number
   municipalCode: string | null
+  /** cTribNac (6 dígitos) — o da regra, ou DERIVADO quando o subitem tem um único
+   *  desdobro nacional (D-N11a). null = subitem com vários desdobros e a regra não
+   *  escolheu (pendência: NATIONAL_CODE). */
+  nationalCode:  string | null
   active:        'S' | 'N'
 }
 
-export type ServiceRuleProblem = 'NO_RULE' | 'INACTIVE' | 'CITY_MISMATCH'
+export type ServiceRuleProblem = 'NO_RULE' | 'INACTIVE' | 'CITY_MISMATCH' | 'NATIONAL_CODE'
+
+/** cTribNac derivado: único código ATIVO do subitem (Anexo B) — só quando é um só. */
+export const DERIVED_NATIONAL_CODE_SQL = `(SELECT MIN(n.code) FROM setes_central.tb_service_national_code n
+                  WHERE n.tb_service_list_id = r.tb_service_list_id AND n.deleted = 'N' AND n.active = 'S'
+                  GROUP BY n.tb_service_list_id HAVING COUNT(*) = 1)`
 
 const FIELDS = `r.id, r.tb_city_id AS cityId, c.name AS cityName,
                 r.tb_service_list_id AS serviceListId, r.aliq,
-                r.municipal_code AS municipalCode, COALESCE(r.active, 'S') AS active`
+                r.municipal_code AS municipalCode,
+                COALESCE(r.national_code, ${DERIVED_NATIONAL_CODE_SQL}) AS nationalCode,
+                COALESCE(r.active, 'S') AS active`
 
 function toResolved(row: any): ServiceTaxRuleResolved {
   return {
     id: Number(row.id), cityId: Number(row.cityId), cityName: row.cityName ?? null,
     serviceListId: String(row.serviceListId), aliq: Number(row.aliq ?? 0),
-    municipalCode: row.municipalCode ?? null, active: row.active === 'N' ? 'N' : 'S',
+    municipalCode: row.municipalCode ?? null, nationalCode: row.nationalCode ?? null,
+    active: row.active === 'N' ? 'N' : 'S',
   }
 }
 
@@ -81,6 +93,9 @@ export function checkServiceRule(
   if (!rule) return 'NO_RULE'
   if (rule.active !== 'S') return 'INACTIVE'
   if (recipientCityId !== null && rule.cityId !== recipientCityId) return 'CITY_MISMATCH'
+  // D-N11a: o DPS exige cTribNac; regra de subitem com vários desdobros sem escolha = pendência
+  // (depois da cidade: a regra errada é o problema maior)
+  if (rule.nationalCode == null) return 'NATIONAL_CODE'
   return null
 }
 
@@ -95,5 +110,7 @@ export function serviceRuleProblemMessage(
       return `Item ${itemId}: regra de tributação de serviço ${rule!.id} está inativa`
     case 'CITY_MISMATCH':
       return `Item ${itemId}: regra ${rule!.id} incide em ${rule!.cityName ?? rule!.cityId}, mas o tomador está em outra cidade — cadastre/vincule a regra do município do tomador`
+    case 'NATIONAL_CODE':
+      return `Item ${itemId}: regra ${rule!.id} sem código de tributação nacional — o subitem ${rule!.serviceListId} tem mais de um desdobro no Anexo B; escolha na regra`
   }
 }

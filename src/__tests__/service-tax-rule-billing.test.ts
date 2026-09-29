@@ -15,6 +15,7 @@ jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
 }))
+jest.mock('../shared/fiscal-issuer', () => ({ __esModule: true, ...jest.requireActual('../shared/fiscal-issuer'), getIssuer: jest.fn().mockResolvedValue(null) }))
 jest.mock('../shared/tax-rule', () => {
   const actual = jest.requireActual('../shared/tax-rule')
   return { ...actual, findTaxRule: jest.fn(), loadPieces: jest.fn() }
@@ -59,7 +60,7 @@ beforeEach(() => { mockQuery.mockResolvedValue([[{ 1: 1 }]]) })
 const inst = { institutionId: 1, userId: 7, role: 'admin', schemaName: 'setes_setes' }
 const RULE: ServiceTaxRuleResolved = {
   id: 2, cityId: 4004, cityName: 'CURITIBA', serviceListId: '1.02',
-  aliq: 5, municipalCode: '0102', active: 'S',
+  aliq: 5, municipalCode: '0102', nationalCode: '010201', active: 'S',
 }
 beforeEach(() => jest.clearAllMocks())
 
@@ -112,7 +113,7 @@ const serviceItem = (over: any = {}) => ({
   kind_tributary: null, purpose: null, ...over,
 })
 const ruleRow = (over: any = {}) => ({ id: 2, cityId: 4004, cityName: 'CURITIBA',
-  serviceListId: '1.02', aliq: 5, municipalCode: '0102', active: 'S', ...over })
+  serviceListId: '1.02', aliq: 5, municipalCode: '0102', nationalCode: '010201', active: 'S', ...over })
 
 describe('validateOrder — caminho kind=S (D6/D12/D14)', () => {
   it('serviço com regra coerente: grava vínculo irmão (origin A) e conta rulesResolved', async () => {

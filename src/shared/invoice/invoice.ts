@@ -15,8 +15,12 @@ import { HttpError } from '@shared/errors/http-error'
  * das notas mercadoria × serviço). Com D3 (pendente cancelada = soft-delete)
  * e D5 (pedido refaturável), o cabeçalho é REVIVIDO por upsert na segunda
  * vida — por isso o evento E guarda o SNAPSHOT do fato (número/série/
- * modelo/valor). `tb_invoice.status` é ESPELHO escrito aqui ('0' = pronta,
- * não transmitida), nunca lido para decidir.
+ * modelo/valor). `tb_invoice.status` é ESPELHO escrito aqui ('0' = pronta):
+ * o estado FISCAL não mora nele — é do RAMO, derivado do último evento da
+ * última transmissão (`@shared/invoice-transmission`, D-N1: A/R/C/K/F/N vivem
+ * em tb_invoice_service_transmission_event). A composição da transmissão NÃO
+ * escreve `status`; ele só é lido como cinto (Q-A2) contra valor gravado pelo
+ * sync ('A'/'F' vindos do desktop não são "pendente").
  */
 
 export type InvoiceEventKind = 'E' | 'C'
@@ -144,6 +148,20 @@ export interface InvoiceMerchandiseInput {
   quantity: number
 }
 
+export interface InvoiceServiceInput {
+  totalValue:    number
+  serviceListId: string | null      // subitem LC 116 ('1.02')
+  nationalCode:  string | null      // cTribNac (6 dígitos)
+  municipalCode: string | null      // cTribMun
+  cityId:        number | null      // cidade de INCIDÊNCIA (da regra)
+  baseIss:       number             // Σ base de tb_order_item_issqn
+  aliqIss:       number             // % da regra
+  issValue:      number             // Σ ISS
+  issWithheld:   'S' | 'N'          // tpRetISSQN (D-N8)
+  liability:     '1' | '2' | '3' | '4'  // tribISSQN (D-N8)
+  description:   string | null      // xDescServ montado dos itens
+}
+
 export interface IssueInvoiceInput {
   orderId: number
   recipientEntityId: number
@@ -153,8 +171,10 @@ export interface IssueInvoiceInput {
   noteText: string | null
   /** Ramo de mercadoria — presença = existe (natureza da nota por ramo). */
   merchandise: InvoiceMerchandiseInput | null
-  /** Ramo de serviço — total dos itens 'S'; null = sem ramo. */
-  serviceTotal: number | null
+  /** Ramo de SERVIÇO (presença = ramo existe). Onda 3 (migration 058): o ramo
+   *  carrega o que o DPS precisa, CONGELADO no faturamento — um DPS declara UM
+   *  serviço (D-N2), por isso um único código nacional/municipal/cidade por nota. */
+  service: InvoiceServiceInput | null
   /** Data do fato (E); default hoje (local). */
   dtRecord?: string
 }
@@ -212,13 +232,23 @@ export async function issueInvoice(
       [input.orderId, institutionId]
     )
   }
-  if (input.serviceTotal != null) {
+  if (input.service) {
+    const sv = input.service
     await conn.query(
       `INSERT INTO \`${s}\`.tb_invoice_service
-         (id, tb_institution_id, terminal, total_value, created_at, updated_at, deleted)
-       VALUES (?, ?, 0, ?, NOW(), NOW(), 'N')
-       ON DUPLICATE KEY UPDATE total_value = VALUES(total_value), deleted = 'N', updated_at = NOW()`,
-      [input.orderId, institutionId, input.serviceTotal]
+         (id, tb_institution_id, terminal, total_value, tb_service_list_id, national_code, municipal_code,
+          tb_city_id, base_iss_value, aliq_iss, iss_value, iss_withheld, liability, description,
+          created_at, updated_at, deleted)
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+       ON DUPLICATE KEY UPDATE
+         total_value = VALUES(total_value), tb_service_list_id = VALUES(tb_service_list_id),
+         national_code = VALUES(national_code), municipal_code = VALUES(municipal_code),
+         tb_city_id = VALUES(tb_city_id), base_iss_value = VALUES(base_iss_value),
+         aliq_iss = VALUES(aliq_iss), iss_value = VALUES(iss_value), iss_withheld = VALUES(iss_withheld),
+         liability = VALUES(liability), description = VALUES(description),
+         dps_number = NULL, deleted = 'N', updated_at = NOW()`,
+      [input.orderId, institutionId, sv.totalValue, sv.serviceListId, sv.nationalCode, sv.municipalCode,
+       sv.cityId, sv.baseIss, sv.aliqIss, sv.issValue, sv.issWithheld, sv.liability, sv.description]
     )
   } else {
     await conn.query(

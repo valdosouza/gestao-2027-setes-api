@@ -75,3 +75,31 @@ export const invoiceBodyDto = z.object({
   checks: z.array(checksByParcelDto).optional(),
 })
 export type InvoiceBodyDto = z.infer<typeof invoiceBodyDto>
+
+/**
+ * Onda 3 NFS-e (prompt_onda3_nfse_adn.md §9 etapa 3): transmissão do DPS ao
+ * fisco pela composição @shared/invoice-transmission. Autoria vem do JWT.
+ */
+export const transmitBodyDto = z.object({
+  orderId: z.number().int().positive(),
+})
+export type TransmitBody = z.infer<typeof transmitBodyDto>
+
+/** Lote "Transmitir pendentes": teto 50 por requisição (D27 espelhada) — o app fatia e agrega. */
+export const transmitBatchBodyDto = z.object({
+  orderIds: z.array(z.number().int().positive()).min(1).max(50),
+})
+export type TransmitBatchBody = z.infer<typeof transmitBatchBodyDto>
+
+export const fiscalRefreshBodyDto = z.object({
+  minMinutes: z.number().int().min(1).max(1440).optional(),   // D-N22: nunca 0 (reconsulta a cada clique)
+  limit:      z.number().int().min(1).max(50).optional(),
+})
+export type FiscalRefreshBody = z.infer<typeof fiscalRefreshBodyDto>
+
+/** Cancelamento NO FISCO (D-N7): motivo vira xMotivo do e101101 (15–255; curto ganha complemento). */
+export const fiscalCancelBodyDto = z.object({
+  orderId: z.number().int().positive(),
+  reason:  z.string().trim().min(1).max(255),
+})
+export type FiscalCancelBody = z.infer<typeof fiscalCancelBodyDto>

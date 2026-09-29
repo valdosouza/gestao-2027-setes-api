@@ -19,7 +19,8 @@ import { getEstablishmentChain, saveEstablishmentChain } from './establishment.r
  * toggle F/J/N nunca mudam por aqui).
  */
 
-function toDto(chain: EntityFiscalFull, taxRegime: string | null): EstablishmentDto {
+function toDto(chain: EntityFiscalFull, tax: { taxRegime: string | null; simplesRegime: string | null; specialTaxRegime: string | null; cnae: string | null }): EstablishmentDto {
+  const taxRegime = tax.taxRegime
   // Institution sempre nasce com documento (F ou J) — nunca 'N' (decisão
   // registrada no institutionCreateDto: schemaName + admin obrigatórios,
   // e a criação real do cliente é sempre pessoa física ou jurídica). Se um
@@ -37,6 +38,9 @@ function toDto(chain: EntityFiscalFull, taxRegime: string | null): Establishment
     ie:          chain.company?.ie ?? null,
     im:          chain.company?.im ?? null,
     taxRegime,
+    simplesRegime:    tax.simplesRegime,
+    specialTaxRegime: tax.specialTaxRegime,
+    cnae:             tax.cnae,
     addresses:   chain.addresses,
     phones:      chain.phones,
     socials:     chain.socialMedia,
@@ -54,7 +58,10 @@ export async function fetchEstablishment(
   // Tributação do PRÓPRIO estabelecimento (convenção R4 do faturamento:
   // tb_institution.id = tb_entity.id) — null se nunca configurada.
   const tax = await getEntityTax(schemaName, institutionId, institutionId)
-  return toDto(chain, tax?.taxRegime ?? null)
+  return toDto(chain, {
+    taxRegime: tax?.taxRegime ?? null, simplesRegime: tax?.simplesRegime ?? null,
+    specialTaxRegime: tax?.specialTaxRegime ?? null, cnae: tax?.cnae ?? null,
+  })
 }
 
 export async function editEstablishment(
@@ -99,12 +106,20 @@ export async function editEstablishment(
   // tributação; presente = MERGE sobre a linha viva (upsertEntityTax grava
   // TODAS as colunas — sem o merge, um PUT daqui zeraria o que a aba
   // Tributação de outros cadastros tivesse configurado para o emitente).
-  if (input.taxRegime !== undefined) {
-    const current = await getEntityTax(schemaName, institutionId, institutionId)
+  const touchesTax = input.taxRegime !== undefined || input.simplesRegime !== undefined
+    || input.specialTaxRegime !== undefined || input.cnae !== undefined
+  const current = touchesTax ? await getEntityTax(schemaName, institutionId, institutionId) : null
+  if (touchesTax) {
+    // merge campo a campo: undefined não toca; null limpa (mesma regra do taxRegime)
     await upsertEntityTax(pool, schemaName, institutionId, institutionId, {
       ...(current ?? {}),
-      taxRegime: input.taxRegime,
+      ...(input.taxRegime !== undefined ? { taxRegime: input.taxRegime } : {}),
+      ...(input.simplesRegime !== undefined ? { simplesRegime: input.simplesRegime } : {}),
+      ...(input.specialTaxRegime !== undefined ? { specialTaxRegime: input.specialTaxRegime } : {}),
+      ...(input.cnae !== undefined ? { cnae: input.cnae } : {}),
     })
+  }
+  if (input.taxRegime !== undefined) {
 
     // D42: mudou o GRUPO do regime (Simples 1/2 × Normal 3) → remove das
     // regras de tributação o código do regime que ficou para trás (indo p/

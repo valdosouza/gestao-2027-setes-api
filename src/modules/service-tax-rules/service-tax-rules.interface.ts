@@ -23,6 +23,12 @@ export interface ServiceTaxRuleRow {
   localIncidence:         'P' | 'E' | null
   aliq:                   number
   municipalCode:          string | null
+  /** cTribNac gravado na regra (null = derivar quando único). */
+  nationalCode:           string | null
+  /** cTribNac EFETIVO (gravado ou derivado) — o que o DPS usa. */
+  effectiveNationalCode:  string | null
+  /** Quantos desdobros nacionais o subitem tem (1 = derivável). */
+  nationalCodeOptions:    number
   active:                 'S' | 'N'
 }
 
@@ -31,6 +37,7 @@ export interface ServiceTaxRuleInput {
   serviceListId:  string
   aliq:           number
   municipalCode?: string | null
+  nationalCode?:  string | null
   active?:        'S' | 'N'
 }
 

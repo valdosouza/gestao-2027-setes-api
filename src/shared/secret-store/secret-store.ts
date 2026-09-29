@@ -80,7 +80,10 @@ export function readSecret(ref: SecretRef, missingCode = 'SECRET_MISSING'): Buff
 export function writeSecret(ref: SecretRef, content: Buffer | string): void {
   const file = secretFilePath(ref)
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, content, { mode: 0o600 })
+  // D-N30: nunca um arquivo pela metade — tmp + rename (atômico no mesmo diretório)
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
+  fs.writeFileSync(tmp, content, { mode: 0o600 })
+  fs.renameSync(tmp, file)
 }
 
 export function deleteSecret(ref: SecretRef): boolean {
@@ -97,6 +100,8 @@ export interface CertificateInfo {
   daysToExpire:   number
   fingerprint256: string
   expired:        boolean
+  /** R2-4: notBefore no futuro — não vale AINDA (o handshake diria CERT_NOT_YET_VALID). */
+  notYetValid:    boolean
 }
 
 /** Metadados PÚBLICOS de um certificado PEM — o que a tela pode mostrar. */
@@ -112,6 +117,7 @@ export function certificateInfo(pem: Buffer | string, now: Date = new Date()): C
     daysToExpire: days,
     fingerprint256: cert.fingerprint256,
     expired: days < 0,
+    notYetValid: new Date(cert.validFrom).getTime() > now.getTime(),
   }
 }
 

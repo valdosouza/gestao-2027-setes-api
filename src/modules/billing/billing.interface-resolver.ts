@@ -27,3 +27,9 @@ export function resolveFromBody(req: Request): Promise<string> {
   const inst = req.institution!
   return resolveOrderInterface(inst.schemaName, inst.institutionId, Number(req.body?.orderId))
 }
+
+/** Resolver das rotas `/fiscal/:orderId/*`: o pedido vem na URL. */
+export function resolveFromParam(req: Request): Promise<string> {
+  const inst = req.institution!
+  return resolveOrderInterface(inst.schemaName, inst.institutionId, Number(req.params?.orderId))
+}

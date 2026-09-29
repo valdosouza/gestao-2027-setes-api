@@ -22,6 +22,10 @@ export interface EstablishmentDto {
   /** Regime tributário do PRÓPRIO estabelecimento (D39: mantido SÓ aqui) —
    *  rótulo canônico de TAX_REGIMES em tb_entity_tax (entity = institution). */
   taxRegime:   string | null
+  /** Fatos do EMITENTE consumidos pelos documentos fiscais (Onda 3 — D-E3/D-E23). */
+  simplesRegime:    string | null
+  specialTaxRegime: string | null
+  cnae:             string | null
   addresses:   AddressRow[]
   phones:      PhoneRow[]
   socials:     SocialMediaRow[]
@@ -38,6 +42,9 @@ export interface EstablishmentUpdateInput {
   im?:         string | null
   /** Campo avulso (D39.2) — null limpa; undefined não toca a tributação. */
   taxRegime?:  string | null
+  simplesRegime?:    string | null
+  specialTaxRegime?: string | null
+  cnae?:             string | null
   addresses:   AddressInput[]
   phones:      PhoneInput[]
   socials:     SocialMediaInput[]

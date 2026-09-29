@@ -5,7 +5,7 @@ import {
 } from './service-tax-rules.interface'
 import {
   listServiceTaxRules, getServiceTaxRule, insertServiceTaxRule,
-  updateServiceTaxRule, softDeleteServiceTaxRule, listServiceListLookup,
+  updateServiceTaxRule, softDeleteServiceTaxRule, listServiceListLookup, listNationalCodeLookup,
 } from './service-tax-rules.repository'
 
 /**
@@ -55,4 +55,8 @@ export async function removeServiceTaxRule(
 
 export async function fetchServiceListLookup(filter: string): Promise<ServiceTaxRuleLookupRow[]> {
   return listServiceListLookup(filter)
+}
+
+export async function fetchNationalCodeLookup(serviceListId: string): Promise<ServiceTaxRuleLookupRow[]> {
+  return listNationalCodeLookup(serviceListId)
 }

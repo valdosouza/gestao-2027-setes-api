@@ -7,7 +7,7 @@ import { serviceTaxRuleDto } from './service-tax-rules.dto'
 import {
   ServiceTaxRuleScope, fetchServiceTaxRules, fetchServiceTaxRule,
   createServiceTaxRule, editServiceTaxRule, removeServiceTaxRule,
-  fetchServiceListLookup,
+  fetchServiceListLookup, fetchNationalCodeLookup,
 } from './service-tax-rules.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
@@ -72,6 +72,19 @@ export async function remove(req: Request, res: Response): Promise<void> {
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'service-tax-rules/:id DELETE')
+  }
+}
+
+export async function nationalCodeLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const serviceListId = String(req.query.serviceListId ?? '')
+    if (!/^\d{1,2}\.\d{2}$/.test(serviceListId)) {
+      res.status(400).json({ error: 'serviceListId inválido (ex.: 1.02)', fields: [{ field: 'serviceListId', message: 'Obrigatório' }] })
+      return
+    }
+    res.json({ ok: true, data: await fetchNationalCodeLookup(serviceListId) })
+  } catch (err) {
+    handleError(res, err, 'service-tax-rules/national-codes GET')
   }
 }
 

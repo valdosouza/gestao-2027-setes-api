@@ -549,8 +549,61 @@ async function p8_nfse(ordemId: number | null): Promise<void> {
     nota ? `ramo presente, serviço ${nota.serviceValue}`
          : 'a OS fatura com serviceTotal: null — a nota nasce SEM tb_invoice_service, logo sem base de ISS para a NFS-e — Onda 3')
 
-  reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE',
-    'não existe emissão: sem DPS/XML, transmissão ao ADN nacional, protocolo, DANFSe nem cancelamento por evento — Onda 3 (D1)')
+  await p8b_transmissao(nota ? Number(nota.id) : null)
+}
+
+/**
+ * Códigos que NÃO são erro nosso: habilitação/certificado ausentes, fisco fora, credencial recusada pelo fisco
+ * e DADO FISCAL do cadastro a corrigir (regra de ISS com código municipal fora da forma — Q-N26; emitente/tomador
+ * incompletos; regra sem código nacional). A régua mostra a mensagem da API: é tarefa de implantação, não de código.
+ */
+const PENDENCIA_FISCO = new Set([
+  'FISCAL_ISSUER_MISSING', 'FISCAL_CERT_MISSING', 'FISCAL_CERT_EXPIRED', 'FISCAL_CERT_INVALID',
+  'FISCAL_AUTHORITY_UNAVAILABLE', 'FISCAL_AUTHORITY_AUTH_FAILED', 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE',
+  'FISCAL_DPS_INVALID', 'FISCAL_EMITTER_INCOMPLETE', 'FISCAL_RECIPIENT_INCOMPLETE', 'SERVICE_RULE_NATIONAL_CODE_REQUIRED',
+])
+
+/**
+ * P8b — Onda 3 (D-N3/D-N7/D-N12): a nota da OS vira DPS assinado e vai ao ADN
+ * pela composição @shared/invoice-transmission; OK exige A com chave de 50 e o
+ * XML + DANFSe servidos pela API. Sem habilitação SE, sem certificado ou com o
+ * fisco fora fica PENDENTE com o motivo exato; DPS rejeitado (E0xxx) é erro
+ * NOSSO de dado → FALHA.
+ */
+async function p8b_transmissao(notaId: number | null): Promise<void> {
+  if (!notaId) { reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE', 'sem nota da OS com ramo de serviço para transmitir'); return }
+  const iss = await api('GET', '/establishment/issuer')
+  const se = (iss.body?.data?.issuers ?? []).find((i: any) => i.model === 'SE')
+  if (!se) {
+    reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE', 'estabelecimento sem habilitação SE — configure ambiente e série na aba Emissor fiscal (D-N4)')
+    return
+  }
+  if (!se.enabled) {
+    reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE',
+      `habilitação SE em ${se.environment} sem certificado A1 válido no cofre — envie o .pfx na aba Emissor fiscal (D-N5/D-N31: um só para H e P)`)
+    return
+  }
+  let t = await api('POST', '/billing/transmit', { orderId: notaId })
+  if (t.status === 409 && t.body?.code === 'FISCAL_ALREADY_AUTHORIZED') {
+    t = { status: 201, body: { data: { invoiceId: notaId, reused: true } } }   // a régua roda mais de uma vez sobre a mesma nota
+  }
+  if (t.status !== 201) {
+    const code = String(t.body?.code ?? '')
+    reporta('P8b', 'NFS-e (emissão fiscal)', PENDENCIA_FISCO.has(code) ? 'PENDENTE' : 'FALHA',
+      `transmissão ${PENDENCIA_FISCO.has(code) ? 'não concluída' : 'recusada'}: ${motivo(t)}`)
+    return
+  }
+  const view = await api('GET', `/billing/fiscal/${notaId}`)
+  const last = view.body?.data?.transmissions?.at?.(-1)
+  const xml = await api('GET', `/billing/fiscal/${notaId}/xml`)
+  const pdf = await api('GET', `/billing/fiscal/${notaId}/danfse`)
+  const okA = view.body?.data?.state === 'authorized' && String(last?.accessKey ?? '').length === 50
+  const okXml = xml.status === 200 && String(xml.body?.data?.xml ?? '').includes('<infNFSe')
+  const okPdf = pdf.status === 200 && String(pdf.body?.data?.pdfBase64 ?? '').startsWith('JVBERi0')   // "%PDF-" em base64
+  criados.nfse = { invoiceId: notaId, attempt: last?.attempt, accessKey: last?.accessKey, nfseNumber: last?.nfseNumber }
+  reporta('P8b', 'NFS-e (emissão fiscal)', okA && okXml && okPdf ? 'OK' : 'FALHA',
+    `estado ${view.body?.data?.state ?? '?'} · tentativa ${last?.attempt ?? '?'} · NFS-e ${last?.nfseNumber ?? '?'} · chave ${last?.accessKey ?? '?'}` +
+    ` · XML ${okXml ? 'ok' : motivo(xml)} · DANFSe ${okPdf ? 'ok' : motivo(pdf)}`)
 }
 
 async function p9_producao(): Promise<void> {

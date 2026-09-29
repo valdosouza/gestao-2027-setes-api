@@ -47,6 +47,7 @@ export interface BillingOrderItem {
   unitValue: number
   discountValue: number
   productKind: 'P' | 'M' | 'S'
+  productDescription: string | null
   ncm: string | null
   origin: string | null       // tb_merchandise.source (origem da mercadoria)
   merchandiseSt: 'S' | 'N'

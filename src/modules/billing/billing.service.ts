@@ -1,3 +1,4 @@
+import { getIssuer } from '@shared/fiscal-issuer'
 import { HttpError } from '@shared/errors/http-error'
 import {
   findTaxRule, loadPieces, calculateItemTaxes, prorateWithResidue,
@@ -5,6 +6,7 @@ import {
   ItemTaxCalcInput, icmsMissingCodeForCrt,
 } from '@shared/tax-rule'
 import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
+import { liabilityFromExigibilidade } from '@shared/entity-tax/entity-tax.types'
 import {
   resolveServiceTaxRule, getServiceTaxRuleById, checkServiceRule,
   serviceRuleProblemMessage, ServiceTaxRuleResolved,
@@ -71,6 +73,8 @@ interface BillingContext {
   recipientContributor: boolean
   recipientByPassSt: 'S' | 'N'
   recipientIssRetido: boolean
+  /** D-N20: exigibilidade do ISS do EMITENTE → tribISSQN do ramo de serviço (liabilityFromExigibilidade). */
+  emitterIssExigibilidade: string | null
 }
 
 async function loadContext(
@@ -120,6 +124,7 @@ async function loadContext(
     recipientContributor: recipientTax?.indIeDest === '1',
     recipientByPassSt: recipientTax?.byPassSt === 'S' ? 'S' : 'N',
     recipientIssRetido: recipientTax?.issRetido === 'S',
+    emitterIssExigibilidade: emitterTax?.issExigibilidade ?? null,
   }
   return { ctx, issues }
 }
@@ -610,7 +615,10 @@ export async function invoiceOrder(
         stAliq,
       },
       issqnExtras: serviceRule
-        ? { serviceListId: serviceRule.serviceListId, municipalCode: serviceRule.municipalCode }
+        ? {
+            serviceListId: serviceRule.serviceListId, municipalCode: serviceRule.municipalCode,
+            nationalCode: serviceRule.nationalCode, cityId: serviceRule.cityId, aliq: serviceRule.aliq,
+          }
         : null,
     })
   }
@@ -674,7 +682,10 @@ export async function invoiceOrder(
   // só serviço → SE (interna, como no Software House)
   const hasMerchandise = computed.some(ci => ci.item.productKind !== 'S')
   const model = hasMerchandise ? '55' : 'SE'
-  const serie = (await getConfigContent(institution, 'billing', 'invoice_serie') ?? '1').slice(0, 10)
+  // D-E2 (Onda 3): a série vem da HABILITAÇÃO do emissor por modelo (tb_establishment_issuer);
+  // sem linha = '1' (a config invoice_serie foi aposentada — seed 58)
+  const issuerLine = await getIssuer(pool, institution.schemaName, institution.institutionId, model)
+  const serie = (issuerLine?.serie ?? '1').slice(0, 10)
 
   // R5-Q1 atualizada pelo parecer 2026-08-24: a direção do ajuste vem do
   // RAMO (gravada na abertura pelo order-returns) — fonte única, o
@@ -738,6 +749,11 @@ export async function invoiceOrder(
 
   const noteText = [...generalNotes, ...regimeTexts, issqnText, approxTaxText]
     .filter((t): t is string => !!t).join('\n')
+
+  // LOW-9 (seed 58): como o xDescServ do DPS é montado — 'I' itens · 'O' observação
+  // da nota · 'A' ambos. Lido ANTES da transação (mesma regra da config acima).
+  const dpsFormatRaw = await getConfigContent(institution, 'billing', 'dps_description_format')
+  const dpsDescriptionFormat: 'I' | 'O' | 'A' = dpsFormatRaw === 'O' || dpsFormatRaw === 'A' ? dpsFormatRaw : 'I'
 
   // ── Comissão por item (Q1/Q2 da rodada 2026-08-24) ──────────────────────
   // Venda: lançamento POSITIVO por item (kind 'F' — faturamento; o modo
@@ -823,6 +839,8 @@ export async function invoiceOrder(
     userId: institution.userId,
     commissions,
     returnPlan,
+    serviceLiability: liabilityFromExigibilidade(ctx.emitterIssExigibilidade),
+    dpsDescriptionFormat,
   })
 }
 

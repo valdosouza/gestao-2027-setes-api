@@ -75,6 +75,24 @@ router.get('/service-list', controller.serviceListLookup)
 
 /**
  * @swagger
+ * /api/service-tax-rules/national-codes:
+ *   get:
+ *     summary: Lookup dos códigos de tributação NACIONAL (cTribNac, Anexo B) de um subitem da LC 116 (Onda 3 NFS-e, D-N11a)
+ *     tags: [service-tax-rules]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: serviceListId
+ *         required: true
+ *         schema: { type: string, example: "1.02" }
+ *     responses:
+ *       200: { description: "{ ok, data: [{ id: '010201', description }] } — 1 linha = derivável, N = a regra escolhe" }
+ *       400: { description: serviceListId inválido }
+ */
+router.get('/national-codes', controller.nationalCodeLookup)
+
+/**
+ * @swagger
  * /api/service-tax-rules/{id}:
  *   get:
  *     summary: Regra por id

@@ -46,7 +46,7 @@ describe('issueInvoice', () => {
       noteText: 'obs', merchandise: {
         baseIcms: 250, icms: 45, baseIcmsSt: 0, icmsSt: 0, ipi: 0, totalValue: 250,
         freight: 0, expenses: 0, discount: 0, quantity: 2,
-      }, serviceTotal: null, dtRecord: '2026-09-08',
+      }, service: null, dtRecord: '2026-09-08',
     })
     expect(r).toEqual({ invoiceNumber: '7', event: 3 })
     const sqls = conn.query.mock.calls.map(c => String(c[0]))
@@ -67,11 +67,11 @@ describe('issueInvoice', () => {
       .mockResolvedValueOnce([[{ nextEvent: 1 }]]).mockResolvedValueOnce([{}])
     await issueInvoice(conn as any, 'setes_setes', 1, 7, {
       orderId: 101, recipientEntityId: 209, model: 'SE', serie: '1', totalValue: 80,
-      noteText: null, merchandise: null, serviceTotal: 80,
+      noteText: null, merchandise: null, service: { totalValue: 80, serviceListId: '1.02', nationalCode: '010201', municipalCode: '0102', cityId: 4004, baseIss: 80, aliqIss: 5, issValue: 4, issWithheld: 'N', liability: '1', description: 'Suporte' },
     })
     const sqls = conn.query.mock.calls.map(c => String(c[0]))
     expect(sqls[2]).toMatch(/UPDATE `setes_setes`.tb_invoice_merchandise SET deleted = 'S'/)
-    expect(sqls[3]).toMatch(/tb_invoice_service[\s\S]*ON DUPLICATE KEY UPDATE total_value/)
+    expect(sqls[3]).toMatch(/tb_invoice_service[\s\S]*national_code[\s\S]*ON DUPLICATE KEY UPDATE[\s\S]*total_value = VALUES\(total_value\)/)
   })
 })
 

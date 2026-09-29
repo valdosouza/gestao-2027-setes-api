@@ -52,7 +52,7 @@ describe('service-tax-rules repository', () => {
     expect(id).toBe(3)
     expect(conn.query.mock.calls[1][0] as string).toContain("active = 'S'")
     expect(conn.query.mock.calls[3][0] as string).toContain('FOR UPDATE')
-    expect(conn.query.mock.calls[4][1]).toEqual([3, 1, 4004, '1.02', 5, '0102', 'S'])
+    expect(conn.query.mock.calls[4][1]).toEqual([3, 1, 4004, '1.02', 5, '0102', null, 'S'])
     expect(conn.commit).toHaveBeenCalled()
   })
 

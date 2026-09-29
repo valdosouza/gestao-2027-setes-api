@@ -10,6 +10,9 @@ import { reverseCheckEvent, isCheckEventCurrent } from '@shared/check'
 import { insertCommissions, getCommissionBalanceByItem, CommissionEntryInput } from '@shared/commission'
 import { findServiceOrderForReopen, reopenServiceOrder } from '@shared/service-order'
 import { lockInvoice, insertInvoiceEvent, localTodayIso, LockedInvoice } from './invoice'
+import {
+  latestTransmission, isLiveTransmission, isAuthorized, findTransmissionEventByKind, setTransmissionEventEffect,
+} from '@shared/invoice-transmission/transmission.repository'
 
 /**
  * COMPOSIÇÃO "desfazer o faturamento" (prompt_cancelamento_nota.md D1–D17 +
@@ -37,7 +40,7 @@ import { lockInvoice, insertInvoiceEvent, localTodayIso, LockedInvoice } from '.
  * PEDIDO e NÃO se toca (parecer §3).
  */
 
-export type CancelBlockField = 'title' | 'bankSlip' | 'check' | 'return' | 'serviceOrder'
+export type CancelBlockField = 'title' | 'bankSlip' | 'check' | 'return' | 'serviceOrder' | 'fiscal'
 
 /** D-G9: título de OUTRO pedido que estava no boleto agrupado cancelado — fica independente. */
 export interface ReleasedTitle {
@@ -311,6 +314,24 @@ export async function buildCancelPlan(
     })
   }
 
+  // 2f. FISCO (Onda 3 NFS-e, D-N7 / §3.9 da NF-e: "plano local → estado fiscal
+  // → pedido ao fisco → voz → efeito"): a última transmissão do ramo de
+  // serviço decide se o C local pode nascer daqui. Nunca transmitida, R ou F →
+  // cancela local; A vigente → o C local só nasce da VOZ C do fisco (rota
+  // `POST /billing/fiscal/cancel`, que grava a voz e chama esta composição na
+  // MESMA transação — aí a leitura abaixo já vê C); reserva sem voz (em voo)
+  // ou K → nada até a consulta reconciliar. Leitura travante (regra 2 do §9).
+  const tx = await latestTransmission(conn, s, institutionId, orderId, true)
+  // A é FINAL para a transmissão (o fisco não diz mais nada dela) mas VIGENTE para a nota
+  if (tx && (isLiveTransmission(tx) || isAuthorized(tx))) {
+    const msg = isAuthorized(tx)   // A, ou N depois de um K (D-N17: o pedido não consta — segue autorizada)
+      ? `NFS-e ${tx.nfseNumber ?? tx.accessKey ?? ''} autorizada no fisco (tentativa ${tx.attempt}) — cancele pela ação "Cancelar NFS-e" (o fisco fala primeiro)`
+      : tx.lastKind === 'K'
+        ? `Pedido de cancelamento ao fisco sem resposta (tentativa ${tx.attempt}) — consulte a NFS-e para reconciliar antes`
+        : `Transmissão ao fisco em andamento (tentativa ${tx.attempt}) — aguarde a voz do fisco e consulte antes`
+    blocks.push({ field: 'fiscal', ref: String(tx.attempt), message: msg })
+  }
+
   // 2e. comissão: compensação pelo SALDO vivo por item (Q-P8)
   const balances = await getCommissionBalanceByItem(conn, s, institutionId, orderId)
   const commissionEntries: CommissionEntryInput[] = balances.map(b => ({
@@ -402,6 +423,16 @@ export async function cancelInvoice(
       model: plan.invoice.model, value: plan.invoice.value,
     },
   })
+  // M1 do socrático (Q-N34 a, espelho da rota fiscal): a voz C do fisco com efeito pendente ganha ESTE C
+  // como efeito — senão a pendência fica órfã quando a nota refatura (vida nova) e ninguém a resolve
+  const fiscalTx = await latestTransmission(conn, s, institutionId, input.orderId, true)
+  if (fiscalTx?.lastKind === 'C') {
+    const voice = await findTransmissionEventByKind(conn, s, institutionId, input.orderId, fiscalTx.attempt, 'C', true)
+    if (voice && voice.invoiceEvent == null) {
+      await setTransmissionEventEffect(conn, s, institutionId, input.orderId, fiscalTx.attempt, voice.event, event,
+        `Efeito ligado ao cancelamento manual (evento ${event})`)
+    }
+  }
   // D3: nota pendente cancelada some da numeração (D4) e das listas; a trilha fica no evento
   await conn.query(
     `UPDATE \`${s}\`.tb_invoice SET deleted = 'S', updated_at = NOW()

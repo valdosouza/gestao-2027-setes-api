@@ -11,6 +11,8 @@ export const serviceTaxRuleDto = z.object({
   serviceListId: z.string().regex(/^\d{1,2}\.\d{2}$/, 'Item da lista inválido (ex.: 1.01)'),
   aliq:          z.number().min(0).max(100),
   municipalCode: z.string().max(20).nullable().optional(),
+  /** cTribNac (Anexo B) — obrigatório só quando o subitem tem mais de um desdobro (D-N11a). */
+  nationalCode:  z.string().regex(/^\d{6}$/, 'Código nacional com 6 dígitos').nullable().optional(),
   active:        z.enum(['S', 'N']).optional().default('S'),
 })
 

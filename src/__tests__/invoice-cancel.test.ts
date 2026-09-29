@@ -40,10 +40,10 @@ beforeEach(() => {
 })
 
 /** Sequência base do plano: pedido F, nota viva com E, sem cheques/baixas/boletos/devoluções. */
-const PLAN_QUERIES = 10
+const PLAN_QUERIES = 11   // +1 (Onda 3): última transmissão ao fisco — bloco `fiscal`
 function planQueries(conn: any, opts: {
   status?: string; invoice?: any[]; last?: any[]; anchor?: any[]; serviceOrder?: any[]; receipts?: any[]; payments?: any[];
-  slips?: any[]; released?: any[]; returns?: any[];
+  slips?: any[]; released?: any[]; returns?: any[]; fiscal?: any[];
 } = {}) {
   conn.query
     .mockResolvedValueOnce([[{ status: opts.status ?? 'F' }]])                       // lock pedido
@@ -58,6 +58,7 @@ function planQueries(conn: any, opts: {
     .mockResolvedValueOnce([opts.slips ?? []])                                         // boletos
   if (opts.released) conn.query.mockResolvedValueOnce([opts.released])                 // D-G9: só com boleto agrupado
   conn.query.mockResolvedValueOnce([opts.returns ?? []])                               // devoluções
+  conn.query.mockResolvedValueOnce([opts.fiscal ?? []])                                // Onda 3: última transmissão ao fisco (bloco fiscal)
 }
 
 const scope = ['setes_setes', 1, 7] as const
@@ -230,6 +231,7 @@ describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
       .mockResolvedValueOnce([[{ id: 7001 }]])              // trava '1-55' ocupada por outra OS
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[]])                          // Onda 3: última transmissão ao fisco
     const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
     expect(plan.serviceOrder).toEqual({ openLock: '1-55' })
     expect(plan.blocks).toEqual([expect.objectContaining({ field: 'serviceOrder', ref: '7001' })])
@@ -249,6 +251,7 @@ describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
       .mockResolvedValueOnce([[]])                          // trava livre
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[]])                          // Onda 3: última transmissão ao fisco
     for (let i = 0; i < 11; i++) conn.query.mockResolvedValueOnce([{}])
     conn.query.mockResolvedValueOnce([[{ nextEvent: 2 }]]).mockResolvedValueOnce([{}])
     conn.query.mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}])
@@ -350,5 +353,47 @@ describe('cancelInvoice — executar', () => {
     const r = await cancelInvoice(conn as any, ...scope, { orderId: 100, reason: 'erro' })
     expect(r.checksReversed).toEqual([])
     expect(fs.findOpenCashierIdTx).not.toHaveBeenCalled()
+  })
+})
+
+describe('buildCancelPlan — bloco fiscal (Onda 3 NFS-e, D-N7)', () => {
+  const tx = (lastKind: string | null, extra: any = {}) => [{
+    institutionId: 1, invoiceId: 100, attempt: 2, environment: 'H', dpsId: 'DPS' + '4'.repeat(42), accessKey: '5'.repeat(50),
+    nfseNumber: '123', dhProc: '2026-09-21 10:00:00', createdAt: '2026-09-21 09:59:00', lastQueriedAt: null,
+    lastEvent: 1, lastKind, lastCode: null, lastMessage: null, lastDh: null, lastEventAt: null, ...extra,
+  }]
+  it('NFS-e AUTORIZADA (A vigente) → bloqueio `fiscal` apontando "Cancelar NFS-e"; nada local se toca', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: tx('A') })
+    await expect(cancelInvoice(conn as any, ...scope, { orderId: 100, reason: 'erro' }))
+      .rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_CANCEL_BLOCKED', fields: [expect.objectContaining({ field: 'fiscal', ref: '2', message: expect.stringMatching(/Cancelar NFS-e/) })] })
+    expect(slip.cancelBankSlip).not.toHaveBeenCalled()
+    const fiscalSql = String(conn.query.mock.calls[PLAN_QUERIES - 1][0])
+    expect(fiscalSql).toMatch(/tb_invoice_service_transmission t/)
+    expect(fiscalSql).toMatch(/FOR UPDATE/)   // leitura que decide trava (regra 2 do §9)
+  })
+  it('D-N17: N (pedido de cancelamento não consta — segue autorizada) bloqueia como A, apontando "Cancelar NFS-e"', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: tx('N') })
+    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
+    expect(plan.blocks).toEqual([expect.objectContaining({ field: 'fiscal', message: expect.stringMatching(/Cancelar NFS-e/) })])
+  })
+  it('reserva SEM voz (em voo) e K (cancelamento em voo) → bloqueio `fiscal`', async () => {
+    for (const kind of [null, 'K']) {
+      const conn = fakeConn()
+      planQueries(conn, { fiscal: tx(kind) })
+      const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
+      expect(plan.blocks).toEqual([expect.objectContaining({ field: 'fiscal' })])
+    }
+  })
+  it('R, F ou C (transmissão encerrada) e nunca transmitida → sem bloqueio fiscal (cancela local)', async () => {
+    for (const kind of ['R', 'F', 'C']) {
+      const conn = fakeConn()
+      planQueries(conn, { fiscal: tx(kind) })
+      expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([])
+    }
+    const conn = fakeConn()
+    planQueries(conn)
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([])
   })
 })

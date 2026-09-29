@@ -17,3 +17,8 @@ export const PRIVILEGE_CANCELAR   = 7
  *  2026-09-13 — BX-15 do legado exigia senha para QUALQUER desconto; seed sql/55:
  *  privilégio 8 na interface `settlements` + config `max_discount_aliquot`). */
 export const PRIVILEGE_DESCONTO   = 8
+/** Transmitir o documento ao FISCO (D-E14 / Onda 3 NFS-e, Valdo 2026-09-21 — seed
+ *  sql/59: privilégio 9 nas interfaces `service-orders` e `orders`; exigido em
+ *  `POST /api/billing/transmit` pelo ramo do pedido). Separado de FATURAR, como o
+ *  legado separava AUTORIZAR. */
+export const PRIVILEGE_TRANSMITIR = 9
