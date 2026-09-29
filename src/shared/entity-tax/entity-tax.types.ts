@@ -29,6 +29,8 @@ export const IND_IE_DEST_CODES = ['1', '2', '9'] as const
 
 /** opSimpNac da DPS (Onda 3 NFS-e, D-E3): 1 não optante · 2 MEI · 3 ME/EPP. */
 export const SIMPLES_REGIME_CODES = ['1', '2', '3'] as const
+/** regApTribSN do DPS (D-N19a, só para opSimpNac 3): 1 federais e municipal pelo SN · 2 ISSQN por fora · 3 tudo por fora. */
+export const SIMPLES_ASSESSMENT_CODES = ['1', '2', '3'] as const
 /** regEspTrib da DPS (D-E23; CRET do legado): 0 nenhum · 1 ato cooperado · 2 estimativa ·
  *  3 microempresa municipal · 4 notário/registrador · 5 profissional autônomo · 6 sociedade de profissionais. */
 export const SPECIAL_TAX_REGIME_CODES = ['0', '1', '2', '3', '4', '5', '6'] as const
@@ -62,6 +64,8 @@ export interface EntityTaxInput {
   taxRegime?:              string | null
   /** Fatos do EMITENTE (só fazem sentido quando entity = institution — Onda 3). */
   simplesRegime?:          string | null
+  /** regApTribSN (D-N19a) — só faz sentido com simplesRegime '3'; NULL = dentro do sublimite (omitido no DPS). */
+  simplesAssessment?:      string | null
   specialTaxRegime?:       string | null
   cnae?:                   string | null
   byPassSt?:               SN | null
@@ -78,6 +82,7 @@ export interface EntityTaxRow {
   consumer:               SN | null
   taxRegime:              string | null
   simplesRegime:          string | null
+  simplesAssessment:      string | null
   specialTaxRegime:       string | null
   cnae:                   string | null
   byPassSt:               SN | null

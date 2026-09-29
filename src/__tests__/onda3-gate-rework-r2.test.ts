@@ -256,6 +256,22 @@ describe('D-N30 (MEDIUM-4) — credencial LOCAL recusada (par PEM não abre) = 4
   })
 })
 
+describe('D-N19a — ME/EPP (opSimpNac 3): regApTribSN vai no DPS quando informado; ausente = omitido', () => {
+  it('apuração 2 (ISSQN por fora) → <regApTribSN>2</regApTribSN>; NULL → sem o elemento; não optante ignora o campo', async () => {
+    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    ;(entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '3', simplesAssessment: '2', specialTaxRegime: null, issExigibilidade: '01' })
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.transmit.mock.calls[0][1]).toContain('<opSimpNac>3</opSimpNac><regApTribSN>2</regApTribSN><regEspTrib>0</regEspTrib>')
+    ;(entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '3', simplesAssessment: null, specialTaxRegime: null, issExigibilidade: '01' })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(null)
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.transmit.mock.calls[1][1]).toContain('<opSimpNac>3</opSimpNac><regEspTrib>0</regEspTrib>')
+    ;(entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '1', simplesAssessment: '2', specialTaxRegime: null, issExigibilidade: '01' })
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.transmit.mock.calls[2][1]).not.toContain('regApTribSN')
+  })
+})
+
 describe('L5/L6 — kinds numa fonte só; lote pára em 409 do EMISSOR', () => {
   it('L5: FINAL_TRANSMISSION_KINDS é o MESMO objeto nos dois repositórios', () => {
     expect(KINDS_A).toBe(KINDS_B)

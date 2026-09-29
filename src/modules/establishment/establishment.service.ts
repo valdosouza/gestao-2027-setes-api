@@ -19,7 +19,7 @@ import { getEstablishmentChain, saveEstablishmentChain } from './establishment.r
  * toggle F/J/N nunca mudam por aqui).
  */
 
-function toDto(chain: EntityFiscalFull, tax: { taxRegime: string | null; simplesRegime: string | null; specialTaxRegime: string | null; cnae: string | null }): EstablishmentDto {
+function toDto(chain: EntityFiscalFull, tax: { taxRegime: string | null; simplesRegime: string | null; simplesAssessment: string | null; specialTaxRegime: string | null; cnae: string | null }): EstablishmentDto {
   const taxRegime = tax.taxRegime
   // Institution sempre nasce com documento (F ou J) — nunca 'N' (decisão
   // registrada no institutionCreateDto: schemaName + admin obrigatórios,
@@ -39,6 +39,7 @@ function toDto(chain: EntityFiscalFull, tax: { taxRegime: string | null; simples
     im:          chain.company?.im ?? null,
     taxRegime,
     simplesRegime:    tax.simplesRegime,
+    simplesAssessment: tax.simplesAssessment,
     specialTaxRegime: tax.specialTaxRegime,
     cnae:             tax.cnae,
     addresses:   chain.addresses,
@@ -60,6 +61,7 @@ export async function fetchEstablishment(
   const tax = await getEntityTax(schemaName, institutionId, institutionId)
   return toDto(chain, {
     taxRegime: tax?.taxRegime ?? null, simplesRegime: tax?.simplesRegime ?? null,
+    simplesAssessment: tax?.simplesAssessment ?? null,
     specialTaxRegime: tax?.specialTaxRegime ?? null, cnae: tax?.cnae ?? null,
   })
 }
@@ -107,7 +109,7 @@ export async function editEstablishment(
   // TODAS as colunas — sem o merge, um PUT daqui zeraria o que a aba
   // Tributação de outros cadastros tivesse configurado para o emitente).
   const touchesTax = input.taxRegime !== undefined || input.simplesRegime !== undefined
-    || input.specialTaxRegime !== undefined || input.cnae !== undefined
+    || input.simplesAssessment !== undefined || input.specialTaxRegime !== undefined || input.cnae !== undefined
   const current = touchesTax ? await getEntityTax(schemaName, institutionId, institutionId) : null
   if (touchesTax) {
     // merge campo a campo: undefined não toca; null limpa (mesma regra do taxRegime)
@@ -115,6 +117,9 @@ export async function editEstablishment(
       ...(current ?? {}),
       ...(input.taxRegime !== undefined ? { taxRegime: input.taxRegime } : {}),
       ...(input.simplesRegime !== undefined ? { simplesRegime: input.simplesRegime } : {}),
+      // D-N19a: a apuração só existe para ME/EPP — qualquer outro regime a limpa
+      ...(input.simplesAssessment !== undefined ? { simplesAssessment: input.simplesAssessment } : {}),
+      ...((input.simplesRegime !== undefined && input.simplesRegime !== '3') ? { simplesAssessment: null } : {}),
       ...(input.specialTaxRegime !== undefined ? { specialTaxRegime: input.specialTaxRegime } : {}),
       ...(input.cnae !== undefined ? { cnae: input.cnae } : {}),
     })

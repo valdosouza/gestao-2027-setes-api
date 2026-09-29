@@ -184,12 +184,17 @@ export async function buildEmitter(schemaName: string, institutionId: number): P
       [{ field: 'simplesRegime', message: 'Obrigatório para o DPS (D-N19)' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
   }
   const opSimpNac = String(tax!.simplesRegime) as '1' | '2' | '3'
+  // D-N19a (Valdo: a Setes é ME/EPP): regApTribSN só para opSimpNac 3 e só quando o emitente ultrapassou
+  // sublimite/limite (fato informado na aba Tributação); NULL = elemento OMITIDO (opcional no XSD — o
+  // fisco apura pelo SN). Não é default silencioso: é a ausência do fato, e o XSD a prevê.
+  const regApTribSN = opSimpNac === '3' && ['1', '2', '3'].includes(String(tax?.simplesAssessment))
+    ? (String(tax!.simplesAssessment) as '1' | '2' | '3') : undefined
   // regEspTrib: NULL → '0' (nenhum regime especial) é o caso comum e o default do XSD faz sentido — documentado, não silencioso
   const regEspTrib = (['0', '1', '2', '3', '4', '5', '6'].includes(String(tax?.specialTaxRegime)) ? String(tax!.specialTaxRegime) : '0') as DpsInput['prest']['regTrib']['regEspTrib']
   const im = (full!.company!.im ?? '').trim() || null
   return {
     identity: { cnpj, im, name: (full!.entity.nameCompany ?? full!.entity.nickTrade ?? '').trim(), cMunEmi: cMun! },
-    prest: { cnpj, ...(im ? { im } : {}), regTrib: { opSimpNac, regEspTrib } },
+    prest: { cnpj, ...(im ? { im } : {}), regTrib: { opSimpNac, ...(regApTribSN ? { regApTribSN } : {}), regEspTrib } },
   }
 }
 

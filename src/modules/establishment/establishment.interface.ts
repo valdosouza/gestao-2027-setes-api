@@ -24,6 +24,8 @@ export interface EstablishmentDto {
   taxRegime:   string | null
   /** Fatos do EMITENTE consumidos pelos documentos fiscais (Onda 3 — D-E3/D-E23). */
   simplesRegime:    string | null
+  /** regApTribSN (D-N19a) — só com simplesRegime '3'. */
+  simplesAssessment: string | null
   specialTaxRegime: string | null
   cnae:             string | null
   addresses:   AddressRow[]
@@ -43,6 +45,7 @@ export interface EstablishmentUpdateInput {
   /** Campo avulso (D39.2) — null limpa; undefined não toca a tributação. */
   taxRegime?:  string | null
   simplesRegime?:    string | null
+  simplesAssessment?: string | null
   specialTaxRegime?: string | null
   cnae?:             string | null
   addresses:   AddressInput[]
