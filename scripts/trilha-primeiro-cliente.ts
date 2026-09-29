@@ -561,6 +561,9 @@ const PENDENCIA_FISCO = new Set([
   'FISCAL_ISSUER_MISSING', 'FISCAL_CERT_MISSING', 'FISCAL_CERT_EXPIRED', 'FISCAL_CERT_INVALID',
   'FISCAL_AUTHORITY_UNAVAILABLE', 'FISCAL_AUTHORITY_AUTH_FAILED', 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE',
   'FISCAL_DPS_INVALID', 'FISCAL_EMITTER_INCOMPLETE', 'FISCAL_RECIPIENT_INCOMPLETE', 'SERVICE_RULE_NATIONAL_CODE_REQUIRED',
+  // 1ª sessão real (2026-09-28): a REJEIÇÃO do fisco chega com o E-xxxx e a frase dele (ex.: E0116 "A IM deve ser
+  // informada") — a régua mostra a voz do fisco; corrigir o cadastro e retransmitir é implantação, não código
+  'FISCAL_DPS_REJECTED',
 ])
 
 /**
