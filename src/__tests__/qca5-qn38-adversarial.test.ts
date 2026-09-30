@@ -76,7 +76,9 @@ describe('Q-N38 — arquivo do evento de cancelamento em disco', () => {
     process.env.STORAGE_PATH = root
   })
   afterEach(() => {
-    process.env.STORAGE_PATH = prev
+    // Q-ADV2g: atribuir undefined a process.env grava a STRING "undefined" (a pasta ./undefined/ nascia daqui)
+    if (prev === undefined) delete process.env.STORAGE_PATH
+    else process.env.STORAGE_PATH = prev
     fs.rmSync(root, { recursive: true, force: true })
   })
 
@@ -107,6 +109,17 @@ describe('Q-N38 — arquivo do evento de cancelamento em disco', () => {
 })
 
 describe('Q-N38a — XML de HOMOLOGAÇÃO fora do arquivo fiscal de produção (Valdo 2026-09-30)', () => {
+  let root: string
+  const prev = process.env.STORAGE_PATH
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'qn38a-'))   // Q-ADV2g: nunca grava no cwd do projeto
+    process.env.STORAGE_PATH = root
+  })
+  afterEach(() => {
+    if (prev === undefined) delete process.env.STORAGE_PATH
+    else process.env.STORAGE_PATH = prev
+    fs.rmSync(root, { recursive: true, force: true })
+  })
   it('H grava em <cnpj>/H/<ano>/<mês>; P não o enxerga; H acha também o layout antigo (compatibilidade)', () => {
     const cnpj = '11222333000181'
     const when = new Date('2026-08-15T10:00:00-03:00')

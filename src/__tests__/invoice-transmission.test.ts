@@ -476,8 +476,11 @@ describe('Q-ADV1b — F de envio interrompido é reconferido no fisco ANTES do c
     ;(repo.latestTransmission as jest.Mock).mockResolvedValue(fq)      // a consulta (refresh) relê pela peça
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
-    await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE).catch(() => undefined)
-    expect(adapter.queryNfse).toHaveBeenCalled()
+    // Q-ADV2d: UM GET /dps só; a consulta pela chave vai pronta ao refresh; nada reconciliado → 409 (não cancela no escuro)
+    await expect(reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE))
+      .rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_TRANSMISSION_IN_PROGRESS' })
+    expect(adapter.queryDpsAccessKey).toHaveBeenCalledTimes(1)
+    expect(adapter.queryNfse).toHaveBeenCalledTimes(1)
   })
   it('gate (MEDIUM): tentativa de HOMOLOGAÇÃO não é reconferida — sandbox fora não prende a nota (Q-CA5b)', async () => {
     ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'H' })], events: [] })

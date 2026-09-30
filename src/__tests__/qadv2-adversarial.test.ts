@@ -67,7 +67,7 @@ describe('Q-ADV2d — reconferência × 2ª pergunta do refresh', () => {
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
 
-  it.failing('MEDIUM: 1º GET /dps ACHA a chave, 2º (dentro do refresh) volta 404 → a reconferência deveria recusar (fail-closed), não liberar o cancelamento local', async () => {
+  it('MEDIUM: 1º GET /dps ACHA a chave, 2º (dentro do refresh) volta 404 → a reconferência deveria recusar (fail-closed), não liberar o cancelamento local', async () => {
     adapter.queryDpsAccessKey.mockResolvedValueOnce(KEY).mockResolvedValueOnce(null)
     await expect(reconfirmBeforeLocalCancel('setes_setes', 1, 7, INVOICE)).rejects.toBeDefined()
   })
@@ -81,23 +81,26 @@ describe('Q-ADV2b — 404 do GET /dps: forma do corpo × conclusivo', () => {
   const reply404 = (text: string) => { transport.request = jest.fn().mockResolvedValue({ status: 404, headers: { 'content-type': 'application/json' }, text }) }
   const outcome = async () => realAdn.queryDpsAccessKey(ctx, DPS_ID).catch((e: any) => e)
 
-  it('semântica fixada: erros[] VAZIO ainda é conclusivo (null)', async () => {
-    reply404('{"erros":[]}')
+  it('Q-ADV2f: a resposta REAL do ADN (erro SINGULAR com E2404, sonda na produção restrita 2026-09-30) → conclusivo (null)', async () => {
+    reply404('{"tipoAmbiente":0,"dataHoraProcessamento":"2026-09-30T09:42:39.5553657-03:00","erro":{"codigo":"E2404","descricao":"Não foi gerada uma NFS-e com o identificador de DPS informado"}}')
     expect(await outcome()).toBeNull()
   })
-  it('semântica fixada: lista de itens com codigo → conclusivo (null)', async () => {
-    reply404('[{"codigo":"E404","descricao":"não encontrada"}]')
-    expect(await outcome()).toBeNull()
+  it('E2404 em lista (erros[]/errors[]) ou no topo, qualquer caixa do código → conclusivo (null)', async () => {
+    for (const body of ['{"erros":[{"codigo":"E2404"}]}', '[{"Codigo":"e2404"}]', '{"codigo":"E2404"}']) {
+      reply404(body)
+      expect(await outcome()).toBeNull()
+    }
   })
-  it('semântica fixada (fail-closed): chave com CAIXA diferente ("Erros") ou erro SINGULAR ("erro":{…}) → 502 em voo', async () => {
-    for (const body of ['{"Erros":[{"Codigo":"E404"}]}', '{"erro":{"codigo":"E404","descricao":"x"}}', '{"message":"no Route matched with those values"}', '{}', '[]']) {
+  it('fail-closed: 404 SEM o código E2404 → 502 em voo', async () => {
+    // Q-ADV2f: sem E2404 não é o fisco dizendo "não gerei" — erros[] VAZIO, outro código, gateway, {} e [] ficam em voo
+    for (const body of ['{"erros":[]}', '{"erro":{"codigo":"E404","descricao":"x"}}', '{"code":404,"message":"Not Found"}', '{"message":"no Route matched with those values"}', '{}', '[]']) {
       reply404(body)
       const out = await outcome()
       expect(out).toBeInstanceOf(AuthorityHttpError)
       expect(out).toMatchObject({ statusCode: 502 })
     }
   })
-  it.failing('LOW: 404 JSON de gateway com `code` numérico ({"code":404,"message":"Not Found"}) deveria ser 502, não "DPS sem NFS-e"', async () => {
+  it('LOW: 404 JSON de gateway com `code` numérico ({"code":404,"message":"Not Found"}) deveria ser 502, não "DPS sem NFS-e"', async () => {
     reply404('{"code":404,"message":"Not Found"}')
     const out = await outcome()
     expect(out).toBeInstanceOf(AuthorityHttpError)

@@ -79,3 +79,6 @@ out/
 
 # Compilação TypeScript
 *.tsc
+
+# Q-ADV2g: pasta nascida de STORAGE_PATH="undefined" em teste — nunca versionar
+undefined/

@@ -166,8 +166,8 @@ describe('Q-ADV1a — 404 do GET /dps: só a resposta ESTRUTURADA do fisco é co
   const orig = transport.request
   afterAll(() => { transport.request = orig })
 
-  it('controle: 404 com erros[] do fisco → null (conclusivo)', async () => {
-    transport.request = jest.fn().mockResolvedValue({ status: 404, headers: {}, text: '{"erros":[{"codigo":"E404","descricao":"DPS não encontrada"}]}' })
+  it('controle: 404 REAL do fisco (erro.codigo E2404 — Q-ADV2f) → null (conclusivo)', async () => {
+    transport.request = jest.fn().mockResolvedValue({ status: 404, headers: {}, text: '{"tipoAmbiente":0,"dataHoraProcessamento":"2026-09-30T09:42:39.5553657-03:00","erro":{"codigo":"E2404","descricao":"Não foi gerada uma NFS-e com o identificador de DPS informado"}}' })
     expect(await realAdn.queryDpsAccessKey(ctx, DPS_ID)).toBeNull()
   })
 

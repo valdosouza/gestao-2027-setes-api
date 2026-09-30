@@ -311,14 +311,25 @@ export async function reconfirmBeforeLocalCancel(
   if (!tx) return
   const opened = await openServiceIssuer(s, institutionId)
   const ctx = authorityContextFor(s, institutionId, opened, tx.environment)
-  const key = await serviceAdapter().queryDpsAccessKey(ctx, tx.dpsId!)   // filtrado acima (!!t.dpsId)
+  const adapter = serviceAdapter()
+  const key = await adapter.queryDpsAccessKey(ctx, tx.dpsId!)   // filtrado acima (!!t.dpsId)
   if (!key) return
   logger.warn('NFS-e achada no fisco para DPS dado como sem resposta — reconciliando antes do cancelamento local',
     { institutionId, invoiceId, attempt: tx.attempt, dpsId: tx.dpsId })
-  await refreshServiceTransmission(s, institutionId, userId, invoiceId, 'Q', { attempt: tx.attempt })
+  // Q-ADV2d (Valdo 2026-09-30): a consulta pela CHAVE que o fisco acabou de dar vai PRONTA para o refresh —
+  // sem um 2º GET /dps que, vindo 404 (réplica atrasada/gateway), faria o refresh voltar sem nada
+  const query = await adapter.queryNfse(ctx, key)
+  // Q-ADV2h (MEDIUM-1/D-N26): a chave pousa na tentativa que CUNHOU o Id do DPS — a mais antiga com esse dps_id
+  const minter = transmissions.find(t => t.dpsId === tx.dpsId) ?? tx
+  await refreshServiceTransmission(s, institutionId, userId, invoiceId, 'Q', { attempt: minter.attempt, query })
+  // cinto: o fisco mostrou a NFS-e — se ainda não há chave gravada na vida vigente, NÃO cancela no escuro
+  const after = await listServiceTransmissions(s, institutionId, invoiceId)
+  if (!after.transmissions.some(t => !!t.accessKey)) {
+    throw new HttpError(409, `A NFS-e deste DPS existe no fisco (chave ${key}) mas não foi reconciliada — consulte a nota antes de cancelar`,
+      [{ field: 'fiscal', message: 'NFS-e existe no fisco' }], ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
+  }
 }
 
-// ---------------------------------------------------------------------------
 // B/C. Consultar e aplicar a voz do fisco
 // ---------------------------------------------------------------------------
 

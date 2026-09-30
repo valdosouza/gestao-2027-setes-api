@@ -66,17 +66,25 @@ function decodeXmlField(b64: string): string | null {
 }
 
 /**
- * Q-ADV1a/Q-ADV2b (Valdo 2026-09-30): corpo é a resposta ESTRUTURADA do FISCO — a lista de erros
- * (`erros[]`/`errors[]`) ou um item com `codigo`/`code`. JSON de gateway/rota (`{"message":"no Route
- * matched…"}`), HTML ou vazio NÃO são o fisco dizendo "não existe": ficam ambíguos (em voo).
+ * Q-ADV1a/Q-ADV2b/Q-ADV2f (Valdo 2026-09-30): 404 do `GET /dps/{id}` só é "o fisco não gerou NFS-e
+ * para este DPS" quando o FISCO diz isso — código **E2404**. Forma REAL (sonda na produção restrita,
+ * 2026-09-30): `{"tipoAmbiente":…,"dataHoraProcessamento":…,"erro":{"codigo":"E2404","descricao":"Não foi
+ * gerada uma NFS-e com o identificador de DPS informado"}}` — `erro` no SINGULAR. Aceita também a lista
+ * (`erros[]`/`errors[]`) e o código no topo; qualquer outro 404 (gateway, rota, JSON sem E2404, HTML,
+ * vazio) é ambíguo → 502, a tentativa fica em voo.
  */
-function isAuthorityJsonBody(text: string | null | undefined): boolean {
+export const DPS_NOT_GENERATED_CODE = 'E2404'
+function isDpsNotGenerated(text: string | null | undefined): boolean {
   let j: any
   try { j = JSON.parse(String(text ?? '')) } catch { return false }
   if (!j || typeof j !== 'object') return false
-  if (Array.isArray(j?.erros) || Array.isArray(j?.errors)) return true
-  const item = Array.isArray(j) ? j[0] : j
-  return !!item && typeof item === 'object' && (item.codigo != null || item.code != null || item.Codigo != null)
+  const items: any[] = [
+    ...(Array.isArray(j) ? j : [j]),
+    ...(j.erro && typeof j.erro === 'object' ? [j.erro] : []),
+    ...(Array.isArray(j.erros) ? j.erros : []),
+    ...(Array.isArray(j.errors) ? j.errors : []),
+  ]
+  return items.some(e => e && typeof e === 'object' && String(e.codigo ?? e.Codigo ?? '').trim().toUpperCase() === DPS_NOT_GENERATED_CODE)
 }
 
 function unknownResponse(label: string, status: number, text: string): AuthorityHttpError {
@@ -198,7 +206,7 @@ export const adnAdapter: TaxAuthorityAdapter = {
       // Q-ADV1a (Valdo 2026-09-30): 404 só é "DPS sem NFS-e" (conclusivo → F) quando é a RESPOSTA do fisco
       // (corpo JSON estruturado); 404 vazio/HTML (gateway, proxy, rota) é ilegível → 502, a tentativa fica em voo
       if (err instanceof AuthorityHttpError && err.authorityStatus === 404) {
-        if (isAuthorityJsonBody(err.body)) return null
+        if (isDpsNotGenerated(err.body)) return null
         throw unknownResponse('dps: 404 sem resposta estruturada do fisco', 404, err.body)
       }
       throw err

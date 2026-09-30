@@ -307,7 +307,7 @@ describe('adaptador ADN — consultas e eventos', () => {
     expect(mockHttp.mock.calls[0][0].url).toBe(`https://sefin.producaorestrita.nfse.gov.br/SefinNacional/dps/${DPS_ID}`)
     expect(mockHttp.mock.calls[0][0].method).toBe('GET')
     // Q-ADV1a: só o 404 ESTRUTURADO do fisco é "DPS sem NFS-e" (conclusivo)
-    mockHttp.mockResolvedValueOnce({ status: 404, headers: {}, text: '{"erros":[{"codigo":"E404","descricao":"DPS não encontrada"}]}' })
+    mockHttp.mockResolvedValueOnce({ status: 404, headers: {}, text: '{"tipoAmbiente":0,"dataHoraProcessamento":"2026-09-30T09:42:39.5553657-03:00","erro":{"codigo":"E2404","descricao":"Não foi gerada uma NFS-e com o identificador de DPS informado"}}' })   // forma REAL (Q-ADV2f)
     expect(await adn.queryDpsAccessKey(ctx, DPS_ID)).toBeNull()
     // 404 vazio ou HTML (gateway/proxy/rota) → ilegível 502: a tentativa fica em voo, nunca F
     for (const text of ['', '<html><body>Not Found</body></html>']) {
