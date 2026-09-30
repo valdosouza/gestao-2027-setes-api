@@ -441,7 +441,13 @@ export async function listLiveTransmissionsToRefresh(
           ((le.kind IS NULL OR le.kind IN ('S','K'))
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)))
           OR (le.kind IN ('A','N')
-             AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? HOUR)))
+             AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? HOUR))
+             -- gate adversarial 2026-09-30: nota de HOMOLOGAÇÃO cancelada LOCALMENTE (Q-CA5b) sai do rodízio —
+             -- a autorização do sandbox não tem mais nota viva para acompanhar
+             AND COALESCE((SELECT ev.kind FROM \`${s}\`.tb_invoice_event ev
+                   WHERE ev.tb_institution_id = t.tb_institution_id AND ev.tb_invoice_id = t.tb_invoice_id
+                     AND ev.terminal = t.terminal AND ev.deleted = 'N'
+                   ORDER BY ev.event DESC LIMIT 1), '-') <> 'C')
           OR (le.kind = 'C' AND le.invoice_event IS NULL
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)))
         )

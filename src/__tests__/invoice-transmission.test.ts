@@ -464,32 +464,34 @@ describe('Q-N38 — XML do evento de cancelamento no arquivo fiscal (Valdo 2026-
 
 describe('Q-ADV1b — F de envio interrompido é reconferido no fisco ANTES do cancelamento local', () => {
   it('F por consulta (Q) sem chave: GET /dps de novo — não achou → segue sem gravar nada', async () => {
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' }))
+    ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' })], events: [] })
     adapter.queryDpsAccessKey.mockResolvedValue(null)
     await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)
     expect(adapter.queryDpsAccessKey).toHaveBeenCalledTimes(1)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
   it('F por consulta e o fisco AGORA acha a NFS-e → reconcilia (A) antes do plano — o cancelamento passa a exigir "Cancelar NFS-e"', async () => {
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' }))
+    const fq = tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' })
+    ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({ transmissions: [fq], events: [] })
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(fq)      // a consulta (refresh) relê pela peça
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
     await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE).catch(() => undefined)
     expect(adapter.queryNfse).toHaveBeenCalled()
   })
   it('gate (MEDIUM): tentativa de HOMOLOGAÇÃO não é reconferida — sandbox fora não prende a nota (Q-CA5b)', async () => {
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'H' }))
+    ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'H' })], events: [] })
     await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)
     expect(adapter.queryDpsAccessKey).not.toHaveBeenCalled()
   })
   it('fisco FORA na reconferência → o erro sobe (fail-closed: não cancela no escuro)', async () => {
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' }))
+    ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({ transmissions: [tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' })], events: [] })
     adapter.queryDpsAccessKey.mockRejectedValue(new HttpError(503, 'fora', undefined, 'FISCAL_AUTHORITY_UNAVAILABLE'))
     await expect(reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ statusCode: 503 })
   })
   it('F de resposta DIRETA (P: 401/403, credencial local), R, sem transmissão ou com chave → não consulta', async () => {
-    for (const t of [tx({ lastKind: 'F', lastSource: 'P', accessKey: null }), tx({ lastKind: 'R', accessKey: null }), null, tx({ lastKind: 'A' })]) {
-      ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
+    for (const t of [tx({ lastKind: 'F', lastSource: 'P', accessKey: null, environment: 'P' }), tx({ lastKind: 'R', accessKey: null, environment: 'P' }), null, tx({ lastKind: 'A', environment: 'P' })]) {
+      ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({ transmissions: t ? [t] : [], events: [] })
       await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)
     }
     expect(adapter.queryDpsAccessKey).not.toHaveBeenCalled()

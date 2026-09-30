@@ -448,6 +448,11 @@ describe('LOW-1 / LOW-3 / LOW-6 / LOW-9', () => {
     await real.listPendingServiceInvoices(S.schema, S.inst, 50)
     const sql = String(q.mock.calls[0][0]).replace(/\s+/g, ' ')
     expect(sql).toContain("ORDER BY le.event DESC LIMIT 1), '-') IN ('A','N','S','K','-')")
+    // gate adversarial 2026-09-30: autorização (A/N) cuja nota foi cancelada LOCALMENTE (homologação, Q-CA5b) sai do rodízio de 24 h
+    q.mockResolvedValueOnce([[]])
+    await real.listLiveTransmissionsToRefresh(S.schema, S.inst, 5, 8)
+    const live = String(q.mock.calls[1][0]).replace(/\s+/g, ' ')
+    expect(live).toMatch(/le\.kind IN \('A','N'\)[^]*tb_invoice_event ev[^]*ORDER BY ev\.event DESC LIMIT 1\), '-'\) <> 'C'/)
     // D3/D4 (2026-09-29): nota com registro fiscal cancelada fica VIVA com evento C — não é pendente
     expect(sql).toMatch(/tb_invoice_event ev[^)]*ORDER BY ev\.event DESC LIMIT 1\), '-'\) <> 'C'/)
   })

@@ -299,14 +299,19 @@ export async function reconfirmBeforeLocalCancel(
   schemaName: string, institutionId: number, userId: number | null, invoiceId: number
 ): Promise<void> {
   const s = assertSchema(schemaName)
-  const tx = await latestTransmission(pool, s, institutionId, invoiceId)
-  if (!tx || tx.accessKey || tx.lastKind !== 'F' || tx.lastSource !== 'Q' || !tx.dpsId) return
-  // gate (MEDIUM): HOMOLOGAÇÃO não prende a nota (Q-CA5b) — nem pelo cancelamento no fisco nem por esta
-  // reconferência (sandbox fora não pode bloquear o cancelamento local de nota sem valor jurídico)
-  if (tx.environment === 'H') return
+  // Q-ADV2a (Valdo 2026-09-30): TODA tentativa da vida vigente conta — as tentativas da mesma vida reusam
+  // o Id do DPS (D-N3); um F "interrompido" na 1ª seguido de R/F direto na 2ª não pode escapar
+  const { transmissions } = await listServiceTransmissions(s, institutionId, invoiceId)
+  if (transmissions.some(t => !!t.accessKey)) return          // a NFS-e já é conhecida: o plano decide
+  const candidates = transmissions.filter(t =>
+    t.lastKind === 'F' && t.lastSource === 'Q' && !!t.dpsId
+    // gate (MEDIUM): HOMOLOGAÇÃO não prende a nota (Q-CA5b) — sandbox fora não bloqueia o cancelamento local
+    && t.environment !== 'H')
+  const tx = candidates[candidates.length - 1]
+  if (!tx) return
   const opened = await openServiceIssuer(s, institutionId)
   const ctx = authorityContextFor(s, institutionId, opened, tx.environment)
-  const key = await serviceAdapter().queryDpsAccessKey(ctx, tx.dpsId)
+  const key = await serviceAdapter().queryDpsAccessKey(ctx, tx.dpsId!)   // filtrado acima (!!t.dpsId)
   if (!key) return
   logger.warn('NFS-e achada no fisco para DPS dado como sem resposta — reconciliando antes do cancelamento local',
     { institutionId, invoiceId, attempt: tx.attempt, dpsId: tx.dpsId })

@@ -65,9 +65,18 @@ function decodeXmlField(b64: string): string | null {
   } catch { return null }
 }
 
-/** Q-ADV1a: corpo é a resposta ESTRUTURADA do fisco (JSON objeto/lista) — não página de gateway nem vazio. */
+/**
+ * Q-ADV1a/Q-ADV2b (Valdo 2026-09-30): corpo é a resposta ESTRUTURADA do FISCO — a lista de erros
+ * (`erros[]`/`errors[]`) ou um item com `codigo`/`code`. JSON de gateway/rota (`{"message":"no Route
+ * matched…"}`), HTML ou vazio NÃO são o fisco dizendo "não existe": ficam ambíguos (em voo).
+ */
 function isAuthorityJsonBody(text: string | null | undefined): boolean {
-  try { const j = JSON.parse(String(text ?? '')); return !!j && typeof j === 'object' } catch { return false }
+  let j: any
+  try { j = JSON.parse(String(text ?? '')) } catch { return false }
+  if (!j || typeof j !== 'object') return false
+  if (Array.isArray(j?.erros) || Array.isArray(j?.errors)) return true
+  const item = Array.isArray(j) ? j[0] : j
+  return !!item && typeof item === 'object' && (item.codigo != null || item.code != null || item.Codigo != null)
 }
 
 function unknownResponse(label: string, status: number, text: string): AuthorityHttpError {
