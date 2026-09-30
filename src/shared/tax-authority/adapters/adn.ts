@@ -65,6 +65,11 @@ function decodeXmlField(b64: string): string | null {
   } catch { return null }
 }
 
+/** Q-ADV1a: corpo é a resposta ESTRUTURADA do fisco (JSON objeto/lista) — não página de gateway nem vazio. */
+function isAuthorityJsonBody(text: string | null | undefined): boolean {
+  try { const j = JSON.parse(String(text ?? '')); return !!j && typeof j === 'object' } catch { return false }
+}
+
 function unknownResponse(label: string, status: number, text: string): AuthorityHttpError {
   // LOW-6 do gate: nunca a amostra do corpo (pode carregar dado fiscal/segredo) — só tamanho e status
   logger.warn('Fisco respondeu 2xx sem envelope legível', { label, status, bytes: Buffer.byteLength(text, 'utf8') })
@@ -181,7 +186,12 @@ export const adnAdapter: TaxAuthorityAdapter = {
       if (!key) throw unknownResponse('dps', status, text)
       return key
     } catch (err) {
-      if (err instanceof AuthorityHttpError && err.authorityStatus === 404) return null   // NFS-e ainda não gerada para esse DPS
+      // Q-ADV1a (Valdo 2026-09-30): 404 só é "DPS sem NFS-e" (conclusivo → F) quando é a RESPOSTA do fisco
+      // (corpo JSON estruturado); 404 vazio/HTML (gateway, proxy, rota) é ilegível → 502, a tentativa fica em voo
+      if (err instanceof AuthorityHttpError && err.authorityStatus === 404) {
+        if (isAuthorityJsonBody(err.body)) return null
+        throw unknownResponse('dps: 404 sem resposta estruturada do fisco', 404, err.body)
+      }
       throw err
     }
   },

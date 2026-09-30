@@ -10,7 +10,7 @@
 // do evento C) — nada editado depois é tocado; se algo foi, ele PARA.
 //
 // Pré-condições conferidas (qualquer falha = aborta sem gravar):
-//   - último evento da nota = C, e a transmissão vigente DETÉM a chave do fisco;
+//   - último evento da nota = C, e uma tentativa da VIDA VIGENTE detém chave de PRODUÇÃO;
 //   - nota soft-deletada no mesmo instante do evento C;
 //   - pedido em 'A' e OS (se houver) sem item novo/alterado depois do C.
 //
@@ -54,9 +54,16 @@ async function main() {
     if (ev?.kind !== 'C') throw new Error(`Último evento da nota ${orderId} não é C (${ev?.kind ?? 'nenhum'}) — nada a corrigir`)
     const at = ev.at as Date
 
-    const keyed = (await q(`SELECT attempt, access_key FROM ${s}.tb_invoice_service_transmission
-                             WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND deleted = 'N'
-                               AND access_key IS NOT NULL AND environment = 'P' ORDER BY attempt DESC LIMIT 1`, [inst, orderId]))[0]
+    // Q-CA5a (Valdo 2026-09-30): a chave tem de ser da VIDA VIGENTE da nota (D-N27 — tentativas desde o
+    // último evento E); a chave de uma vida anterior (nota refaturada depois) não autoriza reviver esta
+    const keyed = (await q(`SELECT t.attempt, t.access_key FROM ${s}.tb_invoice_service_transmission t
+                             WHERE t.tb_institution_id = ? AND t.tb_invoice_id = ? AND t.terminal = 0 AND t.deleted = 'N'
+                               AND t.access_key IS NOT NULL AND t.environment = 'P'
+                               AND (t.invoice_event IS NULL OR t.invoice_event >= COALESCE(
+                                     (SELECT MAX(ev.event) FROM ${s}.tb_invoice_event ev
+                                       WHERE ev.tb_institution_id = t.tb_institution_id AND ev.tb_invoice_id = t.tb_invoice_id
+                                         AND ev.terminal = t.terminal AND ev.kind = 'E' AND ev.deleted = 'N'), 0))
+                             ORDER BY t.attempt DESC LIMIT 1`, [inst, orderId]))[0]
     // Q-CA5: só chave de PRODUÇÃO é registro fiscal — homologação cancelada segue o caminho da pendente
     if (!keyed) throw new Error(`Nota ${orderId} sem chave do fisco em PRODUÇÃO — é PENDENTE (Q-CA5), o soft-delete está correto`)
 

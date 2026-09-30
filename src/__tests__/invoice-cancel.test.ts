@@ -358,7 +358,7 @@ describe('cancelInvoice — executar', () => {
 
 describe('buildCancelPlan — bloco fiscal (Onda 3 NFS-e, D-N7)', () => {
   const tx = (lastKind: string | null, extra: any = {}) => [{
-    institutionId: 1, invoiceId: 100, attempt: 2, environment: 'H', dpsId: 'DPS' + '4'.repeat(42), accessKey: '5'.repeat(50),
+    institutionId: 1, invoiceId: 100, attempt: 2, environment: 'P', dpsId: 'DPS' + '4'.repeat(42), accessKey: '5'.repeat(50),
     nfseNumber: '123', dhProc: '2026-09-21 10:00:00', createdAt: '2026-09-21 09:59:00', lastQueriedAt: null,
     lastEvent: 1, lastKind, lastCode: null, lastMessage: null, lastDh: null, lastEventAt: null, ...extra,
   }]
@@ -371,6 +371,18 @@ describe('buildCancelPlan — bloco fiscal (Onda 3 NFS-e, D-N7)', () => {
     const fiscalSql = String(conn.query.mock.calls[PLAN_QUERIES - 1][0])
     expect(fiscalSql).toMatch(/tb_invoice_service_transmission t/)
     expect(fiscalSql).toMatch(/FOR UPDATE/)   // leitura que decide trava (regra 2 do §9)
+  })
+  it('Q-CA5b: NFS-e autorizada em HOMOLOGAÇÃO não bloqueia — cancelamento local direto, caminho da pendente', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: tx('A', { environment: 'H' }) })
+    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
+    expect(plan.blocks).toEqual([])
+    expect(plan.fiscalRecord).toBe(false)
+  })
+  it('Q-CA5b: cancelamento em VOO (K) continua bloqueando mesmo em homologação', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: tx('K', { environment: 'H' }) })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([expect.objectContaining({ field: 'fiscal' })])
   })
   it('D-N17: N (pedido de cancelamento não consta — segue autorizada) bloqueia como A, apontando "Cancelar NFS-e"', async () => {
     const conn = fakeConn()

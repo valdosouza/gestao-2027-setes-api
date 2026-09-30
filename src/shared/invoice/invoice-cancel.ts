@@ -327,7 +327,10 @@ export async function buildCancelPlan(
   // ou K → nada até a consulta reconciliar. Leitura travante (regra 2 do §9).
   const tx = await latestTransmission(conn, s, institutionId, orderId, true)
   // A é FINAL para a transmissão (o fisco não diz mais nada dela) mas VIGENTE para a nota
-  if (tx && (isLiveTransmission(tx) || isAuthorized(tx))) {
+  // Q-CA5b (Valdo 2026-09-30): NFS-e autorizada em HOMOLOGAÇÃO não tem valor jurídico — o cancelamento
+  // LOCAL direto é permitido (sandbox fora / prazo vencido não prende a nota); segue o caminho da pendente (Q-CA5)
+  const homologationAuthorized = !!tx && isAuthorized(tx) && tx.environment === 'H'
+  if (tx && (isLiveTransmission(tx) || isAuthorized(tx)) && !homologationAuthorized) {
     const msg = isAuthorized(tx)   // A, ou N depois de um K (D-N17: o pedido não consta — segue autorizada)
       ? `NFS-e ${tx.nfseNumber ?? tx.accessKey ?? ''} autorizada no fisco (tentativa ${tx.attempt}) — cancele pela ação "Cancelar NFS-e" (o fisco fala primeiro)`
       : tx.lastKind === 'K'

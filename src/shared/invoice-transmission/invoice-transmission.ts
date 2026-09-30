@@ -211,7 +211,7 @@ export async function transmitServiceInvoice(
 
   // (e) o DPS assinado em disco — snapshot do que foi dito ao fisco
   try {
-    saveFiscalXml(base.emitter.cnpj, dpsFileName(reserved.dpsId), reserved.xml)
+    saveFiscalXml(base.emitter.cnpj, dpsFileName(reserved.dpsId), reserved.xml, new Date(), environment)
   } catch (err) {
     logger.warn('DPS assinado não gravado em disco', { institutionId, invoiceId, attempt: reserved.attempt, err: errMsg(err) })
   }
@@ -252,7 +252,7 @@ export async function transmitServiceInvoice(
     }
   })
   try {
-    saveFiscalXml(base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml)
+    saveFiscalXml(base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment)
   } catch (err) {
     logger.error('XML da NFS-e autorizada NÃO gravado em disco — a consulta regrava', { institutionId, invoiceId, accessKey: outcome.accessKey, err: errMsg(err) })
   }
@@ -285,6 +285,32 @@ async function reconcileInterrupted(
       kind: 'F', source: 'Q', message: 'Sem resposta do fisco e nenhuma NFS-e gerada para este DPS — envio interrompido',
     })
   })
+}
+
+/**
+ * Q-ADV1b (Valdo 2026-09-30): antes de um cancelamento LOCAL, a nota cuja tentativa vigente fechou
+ * com F de envio INTERROMPIDO (voz por consulta, sem chave) é conferida de novo no fisco
+ * (`GET /dps/{id}`): o F nasceu de uma consulta; o cancelamento local é irreversível para o número.
+ * Achou a NFS-e → reconcilia (A) e o plano de cancelamento passa a exigir "Cancelar NFS-e";
+ * não achou → segue; fisco fora → o erro sobe (fail-closed: não cancela no escuro).
+ * Nota sem transmissão, com chave, ou com F de resposta direta (401/403, credencial local) → nada.
+ */
+export async function reconfirmBeforeLocalCancel(
+  schemaName: string, institutionId: number, userId: number | null, invoiceId: number
+): Promise<void> {
+  const s = assertSchema(schemaName)
+  const tx = await latestTransmission(pool, s, institutionId, invoiceId)
+  if (!tx || tx.accessKey || tx.lastKind !== 'F' || tx.lastSource !== 'Q' || !tx.dpsId) return
+  // gate (MEDIUM): HOMOLOGAÇÃO não prende a nota (Q-CA5b) — nem pelo cancelamento no fisco nem por esta
+  // reconferência (sandbox fora não pode bloquear o cancelamento local de nota sem valor jurídico)
+  if (tx.environment === 'H') return
+  const opened = await openServiceIssuer(s, institutionId)
+  const ctx = authorityContextFor(s, institutionId, opened, tx.environment)
+  const key = await serviceAdapter().queryDpsAccessKey(ctx, tx.dpsId)
+  if (!key) return
+  logger.warn('NFS-e achada no fisco para DPS dado como sem resposta — reconciliando antes do cancelamento local',
+    { institutionId, invoiceId, attempt: tx.attempt, dpsId: tx.dpsId })
+  await refreshServiceTransmission(s, institutionId, userId, invoiceId, 'Q', { attempt: tx.attempt })
 }
 
 // ---------------------------------------------------------------------------
@@ -495,13 +521,13 @@ export async function refreshServiceTransmission(
     try {
       const cnpj = await emitterCnpj(institutionId)
       const when = target.dhProc ? new Date(target.dhProc.replace(' ', 'T')) : new Date()
-      if (!findFiscalXml(cnpj, nfseFileName(result.accessKey), [target.dhProc, target.createdAt])) {
-        saveFiscalXml(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, when)
+      if (!findFiscalXml(cnpj, nfseFileName(result.accessKey), [target.dhProc, target.createdAt], target.environment)) {
+        saveFiscalXml(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, when, target.environment)
       }
       // Q-N38: evento de cancelamento do fisco — grava se faltar (recupera o de cancelamentos antigos)
       const eventXml = nfse.cancelled?.eventXml
-      if (eventXml && !findFiscalXml(cnpj, cancelEventFileName(result.accessKey), [target.dhProc, target.createdAt])) {
-        saveFiscalXml(cnpj, cancelEventFileName(result.accessKey), eventXml, when)
+      if (eventXml && !findFiscalXml(cnpj, cancelEventFileName(result.accessKey), [target.dhProc, target.createdAt], target.environment)) {
+        saveFiscalXml(cnpj, cancelEventFileName(result.accessKey), eventXml, when, target.environment)
       }
     } catch (err) {
       logger.warn('XML da NFS-e não gravado na consulta', { institutionId, invoiceId, err: errMsg(err) })
@@ -620,7 +646,7 @@ export async function cancelServiceInvoiceAtAuthority(
     try {
       // mesma pasta da NFS-e (mês da AUTORIZAÇÃO) — a consulta procura lá e não duplica
       saveFiscalXml(await emitterCnpj(institutionId), cancelEventFileName(tx.accessKey!), registered.eventXml,
-        tx.dhProc ? new Date(tx.dhProc.replace(' ', 'T')) : new Date())
+        tx.dhProc ? new Date(tx.dhProc.replace(' ', 'T')) : new Date(), tx.environment)
     } catch (err) {
       logger.warn('XML do evento de cancelamento não gravado em disco', { institutionId, invoiceId, err: errMsg(err) })
     }
@@ -764,7 +790,7 @@ export async function getServiceFiscalView(schemaName: string, institutionId: nu
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (withKey?.accessKey) {
     try {
-      xmlAvailable = !!findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])   // L4
+      xmlAvailable = !!findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment)   // L4
     } catch { xmlAvailable = false }
   }
   return { invoiceId, state: fiscalStateOf(latest), transmissions, events, pendingEffects, xmlAvailable, danfseAvailable: xmlAvailable }
@@ -778,7 +804,7 @@ export async function readNfseXml(schemaName: string, institutionId: number, inv
   if (!withKey?.accessKey) {
     throw new HttpError(404, `Nota ${invoiceId} sem NFS-e autorizada no fisco`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   }
-  const file = findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt])   // L4
+  const file = findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment)   // L4
   if (!file) {
     throw new HttpError(404, `XML da NFS-e ${withKey.accessKey} não está em disco — consulte a nota para regravar`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   }

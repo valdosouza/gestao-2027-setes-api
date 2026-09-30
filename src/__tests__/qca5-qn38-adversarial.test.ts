@@ -28,19 +28,30 @@ import {
 
 const KEY = '41069022112345678000199000000000000042609300000001'   // 50 dígitos
 
-describe('Q-ADV1 — F por "credencial" é decidido pelo texto do erro, não pela fase', () => {
+describe('Q-ADV1a — F por credencial é decidido pela FASE (antes/depois do handshake), não só pelo texto', () => {
   const original = transport.request
   afterEach(() => { transport.request = original })
 
-  it('erro TLS de camada de registro (pós-handshake) fecha a tentativa com F [ACHADO MEDIUM — caracterização]', async () => {
-    transport.request = jest.fn().mockRejectedValue(Object.assign(
-      new Error('error:0A000119:SSL routines::decryption failed or bad record mac'),
-      { code: 'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC' },
-    )) as any
-    let caught: unknown
-    try {
-      await authorityJson({ url: 'https://sefin.example/nfse', method: 'POST', body: '{}' }, 'nfse')
-    } catch (err) { caught = err }
+  const tlsErr = (afterHandshake: boolean) => Object.assign(
+    new Error('error:0A000119:SSL routines::decryption failed or bad record mac'),
+    { code: 'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC', afterHandshake },
+  )
+  const outcome = async () => {
+    try { await authorityJson({ url: 'https://sefin.example/nfse', method: 'POST', body: '{}' }, 'nfse') }
+    catch (err) { return err }
+    return null
+  }
+
+  it('Q-ADV1a (Valdo 2026-09-30): erro TLS DEPOIS do handshake é AMBÍGUO — a tentativa fica em voo, nunca F', async () => {
+    transport.request = jest.fn().mockRejectedValue(tlsErr(true)) as any
+    const caught = await outcome()
+    expect(caught).toMatchObject({ code: 'FISCAL_AUTHORITY_UNAVAILABLE' })
+    expect(classifyAuthorityError(caught)).toBe('ambiguous')
+  })
+
+  it('Q-ADV1a: o MESMO erro ANTES do handshake (corpo não saiu) continua credencial → F conclusivo', async () => {
+    transport.request = jest.fn().mockRejectedValue(tlsErr(false)) as any
+    const caught = await outcome()
     expect(caught).toMatchObject({ code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
     const cls = classifyAuthorityError(caught)
     expect(cls).toBe('auth_failed')
@@ -92,5 +103,18 @@ describe('Q-N38 — arquivo do evento de cancelamento em disco', () => {
     const nfse = findFiscalXml('12345678000199', nfseFileName(KEY))!
     const evt = findFiscalXml('12345678000199', cancelEventFileName(KEY))!
     expect(path.dirname(nfse)).not.toBe(path.dirname(evt))   // achável (varredura), mas não "ao lado"
+  })
+})
+
+describe('Q-N38a — XML de HOMOLOGAÇÃO fora do arquivo fiscal de produção (Valdo 2026-09-30)', () => {
+  it('H grava em <cnpj>/H/<ano>/<mês>; P não o enxerga; H acha também o layout antigo (compatibilidade)', () => {
+    const cnpj = '11222333000181'
+    const when = new Date('2026-08-15T10:00:00-03:00')
+    const hPath = saveFiscalXml(cnpj, `${KEY}-nfse.xml`, '<h/>', when, 'H')
+    expect(hPath.split(path.sep).join('/').endsWith(`/${cnpj}/H/2026/08/${KEY}-nfse.xml`)).toBe(true)
+    expect(findFiscalXml(cnpj, `${KEY}-nfse.xml`, ['2026-08-15 10:00:00'], 'P')).toBeNull()
+    expect(findFiscalXml(cnpj, `${KEY}-nfse.xml`, [], 'H')).toBe(hPath)
+    const legacy = saveFiscalXml(cnpj, 'DPS-legado-dps.xml', '<old/>', when)          // gravado antes da Q-N38a (layout P)
+    expect(findFiscalXml(cnpj, 'DPS-legado-dps.xml', [], 'H')).toBe(legacy)
   })
 })

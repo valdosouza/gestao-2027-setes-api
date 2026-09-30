@@ -761,7 +761,7 @@ describe('C.17 — POST /billing/cancel (cancelamento LOCAL, peça @shared/invoi
       return [[]]
     })
   }
-  it.each([['A', () => tx({ lastKind: 'A' }), /Cancelar NFS-e/], ['em voo', () => inFlightNow(), /andamento/], ['K', () => tx({ lastKind: 'K' }), /sem resposta/]])(
+  it.each([['A', () => tx({ lastKind: 'A', environment: 'P' }), /Cancelar NFS-e/], ['em voo', () => inFlightNow(), /andamento/], ['K', () => tx({ lastKind: 'K' }), /sem resposta/]])(
     '(17) transmissão %s → 409 INVOICE_CANCEL_BLOCKED com field "fiscal" e mensagem que aponta o caminho; nada gravado', async (_l, mk, msg) => {
       realCancelPlanSql()
       setTx(mk())

@@ -50,6 +50,7 @@ import {
   ValidationReport, ValidationIssue, InvoiceResult, BillingOrderItem,
 } from './billing.interface'
 import { ValidateBodyDto, InvoiceBodyDto } from './billing.dto'
+import { reconfirmBeforeLocalCancel } from '@shared/invoice-transmission'
 
 /**
  * Orquestração do faturamento (W2 Onda 3, rodada R4):
@@ -852,6 +853,8 @@ export async function cancelOrderInvoice(
   institution: InstitutionPayload, input: CancelBody
 ): Promise<CancelInvoiceResult> {
   const { schemaName, institutionId, userId } = institution
+  // Q-ADV1b: F de envio interrompido é reconferido no fisco ANTES do cancelamento local (fora da transação)
+  await reconfirmBeforeLocalCancel(schemaName, institutionId, userId, input.orderId)
   return withDeadlockRetry('cancelamento da nota', { institutionId, orderId: input.orderId }, 3,
     async () => {
       const conn = await pool.getConnection()

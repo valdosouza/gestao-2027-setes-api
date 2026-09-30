@@ -21,6 +21,7 @@ import * as counters from '../shared/db/counters'
 import { AuthorityHttpError } from '../shared/tax-authority/https-json'
 import {
   transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, getServiceFiscalView, getServiceFiscalSummaries, toDbDateTime,
+  reconfirmBeforeLocalCancel,
 } from '../shared/invoice-transmission'
 import { HttpError } from '../shared/errors/http-error'
 import { resetMunicipalTermsCache } from '../shared/invoice-transmission/branches/service'
@@ -160,9 +161,9 @@ describe('transmitServiceInvoice — reserva sob lock → fisco FORA da transaç
     expect(repo.fillAuthorityData).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 10:15:30' })
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, S.user,
       expect.objectContaining({ kind: 'A', source: 'P', dh: '2026-09-21 10:15:30' }))
-    // XML em disco: STORAGE_PATH/<cnpj>/<yyyy>/<mm>/<dpsId>-dps.xml e <chave>-nfse.xml
+    // XML em disco: STORAGE_PATH/<cnpj>/H/<yyyy>/<mm>/… — emissor de HOMOLOGAÇÃO vai para a subpasta H (Q-N38a)
     const now = new Date()
-    const dir = path.join(process.env.STORAGE_PATH!, '12345678000199', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'))
+    const dir = path.join(process.env.STORAGE_PATH!, '12345678000199', 'H', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'))
     expect(fs.existsSync(path.join(dir, 'DPS410690221234567800019900001000000000000042-dps.xml'))).toBe(true)
     expect(fs.readFileSync(path.join(dir, `${KEY}-nfse.xml`), 'utf8')).toBe(NFSE_XML)
   })
@@ -456,7 +457,41 @@ describe('Q-N38 — XML do evento de cancelamento no arquivo fiscal (Valdo 2026-
     const EVT = '<evento><infEvento Id="EVT1"><dhProc>2026-09-22T09:00:00-03:00</dhProc></infEvento></evento>'
     adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: EVT, raw: {} })
     await cancelServiceInvoiceAtAuthority(S.schema, S.inst, S.user, INVOICE, 'cliente desistiu do serviço')
-    const file = path.join(process.env.STORAGE_PATH!, '12345678000199', '2026', '08', `${KEY}-evt101101.xml`)
+    const file = path.join(process.env.STORAGE_PATH!, '12345678000199', 'H', '2026', '08', `${KEY}-evt101101.xml`)   // tx de H (Q-N38a)
     expect(fs.readFileSync(file, 'utf8')).toBe(EVT)
+  })
+})
+
+describe('Q-ADV1b — F de envio interrompido é reconferido no fisco ANTES do cancelamento local', () => {
+  it('F por consulta (Q) sem chave: GET /dps de novo — não achou → segue sem gravar nada', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' }))
+    adapter.queryDpsAccessKey.mockResolvedValue(null)
+    await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.queryDpsAccessKey).toHaveBeenCalledTimes(1)
+    expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+  })
+  it('F por consulta e o fisco AGORA acha a NFS-e → reconcilia (A) antes do plano — o cancelamento passa a exigir "Cancelar NFS-e"', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' }))
+    adapter.queryDpsAccessKey.mockResolvedValue(KEY)
+    adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
+    await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE).catch(() => undefined)
+    expect(adapter.queryNfse).toHaveBeenCalled()
+  })
+  it('gate (MEDIUM): tentativa de HOMOLOGAÇÃO não é reconferida — sandbox fora não prende a nota (Q-CA5b)', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'H' }))
+    await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)
+    expect(adapter.queryDpsAccessKey).not.toHaveBeenCalled()
+  })
+  it('fisco FORA na reconferência → o erro sobe (fail-closed: não cancela no escuro)', async () => {
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'F', lastSource: 'Q', accessKey: null, environment: 'P' }))
+    adapter.queryDpsAccessKey.mockRejectedValue(new HttpError(503, 'fora', undefined, 'FISCAL_AUTHORITY_UNAVAILABLE'))
+    await expect(reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ statusCode: 503 })
+  })
+  it('F de resposta DIRETA (P: 401/403, credencial local), R, sem transmissão ou com chave → não consulta', async () => {
+    for (const t of [tx({ lastKind: 'F', lastSource: 'P', accessKey: null }), tx({ lastKind: 'R', accessKey: null }), null, tx({ lastKind: 'A' })]) {
+      ;(repo.latestTransmission as jest.Mock).mockResolvedValue(t)
+      await reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE)
+    }
+    expect(adapter.queryDpsAccessKey).not.toHaveBeenCalled()
   })
 })

@@ -301,13 +301,19 @@ describe('adaptador ADN — transmit (POST /nfse)', () => {
 })
 
 describe('adaptador ADN — consultas e eventos', () => {
-  it('GET /dps/{id}: 200 {chaveAcesso} → chave; 404 → null (NFS-e ainda não gerada)', async () => {
+  it('GET /dps/{id}: 200 {chaveAcesso} → chave; 404 do fisco → null; 404 sem corpo estruturado → 502 (Q-ADV1a)', async () => {
     mockHttp.mockResolvedValueOnce(ok({ chaveAcesso: CHAVE }))
     expect(await adn.queryDpsAccessKey(ctx, DPS_ID)).toBe(CHAVE)
     expect(mockHttp.mock.calls[0][0].url).toBe(`https://sefin.producaorestrita.nfse.gov.br/SefinNacional/dps/${DPS_ID}`)
     expect(mockHttp.mock.calls[0][0].method).toBe('GET')
-    mockHttp.mockResolvedValueOnce({ status: 404, headers: {}, text: '' })
+    // Q-ADV1a: só o 404 ESTRUTURADO do fisco é "DPS sem NFS-e" (conclusivo)
+    mockHttp.mockResolvedValueOnce({ status: 404, headers: {}, text: '{"erros":[{"codigo":"E404","descricao":"DPS não encontrada"}]}' })
     expect(await adn.queryDpsAccessKey(ctx, DPS_ID)).toBeNull()
+    // 404 vazio ou HTML (gateway/proxy/rota) → ilegível 502: a tentativa fica em voo, nunca F
+    for (const text of ['', '<html><body>Not Found</body></html>']) {
+      mockHttp.mockResolvedValueOnce({ status: 404, headers: {}, text })
+      await expect(adn.queryDpsAccessKey(ctx, DPS_ID)).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    }
     mockHttp.mockResolvedValueOnce({ status: 403, headers: {}, text: '' })
     await expect(adn.queryDpsAccessKey(ctx, DPS_ID)).rejects.toMatchObject({ code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
   })

@@ -48,6 +48,8 @@ export interface TransmissionRow {
   lastKind:       TransmissionEventKind | null
   lastCode:       string | null
   lastMessage:    string | null
+  /** Origem da última voz (P resposta direta · Q consulta) — Q-ADV1b: F de envio interrompido vem por Q. */
+  lastSource?:    TransmissionSource | null
   lastDh:         string | null
   lastEventAt:    string | null
   /** Idade do último evento em minutos, NO BANCO (D-N28: carência do K antes de virar N). */
@@ -74,7 +76,7 @@ const TX_SELECT = (s: string) => `
          DATE_FORMAT(t.created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
          TIMESTAMPDIFF(MINUTE, t.created_at, NOW()) AS ageMinutes,
          DATE_FORMAT(t.last_queried_at, '%Y-%m-%d %H:%i:%s') AS lastQueriedAt,
-         le.event AS lastEvent, le.kind AS lastKind, le.authority_code AS lastCode, le.message AS lastMessage,
+         le.event AS lastEvent, le.kind AS lastKind, le.authority_code AS lastCode, le.message AS lastMessage, le.source AS lastSource,
          DATE_FORMAT(le.dh, '%Y-%m-%d %H:%i:%s') AS lastDh,
          DATE_FORMAT(le.created_at, '%Y-%m-%d %H:%i:%s') AS lastEventAt,
          TIMESTAMPDIFF(MINUTE, le.created_at, NOW()) AS lastEventAgeMinutes
@@ -106,7 +108,7 @@ function mapTx(r: any): TransmissionRow {
     ageMinutes: r.ageMinutes == null ? null : Number(r.ageMinutes), lastQueriedAt: r.lastQueriedAt ?? null,
     invoiceEvent: r.invoiceEvent == null ? null : Number(r.invoiceEvent),
     lastEvent: r.lastEvent == null ? null : Number(r.lastEvent), lastKind: r.lastKind ?? null,
-    lastCode: r.lastCode ?? null, lastMessage: r.lastMessage ?? null, lastDh: r.lastDh ?? null,
+    lastCode: r.lastCode ?? null, lastMessage: r.lastMessage ?? null, lastSource: r.lastSource ?? null, lastDh: r.lastDh ?? null,
     lastEventAt: r.lastEventAt ?? null,
     lastEventAgeMinutes: r.lastEventAgeMinutes == null ? null : Number(r.lastEventAgeMinutes),
   }

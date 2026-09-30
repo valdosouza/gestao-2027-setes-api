@@ -27,6 +27,12 @@ jest.mock('../shared/invoice', () => ({
   issueInvoice: jest.fn(),
   cancelInvoice: jest.fn(),
 }))
+// Q-ADV1b: a reconferência no fisco antes do cancelamento local tem teste próprio — aqui só o retry
+jest.mock('../shared/invoice-transmission', () => ({
+  __esModule: true,
+  ...jest.requireActual('../shared/invoice-transmission'),
+  reconfirmBeforeLocalCancel: jest.fn().mockResolvedValue(undefined),
+}))
 jest.mock('../shared/commission', () => ({
   resolveCommissionAliq: jest.fn(), getPostedItemCommissions: jest.fn(), insertCommissions: jest.fn(),
 }))

@@ -50,8 +50,18 @@ export class AuthorityHttpError extends HttpError {
   }
 }
 
+/**
+ * Q-ADV1a (Valdo 2026-09-30): o erro carrega `afterHandshake` — true quando o TLS já tinha
+ * fechado o aperto de mão (o pedido PODE ter chegado ao fisco). Só falha ANTES disso é
+ * credencial (F conclusivo); depois, mesmo com texto "SSL routines", é AMBÍGUO (fica em voo).
+ */
 export function httpsRequest(call: HttpsCall): Promise<HttpsResult> {
   const u = new URL(call.url)
+  let handshakeDone = false
+  const fail = (reject: (e: unknown) => void) => (err: any) => {
+    if (err && typeof err === 'object') err.afterHandshake = handshakeDone
+    reject(err)
+  }
   return new Promise((resolve, reject) => {
     const req = https.request({
       protocol: u.protocol, hostname: u.hostname, port: u.port || 443,
@@ -61,13 +71,20 @@ export function httpsRequest(call: HttpsCall): Promise<HttpsResult> {
     }, res => {
       const chunks: Buffer[] = []
       res.on('data', c => chunks.push(c))
-      res.on('error', reject)                                   // reset no meio do corpo: nunca pendente
+      res.on('error', fail(reject))                             // reset no meio do corpo: nunca pendente
       res.on('end', () => resolve({
         status: res.statusCode ?? 0, headers: res.headers, text: Buffer.concat(chunks).toString('utf8'),
       }))
     })
+    // gate adversarial (HIGH, 2026-09-30): conexão REAPROVEITADA (keep-alive do agente) não emite
+    // 'secureConnect' — o handshake já foi feito numa requisição anterior; sem isto um erro TLS
+    // pós-envio no lote virava "credencial" (F conclusivo) e a NFS-e podia sair duplicada
+    req.on('socket', socket => {
+      if (req.reusedSocket) handshakeDone = true
+      else socket.once('secureConnect', () => { handshakeDone = true })
+    })
     req.on('timeout', () => req.destroy(new Error('timeout')))
-    req.on('error', reject)
+    req.on('error', fail(reject))
     if (call.body) req.write(call.body)
     req.end()
   })
@@ -163,7 +180,8 @@ export async function authorityJson<T = any>(call: HttpsCall, label: string, opt
       throw new AuthorityHttpError(409, 'Certificado/chave do emissor no cofre não abrem (par inconsistente ou ilegível) — envie o .pfx novamente',
         ErrorCodes.FISCAL_CERT_INVALID, 0, String(err?.code ?? ''), [{ field: 'certificate', message: 'Par PEM inválido' }])
     }
-    if (isTlsCredentialError(err)) {
+    // Q-ADV1a: erro TLS DEPOIS do handshake não é credencial — o corpo pode ter sido entregue
+    if (isTlsCredentialError(err) && err?.afterHandshake !== true) {
       logger.warn('Fisco recusou o certificado do emissor (TLS)', { label, url: call.url, code: err?.code, err: err?.message })
       throw new AuthorityHttpError(409, 'Fisco recusou o certificado/chave do emissor (mTLS) — confira o A1 na aba Emissor fiscal',
         ErrorCodes.FISCAL_AUTHORITY_AUTH_FAILED, 0, String(err?.code ?? ''))

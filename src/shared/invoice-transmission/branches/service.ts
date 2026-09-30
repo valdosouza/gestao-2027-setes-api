@@ -517,14 +517,26 @@ export function storageRoot(): string {
   return process.env.STORAGE_PATH ?? path.resolve(process.cwd(), 'storage')
 }
 
-function monthDir(cnpj: string, when: Date): string {
-  return path.join(storageRoot(), digitsOf(cnpj), String(when.getFullYear()), String(when.getMonth() + 1).padStart(2, '0'))
+/** Ambiente do arquivo fiscal: P = arquivo de PRODUÇÃO (layout original); H = homologação, em subpasta própria (Q-N38a). */
+export type FiscalFileEnvironment = 'H' | 'P'
+
+/**
+ * Raiz do CNPJ no arquivo fiscal. Q-N38a (Valdo 2026-09-30): XML de HOMOLOGAÇÃO fica em `<cnpj>/H/…`,
+ * fora do arquivo fiscal de PRODUÇÃO (`<cnpj>/<ano>/<mês>` — o que vai para o contador).
+ */
+function cnpjRoot(cnpj: string, environment: FiscalFileEnvironment = 'P'): string {
+  const base = path.join(storageRoot(), digitsOf(cnpj))
+  return environment === 'H' ? path.join(base, 'H') : base
+}
+
+function monthDir(cnpj: string, when: Date, environment: FiscalFileEnvironment = 'P'): string {
+  return path.join(cnpjRoot(cnpj, environment), String(when.getFullYear()), String(when.getMonth() + 1).padStart(2, '0'))
 }
 
 /** Grava (mkdir -p) e devolve o caminho. Nome sem separadores por construção (Id/chave são dígitos). */
-export function saveFiscalXml(cnpj: string, name: string, xml: string, when = new Date()): string {
+export function saveFiscalXml(cnpj: string, name: string, xml: string, when = new Date(), environment: FiscalFileEnvironment = 'P'): string {
   if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error(`Nome de arquivo fiscal inválido: ${name}`)
-  const dir = monthDir(cnpj, when)
+  const dir = monthDir(cnpj, when, environment)
   fs.mkdirSync(dir, { recursive: true })
   const full = path.join(dir, name)
   fs.writeFileSync(full, xml, 'utf8')
@@ -539,23 +551,29 @@ export const cancelEventFileName = (accessKey: string) => `${digitsOf(accessKey)
 /**
  * Localiza um XML pelo nome: tenta os meses das datas conhecidas (dhProc,
  * created_at) e, se não achar, varre a pasta do CNPJ (poucas pastas por ano).
+ * Homologação procura em `<cnpj>/H` e, por compatibilidade, no layout antigo
+ * (XMLs de H gravados antes da Q-N38a); produção nunca olha dentro de `H`.
  */
-export function findFiscalXml(cnpj: string, name: string, hints: (string | null | undefined)[] = []): string | null {
-  for (const h of hints) {
-    if (!h) continue
-    const d = new Date(String(h).replace(' ', 'T'))
-    if (Number.isNaN(d.getTime())) continue
-    const p = path.join(monthDir(cnpj, d), name)
-    if (fs.existsSync(p)) return p
-  }
-  const root = path.join(storageRoot(), digitsOf(cnpj))
-  if (!fs.existsSync(root)) return null
-  for (const y of fs.readdirSync(root)) {
-    const yd = path.join(root, y)
-    if (!fs.statSync(yd).isDirectory()) continue
-    for (const m of fs.readdirSync(yd)) {
-      const p = path.join(yd, m, name)
+export function findFiscalXml(cnpj: string, name: string, hints: (string | null | undefined)[] = [], environment: FiscalFileEnvironment = 'P'): string | null {
+  const roots: FiscalFileEnvironment[] = environment === 'H' ? ['H', 'P'] : ['P']
+  for (const env of roots) {
+    for (const h of hints) {
+      if (!h) continue
+      const d = new Date(String(h).replace(' ', 'T'))
+      if (Number.isNaN(d.getTime())) continue
+      const p = path.join(monthDir(cnpj, d, env), name)
       if (fs.existsSync(p)) return p
+    }
+    const root = cnpjRoot(cnpj, env)
+    if (!fs.existsSync(root)) continue
+    for (const y of fs.readdirSync(root)) {
+      if (!/^\d{4}$/.test(y)) continue                     // só pastas de ANO (a `H` não é varrida por P)
+      const yd = path.join(root, y)
+      if (!fs.statSync(yd).isDirectory()) continue
+      for (const m of fs.readdirSync(yd)) {
+        const p = path.join(yd, m, name)
+        if (fs.existsSync(p)) return p
+      }
     }
   }
   return null
