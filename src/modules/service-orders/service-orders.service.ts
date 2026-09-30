@@ -2,6 +2,7 @@ import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows } from '@shared/list'
 import logger from '@shared/logger/logger'
 import { contentionToHttpError } from '@shared/db/contention'
+import { getServiceFiscalSummaries } from '@shared/invoice-transmission'
 import {
   ServiceOrderListRow, ServiceOrderFull, OpenOrderInput, OrderItemInput,
   MonthlyRunInput, MonthlyRunReport, InvoiceInput, InvoiceResult,
@@ -35,7 +36,21 @@ export interface ServiceOrderScope {
 export async function fetchOrders(
   status: 'A' | 'F' | '', query: ListQuery, scope: ServiceOrderScope
 ): Promise<PagedRows<ServiceOrderListRow>> {
-  return listOrders(status, query, scope.schemaName, scope.institutionId)
+  const page = await listOrders(status, query, scope.schemaName, scope.institutionId)
+  // Selo fiscal: só nota emitida pela web (evento E) — a sincronizada transmite-se na origem
+  const ids = page.rows.filter((r: any) => (r.status === 'F' || r.status === 'C') && Number(r.webIssued) === 1).map(r => Number(r.id))
+  const fiscal = await getServiceFiscalSummaries(scope.schemaName, scope.institutionId, ids)
+  const rows = page.rows.map(({ webIssued: _w, ...r }: any) => {
+    const f = fiscal.get(Number(r.id))
+    return {
+      ...r,
+      invoiceNumber:     r.invoiceNumber == null ? null : String(r.invoiceNumber),
+      fiscalState:       f?.state ?? null,
+      fiscalEnvironment: f?.environment ?? null,
+      nfseNumber:        f?.nfseNumber ?? null,
+    }
+  })
+  return { rows, total: page.total }
 }
 
 export async function fetchOrder(

@@ -125,16 +125,17 @@ export async function fiscalView(institution: InstitutionPayload, orderId: numbe
 }
 
 export async function fiscalXml(institution: InstitutionPayload, orderId: number): Promise<{ accessKey: string; xml: string }> {
-  return readNfseXml(institution.schemaName, institution.institutionId, orderId)
+  const { accessKey, xml } = await readNfseXml(institution.schemaName, institution.institutionId, orderId)
+  return { accessKey, xml }
 }
 
 export async function fiscalDanfse(institution: InstitutionPayload, orderId: number): Promise<{ accessKey: string; pdfBase64: string }> {
-  const { accessKey, xml } = await readNfseXml(institution.schemaName, institution.institutionId, orderId)
+  const { accessKey, xml, cancelled } = await readNfseXml(institution.schemaName, institution.institutionId, orderId)
   const full = await getEntityFiscalFull(institution.institutionId)
   const issuerName = (full?.entity.nameCompany ?? full?.entity.nickTrade ?? 'Emitente').trim()
   const addr = full?.addresses.find(a => a.main === 'S') ?? full?.addresses[0]
   const municipality = [addr?.cityName, addr?.stateName].filter(Boolean).join(' / ') || '—'
-  const pdf = await renderDanfse(xml, { issuerName, municipality })
+  const pdf = await renderDanfse(xml, { issuerName, municipality, cancelled })
   return { accessKey, pdfBase64: pdf.toString('base64') }
 }
 

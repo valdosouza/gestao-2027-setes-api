@@ -24,8 +24,10 @@ export interface EstablishmentDto {
   taxRegime:   string | null
   /** Fatos do EMITENTE consumidos pelos documentos fiscais (Onda 3 — D-E3/D-E23). */
   simplesRegime:    string | null
-  /** regApTribSN (D-N19a) — só com simplesRegime '3'. */
+  /** regApTribSN (D-N19a/Q-N36) — só com simplesRegime '3', e aí obrigatório. */
   simplesAssessment: string | null
+  /** pTotTribSN (Q-N37) — % aproximado da alíquota efetiva do Simples; só com simplesRegime '3', e aí obrigatório. */
+  simplesTotalTaxAliquot: number | null
   specialTaxRegime: string | null
   cnae:             string | null
   addresses:   AddressRow[]
@@ -46,6 +48,7 @@ export interface EstablishmentUpdateInput {
   taxRegime?:  string | null
   simplesRegime?:    string | null
   simplesAssessment?: string | null
+  simplesTotalTaxAliquot?: number | null
   specialTaxRegime?: string | null
   cnae?:             string | null
   addresses:   AddressInput[]

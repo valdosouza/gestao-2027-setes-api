@@ -207,6 +207,16 @@ describe('validateOrder', () => {
       .rejects.toMatchObject({ statusCode: 409, code: 'ORDER_INVOICED' })
   })
 
+  it('D3/D4 (gate socrático 2026-09-29, HIGH): pedido CANCELADO com nota fiscal (C) NUNCA refatura — validate e invoice → 409 ORDER_CANCELLED antes de tocar a nota', async () => {
+    mockOrderBase('C')
+    await expect(validateOrder(inst as any, { orderId: 10 }))
+      .rejects.toMatchObject({ statusCode: 409, code: 'ORDER_CANCELLED' })
+    mockOrderBase('C')
+    await expect(invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false }))
+      .rejects.toMatchObject({ statusCode: 409, code: 'ORDER_CANCELLED' })
+    expect((pool as any).getConnection).not.toHaveBeenCalled()   // nenhuma transação aberta: issueInvoice nunca roda
+  })
+
   it('empilha TODAS as issues (não para na primeira) e grava regra achada', async () => {
     mockOrderBase()
     mockBranchSale()

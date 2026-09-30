@@ -30,6 +30,7 @@ export const ErrorCodes = {
   // Software House — ciclo de serviços
   ORDER_OPEN_EXISTS:   'ORDER_OPEN_EXISTS',
   ORDER_INVOICED:      'ORDER_INVOICED',
+  ORDER_CANCELLED:     'ORDER_CANCELLED',
   ORDER_NO_ITEMS:      'ORDER_NO_ITEMS',
   PAYMENT_TYPE_UNAVAILABLE: 'PAYMENT_TYPE_UNAVAILABLE',
   // Financeiro
@@ -195,6 +196,7 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   TREE_CYCLE:          'Movimento criaria ciclo na árvore',
   ORDER_OPEN_EXISTS:   'Cliente já tem ordem de serviço aberta (D5 — máx. 1)',
   ORDER_INVOICED:      'Ordem já faturada — alterações só via financeiro',
+  ORDER_CANCELLED:     'Pedido cancelado com nota fiscal (D3/D4) — somente leitura; faturar de novo exige pedido/OS novo',
   ORDER_NO_ITEMS:      'Ordem sem itens — nada a faturar',
   PAYMENT_TYPE_UNAVAILABLE: 'Forma de pagamento não vinculada/habilitada na institution',
   TITLE_NOT_FOUND:     'Título financeiro não encontrado',

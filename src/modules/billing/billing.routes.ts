@@ -191,7 +191,7 @@ router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody),
  *       403: { description: Sem privilégio TRANSMITIR (PRIVILEGE_REQUIRED) }
  *       404: { description: Nota não encontrada / não emitida por este estabelecimento }
  *       409: { description: FISCAL_ISSUER_MISSING · FISCAL_CERT_MISSING/EXPIRED · FISCAL_TRANSMISSION_IN_PROGRESS · FISCAL_ALREADY_AUTHORIZED · FISCAL_CANCEL_IN_FLIGHT · INVOICE_NOT_TRANSMITTABLE · FISCAL_AUTHORITY_AUTH_FAILED (F gravado) }
- *       422: { description: INVOICE_SERVICE_BRANCH_MISSING · SERVICE_RULE_NATIONAL_CODE_REQUIRED · FISCAL_EMITTER_INCOMPLETE · FISCAL_RECIPIENT_INCOMPLETE · FISCAL_DPS_REJECTED (R gravado, E0xxx em fields[]) }
+ *       422: { description: "INVOICE_SERVICE_BRANCH_MISSING · SERVICE_RULE_NATIONAL_CODE_REQUIRED · FISCAL_EMITTER_INCOMPLETE · FISCAL_RECIPIENT_INCOMPLETE · FISCAL_DPS_REJECTED (R gravado, E0xxx em fields[])" }
  *       502: { description: FISCAL_AUTHORITY_UNKNOWN_RESPONSE (ambíguo — nada gravado) }
  *       503: { description: FISCAL_AUTHORITY_UNAVAILABLE (ambíguo — tentativa em voo) }
  */

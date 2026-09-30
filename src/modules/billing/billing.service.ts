@@ -21,7 +21,7 @@ import { cancelInvoice, CancelInvoiceResult } from '@shared/invoice'
 import { CancelBody } from './billing.dto'
 import { resolveOrderParcels, MaterializedParcel as ResolvedParcel } from '@shared/order-installment'
 import { hasServiceOrderCycle } from '@shared/service-order'
-import { Queryable } from '@shared/order'
+import { Queryable, assertOrderOpen } from '@shared/order'
 import {
   parseCrt, adjustMva, resolveFinancialPolarity,
 } from './billing.context'
@@ -164,9 +164,8 @@ export async function validateOrder(
 
   const status = await getOrderStatus(schemaName, institutionId, input.orderId)
   if (status === null) throw new HttpError(404, `Ordem ${input.orderId} não encontrada`)
-  if (status === 'F') {
-    throw new HttpError(409, 'Ordem já faturada', undefined, 'ORDER_INVOICED')
-  }
+  // D3/D4 (gate 2026-09-29): 'C' (cancelado com nota fiscal) também NÃO fatura — predicado único
+  assertOrderOpen(status, input.orderId)
 
   const branch = await getOrderBranch(schemaName, institutionId, input.orderId)
   if (!branch) {
@@ -355,7 +354,7 @@ export async function invoiceOrder(
 
   const status = await getOrderStatus(schemaName, institutionId, input.orderId)
   if (status === null) throw new HttpError(404, `Ordem ${input.orderId} não encontrada`)
-  if (status === 'F') throw new HttpError(409, 'Ordem já faturada', undefined, 'ORDER_INVOICED')
+  assertOrderOpen(status, input.orderId)
 
   const branch = await getOrderBranch(schemaName, institutionId, input.orderId)
   if (!branch) {

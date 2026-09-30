@@ -23,6 +23,7 @@ type Q = PoolConnection | typeof pool
  * ser pedido de novo).
  */
 import { TransmissionEventKind, FINAL_TRANSMISSION_KINDS, AUTHORIZED_KINDS } from './transmission-kinds'
+import { LAST_INVOICE_EVENT_KIND_SQL } from '@shared/invoice/invoice'
 export { TransmissionEventKind, FINAL_TRANSMISSION_KINDS, AUTHORIZED_KINDS }
 export type TransmissionSource = 'P' | 'Q'
 export type TransmissionEnvironment = 'H' | 'P'
@@ -196,6 +197,37 @@ export async function listServiceTransmissions(
     [institutionId, invoiceId]
   )
   return { transmissions: txs.map(mapTx), events: events as TransmissionEventRow[] }
+}
+
+/**
+ * Vigente de VÁRIAS notas numa leitura só (lista de OS faturadas — selo por linha): as
+ * tentativas da vida vigente (D-N27) de cada nota, e a vigente escolhida pelo `currentOf`
+ * — a MESMA regra do `latestTransmission` (D-N26), sem 2ª cópia em SQL. Nota sem
+ * tentativa fica fora do mapa.
+ */
+export async function currentTransmissionsOf(
+  schemaName: string, institutionId: number, invoiceIds: number[]
+): Promise<Map<number, TransmissionRow>> {
+  const out = new Map<number, TransmissionRow>()
+  if (invoiceIds.length === 0) return out
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `${TX_SELECT(s)}
+      WHERE t.tb_institution_id = ? AND t.tb_invoice_id IN (?) AND t.terminal = 0 AND t.deleted = 'N'${LIFE_WHERE(s)}
+      ORDER BY t.tb_invoice_id, t.attempt`,
+    [institutionId, invoiceIds]
+  )
+  const byInvoice = new Map<number, TransmissionRow[]>()
+  for (const tx of rows.map(mapTx)) {
+    const list = byInvoice.get(tx.invoiceId) ?? []
+    list.push(tx)
+    byInvoice.set(tx.invoiceId, list)
+  }
+  for (const [invoiceId, txs] of byInvoice) {
+    const current = currentOf(txs)
+    if (current) out.set(invoiceId, current)
+  }
+  return out
 }
 
 /** A vigente dentro de uma lista já lida (mesma regra do `latestTransmission`: quem detém a chave, senão a última). */
@@ -433,6 +465,8 @@ export async function listPendingServiceInvoices(
        JOIN \`${s}\`.tb_invoice_service sv
          ON sv.id = i.id AND sv.tb_institution_id = i.tb_institution_id AND sv.terminal = i.terminal AND sv.deleted = 'N'
       WHERE i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N' AND i.issuer = i.tb_institution_id
+        -- D3/D4: nota com registro fiscal cancelada FICA viva (evento C) — cancelada não é pendente
+        AND COALESCE(${LAST_INVOICE_EVENT_KIND_SQL(s, 'i')}, '-') <> 'C'
         AND NOT EXISTS (
           SELECT 1 FROM \`${s}\`.tb_invoice_service_transmission t
            WHERE t.tb_institution_id = i.tb_institution_id AND t.tb_invoice_id = i.id AND t.terminal = i.terminal AND t.deleted = 'N'${LIFE_WHERE(s)}

@@ -1,5 +1,6 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
+import { assertOrderOpen } from '@shared/order'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
@@ -241,10 +242,8 @@ async function lockOpenReturn(
     [orderId, institutionId]
   )
   if (!rows[0]) throw new HttpError(404, `Devolução ${orderId} não encontrada`)
-  if (rows[0].status !== 'A') {
-    throw new HttpError(409, 'Devolução já faturada — alterações só via financeiro',
-      undefined, 'ORDER_INVOICED')
-  }
+  // predicado ÚNICO (gate socrático 2026-09-30): 'C' cancelado com nota fiscal → ORDER_CANCELLED
+  assertOrderOpen(String(rows[0].status), orderId)
 }
 
 // ---------------------------------------------------------------------

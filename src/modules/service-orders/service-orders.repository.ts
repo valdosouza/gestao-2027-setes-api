@@ -1,5 +1,6 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
+import { assertOrderOpen } from '@shared/order'
 import { HttpError } from '@shared/errors/http-error'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { lockInstitutionCounters } from '@shared/db/counters'
@@ -10,6 +11,7 @@ import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
 import { upsertOrderBilling } from '@shared/order-billing'
 import { issueInvoice, InvoiceServiceInput } from '@shared/invoice'
+import { releaseServiceOrderCompetences } from '@shared/service-order'
 import { resolveServiceTaxRule, checkServiceRule, serviceRuleProblemMessage, ServiceTaxRuleResolved } from '@shared/service-tax-rule'
 import { calcIssqn } from '@shared/tax-rule'
 import { getEntityFiscalFull } from '@shared/entity'
@@ -78,10 +80,17 @@ export async function listOrders(
      LEFT JOIN \`${schemaName}\`.tb_order_totalizer t
         ON t.id = c.id AND t.tb_institution_id = c.tb_institution_id
        AND t.terminal = c.terminal AND t.deleted = 'N'
+     LEFT JOIN \`${schemaName}\`.tb_invoice inv
+        ON inv.id = c.id AND inv.tb_institution_id = c.tb_institution_id
+       AND inv.terminal = c.terminal AND inv.deleted = 'N'
      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
-       AND (? IS NULL OR o.status = ?)
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)`
-  const params = [institutionId, statusFilter, statusFilter, like, like, like]
+       AND (? IS NULL OR o.status = ? OR (? = 'F' AND o.status = 'C'))
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?
+            OR c.number = ? OR inv.number = ?)`
+  // Filtro só com dígitos também acha pelo nº da OS ou da nota (igualdade exata)
+  const numeric = query.filter && /^\d+$/.test(query.filter) ? query.filter : null
+  // Q-CA3: a aba Faturadas também mostra a OS CANCELADA com nota fiscal ('C') — a nota nunca some da vista
+  const params = [institutionId, statusFilter, statusFilter, statusFilter, like, like, like, numeric, numeric]
 
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
@@ -93,9 +102,13 @@ export async function listOrders(
             (SELECT COUNT(*) FROM \`${schemaName}\`.tb_order_item i
               WHERE i.tb_order_id = s.id AND i.tb_institution_id = s.tb_institution_id
                 AND i.terminal = s.terminal AND i.deleted = 'N') AS itemsCount,
-            COALESCE(t.total_value, 0) AS totalValue
+            COALESCE(t.total_value, 0) AS totalValue,
+            inv.number AS invoiceNumber,
+            EXISTS (SELECT 1 FROM \`${schemaName}\`.tb_invoice_event ev
+                     WHERE ev.tb_institution_id = inv.tb_institution_id AND ev.tb_invoice_id = inv.id
+                       AND ev.terminal = inv.terminal AND ev.kind = 'E' AND ev.deleted = 'N') AS webIssued
      ${where}
-     ORDER BY o.status, c.number DESC, c.id DESC
+     ORDER BY (o.status = 'A') DESC, c.number DESC, c.id DESC
      LIMIT ? OFFSET ?`,
     [...params, query.pageSize, query.offset]
   )
@@ -228,10 +241,8 @@ async function lockOpenOrder(
     [orderId, institutionId]
   )
   if (!rows[0]) throw new HttpError(404, `Ordem de serviço ${orderId} não encontrada`)
-  if (rows[0].status !== 'A') {
-    throw new HttpError(409, 'Ordem já faturada — alterações só via financeiro',
-      undefined, 'ORDER_INVOICED')
-  }
+  // predicado ÚNICO (gate socrático 2026-09-30): 'C' cancelado com nota fiscal → ORDER_CANCELLED
+  assertOrderOpen(String(rows[0].status), orderId)
 }
 
 /**
@@ -519,13 +530,8 @@ export async function cancelOrder(
       [orderId, institutionId]
     )
     // D-A29: OS cancelada devolve a competência ao contrato (a rotina pode
-    // reinjetar); item REMOVIDO à mão da OS viva NÃO devolve — ato do operador.
-    await conn.query(
-      `UPDATE \`${schemaName}\`.tb_contract_item_competence
-          SET deleted = 'S', updated_at = NOW()
-        WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0`,
-      [institutionId, orderId]
-    )
+    // reinjetar) — peça única, também usada pelo cancelamento de nota fiscal (Q-CA2).
+    await releaseServiceOrderCompetences(conn, schemaName, institutionId, orderId)
 
     await conn.commit()
   } catch (err) {

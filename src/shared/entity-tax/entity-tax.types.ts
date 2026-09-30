@@ -64,8 +64,10 @@ export interface EntityTaxInput {
   taxRegime?:              string | null
   /** Fatos do EMITENTE (só fazem sentido quando entity = institution — Onda 3). */
   simplesRegime?:          string | null
-  /** regApTribSN (D-N19a) — só faz sentido com simplesRegime '3'; NULL = dentro do sublimite (omitido no DPS). */
+  /** regApTribSN (D-N19a/Q-N36) — só com simplesRegime '3', e aí obrigatório (o fisco recusa a ausência — E0166); NULL fora do regime 3. */
   simplesAssessment?:      string | null
+  /** pTotTribSN (Q-N37) — % aproximado da alíquota efetiva do Simples (DAS); só com simplesRegime '3', e aí obrigatório (E0712). */
+  simplesTotalTaxAliquot?: number | null
   specialTaxRegime?:       string | null
   cnae?:                   string | null
   byPassSt?:               SN | null
@@ -83,6 +85,7 @@ export interface EntityTaxRow {
   taxRegime:              string | null
   simplesRegime:          string | null
   simplesAssessment:      string | null
+  simplesTotalTaxAliquot: number | null
   specialTaxRegime:       string | null
   cnae:                   string | null
   byPassSt:               SN | null

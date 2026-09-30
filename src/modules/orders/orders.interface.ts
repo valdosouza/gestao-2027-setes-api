@@ -19,7 +19,7 @@ export interface OrderListRow {
   customerName: string | null
   salesmanId:   number
   salesmanName: string | null
-  status:       'A' | 'F'
+  status:       'A' | 'F' | 'C'   // C = cancelado com nota fiscal (D3/D4)
   dtRecord:     string | null
   hasService:   boolean
   itemsCount:   number
@@ -45,7 +45,7 @@ export interface OrderFull {
   customerName: string | null
   salesmanId:   number
   salesmanName: string | null
-  status:       'A' | 'F'
+  status:       'A' | 'F' | 'C'   // C = cancelado com nota fiscal (D3/D4)
   dtRecord:     string | null
   items:        OrderItemRow[]
   totalValue:   number
@@ -95,7 +95,7 @@ export interface NegotiationParcelRow {
 export interface OrderNegotiation {
   orderId:      number
   /** 'A' aberto (editável) | 'F' faturado (somente leitura). */
-  status:       'A' | 'F'
+  status:       'A' | 'F' | 'C'   // C = cancelado com nota fiscal (D3/D4)
   mode:         'simple' | 'elaborated'
   billing: {
     paymentTypeId:          number

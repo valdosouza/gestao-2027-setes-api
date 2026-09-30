@@ -20,7 +20,7 @@ import * as invoice from '../shared/invoice'
 import * as counters from '../shared/db/counters'
 import { AuthorityHttpError } from '../shared/tax-authority/https-json'
 import {
-  transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, getServiceFiscalView, toDbDateTime,
+  transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, getServiceFiscalView, getServiceFiscalSummaries, toDbDateTime,
 } from '../shared/invoice-transmission'
 import { HttpError } from '../shared/errors/http-error'
 import { resetMunicipalTermsCache } from '../shared/invoice-transmission/branches/service'
@@ -113,7 +113,7 @@ beforeEach(() => {
   ;(authority.adapterFor as jest.Mock).mockReturnValue(adapter)
   ;(issuer.openIssuer as jest.Mock).mockResolvedValue(opened())
   ;(entity.getEntityFiscalFull as jest.Mock).mockImplementation(async (id: number) => fullEntity(id))
-  ;(entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '3', specialTaxRegime: '0' })
+  ;(entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '3', simplesAssessment: '1', simplesTotalTaxAliquot: 6, specialTaxRegime: '0' })
   ;(invoice.lockInvoice as jest.Mock).mockResolvedValue({ id: INVOICE, number: '17', serie: '1', model: 'SE', value: 1234.5, status: '0', lastEvent: 1, lastKind: 'E' })
   ;(repo.latestTransmission as jest.Mock).mockResolvedValue(null)
   // a leitura por tentativa / por dps_id espelha a última (os cenários mudam só latestTransmission)
@@ -150,7 +150,7 @@ describe('transmitServiceInvoice — reserva sob lock → fisco FORA da transaç
     // o XML enviado é o DPS do ramo (emitente = institution, tomador = entidade da nota)
     const sent = adapter.transmit.mock.calls[0][1] as string
     expect(sent).toContain('<infDPS Id="DPS410690221234567800019900001000000000000042">')
-    expect(sent).toContain('<prest><CNPJ>12345678000199</CNPJ><IM>777</IM><regTrib><opSimpNac>3</opSimpNac><regEspTrib>0</regEspTrib></regTrib></prest>')
+    expect(sent).toContain('<prest><CNPJ>12345678000199</CNPJ><IM>777</IM><regTrib><opSimpNac>3</opSimpNac><regApTribSN>1</regApTribSN><regEspTrib>0</regEspTrib></regTrib></prest>')
     expect(sent).toContain('<toma><CNPJ>98765432000188</CNPJ><xNome>Cliente Ltda</xNome><end><endNac><cMun>4106902</cMun><CEP>80010000</CEP></endNac>')
     expect(sent).toContain('<cTribNac>010201</cTribNac>')
     expect(sent).toContain('<vServ>1234.50</vServ>')
@@ -418,5 +418,45 @@ describe('getServiceFiscalView', () => {
     })
     const v = await getServiceFiscalView(S.schema, S.inst, INVOICE)
     expect(v).toMatchObject({ invoiceId: INVOICE, state: 'authorized', pendingEffects: 0, xmlAvailable: true, danfseAvailable: true })
+  })
+})
+
+describe('getServiceFiscalSummaries — selo da lista de OS pelo MESMO leitor do detalhe', () => {
+  it('vigente = quem detém a chave (D-N26), senão a última; nota sem tentativa = none', async () => {
+    const row = (invoiceId: number, attempt: number, lastKind: string | null, accessKey: string | null = null, environment = 'P') =>
+      ({ institutionId: S.inst, invoiceId, attempt, environment, accessKey, nfseNumber: accessKey ? '15' : null, lastKind })
+    q.mockResolvedValueOnce([[
+      row(10, 1, 'A', 'KEY10'), row(10, 2, 'R'),          // chave na 1 → autorizada, mesmo com R depois
+      row(11, 1, 'R', null, 'H'), row(11, 2, 'F', null, 'H'),
+    ]])
+    const m = await getServiceFiscalSummaries(S.schema, S.inst, [10, 11, 12])
+    expect(m.get(10)).toEqual({ state: 'authorized', environment: 'P', nfseNumber: '15' })
+    expect(m.get(11)).toEqual({ state: 'failed', environment: 'H', nfseNumber: null })
+    expect(m.get(12)).toEqual({ state: 'none', environment: null, nfseNumber: null })
+  })
+
+  it('lista vazia não consulta o banco', async () => {
+    q.mockClear()
+    expect((await getServiceFiscalSummaries(S.schema, S.inst, [])).size).toBe(0)
+    expect(q).not.toHaveBeenCalled()
+  })
+})
+
+describe('Q-N38 — XML do evento de cancelamento no arquivo fiscal (Valdo 2026-09-30)', () => {
+  const planOk = (extraBlocks: any[] = []) => ({
+    orderId: INVOICE, invoice: { id: INVOICE, lastKind: 'E', lastEvent: 1 }, blocks: extraBlocks, bankSlipsToCancel: [], releasedTitles: [],
+    serviceOrder: null, checksToReverse: [], commissionEntries: [], touchesCash: false,
+  })
+  const cancelled = { orderId: INVOICE, invoiceNumber: '17', event: 2, checksReversed: [], bankSlipsCancelled: [], releasedTitles: [], commissionsCompensated: 0 }
+  it('fisco ACEITA com o evento gerado → <chave>-evt101101.xml gravado na pasta da NFS-e (mês da autorização)', async () => {
+    ;(invoice.buildCancelPlan as jest.Mock).mockResolvedValue(planOk([{ field: 'fiscal', ref: '1', message: 'NFS-e autorizada' }]))
+    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastKind: 'A', dhProc: '2026-08-15 10:00:00' }))
+    ;(repo.insertTransmissionEvent as jest.Mock).mockResolvedValue(2)
+    ;(invoice.cancelInvoice as jest.Mock).mockResolvedValue(cancelled)
+    const EVT = '<evento><infEvento Id="EVT1"><dhProc>2026-09-22T09:00:00-03:00</dhProc></infEvento></evento>'
+    adapter.registerEvent.mockResolvedValue({ dhEvento: '2026-09-22T09:00:00-03:00', protocol: 'EVT1', eventXml: EVT, raw: {} })
+    await cancelServiceInvoiceAtAuthority(S.schema, S.inst, S.user, INVOICE, 'cliente desistiu do serviço')
+    const file = path.join(process.env.STORAGE_PATH!, '12345678000199', '2026', '08', `${KEY}-evt101101.xml`)
+    expect(fs.readFileSync(file, 'utf8')).toBe(EVT)
   })
 })

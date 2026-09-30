@@ -26,7 +26,7 @@ const router = Router()
  *       - BearerAuth: []
  *     responses:
  *       200:
- *         description: '{ ok: true, data: { nameCompany, nickTrade, document, personType, ie, im, taxRegime, addresses, phones, socials } }'
+ *         description: '{ ok: true, data: { nameCompany, nickTrade, document, personType, ie, im, taxRegime, simplesRegime, simplesAssessment, simplesTotalTaxAliquot, specialTaxRegime, cnae, addresses, phones, socials } }'
  *       401: { description: Não autenticado }
  *       403: { description: Restrito a administradores }
  *       500: { description: Erro interno }
@@ -65,6 +65,11 @@ router.get('/', controller.get)
  *                   Simples zera o CST; p/ Normal zera o CSOSN): as regras
  *                   ficam pendentes no /billing/validate até serem revisadas.
  *                 example: '1 - Simples Nacional'
+ *               simplesRegime:     { type: string, nullable: true, enum: ['1', '2', '3'], description: 'opSimpNac do DPS — 1 não optante · 2 MEI · 3 ME/EPP' }
+ *               simplesAssessment: { type: string, nullable: true, enum: ['1', '2', '3'], description: 'regApTribSN — obrigatório com simplesRegime 3 (Q-N36; 422 REQUIRED_FIELDS no estado resultante)' }
+ *               simplesTotalTaxAliquot: { type: number, nullable: true, minimum: 0.01, maximum: 99.99, example: 6.00, description: 'pTotTribSN — % aproximado da alíquota efetiva do Simples (DAS); obrigatório com simplesRegime 3 (Q-N37); sair do regime 3 limpa' }
+ *               specialTaxRegime:  { type: string, nullable: true, enum: ['0', '1', '2', '3', '4', '5', '6'] }
+ *               cnae:              { type: string, nullable: true, pattern: '^\d{7}$' }
  *               addresses:
  *                 type: array
  *                 items: { type: object }

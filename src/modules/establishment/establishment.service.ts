@@ -1,5 +1,6 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
+import { ErrorCodes } from '@shared/errors/error-codes'
 import { EntityFiscalFull, EntityFiscalInput } from '@shared/entity'
 import { getEntityTax, upsertEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { parseCrt } from '@shared/entity-tax/entity-tax.types'
@@ -19,7 +20,7 @@ import { getEstablishmentChain, saveEstablishmentChain } from './establishment.r
  * toggle F/J/N nunca mudam por aqui).
  */
 
-function toDto(chain: EntityFiscalFull, tax: { taxRegime: string | null; simplesRegime: string | null; simplesAssessment: string | null; specialTaxRegime: string | null; cnae: string | null }): EstablishmentDto {
+function toDto(chain: EntityFiscalFull, tax: { taxRegime: string | null; simplesRegime: string | null; simplesAssessment: string | null; simplesTotalTaxAliquot: number | null; specialTaxRegime: string | null; cnae: string | null }): EstablishmentDto {
   const taxRegime = tax.taxRegime
   // Institution sempre nasce com documento (F ou J) — nunca 'N' (decisão
   // registrada no institutionCreateDto: schemaName + admin obrigatórios,
@@ -40,6 +41,7 @@ function toDto(chain: EntityFiscalFull, tax: { taxRegime: string | null; simples
     taxRegime,
     simplesRegime:    tax.simplesRegime,
     simplesAssessment: tax.simplesAssessment,
+    simplesTotalTaxAliquot: tax.simplesTotalTaxAliquot,
     specialTaxRegime: tax.specialTaxRegime,
     cnae:             tax.cnae,
     addresses:   chain.addresses,
@@ -62,6 +64,7 @@ export async function fetchEstablishment(
   return toDto(chain, {
     taxRegime: tax?.taxRegime ?? null, simplesRegime: tax?.simplesRegime ?? null,
     simplesAssessment: tax?.simplesAssessment ?? null,
+    simplesTotalTaxAliquot: tax?.simplesTotalTaxAliquot == null ? null : Number(tax.simplesTotalTaxAliquot),
     specialTaxRegime: tax?.specialTaxRegime ?? null, cnae: tax?.cnae ?? null,
   })
 }
@@ -78,6 +81,25 @@ export async function editEstablishment(
   if (chain.personType === 'N') {
     throw new HttpError(500,
       `Estabelecimento ${institutionId} sem documento fiscal (personType 'N') — dado inconsistente`)
+  }
+
+  // Q-N36: ME/EPP (regime do Simples 3) EXIGE a apuração (regApTribSN) — o fisco recusa
+  // a ausência com E0166. Conferido sobre o estado RESULTANTE (merge com o gravado) e
+  // ANTES de gravar qualquer parte: o que valida é o que grava.
+  if (input.simplesRegime !== undefined || input.simplesAssessment !== undefined || input.simplesTotalTaxAliquot !== undefined) {
+    const saved = await getEntityTax(schemaName, institutionId, institutionId)
+    const regime = input.simplesRegime !== undefined ? input.simplesRegime : saved?.simplesRegime ?? null
+    const assessment = input.simplesAssessment !== undefined ? input.simplesAssessment : saved?.simplesAssessment ?? null
+    if (regime === '3' && !assessment) {
+      throw new HttpError(422, 'Empresa ME/EPP precisa informar a "Apuração no Simples" — o fisco exige esse dado na NFS-e',
+        [{ field: 'simplesAssessment', message: 'Obrigatório para ME/EPP' }], ErrorCodes.REQUIRED_FIELDS)
+    }
+    // Q-N37: idem para o % aproximado de tributos do Simples (E0712 — ME/EPP não pode "não informar")
+    const aliquot = input.simplesTotalTaxAliquot !== undefined ? input.simplesTotalTaxAliquot : saved?.simplesTotalTaxAliquot ?? null
+    if (regime === '3' && aliquot == null) {
+      throw new HttpError(422, 'Empresa ME/EPP precisa informar o "% aproximado de tributos do Simples" (alíquota efetiva do DAS) — o fisco exige esse dado na NFS-e',
+        [{ field: 'simplesTotalTaxAliquot', message: 'Obrigatório para ME/EPP' }], ErrorCodes.REQUIRED_FIELDS)
+    }
   }
 
   // Reconstitui a cadeia completa que saveEntityFiscalChain espera,
@@ -109,7 +131,8 @@ export async function editEstablishment(
   // TODAS as colunas — sem o merge, um PUT daqui zeraria o que a aba
   // Tributação de outros cadastros tivesse configurado para o emitente).
   const touchesTax = input.taxRegime !== undefined || input.simplesRegime !== undefined
-    || input.simplesAssessment !== undefined || input.specialTaxRegime !== undefined || input.cnae !== undefined
+    || input.simplesAssessment !== undefined || input.simplesTotalTaxAliquot !== undefined
+    || input.specialTaxRegime !== undefined || input.cnae !== undefined
   const current = touchesTax ? await getEntityTax(schemaName, institutionId, institutionId) : null
   if (touchesTax) {
     // merge campo a campo: undefined não toca; null limpa (mesma regra do taxRegime)
@@ -119,7 +142,8 @@ export async function editEstablishment(
       ...(input.simplesRegime !== undefined ? { simplesRegime: input.simplesRegime } : {}),
       // D-N19a: a apuração só existe para ME/EPP — qualquer outro regime a limpa
       ...(input.simplesAssessment !== undefined ? { simplesAssessment: input.simplesAssessment } : {}),
-      ...((input.simplesRegime !== undefined && input.simplesRegime !== '3') ? { simplesAssessment: null } : {}),
+      ...(input.simplesTotalTaxAliquot !== undefined ? { simplesTotalTaxAliquot: input.simplesTotalTaxAliquot } : {}),
+      ...((input.simplesRegime !== undefined && input.simplesRegime !== '3') ? { simplesAssessment: null, simplesTotalTaxAliquot: null } : {}),
       ...(input.specialTaxRegime !== undefined ? { specialTaxRegime: input.specialTaxRegime } : {}),
       ...(input.cnae !== undefined ? { cnae: input.cnae } : {}),
     })

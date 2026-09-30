@@ -5,7 +5,7 @@ import { assertSchemaName } from '@shared/field-config'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { lockInstitutionCounters } from '@shared/db/counters'
 import { ListQuery, PagedRows, escapeLike } from '@shared/list'
-import { getOrderFinancialBase } from '@shared/order'
+import { assertOrderOpen, getOrderFinancialBase } from '@shared/order'
 import { getOrderBilling, upsertOrderBilling, normalizeDeadline, parseDeadline } from '@shared/order-billing'
 import {
   getInstallments, replaceInstallments, clearInstallments, materializeParcels,
@@ -54,9 +54,10 @@ export async function listOrders(
         ON t.id = s.id AND t.tb_institution_id = s.tb_institution_id
        AND t.terminal = s.terminal AND t.deleted = 'N'
      WHERE s.tb_institution_id = ? AND s.deleted = 'N'
-       AND (? IS NULL OR o.status = ?)
+       AND (? IS NULL OR o.status = ? OR (? = 'F' AND o.status = 'C'))
        AND (? IS NULL OR ce.nick_trade LIKE ? OR ce.name_company LIKE ?)`
-  const params = [institutionId, statusFilter, statusFilter, like, like, like]
+  // Q-CA7 (assunção = espelho da Q-CA3): a aba Faturados também mostra o pedido CANCELADO com nota fiscal
+  const params = [institutionId, statusFilter, statusFilter, statusFilter, like, like, like]
 
   const [rows] = await pool.query<any[]>(
     `SELECT s.id, s.number,
@@ -74,7 +75,7 @@ export async function listOrders(
                 AND i.terminal = s.terminal AND i.deleted = 'N') AS itemsCount,
             COALESCE(t.total_value, 0) AS totalValue
      ${where}
-     ORDER BY o.status, s.number DESC, s.id DESC
+     ORDER BY (o.status = 'A') DESC, s.number DESC, s.id DESC
      LIMIT ? OFFSET ?`,
     [...params, query.pageSize, query.offset]
   )
@@ -201,10 +202,8 @@ async function lockOpenOrder(
     [orderId, institutionId]
   )
   if (!rows[0]) throw new HttpError(404, `Pedido ${orderId} não encontrado`, undefined, 'ORDER_NOT_FOUND')
-  if (rows[0].status !== 'A') {
-    throw new HttpError(409, 'Pedido já faturado — alterações só via financeiro',
-      undefined, 'ORDER_INVOICED')
-  }
+  // predicado ÚNICO (gate socrático 2026-09-30): 'C' cancelado com nota fiscal → ORDER_CANCELLED
+  assertOrderOpen(String(rows[0].status), orderId)
 }
 
 /** Garante o ramo tb_order_service (lazy, PRESENÇA — open_lock SEMPRE NULL aqui). */
@@ -496,7 +495,8 @@ export async function getNegotiation(
     [orderId, institutionId]
   )
   if (!ord[0]) return null
-  const status = ord[0].status === 'F' ? 'F' : 'A'
+  // 'C' (cancelado com nota fiscal) é somente leitura como 'F' — nunca vira 'A' na tela (gate 2026-09-29)
+  const status = ord[0].status === 'A' ? 'A' : ord[0].status === 'C' ? 'C' : 'F'
 
   const billing = await getOrderBilling(pool, schemaName, institutionId, orderId)
   const base = await getOrderFinancialBase(pool, schemaName, institutionId, orderId)

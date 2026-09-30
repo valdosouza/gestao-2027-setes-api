@@ -43,8 +43,10 @@ export const establishmentUpdateDto = z.object({
   // Onda 3 (D-E3/D-E23): opSimpNac, regEspTrib e CNAE do EMITENTE — na aba
   // Tributação do Meu Estabelecimento, nunca na habilitação do emissor.
   simplesRegime:    z.enum(SIMPLES_REGIME_CODES).nullable().optional(),
-  // D-N19a: regApTribSN — só com simplesRegime '3'; NULL = dentro do sublimite (omitido no DPS)
+  // D-N19a/Q-N36: regApTribSN — só com simplesRegime '3', e aí OBRIGATÓRIO (E0166 do fisco; checado no service)
   simplesAssessment: z.enum(SIMPLES_ASSESSMENT_CODES).nullable().optional(),
+  // Q-N37: pTotTribSN — % aproximado da alíquota efetiva do Simples (TSDec2V2: até 99,99; > 0)
+  simplesTotalTaxAliquot: z.number().gt(0).max(99.99).multipleOf(0.01).nullable().optional(),
   specialTaxRegime: z.enum(SPECIAL_TAX_REGIME_CODES).nullable().optional(),
   cnae:             z.string().regex(/^\d{7}$/, 'CNAE com 7 dígitos').nullable().optional(),
   addresses:   z.array(addressBody),

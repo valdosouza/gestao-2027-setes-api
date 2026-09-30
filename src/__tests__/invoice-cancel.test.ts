@@ -397,3 +397,87 @@ describe('buildCancelPlan — bloco fiscal (Onda 3 NFS-e, D-N7)', () => {
     expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([])
   })
 })
+
+describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Valdo 2026-09-29)', () => {
+  const keyed = (lastKind: string, accessKey: string | null = '5'.repeat(50)) => [{
+    institutionId: 1, invoiceId: 100, attempt: 17, environment: 'P', dpsId: 'DPS' + '4'.repeat(42), accessKey,
+    nfseNumber: accessKey ? '704' : null, dhProc: null, createdAt: null, lastQueriedAt: null,
+    lastEvent: 2, lastKind, lastCode: null, lastMessage: null, lastDh: null, lastEventAt: null,
+  }]
+  /** Depois do plano: MAX(event)+1 devolve 2; o resto responde vazio. */
+  const execTail = (conn: any) =>
+    conn.query.mockImplementation(async (sql: string) => (/MAX\(event\)/.test(String(sql)) ? [[{ nextEvent: 2 }]] : [[]]))
+
+  it('plano: registro fiscal = a vigente DETÉM a chave (C do fisco já gravado); sem chave (R/F) ou sem transmissão = pendente', async () => {
+    let conn = fakeConn(); planQueries(conn, { fiscal: keyed('C') })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).fiscalRecord).toBe(true)
+    conn = fakeConn(); planQueries(conn, { fiscal: keyed('R', null) })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).fiscalRecord).toBe(false)
+    conn = fakeConn(); planQueries(conn)
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).fiscalRecord).toBe(false)
+  })
+
+  it('Q-CA5: chave obtida em HOMOLOGAÇÃO não é registro fiscal — cancelada segue o caminho da pendente (nota S, pedido A)', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: [{ ...keyed('C')[0], environment: 'H' }] })
+    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
+    expect(plan.fiscalRecord).toBe(false)
+  })
+
+  it('venda com registro fiscal: financeiro desfeito e evento C, mas nota/ramos/snapshots FICAM e o pedido vira C (nunca A)', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: keyed('C') })
+    execTail(conn)
+    const r = await cancelInvoice(conn as any, ...scope, { orderId: 100, reason: 'Cancelada no fisco' })
+    expect(r.event).toBe(2)
+    const after = conn.query.mock.calls.slice(PLAN_QUERIES).map((c: any) => String(c[0]))
+    expect(after[0]).toMatch(/tb_financial SET deleted = 'S'/)
+    expect(after[1]).toMatch(/tb_financial_bills SET deleted = 'S'/)
+    expect(after.some(q => /INSERT INTO `setes_setes`.tb_invoice_event/.test(q))).toBe(true)
+    expect(after.some(q => /tb_invoice SET deleted = 'S'/.test(q))).toBe(false)
+    expect(after.some(q => /tb_invoice_(merchandise|service) SET deleted = 'S'/.test(q))).toBe(false)
+    expect(after.some(q => /tb_order_item_(icms|icms_fcp|ipi|ii|pis|cofins|issqn) SET deleted/.test(q))).toBe(false)
+    expect(after.some(q => /tb_order SET status = 'A'/.test(q))).toBe(false)
+    expect(after[after.length - 1]).toMatch(/UPDATE `setes_setes`.tb_order SET status = 'C'/)
+  })
+
+  it('OS com registro fiscal: NÃO reabre (sem open_lock) e LIBERA a competência; trava D5 ocupada não bloqueia', async () => {
+    const conn = fakeConn()
+    conn.query
+      .mockResolvedValueOnce([[{ status: 'F' }]])
+      .mockResolvedValueOnce([[{ id: 8011, number: '6790', serie: '1', model: 'SE', value: '250.00', status: '0' }]])
+      .mockResolvedValueOnce([[{ event: 1, kind: 'E' }]])
+      .mockResolvedValueOnce([[]])                          // âncora
+      .mockResolvedValueOnce([[{ customerId: 55 }]])        // OS
+      .mockResolvedValueOnce([[{ id: 9000 }]])              // cliente JÁ tem outra OS aberta (trava ocupada)
+      .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([keyed('C')])                  // última transmissão: C com chave
+    execTail(conn)
+    const r = await cancelInvoice(conn as any, ...scope, { orderId: 8011, reason: 'Cancelada no fisco' })
+    expect(r.event).toBe(2)
+    const sqls = conn.query.mock.calls.map((c: any) => String(c[0]))
+    expect(sqls.some(q => /tb_service_order SET open_lock/.test(q))).toBe(false)
+    const rel = conn.query.mock.calls.find((c: any) => /UPDATE `setes_setes`.tb_contract_item_competence/.test(String(c[0])))!
+    expect(String(rel[0])).toMatch(/SET deleted = 'S'[\s\S]*tb_order_id = \?[\s\S]*deleted = 'N'/)
+    expect(rel[1]).toEqual([1, 8011])
+    expect(sqls.some(q => /tb_order SET status = 'C'/.test(q))).toBe(true)
+  })
+
+  it('pendente (sem chave) segue o caminho antigo: nota S, pedido A — e a trava D5 ocupada ainda BLOQUEIA a reabertura', async () => {
+    const conn = fakeConn()
+    conn.query
+      .mockResolvedValueOnce([[{ status: 'F' }]])
+      .mockResolvedValueOnce([[{ id: 100, number: '9', serie: '1', model: 'SE', value: '100.00', status: '0' }]])
+      .mockResolvedValueOnce([[{ event: 1, kind: 'E' }]])
+      .mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[{ customerId: 55 }]])
+      .mockResolvedValueOnce([[{ id: 7001 }]])
+      .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([keyed('R', null)])            // última transmissão: R sem chave
+    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
+    expect(plan.fiscalRecord).toBe(false)
+    expect(plan.blocks).toEqual([expect.objectContaining({ field: 'serviceOrder', ref: '7001' })])
+  })
+})

@@ -124,7 +124,7 @@ beforeEach(() => {
   jest.clearAllMocks()
   resetMunicipalTermsCache()
   headerRow = header()
-  emitterTax = { simplesRegime: '3', specialTaxRegime: null, issExigibilidade: '01' }
+  emitterTax = { simplesRegime: '3', simplesAssessment: '1', simplesTotalTaxAliquot: 6, specialTaxRegime: null, issExigibilidade: '01' }
   q.mockImplementation(async (sql: string) => {
     if (/FROM `setes_setes`\.tb_invoice i/.test(sql)) return [[headerRow]]
     if (/tb_city/.test(sql)) return [[{ ibge: '4106902' }]]
@@ -367,6 +367,12 @@ describe('MEDIUM-5 — D-N19 opSimpNac sem default; D-N20 tribISSQN pela exigibi
     await expect(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ code: 'FISCAL_EMITTER_INCOMPLETE' })
     expect(repo.insertTransmission).not.toHaveBeenCalled()
   })
+  it('Q-N36/Q-N37: o LEITOR do emitente (usado também no cancelamento) NÃO exige apuração nem % — a obrigação é só da montagem do DPS', async () => {
+    emitterTax = { simplesRegime: '3', simplesAssessment: null, simplesTotalTaxAliquot: null, specialTaxRegime: null }
+    const e = await buildEmitter(S.schema, S.inst)
+    expect(e.prest.regTrib).toEqual({ opSimpNac: '3', regEspTrib: '0' })
+    expect(e.simplesTotalTaxAliquot).toBeNull()
+  })
   it('special_tax_regime NULL → regEspTrib 0 (documentado, não é chute de imposto)', async () => {
     emitterTax = { simplesRegime: '2', specialTaxRegime: null }
     const e = await buildEmitter(S.schema, S.inst)
@@ -429,7 +435,7 @@ describe('MEDIUM-7 / D-N22 — consultar exige TRANSMITIR; minMinutes ≥ 1', ()
 // ---------------------------------------------------------------------------
 describe('LOW-1 / LOW-3 / LOW-6 / LOW-9', () => {
   it('LOW-1: dado fora do leiaute (pAliq 12 > TSDec1V2) → 422 FISCAL_DPS_INVALID com campo, sem reservar', async () => {
-    emitterTax = { ...emitterTax, simplesRegime: '1' }   // não optante: a alíquota VAI no DPS (para ME/EPP pelo SN ela é omitida — E0625)
+    emitterTax = { ...emitterTax, simplesAssessment: '2' }   // ME/EPP com ISS por fora: a alíquota VAI no DPS (pelo SN ela é omitida — E0625)
     headerRow = header({ aliqIss: 12 })
     await expect(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)).rejects.toMatchObject({ statusCode: 422, code: 'FISCAL_DPS_INVALID', fields: [expect.objectContaining({ field: 'dps', message: expect.stringMatching(/pAliq/) })] })
     expect(repo.insertTransmission).not.toHaveBeenCalled()
@@ -442,6 +448,8 @@ describe('LOW-1 / LOW-3 / LOW-6 / LOW-9', () => {
     await real.listPendingServiceInvoices(S.schema, S.inst, 50)
     const sql = String(q.mock.calls[0][0]).replace(/\s+/g, ' ')
     expect(sql).toContain("ORDER BY le.event DESC LIMIT 1), '-') IN ('A','N','S','K','-')")
+    // D3/D4 (2026-09-29): nota com registro fiscal cancelada fica VIVA com evento C — não é pendente
+    expect(sql).toMatch(/tb_invoice_event ev[^)]*ORDER BY ev\.event DESC LIMIT 1\), '-'\) <> 'C'/)
   })
   it('LOW-6: 2xx ilegível do fisco é logado só com status e tamanho — nunca a amostra do corpo', async () => {
     const original = transport.request

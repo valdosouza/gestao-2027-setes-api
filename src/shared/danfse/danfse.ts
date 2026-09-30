@@ -19,6 +19,8 @@ import { parseNfseXml, unescapeXml } from '@shared/tax-authority'
 export interface DanfseOptions {
   issuerName:   string
   municipality: string
+  /** Estado VIGENTE do fisco (voz C da transmissão que detém a chave) — carimba "NFS-e CANCELADA". */
+  cancelled?:   boolean
 }
 
 export const NFSE_PUBLIC_QUERY_URL = 'https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave='
@@ -90,6 +92,9 @@ export function extractDanfseFields(nfseXml: string): DanfseFields {
 
 export async function renderDanfse(nfseXml: string, opts: DanfseOptions): Promise<Buffer> {
   const f = extractDanfseFields(nfseXml)
+  // Gate adversarial A8 (2026-09-29): o XML em disco é o da AUTORIZAÇÃO — o cancelamento vem da
+  // VOZ do fisco (evento da chave), nunca embutido nele. Quem chama informa o estado vigente.
+  if (opts.cancelled) f.cancelled = true
   const doc = new PDFDocument({ size: 'A4', margin: 40, info: { Title: `DANFSe ${f.nNFSe ?? ''}`.trim() } })
   const chunks: Buffer[] = []
   const done = new Promise<Buffer>((resolve, reject) => {

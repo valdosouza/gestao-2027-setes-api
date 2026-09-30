@@ -13,6 +13,7 @@ import { issueInvoice, InvoiceServiceInput } from '@shared/invoice'
 import { IssLiability } from '@shared/entity-tax/entity-tax.types'
 import { persistReturn, assertReturnableInTx, ReturnPlan } from '@shared/order-return'
 import logger from '@shared/logger/logger'
+import { assertOrderOpen } from '@shared/order'
 import {
   OrderBranch, BillingOrderItem, ItemTaxRuleLink, InvoiceResult,
 } from './billing.interface'
@@ -464,9 +465,8 @@ async function persistInvoiceOnce(
       [params.orderId, institutionId]
     )
     if (!ord[0]) throw new HttpError(404, `Ordem ${params.orderId} não encontrada`)
-    if (String(ord[0].status) === 'F') {
-      throw new HttpError(409, 'Ordem já faturada', undefined, 'ORDER_INVOICED')
-    }
+    // guarda travante — MESMO predicado do service (D3/D4: 'C' nunca refatura)
+    assertOrderOpen(String(ord[0].status), params.orderId)
 
     // parcelas resolvidas SOB o lock do pedido (negociação não pode mudar por baixo)
     const parcels = await params.resolveParcels(conn)

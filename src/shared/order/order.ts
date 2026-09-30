@@ -62,6 +62,22 @@ export async function getOrderFinancialBase(
 }
 
 /**
+ * Predicado ÚNICO "faturável/editável = status 'A'" (gate socrático 2026-09-29: estado terminal novo
+ * pede UM predicado consumido por todas as portas, não cada porta negando só o que conhecia).
+ * 'F' faturado → 409 ORDER_INVOICED; 'C' cancelado com nota fiscal (D3/D4, Q-CA1) → 409
+ * ORDER_CANCELLED — nunca refatura (a nota cancelada vive com o id do pedido; refaturar a
+ * sobrescreveria); qualquer outro estado → 409 ORDER_INVOICED (cinto).
+ */
+export function assertOrderOpen(status: string | null | undefined, orderId: number): void {
+  if (status === 'A') return
+  if (status === 'C') {
+    throw new HttpError(409, `Pedido ${orderId} cancelado com nota fiscal — somente leitura; para faturar de novo abra um pedido novo`,
+      undefined, 'ORDER_CANCELLED')
+  }
+  throw new HttpError(409, 'Pedido já faturado — alterações só via financeiro', undefined, 'ORDER_INVOICED')
+}
+
+/**
  * Trava o pedido (FOR UPDATE) e exige que esteja ABERTO — agnóstico ao ramo
  * (por tb_order.status, sem JOIN em tb_order_sale/purchase). 404 se não
  * existe; 409 ORDER_INVOICED se já faturado.
@@ -76,9 +92,6 @@ export async function lockOpenOrder(
     [orderId, institutionId]
   )
   if (!rows[0]) throw new HttpError(404, `Pedido ${orderId} não encontrado`, undefined, 'ORDER_NOT_FOUND')
-  if (rows[0].status !== 'A') {
-    throw new HttpError(409, 'Pedido já faturado — alterações só via financeiro',
-      undefined, 'ORDER_INVOICED')
-  }
+  assertOrderOpen(String(rows[0].status), orderId)
   return { status: String(rows[0].status) }
 }

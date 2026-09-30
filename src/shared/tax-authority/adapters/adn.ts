@@ -167,10 +167,11 @@ export const adnAdapter: TaxAuthorityAdapter = {
     }
     // R2-2 (d): só evento GERADO (Id EVT + dhProc) e DESTA chave cancela — evento de outra NFS-e na
     // lista (resposta trocada) não é voz sobre esta; pedido ecoado (sem Id/dhProc) tampouco
-    const cancel = xmls.map(parseEventXml).find(e =>
+    const found = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).find(({ ev: e }) =>
       !!e.eventCode && CANCEL_EVENT_CODES.has(e.eventCode) && isGeneratedEventFor(e, accessKey))
-    if (!cancel) return base
-    return { ...base, status: 'cancelled', cancelled: { dhEvento: cancel.dhProc ?? cancel.dhEvento, motive: cancel.xMotivo } }
+    if (!found) return base
+    const cancel = found.ev
+    return { ...base, status: 'cancelled', cancelled: { dhEvento: cancel.dhProc ?? cancel.dhEvento, motive: cancel.xMotivo, eventXml: found.xml } }
   },
 
   async queryDpsAccessKey(ctx, dpsId): Promise<string | null> {
@@ -202,7 +203,7 @@ export const adnAdapter: TaxAuthorityAdapter = {
     if (!ev || ev.eventCode !== EVENT_CANCEL || !isGeneratedEventFor(ev, accessKey)) {
       throw unknownResponse('evento: resposta sem o evento gerado para esta chave', status, text)
     }
-    return { dhEvento: ev.dhProc ?? ev.dhEvento!, protocol: ev.eventId ?? null, raw: data }
+    return { dhEvento: ev.dhProc ?? ev.dhEvento!, protocol: ev.eventId ?? null, eventXml: xml, raw: data }
   },
 
   async municipalTerms(ctx, cMun): Promise<MunicipalTerms> {

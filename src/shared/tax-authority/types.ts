@@ -174,12 +174,15 @@ export interface NfseQuery {
   status:     'authorized' | 'cancelled' | 'unknown'
   nfseXml:    string
   dhProc:     string | null
-  cancelled?: { dhEvento: string | null; motive: string | null }
+  /** eventXml (Q-N38): o XML do evento GERADO pelo fisco, para o arquivo fiscal do contribuinte. */
+  cancelled?: { dhEvento: string | null; motive: string | null; eventXml?: string | null }
 }
 
 export interface EventRegisterResult {
   dhEvento:  string | null
   protocol?: string | null                    // Id do evento gerado (EVT…) quando o fisco o devolve
+  /** Q-N38: o XML do evento gerado (e101101) — gravado em disco ao lado da NFS-e. */
+  eventXml?: string | null
   raw:       unknown
 }
 

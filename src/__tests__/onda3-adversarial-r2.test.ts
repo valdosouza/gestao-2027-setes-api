@@ -288,7 +288,7 @@ beforeEach(() => {
   ;(authority.adapterFor as jest.Mock).mockReturnValue(adapter)
   ;(issuerRepo.getIssuer as jest.Mock).mockResolvedValue(issuerRow())
   ;(entity.getEntityFiscalFull as jest.Mock).mockImplementation(async (id: number) => fullEntity(id))
-  ;(entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '3', specialTaxRegime: '0' })
+  ;(entityTax.getEntityTax as jest.Mock).mockResolvedValue({ simplesRegime: '3', simplesAssessment: '1', simplesTotalTaxAliquot: 6, specialTaxRegime: '0' })
   ;(invoice.lockInvoice as jest.Mock).mockReset().mockResolvedValue({ id: INVOICE, number: '17', serie: '1', model: 'SE', value: 1234.5, status: '0', lastEvent: 1, lastKind: 'E' })
   ;(invoice.buildCancelPlan as jest.Mock).mockReset().mockResolvedValue(planOk([{ field: 'fiscal', ref: '1', message: 'NFS-e autorizada' }]))
   ;(invoice.cancelInvoice as jest.Mock).mockReset().mockResolvedValue(cancelled)

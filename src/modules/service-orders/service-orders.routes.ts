@@ -27,7 +27,7 @@ const router = Router()
  *       - in: query
  *         name: filter
  *         schema: { type: string }
- *         description: Filtra pelo nome do cliente
+ *         description: Filtra pelo nome do cliente; só dígitos também acha pelo nº da OS ou da nota (igualdade)
  *       - in: query
  *         name: page
  *         schema: { type: integer, minimum: 1, default: 1 }
@@ -37,7 +37,7 @@ const router = Router()
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
  *     responses:
- *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, number, customerId, customerName, status, dtRecord, itemsCount, totalValue }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, number, customerId, customerName, status, dtRecord, itemsCount, totalValue, invoiceNumber, fiscalState (none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight; null = aberta ou nota da origem), fiscalEnvironment (H|P), nfseNumber }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  *   post:

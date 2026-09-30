@@ -110,3 +110,22 @@ export async function reopenServiceOrder(
     throw err
   }
 }
+
+/**
+ * Devolve ao contrato as COMPETÊNCIAS (meses da rotina mensal) consumidas por esta OS — o fato
+ * `tb_contract_item_competence` perde o objeto e o mês volta a ser injetável pela rotina.
+ * Fonte ÚNICA dos dois atos que desfazem a OS: cancelar a OS aberta (D-A29, módulo
+ * service-orders) e cancelar a nota COM registro fiscal (Q-CA2 — a OS vira 'C' e fica como
+ * história; o serviço do mês continua devido e vai para uma OS nova).
+ */
+export async function releaseServiceOrderCompetences(
+  conn: PoolConnection, schemaName: string, institutionId: number, orderId: number
+): Promise<void> {
+  const s = assertSchema(schemaName)
+  await conn.query(
+    `UPDATE \`${s}\`.tb_contract_item_competence
+        SET deleted = 'S', updated_at = NOW()
+      WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0 AND deleted = 'N'`,
+    [institutionId, orderId]
+  )
+}

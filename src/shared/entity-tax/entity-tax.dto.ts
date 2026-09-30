@@ -19,6 +19,8 @@ export const entityTaxBody = z.object({
   taxRegime:              z.enum(TAX_REGIMES).nullable().optional(),
   simplesRegime:          z.enum(SIMPLES_REGIME_CODES).nullable().optional(),
   simplesAssessment:      z.enum(SIMPLES_ASSESSMENT_CODES).nullable().optional(),
+  // Q-N37: pTotTribSN (TSDec2V2 — até 99,99; 2 casas); > 0 (declarar 0 seria falso)
+  simplesTotalTaxAliquot: z.number().gt(0).max(99.99).multipleOf(0.01).nullable().optional(),
   specialTaxRegime:       z.enum(SPECIAL_TAX_REGIME_CODES).nullable().optional(),
   cnae:                   z.string().regex(/^\d{7}$/, 'CNAE com 7 dígitos').nullable().optional(),
   byPassSt:               sn.nullable().optional(),

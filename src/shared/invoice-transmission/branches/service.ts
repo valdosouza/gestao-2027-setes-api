@@ -10,7 +10,7 @@ import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { LAST_INVOICE_EVENT_KIND_SQL } from '@shared/invoice/invoice'
 import { openIssuer, OpenedIssuer, IssuerEnvironment } from '@shared/fiscal-issuer'
 import {
-  AuthorityContext, AuthorityHttpError, DpsInput, DpsToma, TaxAuthorityAdapter, MunicipalTerms,
+  AuthorityContext, AuthorityHttpError, DpsInput, DpsToma, DpsTotTrib, TaxAuthorityAdapter, MunicipalTerms,
   adapterFor, buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, signXml, ADN_SIGN_ALGORITHM, isLocalCredentialError,
 } from '@shared/tax-authority'
 import { TransmissionEventKind } from '../transmission.repository'
@@ -178,7 +178,7 @@ export interface EmitterIdentity {
  * O emitente É a institution (cadeia + `tb_entity_tax` da própria — D-E3/D-E23).
  * O que falta se corrige no cadastro, não no DPS (D-I17 espelhada): 422 com o campo.
  */
-export async function buildEmitter(schemaName: string, institutionId: number): Promise<{ identity: EmitterIdentity; prest: DpsInput['prest'] }> {
+export async function buildEmitter(schemaName: string, institutionId: number): Promise<{ identity: EmitterIdentity; prest: DpsInput['prest']; simplesTotalTaxAliquot: number | null }> {
   const full = await getEntityFiscalFull(institutionId)
   const missing: FieldError[] = []
   const cnpj = digitsOf(full?.company?.cnpj)
@@ -199,18 +199,54 @@ export async function buildEmitter(schemaName: string, institutionId: number): P
       [{ field: 'simplesRegime', message: 'Obrigatório para o DPS (D-N19)' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
   }
   const opSimpNac = String(tax!.simplesRegime) as '1' | '2' | '3'
-  // D-N19a (Valdo: a Setes é ME/EPP): regApTribSN só para opSimpNac 3 e só quando o emitente ultrapassou
-  // sublimite/limite (fato informado na aba Tributação); NULL = elemento OMITIDO (opcional no XSD — o
-  // fisco apura pelo SN). Não é default silencioso: é a ausência do fato, e o XSD a prevê.
+  // D-N19a/Q-N36: regApTribSN só existe para ME/EPP. Aqui só se LÊ — a OBRIGAÇÃO vive no
+  // `emitterDpsFacts` (montagem do DPS): o cancelamento também passa por este leitor e uma NFS-e
+  // autorizada não pode deixar de ser cancelável porque alguém limpou a aba Tributação.
   const regApTribSN = opSimpNac === '3' && ['1', '2', '3'].includes(String(tax?.simplesAssessment))
     ? (String(tax!.simplesAssessment) as '1' | '2' | '3') : undefined
   // regEspTrib: NULL → '0' (nenhum regime especial) é o caso comum e o default do XSD faz sentido — documentado, não silencioso
   const regEspTrib = (['0', '1', '2', '3', '4', '5', '6'].includes(String(tax?.specialTaxRegime)) ? String(tax!.specialTaxRegime) : '0') as DpsInput['prest']['regTrib']['regEspTrib']
   const im = (full!.company!.im ?? '').trim() || null
+  const aliquot = tax?.simplesTotalTaxAliquot == null ? null : Number(tax.simplesTotalTaxAliquot)
   return {
     identity: { cnpj, im, name: (full!.entity.nameCompany ?? full!.entity.nickTrade ?? '').trim(), cMunEmi: cMun! },
     prest: { cnpj, ...(im ? { im } : {}), regTrib: { opSimpNac, ...(regApTribSN ? { regApTribSN } : {}), regEspTrib } },
+    simplesTotalTaxAliquot: Number.isFinite(aliquot) ? aliquot : null,
   }
+}
+
+/** Teto do pTotTribSN (TSDec2V2 do XSD: 2 inteiros + 2 decimais). */
+export const SIMPLES_TOTAL_TAX_ALIQUOT_MAX = 99.99
+
+/**
+ * Fatos do emitente que o DPS EXIGE conforme o regime do Simples (Anexo I) — só na montagem do
+ * DPS, nunca no cancelamento (ver `buildEmitter`). Ausência → 422 local, antes de reservar tentativa.
+ *
+ * - Q-N36 (E0166 da produção, 2026-09-29): ME/EPP exige regApTribSN — a premissa da D-N19a
+ *   ("NULL = omitido, o fisco apura pelo SN") morreu; o XSD o tem opcional, a Sefin não.
+ * - Q-N37 (E0712 da produção, 2026-09-29): total aproximado de tributos (Lei 12.741) pela matriz
+ *   do Anexo I — MEI: indTotTrib=0 (E0710 proíbe pTotTribSN) · ME/EPP: pTotTribSN = % aproximado
+ *   da alíquota efetiva do Simples (E0712 proíbe indTotTrib) · não optante: só valor/percentual por
+ *   esfera (E0713) — AINDA NÃO SUPORTADO (decisão com o 1º cliente não optante); 422 honesto.
+ */
+export function emitterDpsFacts(
+  prest: DpsInput['prest'], simplesTotalTaxAliquot: number | null
+): DpsTotTrib {
+  const regime = prest.regTrib.opSimpNac
+  if (regime === '2') return { indTotTrib: '0' }
+  if (regime === '1') {
+    throw new HttpError(422, 'Emissão de NFS-e para empresa não optante do Simples ainda não é suportada — o fisco exige o total aproximado de tributos por esfera',
+      [{ field: 'simplesRegime', message: 'Não optante ainda não suportado na NFS-e' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
+  }
+  if (!prest.regTrib.regApTribSN) {
+    throw new HttpError(422, 'Informe a "Apuração no Simples" em Meu Estabelecimento → aba Tributação e transmita de novo — o fisco exige esse dado de empresa ME/EPP',
+      [{ field: 'simplesAssessment', message: 'Informe em Meu Estabelecimento → Tributação → Apuração no Simples' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
+  }
+  if (simplesTotalTaxAliquot == null || !(simplesTotalTaxAliquot > 0) || simplesTotalTaxAliquot > SIMPLES_TOTAL_TAX_ALIQUOT_MAX) {
+    throw new HttpError(422, 'Informe o "% aproximado de tributos do Simples" (alíquota efetiva do DAS) em Meu Estabelecimento → aba Tributação e transmita de novo — o fisco exige esse dado de empresa ME/EPP',
+      [{ field: 'simplesTotalTaxAliquot', message: 'Informe em Meu Estabelecimento → Tributação → % aproximado de tributos do Simples' }], ErrorCodes.FISCAL_EMITTER_INCOMPLETE)
+  }
+  return { pTotTribSN: simplesTotalTaxAliquot }
 }
 
 /** Tomador: CNPJ ou CPF + nome; endereço só quando COMPLETO (o XSD o deixa opcional). */
@@ -269,7 +305,8 @@ export async function buildDpsBase(
     throw new HttpError(422, 'Ramo de serviço sem código de tributação nacional (cTribNac) — regra de ISS sem código (D-N11a)',
       [{ field: 'nationalCode', message: 'Obrigatório' }], ErrorCodes.SERVICE_RULE_NATIONAL_CODE_REQUIRED)
   }
-  const { identity, prest } = await buildEmitter(schemaName, institutionId)
+  const { identity, prest, simplesTotalTaxAliquot } = await buildEmitter(schemaName, institutionId)
+  const totTrib = emitterDpsFacts(prest, simplesTotalTaxAliquot)
   const toma = await buildRecipient(header.entityId)
   const cLocPrestacao = await cityIbge(b.cityId)
   if (!cLocPrestacao) {
@@ -289,10 +326,10 @@ export async function buildDpsBase(
   }
   const tribISSQN = b.liability
   // Anexo I, E0625/E0621 (1ª sessão real, 2026-09-28 — a NFS-e emitida no portal mostrou alíquota 0): para o
-  // optante ME/EPP (opSimpNac 3) com ISSQN apurado PELO Simples (regApTribSN 1 ou omitido) e município de
+  // optante ME/EPP (opSimpNac 3) com ISSQN apurado PELO Simples (regApTribSN 1 — obrigatório desde a Q-N36) e município de
   // incidência conveniado, `pAliq` é PROIBIDA sem retenção (o ISS vai no DAS) e OBRIGATÓRIA (≥ 1,8 %) com
   // retenção. Fora do Simples ou apuração por fora (regApTribSN 2/3) a alíquota da regra segue no DPS.
-  const issInDas = prest.regTrib.opSimpNac === '3' && (prest.regTrib.regApTribSN ?? '1') === '1'
+  const issInDas = prest.regTrib.opSimpNac === '3' && prest.regTrib.regApTribSN === '1'
   const sendAliq = tribISSQN === '1' && !(issInDas && b.issWithheld === 'N')
   // L8 (socrático, Valdo 2026-09-28): o DPS não tem campo de base — vServ É a base que o fisco tributa. Se
   // um dia dedução/redução entrar no cálculo e a base congelada divergir do valor, a NFS-e do fisco e o ISS
@@ -317,7 +354,7 @@ export async function buildDpsBase(
       trib: {
         // D-N8: retenção/exigibilidade vêm congeladas no ramo; alíquota só quando tributável
         tribMun: { tribISSQN, tpRetISSQN: b.issWithheld === 'S' ? '2' : '1', ...(sendAliq ? { pAliq: b.aliqIss } : {}) },
-        totTrib: { indTotTrib: '0' },
+        totTrib,
       },
     },
   }
@@ -496,6 +533,8 @@ export function saveFiscalXml(cnpj: string, name: string, xml: string, when = ne
 
 export const dpsFileName  = (dpsId: string) => `${dpsId}-dps.xml`
 export const nfseFileName = (accessKey: string) => `${digitsOf(accessKey)}-nfse.xml`
+/** Q-N38: evento de CANCELAMENTO gerado pelo fisco — arquivo fiscal ao lado da NFS-e. */
+export const cancelEventFileName = (accessKey: string) => `${digitsOf(accessKey)}-evt101101.xml`
 
 /**
  * Localiza um XML pelo nome: tenta os meses das datas conhecidas (dhProc,

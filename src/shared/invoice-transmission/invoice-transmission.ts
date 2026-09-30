@@ -12,8 +12,8 @@ import { lockInstitutionCounters } from '@shared/db/counters'
 import { lockInvoice, buildCancelPlan, cancelInvoice } from '@shared/invoice'
 import { AuthorityHttpError, NfseQuery, parseNfseXml } from '@shared/tax-authority'
 import {
-  TransmissionRow, TransmissionEventRow, TransmissionEventKind, TransmissionSource,
-  latestTransmission, getTransmission, findTransmissionByDpsId, insertTransmission, setDpsId, fillAuthorityData,
+  TransmissionRow, TransmissionEventRow, TransmissionEventKind, TransmissionSource, TransmissionEnvironment,
+  latestTransmission, currentTransmissionsOf, getTransmission, findTransmissionByDpsId, insertTransmission, setDpsId, fillAuthorityData,
   insertTransmissionEvent, setTransmissionEventEffect, hasTransmissionEvent, findTransmissionEventByKind,
   touchQueriedAt, listServiceTransmissions, listLiveTransmissionsToRefresh, nextDpsNumber, setDpsNumber,
   isLiveTransmission, isAuthorized, countPendingEffects, currentOf,
@@ -22,7 +22,7 @@ import {
   readServiceInvoice, lockDpsNumber, buildDpsBase, buildSignedDps, buildSignedCancel, buildEmitter,
   openServiceIssuer, authorityContextFor, serviceAdapter, classifyAuthorityError, OUTCOME_KIND,
   firstAuthorityCode, authorityMessage, municipalTermsCached, saveFiscalXml, findFiscalXml,
-  dpsFileName, nfseFileName, nowIsoLocal, ServiceInvoiceHeader, EMITTER_FAILURE_CODES, emitterCnpj,
+  dpsFileName, nfseFileName, cancelEventFileName, nowIsoLocal, ServiceInvoiceHeader, EMITTER_FAILURE_CODES, emitterCnpj,
 } from './branches/service'
 
 /**
@@ -494,8 +494,14 @@ export async function refreshServiceTransmission(
   if (nfse.nfseXml && result.accessKey) {
     try {
       const cnpj = await emitterCnpj(institutionId)
+      const when = target.dhProc ? new Date(target.dhProc.replace(' ', 'T')) : new Date()
       if (!findFiscalXml(cnpj, nfseFileName(result.accessKey), [target.dhProc, target.createdAt])) {
-        saveFiscalXml(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, target.dhProc ? new Date(target.dhProc.replace(' ', 'T')) : new Date())
+        saveFiscalXml(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, when)
+      }
+      // Q-N38: evento de cancelamento do fisco — grava se faltar (recupera o de cancelamentos antigos)
+      const eventXml = nfse.cancelled?.eventXml
+      if (eventXml && !findFiscalXml(cnpj, cancelEventFileName(result.accessKey), [target.dhProc, target.createdAt])) {
+        saveFiscalXml(cnpj, cancelEventFileName(result.accessKey), eventXml, when)
       }
     } catch (err) {
       logger.warn('XML da NFS-e não gravado na consulta', { institutionId, invoiceId, err: errMsg(err) })
@@ -608,6 +614,18 @@ export async function cancelServiceInvoiceAtAuthority(
     throw err          // o erro sobe COMO VEIO (503/502 do transporte ou erro cru → crashlytics); o fato novo é o K
   }
 
+  // Q-N38: o evento GERADO pelo fisco vai para o arquivo fiscal ANTES da transação local (o fato já
+  // existe no fisco; falhar ao gravar só avisa — a consulta regrava depois)
+  if (registered.eventXml) {
+    try {
+      // mesma pasta da NFS-e (mês da AUTORIZAÇÃO) — a consulta procura lá e não duplica
+      saveFiscalXml(await emitterCnpj(institutionId), cancelEventFileName(tx.accessKey!), registered.eventXml,
+        tx.dhProc ? new Date(tx.dhProc.replace(' ', 'T')) : new Date())
+    } catch (err) {
+      logger.warn('XML do evento de cancelamento não gravado em disco', { institutionId, invoiceId, err: errMsg(err) })
+    }
+  }
+
   // (5) o fisco cancelou (irreversível): voz C + C local na MESMA transação; a
   // recusa local que entrou no intervalo vira pendência visível (D-I10) — a voz fica
   const dhC = toDbDateTime(registered.dhEvento ?? dhEvento)
@@ -713,6 +731,30 @@ export function fiscalStateOf(tx: TransmissionRow | null): ServiceFiscalState {
   }
 }
 
+/** Resumo fiscal de uma nota para LISTAS (selo por linha): situação + ambiente + nº da NFS-e da vigente. */
+export interface ServiceFiscalSummary {
+  state:       ServiceFiscalState
+  environment: TransmissionEnvironment | null
+  nfseNumber:  string | null
+}
+
+/**
+ * Situação fiscal de VÁRIAS notas numa leitura (lista de OS faturadas). Mesma vigente
+ * (D-N26/D-N27) e mesmo `fiscalStateOf` da seção "No fisco" — a lista nunca diverge
+ * do detalhe. Nota sem tentativa = 'none'.
+ */
+export async function getServiceFiscalSummaries(
+  schemaName: string, institutionId: number, invoiceIds: number[]
+): Promise<Map<number, ServiceFiscalSummary>> {
+  const current = await currentTransmissionsOf(schemaName, institutionId, invoiceIds)
+  const out = new Map<number, ServiceFiscalSummary>()
+  for (const id of invoiceIds) {
+    const tx = current.get(id) ?? null
+    out.set(id, { state: fiscalStateOf(tx), environment: tx?.environment ?? null, nfseNumber: tx?.nfseNumber ?? null })
+  }
+  return out
+}
+
 export async function getServiceFiscalView(schemaName: string, institutionId: number, invoiceId: number): Promise<ServiceFiscalView> {
   const s = assertSchema(schemaName)
   const { transmissions, events } = await listServiceTransmissions(s, institutionId, invoiceId)
@@ -729,7 +771,7 @@ export async function getServiceFiscalView(schemaName: string, institutionId: nu
 }
 
 /** XML da NFS-e autorizada (ou cancelada — o documento existiu) em disco; 404 se não há. */
-export async function readNfseXml(schemaName: string, institutionId: number, invoiceId: number): Promise<{ accessKey: string; xml: string }> {
+export async function readNfseXml(schemaName: string, institutionId: number, invoiceId: number): Promise<{ accessKey: string; xml: string; cancelled: boolean }> {
   const s = assertSchema(schemaName)
   const tx = await latestTransmission(pool, s, institutionId, invoiceId)
   const withKey = tx?.accessKey ? tx : (await listServiceTransmissions(s, institutionId, invoiceId)).transmissions.reverse().find(t => t.accessKey) ?? null
@@ -740,5 +782,6 @@ export async function readNfseXml(schemaName: string, institutionId: number, inv
   if (!file) {
     throw new HttpError(404, `XML da NFS-e ${withKey.accessKey} não está em disco — consulte a nota para regravar`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   }
-  return { accessKey: withKey.accessKey, xml: fs.readFileSync(file, 'utf8') }
+  // A8: cancelada = a voz vigente de quem DETÉM a chave é C (o arquivo não sabe do cancelamento)
+  return { accessKey: withKey.accessKey, xml: fs.readFileSync(file, 'utf8'), cancelled: fiscalStateOf(withKey) === 'cancelled' }
 }

@@ -8,7 +8,7 @@ import {
 } from '@shared/bank-slip'
 import { reverseCheckEvent, isCheckEventCurrent } from '@shared/check'
 import { insertCommissions, getCommissionBalanceByItem, CommissionEntryInput } from '@shared/commission'
-import { findServiceOrderForReopen, reopenServiceOrder } from '@shared/service-order'
+import { findServiceOrderForReopen, reopenServiceOrder, releaseServiceOrderCompetences } from '@shared/service-order'
 import { lockInvoice, insertInvoiceEvent, localTodayIso, LockedInvoice } from './invoice'
 import {
   latestTransmission, isLiveTransmission, isAuthorized, findTransmissionEventByKind, setTransmissionEventEffect,
@@ -30,9 +30,12 @@ import {
  *      409 INVOICE_CANCEL_BLOCKED com `fields[]` tipado (um código só —
  *      Q-P4; a tela mostra "resolva isto antes")
  *   3. EXECUTAR  D16 como invariante ÚNICO (touchesCash → caixa aberto),
- *      depois as peças, soft-delete do financeiro aberto (D6), dos snapshots
- *      fiscais por item e dos ramos, evento C (motivo, origem = E), nota
- *      `deleted='S'` (D3), pedido volta a 'A' (D5).
+ *      depois as peças, soft-delete do financeiro aberto (D6), evento C
+ *      (motivo, origem = E) e o destino da nota pelo REGISTRO FISCAL (D3/D4):
+ *        - pendente (sem chave do fisco): snapshots e ramos soft-deletados,
+ *          nota `deleted='S'` (número liberado), pedido volta a 'A' (D5), OS reabre;
+ *        - com registro fiscal: nota, ramos e snapshots FICAM (é o documento),
+ *          pedido vira 'C' (cancelado, nunca refaturável), OS libera a competência.
  *
  * Fora daqui: estorno de título baixado (settlements — D2), cancelar
  * devolução (order-returns), ramo SEFAZ (fase de transmissão), estoque (D11),
@@ -70,6 +73,12 @@ export interface CancelPlan {
   commissionEntries: CommissionEntryInput[]
   /** D16: alguma linha de caixa vai ser gravada (hoje: todo R de cheque nasce na conta 0). */
   touchesCash: boolean
+  /**
+   * D3/D4: a nota tem REGISTRO FISCAL (a vigente detém a chave do fisco). true → a nota fica
+   * viva com o evento C (número, ramos e snapshots mantidos) e o pedido vira 'C'; false →
+   * nota pendente: soft-delete, número liberado, pedido volta a 'A'.
+   */
+  fiscalRecord: boolean
 }
 
 export interface CancelInvoiceInput {
@@ -147,13 +156,8 @@ export async function buildCancelPlan(
   // Q-G3 (Valdo 2026-09-09: "a nota da OS deve ser cancelável"): ordem de
   // serviço faturada volta a ABERTA — a trava D5 (1 OS aberta por cliente) é
   // conferida AQUI, sob lock, antes de qualquer gravação. Pedido de venda → null.
+  // O bloqueio da trava é decidido DEPOIS da leitura fiscal (2f): só quem reabre a OS precisa dela.
   const serviceOrder = await findServiceOrderForReopen(conn, s, institutionId, orderId)
-  if (serviceOrder?.blockingOrderId != null) {
-    blocks.push({
-      field: 'serviceOrder', ref: String(serviceOrder.blockingOrderId),
-      message: `Cliente já tem a ordem de serviço ${serviceOrder.blockingOrderId} aberta — feche-a antes de cancelar a nota desta`,
-    })
-  }
 
   // C1 (gate socrático): o plano decide gravação, então toma o MESMO lock que
   // os escritores concorrentes — baixa manual (settleBatchTx), baixa de
@@ -331,6 +335,22 @@ export async function buildCancelPlan(
         : `Transmissão ao fisco em andamento (tentativa ${tx.attempt}) — aguarde a voz do fisco e consulte antes`
     blocks.push({ field: 'fiscal', ref: String(tx.attempt), message: msg })
   }
+  // D3/D4 do cancelamento (Valdo, reafirmada 2026-09-29 após a 1ª NFS-e cancelada em produção):
+  // nota com REGISTRO FISCAL (a NFS-e existiu no fisco — a vigente detém a chave, D-N26) NUNCA
+  // some: fica viva com o evento C, mantém número, ramos e snapshots, e o pedido vira 'C'
+  // (cancelado — nunca volta a não faturado; fiel ao PED-01 do legado: PED_FATURADO='C').
+  // Critério pelo FATO, não pelo modelo: vale para NFS-e hoje e NF-e quando o ramo existir.
+  // Q-CA5 (Valdo 2026-09-30, "siga as recomendações"): só chave obtida em PRODUÇÃO é registro fiscal —
+  // a NFS-e de homologação não tem valor jurídico; cancelada, a nota segue o caminho da pendente
+  // (soft-delete, número liberado, pedido/OS reabertos) e o teste em H não deixa pedido 'C' para sempre.
+  const fiscalRecord = !!tx?.accessKey && tx.environment === 'P'
+  // Q-G3: a trava D5 só importa para quem REABRE a OS — nota com registro fiscal não reabre
+  if (!fiscalRecord && serviceOrder?.blockingOrderId != null) {
+    blocks.push({
+      field: 'serviceOrder', ref: String(serviceOrder.blockingOrderId),
+      message: `Cliente já tem a ordem de serviço ${serviceOrder.blockingOrderId} aberta — feche-a antes de cancelar a nota desta`,
+    })
+  }
 
   // 2e. comissão: compensação pelo SALDO vivo por item (Q-P8)
   const balances = await getCommissionBalanceByItem(conn, s, institutionId, orderId)
@@ -345,6 +365,7 @@ export async function buildCancelPlan(
     serviceOrder: serviceOrder ? { openLock: serviceOrder.openLock } : null,
     checksToReverse, commissionEntries,
     touchesCash: checksToReverse.length > 0,
+    fiscalRecord,
   }
 }
 
@@ -401,20 +422,24 @@ export async function cancelInvoice(
       WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0 AND deleted = 'N'`,
     [institutionId, input.orderId]
   )
-  // snapshots fiscais por item (derivados) — o vínculo tb_order_item_tax_rule é do PEDIDO e fica
-  for (const table of ITEM_SNAPSHOT_TABLES) {
-    await conn.query(
-      `UPDATE \`${s}\`.${table} SET deleted = 'S', updated_at = NOW()
-        WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`,
-      [input.orderId, institutionId]
-    )
-  }
-  for (const table of ['tb_invoice_merchandise', 'tb_invoice_service'] as const) {
-    await conn.query(
-      `UPDATE \`${s}\`.${table} SET deleted = 'S', updated_at = NOW()
-        WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`,
-      [input.orderId, institutionId]
-    )
+  // D3: snapshots fiscais por item e ramos só somem da nota PENDENTE — na nota com registro
+  // fiscal eles SÃO o documento (o XML autorizado os declara) e ficam (legado: "impostos por
+  // item ficam"). O vínculo tb_order_item_tax_rule é do PEDIDO e fica sempre.
+  if (!plan.fiscalRecord) {
+    for (const table of ITEM_SNAPSHOT_TABLES) {
+      await conn.query(
+        `UPDATE \`${s}\`.${table} SET deleted = 'S', updated_at = NOW()
+          WHERE tb_order_id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`,
+        [input.orderId, institutionId]
+      )
+    }
+    for (const table of ['tb_invoice_merchandise', 'tb_invoice_service'] as const) {
+      await conn.query(
+        `UPDATE \`${s}\`.${table} SET deleted = 'S', updated_at = NOW()
+          WHERE id = ? AND tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`,
+        [input.orderId, institutionId]
+      )
+    }
   }
   const event = await insertInvoiceEvent(conn, s, institutionId, input.orderId, userId, {
     kind: 'C', dtRecord: localTodayIso(), note: reason, originEvent: plan.invoice.lastEvent,
@@ -433,21 +458,38 @@ export async function cancelInvoice(
         `Efeito ligado ao cancelamento manual (evento ${event})`)
     }
   }
-  // D3: nota pendente cancelada some da numeração (D4) e das listas; a trilha fica no evento
-  await conn.query(
-    `UPDATE \`${s}\`.tb_invoice SET deleted = 'S', updated_at = NOW()
-      WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
-    [input.orderId, institutionId]
-  )
-  // D5: pedido volta a aberto (número e negociação intactos; refaturável)
-  await conn.query(
-    `UPDATE \`${s}\`.tb_order SET status = 'A', updated_at = NOW()
-      WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
-    [input.orderId, institutionId]
-  )
-  // Q-G3: ordem de serviço volta a ABERTA (trava D5 restaurada — editável de novo)
-  if (plan.serviceOrder) {
-    await reopenServiceOrder(conn, schemaName, institutionId, input.orderId, plan.serviceOrder.openLock)
+  if (plan.fiscalRecord) {
+    // D3/D4 (Q-CA1/Q-CA4, Valdo 2026-09-29): nota com registro fiscal FICA — viva, com o evento C
+    // (estado derivado = cancelada), número mantido (não volta ao MAX+1). O pedido vira 'C':
+    // cancelado, somente leitura, NUNCA refaturável (a nota tem o id do pedido; faturar de novo =
+    // pedido/OS NOVO) — legado PED-01: PED_FATURADO='C'.
+    await conn.query(
+      `UPDATE \`${s}\`.tb_order SET status = 'C', updated_at = NOW()
+        WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+      [input.orderId, institutionId]
+    )
+    // Q-CA2: OS da rotina mensal devolve a competência ao contrato — o mês continua devido e a
+    // rotina pode injetá-lo numa OS nova; a OS cancelada vira história (princípio da D-A29)
+    if (plan.serviceOrder) {
+      await releaseServiceOrderCompetences(conn, schemaName, institutionId, input.orderId)
+    }
+  } else {
+    // D3: nota pendente cancelada some da numeração (D4) e das listas; a trilha fica no evento
+    await conn.query(
+      `UPDATE \`${s}\`.tb_invoice SET deleted = 'S', updated_at = NOW()
+        WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+      [input.orderId, institutionId]
+    )
+    // D5: pedido volta a aberto (número e negociação intactos; refaturável)
+    await conn.query(
+      `UPDATE \`${s}\`.tb_order SET status = 'A', updated_at = NOW()
+        WHERE id = ? AND tb_institution_id = ? AND terminal = 0`,
+      [input.orderId, institutionId]
+    )
+    // Q-G3: ordem de serviço volta a ABERTA (trava D5 restaurada — editável de novo)
+    if (plan.serviceOrder) {
+      await reopenServiceOrder(conn, schemaName, institutionId, input.orderId, plan.serviceOrder.openLock)
+    }
   }
   return {
     orderId: input.orderId, invoiceNumber: plan.invoice.number, event,

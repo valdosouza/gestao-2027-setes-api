@@ -323,6 +323,46 @@ describe('establishment service', () => {
 
     expect(taxRulePiece.clearIcmsCodesForRegime).not.toHaveBeenCalled()
   })
+
+  it('Q-N36: ME/EPP (simplesRegime 3) sem apuração → 422 no campo, NADA gravado (nem a cadeia)', async () => {
+    (repo.getEstablishmentChain as jest.Mock).mockResolvedValue(fakeChainJ())
+    await expect(editEstablishment(5, 'setes_acme', { ...baseInput, simplesRegime: '3', simplesAssessment: null }, 1))
+      .rejects.toMatchObject({ statusCode: 422, fields: [expect.objectContaining({ field: 'simplesAssessment' })] })
+    // regime 3 já gravado e o PUT só limpa a apuração → mesma recusa (estado RESULTANTE)
+    entityTaxRepo.getEntityTax.mockResolvedValue({ simplesRegime: '3', simplesAssessment: '1' })
+    await expect(editEstablishment(5, 'setes_acme', { ...baseInput, simplesAssessment: null }, 1))
+      .rejects.toMatchObject({ statusCode: 422 })
+    expect(repo.saveEstablishmentChain).not.toHaveBeenCalled()
+    expect(entityTaxRepo.upsertEntityTax).not.toHaveBeenCalled()
+  })
+
+  it('Q-N36/Q-N37: ME/EPP com apuração e % grava; sair do regime 3 limpa os dois sem exigir nada', async () => {
+    (repo.getEstablishmentChain as jest.Mock).mockResolvedValue(fakeChainJ())
+    ;(repo.saveEstablishmentChain as jest.Mock).mockResolvedValue(undefined)
+    await editEstablishment(5, 'setes_acme', { ...baseInput, simplesRegime: '3', simplesAssessment: '1', simplesTotalTaxAliquot: 6 }, 1)
+    expect(entityTaxRepo.upsertEntityTax).toHaveBeenLastCalledWith(expect.anything(), 'setes_acme', 5, 5,
+      expect.objectContaining({ simplesRegime: '3', simplesAssessment: '1', simplesTotalTaxAliquot: 6 }))
+    entityTaxRepo.getEntityTax.mockResolvedValue({ simplesRegime: '3', simplesAssessment: '1', simplesTotalTaxAliquot: 6 })
+    await editEstablishment(5, 'setes_acme', { ...baseInput, simplesRegime: '1' }, 1)
+    expect(entityTaxRepo.upsertEntityTax).toHaveBeenLastCalledWith(expect.anything(), 'setes_acme', 5, 5,
+      expect.objectContaining({ simplesRegime: '1', simplesAssessment: null, simplesTotalTaxAliquot: null }))
+  })
+
+  it('Q-N37: ME/EPP sem o % aproximado de tributos (novo ou limpando o gravado) → 422 no campo, nada gravado', async () => {
+    (repo.getEstablishmentChain as jest.Mock).mockResolvedValue(fakeChainJ())
+    await expect(editEstablishment(5, 'setes_acme', { ...baseInput, simplesRegime: '3', simplesAssessment: '1' }, 1))
+      .rejects.toMatchObject({ statusCode: 422, fields: [expect.objectContaining({ field: 'simplesTotalTaxAliquot' })] })
+    entityTaxRepo.getEntityTax.mockResolvedValue({ simplesRegime: '3', simplesAssessment: '1', simplesTotalTaxAliquot: 6 })
+    await expect(editEstablishment(5, 'setes_acme', { ...baseInput, simplesTotalTaxAliquot: null }, 1))
+      .rejects.toMatchObject({ statusCode: 422 })
+    expect(repo.saveEstablishmentChain).not.toHaveBeenCalled()
+  })
+
+  it('Q-N37: DTO aceita 6 e 99,99; recusa 0, negativo, 100 e 3 casas', () => {
+    const base = { nameCompany: 'A', nickTrade: 'A', ie: null, im: null, addresses: [], phones: [], socials: [] }
+    for (const ok of [6, 6.5, 99.99, null]) expect(establishmentUpdateDto.safeParse({ ...base, simplesTotalTaxAliquot: ok }).success).toBe(true)
+    for (const bad of [0, -1, 100, 6.123]) expect(establishmentUpdateDto.safeParse({ ...base, simplesTotalTaxAliquot: bad }).success).toBe(false)
+  })
 })
 
 // ---------------------------------------------------------------------

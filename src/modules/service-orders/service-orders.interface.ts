@@ -14,15 +14,28 @@
  * Espelho no app: apps/web/lib/app/modules/service_orders/.
  */
 
+import type { ServiceFiscalState } from '@shared/invoice-transmission'
+
 export interface ServiceOrderListRow {
   id:           number
   number:       number | null
   customerId:   number
   customerName: string | null
-  status:       'A' | 'F'
+  /** A aberta · F faturada · C cancelada com nota fiscal (Q-CA1 — somente leitura, nunca refaturável). */
+  status:       'A' | 'F' | 'C'
   dtRecord:     string | null
   itemsCount:   number
   totalValue:   number
+  /** Nº da nota da OS faturada (null na aberta). */
+  invoiceNumber: string | null
+  /**
+   * Selo fiscal da linha — situação da NFS-e pela vigente (mesmo leitor da seção
+   * "No fisco"). null = nada a mostrar: OS aberta, ou nota sem evento de emissão
+   * na web (sincronizada da origem — transmite-se lá).
+   */
+  fiscalState:       ServiceFiscalState | null
+  fiscalEnvironment: 'H' | 'P' | null
+  nfseNumber:        string | null
 }
 
 export interface ServiceOrderItemRow {
@@ -40,7 +53,7 @@ export interface ServiceOrderFull {
   number:       number | null
   customerId:   number
   customerName: string | null
-  status:       'A' | 'F'
+  status:       'A' | 'F' | 'C'   // C = cancelada com nota fiscal (D3/D4)
   dtRecord:     string | null
   items:        ServiceOrderItemRow[]
   totalValue:   number

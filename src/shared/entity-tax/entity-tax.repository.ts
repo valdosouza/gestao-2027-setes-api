@@ -19,14 +19,15 @@ export async function upsertEntityTax(
 ): Promise<void> {
   await db.query(
     `INSERT INTO ??
-       (id, tb_institution_id, consumer, tax_regime, simples_regime, simples_assessment, special_tax_regime, cnae,
+       (id, tb_institution_id, consumer, tax_regime, simples_regime, simples_assessment, simples_total_tax_aliquot, special_tax_regime, cnae,
         by_pass_st, ind_ie_dest,
         iss_exigibilidade, iss_process_nr, iss_retido, iss_ind_inc_fiscal,
         auto_send_invoice, auto_send_invoice_just_xml, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
      ON DUPLICATE KEY UPDATE
        consumer = VALUES(consumer), tax_regime = VALUES(tax_regime),
        simples_regime = VALUES(simples_regime), simples_assessment = VALUES(simples_assessment),
+       simples_total_tax_aliquot = VALUES(simples_total_tax_aliquot),
        special_tax_regime = VALUES(special_tax_regime), cnae = VALUES(cnae),
        by_pass_st = VALUES(by_pass_st), ind_ie_dest = VALUES(ind_ie_dest),
        iss_exigibilidade = VALUES(iss_exigibilidade),
@@ -37,7 +38,7 @@ export async function upsertEntityTax(
        deleted = 'N', updated_at = NOW()`,
     [`${schemaName}.tb_entity_tax`, entityId, institutionId,
      input.consumer ?? 'N', input.taxRegime ?? null,
-     input.simplesRegime ?? null, input.simplesAssessment ?? null, input.specialTaxRegime ?? null, input.cnae ?? null,
+     input.simplesRegime ?? null, input.simplesAssessment ?? null, input.simplesTotalTaxAliquot ?? null, input.specialTaxRegime ?? null, input.cnae ?? null,
      input.byPassSt ?? 'N',
      input.indIeDest ?? null, input.issExigibilidade ?? null,
      input.issProcessNr ?? null, input.issRetido ?? 'N',
@@ -55,6 +56,7 @@ export async function getEntityTax(
             tax_regime                 AS taxRegime,
             simples_regime             AS simplesRegime,
             simples_assessment         AS simplesAssessment,
+            simples_total_tax_aliquot  AS simplesTotalTaxAliquot,
             special_tax_regime         AS specialTaxRegime,
             cnae,
             by_pass_st                 AS byPassSt,
