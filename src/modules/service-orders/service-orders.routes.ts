@@ -36,9 +36,15 @@ const router = Router()
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, number, customerId, customerName, status, dtRecord, itemsCount, totalValue, invoiceNumber, fiscalState (none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight; null = aberta ou nota da origem), fiscalEnvironment (H|P), nfseNumber }' }
+ *       400: { description: 'criteria malformado ou com chave desconhecida' }
  *       401: { description: Não autenticado }
+ *       422: { description: 'Valor inválido em critério (fields[])' }
  *       500: { description: Erro interno }
  *   post:
  *     summary: Abre uma OS manual para o cliente (trava D5 — máx. 1 aberta)
@@ -132,6 +138,40 @@ router.post('/monthly-run', controller.monthly)
  *       401: { description: Não autenticado }
  */
 router.get('/expiration-suggestion', controller.suggestion)
+
+/**
+ * @swagger
+ * /api/service-orders/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de OS
+ *     description: Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2) — lista branca do módulo, sem expressão SQL.
+ *     tags: [ServiceOrders]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind, labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
+ * /api/service-orders/customer-lookup:
+ *   get:
+ *     summary: Lista de apoio de clientes do critério "cliente" da pesquisa avançada
+ *     tags: [ServiceOrders]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name } (até 50)' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/customer-lookup', controller.customerLookup)
 
 /**
  * @swagger

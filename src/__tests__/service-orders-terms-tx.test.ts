@@ -22,7 +22,6 @@ jest.mock('../shared/title-automation', () => ({
   __esModule: true,
   applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0, chargeable: 1 }),
   resolveTitleAutomationConfig: jest.fn().mockResolvedValue({ autoBankSlip: false }),
-  localIsoDate: () => '2026-09-19',
 }))
 jest.mock('../shared/order-billing', () => ({
   __esModule: true,

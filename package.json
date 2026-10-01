@@ -53,6 +53,9 @@
       "^@modules/(.*)$": "<rootDir>/src/modules/$1",
       "^@shared/(.*)$": "<rootDir>/src/shared/$1",
       "^@feature-flags/(.*)$": "<rootDir>/src/feature-flags/$1"
-    }
+    },
+    "setupFilesAfterEnv": [
+      "<rootDir>/src/test-setup/time-zone.mock.ts"
+    ]
   }
 }

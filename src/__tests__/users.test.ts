@@ -4,6 +4,7 @@
 // (mesma função do login), senha opcional no PUT (null mantém).
 // INDEPENDÊNCIA de contexto (workflow 2026-07-12): super opera qualquer
 // institution; admin do cliente tem o escopo FORÇADO à do JWT.
+import { NO_CRITERIA } from '../shared/list'
 import * as repo from '../modules/users/users.repository'
 import {
   fetchUsers, createUser, editUser, saveInstitutionLinks,
@@ -39,7 +40,7 @@ const input: UserCreateInput = {
 }
 
 /** Query paginada padrão (paginação D3/D5) usada nos cenários de lista. */
-const listQuery = { filter: '', page: 1, pageSize: 25, offset: 0 }
+const listQuery = { filter: '', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA }
 
 beforeEach(() => {
   jest.clearAllMocks()

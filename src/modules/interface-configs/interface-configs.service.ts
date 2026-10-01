@@ -1,3 +1,4 @@
+import { invalidateInstitutionZone } from '@shared/time-zone'
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows } from '@shared/list'
@@ -101,6 +102,7 @@ export async function saveConfigValue(
       institution.schemaName, institution.institutionId, interfaceId, name, tbUserId
     )
     invalidateInterfaceConfig(institution.institutionId, interfaceId)
+    invalidateInstitutionZone(institution.schemaName, institution.institutionId)   // L7 (onda TZ-1): fuso trocado vale já
     return
   }
 
@@ -128,4 +130,5 @@ export async function saveConfigValue(
     )
   }
   invalidateInterfaceConfig(institution.institutionId, interfaceId)
+  invalidateInstitutionZone(institution.schemaName, institution.institutionId)   // L7 (onda TZ-1): fuso trocado vale já
 }

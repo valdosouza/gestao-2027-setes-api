@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import { insertStatement, nextSettledCode } from '@shared/financial-settlement'
 
@@ -39,7 +40,7 @@ export async function reverseStatementLines(
     [institutionId, settledCode]
   )
   const reversalCode = await nextSettledCode(conn, s, institutionId)
-  const factDate = dtOriginal ?? localTodayIso()
+  const factDate = dtOriginal ?? await todayFor(s, institutionId, conn)   // Q-TZ1
   for (const line of lines) {
     await mirrorStatementLine(conn, s, institutionId, userId, line, {
       reversalCode, history: `Estorno: ${note}`, dtOriginal: factDate,
@@ -94,8 +95,4 @@ export async function mirrorStatementLine(
   return mirrorId
 }
 
-function localTodayIso(): string {
-  const d = new Date()
-  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0')].join('-')
-}
+

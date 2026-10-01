@@ -74,18 +74,6 @@ export interface TitleAutomationConfig {
   autoBankSlip: boolean
 }
 
-/**
- * Data de HOJE no fuso local em 'YYYY-MM-DD'. `toISOString()` seria UTC — à
- * noite em Brasília viraria o dia seguinte e divergiria do CURDATE() que o
- * estorno usa.
- */
-export function localIsoDate(now: Date = new Date()): string {
-  return [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-')
-}
 
 /**
  * "Emitir boleto automaticamente no faturamento" é config da interface

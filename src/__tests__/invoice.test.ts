@@ -51,7 +51,8 @@ describe('issueInvoice', () => {
     expect(r).toEqual({ invoiceNumber: '7', event: 3 })
     const sqls = conn.query.mock.calls.map(c => String(c[0]))
     expect(sqls[1]).toMatch(/INSERT INTO `setes_setes`.tb_invoice[\s\S]*ON DUPLICATE KEY UPDATE[\s\S]*deleted = 'N'/)
-    expect(conn.query.mock.calls[1][1]).toEqual([100, 1, 1, '7', '1', 209, 250, '55', 'obs'])
+    // dt_emission = hoje do estabelecimento (Q-TZ1), nunca CURDATE() da sessão UTC
+    expect(conn.query.mock.calls[1][1]).toEqual([100, 1, 1, '7', '1', 209, expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), 250, '55', 'obs'])
     expect(sqls[2]).toMatch(/tb_invoice_merchandise[\s\S]*ON DUPLICATE KEY UPDATE/)
     expect(sqls[3]).toMatch(/UPDATE `setes_setes`.tb_invoice_service SET deleted = 'S'/)
     expect(sqls[5]).toMatch(/INSERT INTO `setes_setes`.tb_invoice_event/)

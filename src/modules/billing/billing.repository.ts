@@ -1,10 +1,11 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchema } from '@shared/db/schema'
 import { ItemTaxCalcResult } from '@shared/tax-rule'
 import {
-  applyTitleAutomation, localIsoDate, TitleAutomationConfig,
+  applyTitleAutomation, TitleAutomationConfig,
 } from '@shared/title-automation'
 import { receiveChecksOnBilling, CheckReceiveItem } from '@shared/check'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
@@ -558,7 +559,7 @@ async function persistInvoiceOnce(
     await insertCommissions(conn, schemaName, institutionId, params.commissions)
 
     // data LOCAL do faturamento — fato gerador dos automatismos e do cheque
-    const invoiceDate = localIsoDate()
+    const invoiceDate = await todayFor(schemaName, institutionId, conn)   // Q-TZ1
 
     // recebimento de CHEQUES (D8/D9 do cheque — Infra-IA/prompts/prompt_
     // cheque_rastreabilidade.md): nasce SÓ aqui, na transação da baixa —

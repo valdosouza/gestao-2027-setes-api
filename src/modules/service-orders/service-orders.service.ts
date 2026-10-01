@@ -1,19 +1,23 @@
+import { walletSalesmanId } from '@shared/customer-wallet'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import logger from '@shared/logger/logger'
 import { contentionToHttpError } from '@shared/db/contention'
 import { getServiceFiscalSummaries } from '@shared/invoice-transmission'
 import {
   ServiceOrderListRow, ServiceOrderFull, OpenOrderInput, OrderItemInput,
   MonthlyRunInput, MonthlyRunReport, InvoiceInput, InvoiceResult,
-  ServiceProductLookupRow, BatchInvoiceInput, BatchInvoiceEntry,
+  ServiceProductLookupRow, ServiceOrderCustomerLookupRow, BatchInvoiceInput, BatchInvoiceEntry,
   BatchInvoiceReport,
 } from './service-orders.interface'
 import {
   listOrders, getOrder, openOrder, addItem, updateItem, removeItem,
   cancelOrder, monthlyRun, generateInvoice, listProductsLookup, contractPaymentDay,
   contractBillingReference, orderExists,
+  SERVICE_ORDER_SEARCH_CRITERIA, listCustomerLookup,
 } from './service-orders.repository'
+
+export { SERVICE_ORDER_SEARCH_CRITERIA }
 import {
   ORDER_NO_CONTRACT_DUE_DAY_MSG, ORDER_NO_CONTRACT_PAYMENT_TYPE_MSG,
   ORDER_STANDALONE_DUE_DAY_MSG, ORDER_STANDALONE_PAYMENT_TYPE_MSG,
@@ -31,6 +35,7 @@ export interface ServiceOrderScope {
   schemaName:    string
   institutionId: number
   userId:        number
+  role?:         string
 }
 
 export async function fetchOrders(
@@ -277,6 +282,20 @@ export async function expirationSuggestion(
     if (dia !== null) return contractDaySuggestion(year, month, dia)
   }
   return fifthBusinessDaySuggestion(year, month)
+}
+
+/** Critérios da pesquisa avançada da lista de OS (D-BA2 — sem expressão SQL). */
+export function fetchServiceOrderSearchCriteria(): PublicSearchCriterion[] {
+  return publicCriteria(SERVICE_ORDER_SEARCH_CRITERIA)
+}
+
+/** Q-BA13 (Valdo 2026-09-30): a carteira travada do vendedor vale aqui também
+ *  (peça @shared/customer-wallet — a carteira é da PESSOA, não da tela). */
+export async function fetchCustomerLookup(
+  filter: string, scope: ServiceOrderScope
+): Promise<ServiceOrderCustomerLookupRow[]> {
+  const salesmanId = await walletSalesmanId({ ...scope, role: scope.role ?? '' })
+  return listCustomerLookup(filter, scope.schemaName, scope.institutionId, salesmanId)
 }
 
 export async function fetchProductsLookup(

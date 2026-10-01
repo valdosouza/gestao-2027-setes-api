@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { HttpError } from '@shared/errors/http-error'
 import { writeManualCashierMovement } from '@shared/financial-settlement'
 import {
@@ -67,7 +68,7 @@ export async function close(
       return writeManualCashierMovement(conn, scope.schemaName, scope.institutionId, scope.userId, {
         cashierId, value: transferValue,
         history: `Transferência no fechamento do caixa ${cashierId}`,
-        dtRecord: new Date().toISOString().slice(0, 10),
+        dtRecord: await todayFor(scope.schemaName, scope.institutionId, conn),   // Q-TZ1 (era UTC: bug após as 21h)
         destinationBankAccountId: input.transferBankAccountId,
       })
     }

@@ -1,5 +1,7 @@
 import { Request } from 'express'
 import { getConfigContent } from '@shared/interface-config'
+import { CompiledCriteria, NO_CRITERIA, SearchCriterion, compileCriteria } from './search-criteria'
+import { DEFAULT_TIME_ZONE, institutionZone } from '@shared/time-zone'
 
 /**
  * Contrato de paginação das listas de pesquisa (prompt_paginacao_telas_pesquisa.md).
@@ -31,17 +33,13 @@ export interface ListQuery {
   page:     number   // 1-based
   pageSize: number
   offset:   number   // derivado: (page - 1) * pageSize
+  /** Pesquisa avançada (D-BA1): fragmento `AND (...)` compilado contra a lista
+   *  branca do módulo — o repository anexa `criteria.sql` ao WHERE e
+   *  `criteria.params` aos params, nos DOIS SELECTs (página e COUNT). */
+  criteria: CompiledCriteria
 }
 
-/**
- * Escapa os metacaracteres de LIKE (decisão do Valdo 2026-08-04, Q3 do
- * gate do módulo banks): sem isso, '_' vira coringa de 1 caractere e '%'
- * casa tudo no filtro digitado pelo usuário. Todo repository que monta
- * `%${filter}%` usa esta peça — o valor segue viajando em placeholder.
- */
-export function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, m => `\\${m}`)
-}
+export { escapeLike } from './escape-like'
 
 function toInt(value: unknown, fallback: number): number {
   const n = Number(value)
@@ -50,10 +48,22 @@ function toInt(value: unknown, fallback: number): number {
 
 /**
  * Lê e CLAMPA filter/page/pageSize da query string (valor inválido = default).
+ * Com [searchCriteria] (lista branca do módulo) compila `?criteria=<json>`.
  * Com [moduleKey], o default de pageSize sai da config `page_size` do módulo
  * (módulo sem catálogo ou request sem JWT caem no DEFAULT_PAGE_SIZE).
  */
-export async function parseListQuery(req: Request, moduleKey?: string): Promise<ListQuery> {
+export async function parseListQuery(
+  req: Request, moduleKey?: string, searchCriteria?: readonly SearchCriterion[]
+): Promise<ListQuery> {
+  // Pesquisa avançada (D-BA1): valida ANTES de qualquer I/O. Módulo sem
+  // critérios declarados + `criteria` enviado = chave desconhecida (400).
+  // Critério de data sobre DATETIME precisa da zona do estabelecimento (Q-BA14).
+  const needsZone = req.query.criteria !== undefined && req.institution
+    && (searchCriteria ?? []).some(c => c.storage === 'datetime')
+  const zone = needsZone ? await institutionZone(req.institution!) : DEFAULT_TIME_ZONE
+  const criteria = req.query.criteria === undefined
+    ? NO_CRITERIA
+    : compileCriteria(req.query.criteria, searchCriteria, zone)
   const filter = String(req.query.filter ?? '')
   const page   = Math.min(toInt(req.query.page, 1), MAX_PAGE)
 
@@ -64,7 +74,7 @@ export async function parseListQuery(req: Request, moduleKey?: string): Promise<
   }
   const pageSize = Math.min(toInt(req.query.pageSize, fallback), MAX_PAGE_SIZE)
 
-  return { filter, page, pageSize, offset: (page - 1) * pageSize }
+  return { filter, page, pageSize, offset: (page - 1) * pageSize, criteria }
 }
 
 /** Par (linhas da página, total com o mesmo WHERE) que os repositories devolvem. */

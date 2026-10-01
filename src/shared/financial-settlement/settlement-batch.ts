@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import { getPrincipalPaidTx, settlementCeiling } from './title-balance'
 import { HttpError } from '@shared/errors/http-error'
@@ -345,8 +346,8 @@ export async function generatePartnershipOrders(
       `INSERT INTO \`${schemaName}\`.tb_order
          (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
           created_at, updated_at)
-       VALUES (?, ?, 0, ?, CURDATE(), 'F', NOW(), NOW())`,
-      [paOrderId, institutionId, userId]
+       VALUES (?, ?, 0, ?, ?, 'F', NOW(), NOW())`,
+      [paOrderId, institutionId, userId, await todayFor(schemaName, institutionId, conn)]   // Q-TZ1
     )
     await conn.query(
       `INSERT INTO \`${schemaName}\`.tb_order_financial
@@ -392,8 +393,8 @@ export async function createPaCompensation(
     `INSERT INTO \`${schemaName}\`.tb_financial
        (tb_institution_id, tb_order_id, terminal, parcel, dt_expiration,
         tb_payment_types_id, tag_value, created_at, updated_at)
-     VALUES (?, ?, 0, ?, CURDATE(), ?, ?, NOW(), NOW())`,
-    [institutionId, paOrderId, parcel, paymentTypeId, tagValue]
+     VALUES (?, ?, 0, ?, ?, ?, ?, NOW(), NOW())`,
+    [institutionId, paOrderId, parcel, await todayFor(schemaName, institutionId, conn), paymentTypeId, tagValue]   // Q-TZ1
   )
   await conn.query(
     `INSERT INTO \`${schemaName}\`.tb_financial_bills
@@ -461,10 +462,11 @@ export async function reverseOnePayment(
           dt_payment, dt_real_payment, settled, tb_financial_plans_id,
           settled_code, tb_payment_types_id, status, origin_event,
           reversal_reason, created_at, updated_at, discount_value)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, CURDATE(), CURDATE(), 'S', 0,
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 'S', 0,
                ?, ?, 'R', ?, ?, NOW(), NOW(), ?)`,
       [institutionId, orderId, parcel, reversalEvent,
        o.interestValue, o.lateValue, o.discountAliquot, o.paidValue,
+       await todayFor(schemaName, institutionId, conn), await todayFor(schemaName, institutionId, conn),   // Q-TZ1: estorno é fato de HOJE no estabelecimento
        reversalCode, o.paymentTypeId, event, reason, o.discountValue ?? 0]
     )
 
@@ -498,7 +500,7 @@ export async function reverseOnePayment(
     // D-G3 (regra de recebimento, Rodada 4): o inverso HERDA dt_record (anula
     // na mesma data de disponibilidade — crédito futuro de cartão não deixa
     // o saldo de hoje negativo) e a sessão de caixa do original; dt_original
-    // = hoje (fato gerador do estorno). Sem original: CURDATE().
+    // = hoje (fato gerador do estorno). Sem original: hoje do estabelecimento (Q-TZ1).
     await conn.query(
       `INSERT INTO \`${schemaName}\`.tb_financial_statement
          (id, tb_institution_id, terminal, tb_bank_account_id, tb_cashier_id,
@@ -507,14 +509,14 @@ export async function reverseOnePayment(
           tb_payment_types_id, tb_financial_plans_id_cre,
           tb_financial_plans_id_deb, status,
           tb_financial_statement_id_origin, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, COALESCE(?, CURDATE()), 0, ?, ?, ?, ?, ?, ?, 'N', CURDATE(),
+       VALUES (?, ?, 0, ?, ?, COALESCE(?, ?), 0, ?, ?, ?, ?, ?, ?, 'N', ?,
                'N', ?, ?, ?, 'R', ?, NOW(), NOW())`,
       [Number(mxSt[0].nextId), institutionId,
        origSt[0] ? origSt[0].bankAccountId : 0,
        origSt[0] ? (origSt[0].cashierId ?? null) : null,
-       origSt[0] ? (origSt[0].dtRecord ?? null) : null,
+       origSt[0] ? (origSt[0].dtRecord ?? null) : null, await todayFor(schemaName, institutionId, conn),
        credit, debit, `Estorno baixa ${o.settledCode}`,
-       credit >= debit ? 'C' : 'D', reversalCode, userId,
+       credit >= debit ? 'C' : 'D', reversalCode, userId, await todayFor(schemaName, institutionId, conn),
        origSt[0] ? origSt[0].paymentTypeId : o.paymentTypeId,
        origSt[0] ? origSt[0].planCre : 0,
        origSt[0] ? origSt[0].planDeb : 0,
@@ -561,12 +563,12 @@ export async function reverseOnePayment(
               dt_original, conferred, tb_payment_types_id,
               tb_financial_plans_id_cre, tb_financial_plans_id_deb, status,
               tb_financial_statement_id_origin, created_at, updated_at)
-           VALUES (?, ?, 0, ?, ?, COALESCE(?, CURDATE()), 0, ?, ?, ?, ?, ?, ?, 'N', CURDATE(),
+           VALUES (?, ?, 0, ?, ?, COALESCE(?, ?), 0, ?, ?, ?, ?, ?, ?, 'N', ?,
                    'N', ?, ?, ?, 'R', ?, NOW(), NOW())`,
           [Number(mxSat[0].nextId), institutionId, sat.bankAccountId,
-           sat.cashierId ?? null, sat.dtRecord ?? null, satCredit, satDebit,
+           sat.cashierId ?? null, sat.dtRecord ?? null, await todayFor(schemaName, institutionId, conn), satCredit, satDebit,
            `Estorno ${String(sat.history ?? '')}`.slice(0, 100),
-           satCredit >= satDebit ? 'C' : 'D', reversalCode, userId,
+           satCredit >= satDebit ? 'C' : 'D', reversalCode, userId, await todayFor(schemaName, institutionId, conn),
            sat.paymentTypeId, sat.planCre, sat.planDeb, sat.id]
         )
         await conn.query(

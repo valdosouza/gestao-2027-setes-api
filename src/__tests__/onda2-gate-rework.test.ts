@@ -74,7 +74,8 @@ const regLive = (over: any = {}) => ({
 })
 const S = { schema: 'setes_setes', inst: 1, user: 7 }
 // hora LOCAL (a composição lê created_at como local, igual ao DATE_FORMAT do banco)
-const fmtLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+// Q-TZ1: o banco devolve created_at em UTC ('YYYY-MM-DD HH:MM:SS')
+const fmtLocal = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ')
 const staleAt = () => fmtLocal(new Date(Date.now() - 30 * 60_000))
 const regInFlightStale = (over: any = {}) => regLive({ requestCode: null, lastEvent: null, lastKind: null, lastBankStatus: null, lastEventAt: null, createdAt: staleAt(), ...over })
 const status = (over: any = {}) => ({

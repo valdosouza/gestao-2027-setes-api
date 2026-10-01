@@ -158,9 +158,9 @@ describe('transmitServiceInvoice — reserva sob lock → fisco FORA da transaç
     expect(sent).not.toContain('<pAliq>')   // ME/EPP pelo Simples sem retenção: alíquota PROIBIDA no DPS (E0625) — o ISS vai no DAS
     expect(sent).toContain('<dCompet>2026-09-21</dCompet>')
     // voz A (source P, dh = dhProc) + write-once do fisco
-    expect(repo.fillAuthorityData).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 10:15:30' })
+    expect(repo.fillAuthorityData).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 13:15:30' })
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, S.user,
-      expect.objectContaining({ kind: 'A', source: 'P', dh: '2026-09-21 10:15:30' }))
+      expect.objectContaining({ kind: 'A', source: 'P', dh: '2026-09-21 13:15:30' }))
     // XML em disco: STORAGE_PATH/<cnpj>/H/<yyyy>/<mm>/… — emissor de HOMOLOGAÇÃO vai para a subpasta H (Q-N38a)
     const now = new Date()
     const dir = path.join(process.env.STORAGE_PATH!, '12345678000199', 'H', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'))
@@ -255,7 +255,7 @@ describe('refreshServiceTransmission — a voz do fisco, idempotente', () => {
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
     const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
     expect(r).toMatchObject({ changed: true, kind: 'A', accessKey: KEY })
-    expect(repo.fillAuthorityData).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 10:15:30' })
+    expect(repo.fillAuthorityData).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, { accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21 13:15:30' })
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, S.user, expect.objectContaining({ kind: 'A', source: 'Q' }))
   })
 
@@ -267,7 +267,7 @@ describe('refreshServiceTransmission — a voz do fisco, idempotente', () => {
     const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
     expect(r).toMatchObject({ changed: true, kind: 'C', invoiceEvent: 2, effectRefused: null })
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, S.user,
-      expect.objectContaining({ kind: 'C', source: 'Q', dh: '2026-09-22 09:00:00' }))
+      expect.objectContaining({ kind: 'C', source: 'Q', dh: '2026-09-22 12:00:00' }))
     expect(invoice.cancelInvoice).toHaveBeenCalledWith(conn, S.schema, S.inst, S.user, { orderId: INVOICE, reason: 'Cancelada no fisco: erro na emissão do documento' })
     expect(repo.setTransmissionEventEffect).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, 2, 2, null)
   })
@@ -345,7 +345,7 @@ describe('cancelServiceInvoiceAtAuthority — D-N7: plano local → estado fisca
     expect(cIns).toBeLessThan(cLocal)
     expect(conn.commit.mock.invocationCallOrder[1]).toBeGreaterThan(cLocal)
     expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, S.user,
-      expect.objectContaining({ kind: 'C', source: 'P', dh: '2026-09-22 09:00:00' }))
+      expect.objectContaining({ kind: 'C', source: 'P', dh: '2026-09-22 12:00:00' }))
     expect(repo.setTransmissionEventEffect).toHaveBeenCalledWith(conn, S.schema, S.inst, INVOICE, 1, 2, 2, null)
   })
 

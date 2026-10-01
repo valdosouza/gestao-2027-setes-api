@@ -78,9 +78,13 @@ export interface EntityFiscalFull {
  * aplicam withFiscalRefinements POR ÚLTIMO (`.extend` não existe em
  * ZodEffects).
  */
+/** Domínio do tipo de pessoa — F física (CPF), J jurídica (CNPJ), N sem documento.
+ *  Fonte ÚNICA: o dto e o critério da pesquisa avançada (D-BA) reusam esta constante. */
+export const PERSON_TYPES = ['F', 'J', 'N'] as const
+
 export const entityFiscalBody = z.object({
   entity:      entityBody,
-  personType:  z.enum(['F', 'J', 'N']),
+  personType:  z.enum(PERSON_TYPES),
   person:      personBody.nullable().optional(),
   company:     companyBody.nullable().optional(),
   // Sem .default([]): lista AUSENTE fica undefined (não toca no banco);

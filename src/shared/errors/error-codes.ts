@@ -116,6 +116,9 @@ export const ErrorCodes = {
   ORDER_NO_BILLING:    'ORDER_NO_BILLING',
   // Transporte (handler global — gate adversarial 2026-09-06): body inválido é erro do cliente
   INVALID_JSON:        'INVALID_JSON',
+  // Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA1)
+  SEARCH_CRITERIA_INVALID:  'SEARCH_CRITERIA_INVALID',
+  SEARCH_CRITERION_INVALID: 'SEARCH_CRITERION_INVALID',
   PAYLOAD_TOO_LARGE:   'PAYLOAD_TOO_LARGE',
   // Negociação do pedido (prompt_negociacao_pedido.md)
   ORDER_NOT_FOUND:     'ORDER_NOT_FOUND',
@@ -279,6 +282,8 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   BANK_SLIP_PAYMENT_TYPE_INVALID: 'Forma informada não é forma de boleto habilitada (D15)',
   BANK_SLIP_PAYMENT_TYPE_AMBIGUOUS: 'Mais de uma forma de boleto habilitada — informe qual destina os títulos (D15)',
   INVALID_JSON:        'Corpo da requisição não é um JSON válido',
+  SEARCH_CRITERIA_INVALID:  'Pesquisa avançada malformada ou com critério que não existe na tela',
+  SEARCH_CRITERION_INVALID: 'Valor inválido em critério da pesquisa avançada',
   PAYLOAD_TOO_LARGE:   'Corpo da requisição excede o limite',
   ORDER_NOT_FOUND:     'Pedido não encontrado',
   INSTALLMENT_INVALID: 'Parcelamento inválido (parcelas 1..n contíguas, valores e datas válidos)',

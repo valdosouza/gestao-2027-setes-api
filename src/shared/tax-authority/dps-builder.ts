@@ -1,3 +1,4 @@
+import { toUtcDb, nowIsoIn, DEFAULT_TIME_ZONE } from '@shared/time-zone'
 import {
   AuthorityEnvironment, CancelEventInput, DpsInput, DpsTpInsc, ParsedEvent, ParsedNfse,
 } from './types'
@@ -62,19 +63,16 @@ function digits(s: string | number, label: string, len?: number): string {
 
 /**
  * TSDateTimeUTC: AAAA-MM-DDThh:mm:ss±hh:00 (sem milissegundos; 'Z' vira +00:00).
- * Aceita ISO com fuso; sem fuso = considera o fuso do processo (Date → local).
+ * Aceita ISO com fuso; sem fuso = hora OFICIAL de Brasília (nunca o fuso do processo — Q-TZ1).
  */
 export function formatDateTimeTz(iso: string): string {
   const m = String(iso).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/)
   if (m) return `${m[1]}T${m[2]}${m[3] === 'Z' ? '+00:00' : m[3]}`
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) throw new Error(`Data/hora inválida para o DPS: ${iso}`)
-  const off = -d.getTimezoneOffset()
-  const sign = off >= 0 ? '+' : '-'
-  const hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')
-  const mm = String(Math.abs(off) % 60).padStart(2, '0')
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${hh}:${mm}`
+  // L2 do gate socrático (onda TZ-1): sem offset = hora OFICIAL de Brasília — nunca o
+  // fuso do processo Node (servidor em UTC mandaria -00:00 ao fisco)
+  const utc = toUtcDb(iso, DEFAULT_TIME_ZONE)
+  if (!utc) throw new Error(`Data/hora inválida para o DPS: ${iso}`)
+  return nowIsoIn(DEFAULT_TIME_ZONE, new Date(`${utc.replace(' ', 'T')}Z`))
 }
 
 /** tpAmb do XSD: 1 produção · 2 homologação (produção restrita). */

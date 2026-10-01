@@ -1,3 +1,4 @@
+import { todayFor, institutionZoneFor, toZoneWall } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
@@ -16,13 +17,16 @@ import { CashierRow, ClosingItemResult } from './cashier.interface'
 
 const WEB_TERMINAL = 0
 
-function mapRow(r: any): CashierRow {
+/** Q-TZ1: dia do caixa sai por DATE_FORMAT (neutro); abertura/fechamento são
+ *  INSTANTES — devolvidos ao app na hora da ZONA do estabelecimento
+ *  ('YYYY-MM-DD HH:MM:SS'; antes era `String(Date)` do Node). */
+function mapRow(r: any, zone: string): CashierRow {
   return {
     id: Number(r.id),
-    dtRecord: r.dtRecord instanceof Date ? r.dtRecord.toISOString().slice(0, 10) : String(r.dtRecord),
+    dtRecord: String(r.dtRecord),
     userId: Number(r.userId),
-    hrBegin: r.hrBegin ? String(r.hrBegin) : null,
-    hrEnd: r.hrEnd ? String(r.hrEnd) : null,
+    hrBegin: toZoneWall(r.hrBegin, zone),
+    hrEnd: toZoneWall(r.hrEnd, zone),
   }
 }
 
@@ -31,7 +35,7 @@ export async function findOpenCashier(
 ): Promise<CashierRow | null> {
   const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
-    `SELECT id, dt_record AS dtRecord, tb_user_id AS userId,
+    `SELECT id, DATE_FORMAT(dt_record, '%Y-%m-%d') AS dtRecord, tb_user_id AS userId,
             hr_begin AS hrBegin, hr_end AS hrEnd
        FROM \`${s}\`.tb_cashier
       WHERE tb_institution_id = ? AND terminal = ? AND tb_user_id = ?
@@ -39,7 +43,7 @@ export async function findOpenCashier(
       ORDER BY id DESC LIMIT 1`,
     [institutionId, WEB_TERMINAL, userId]
   )
-  return rows[0] ? mapRow(rows[0]) : null
+  return rows[0] ? mapRow(rows[0], await institutionZoneFor(schemaName, institutionId)) : null
 }
 
 export async function getCashier(
@@ -47,13 +51,13 @@ export async function getCashier(
 ): Promise<CashierRow | null> {
   const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
-    `SELECT id, dt_record AS dtRecord, tb_user_id AS userId,
+    `SELECT id, DATE_FORMAT(dt_record, '%Y-%m-%d') AS dtRecord, tb_user_id AS userId,
             hr_begin AS hrBegin, hr_end AS hrEnd
        FROM \`${s}\`.tb_cashier
       WHERE tb_institution_id = ? AND terminal = ? AND id = ? AND deleted = 'N'`,
     [institutionId, WEB_TERMINAL, cashierId]
   )
-  return rows[0] ? mapRow(rows[0]) : null
+  return rows[0] ? mapRow(rows[0], await institutionZoneFor(schemaName, institutionId)) : null
 }
 
 /** Abre uma sessão nova — 409 se já existe uma aberta para o usuário (Q-Caixa 5). */
@@ -87,8 +91,9 @@ export async function openCashier(
         `INSERT INTO \`${s}\`.tb_cashier
            (id, tb_institution_id, terminal, dt_record, tb_user_id, hr_begin,
             created_at, updated_at, deleted)
-         VALUES (?, ?, ?, CURDATE(), ?, NOW(), NOW(), NOW(), 'N')`,
-        [id, institutionId, WEB_TERMINAL, userId]
+         VALUES (?, ?, ?, ?, ?, NOW(), NOW(), NOW(), 'N')`,
+        // Q-TZ1: o dia do caixa é o "hoje" do estabelecimento (nunca CURDATE() da sessão UTC)
+        [id, institutionId, WEB_TERMINAL, await todayFor(schemaName, institutionId, conn), userId]
       )
       await conn.commit()
       const row = await getCashier(schemaName, institutionId, id)
@@ -171,7 +176,7 @@ export async function withdrawTx(
       if (row[0].hr_end) throw new HttpError(409, 'Caixa fechado', undefined, 'CASHIER_NOT_OPEN')
 
       const result = await writeManualCashierMovement(conn, schemaName, institutionId, userId, {
-        cashierId, value, history, dtRecord: new Date().toISOString().slice(0, 10),
+        cashierId, value, history, dtRecord: await todayFor(schemaName, institutionId, conn),   // Q-TZ1 (era UTC: bug após as 21h)
         destinationBankAccountId,
       })
       await conn.commit()
@@ -246,7 +251,7 @@ export async function closeCashierTx(
     )
 
     await conn.commit()
-    return { hrEnd: String(after[0].hrEnd), closingItems, transferResult }
+    return { hrEnd: toZoneWall(after[0].hrEnd, await institutionZoneFor(schemaName, institutionId, conn)) ?? '', closingItems, transferResult }
   } catch (err) {
     await conn.rollback()
     throw err

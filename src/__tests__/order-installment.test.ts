@@ -19,13 +19,13 @@ describe('puras', () => {
     expect(parcelQuotas(300, 3)).toEqual([100, 100, 100])
   })
   it('addDays formata em data LOCAL', () => {
-    expect(addDays(new Date(2026, 8, 6), 28)).toBe('2026-10-04')
-    expect(addDays(new Date(2026, 11, 31), 1)).toBe('2027-01-01')
+    expect(addDays('2026-09-06', 28)).toBe('2026-10-04')
+    expect(addDays('2026-12-31', 1)).toBe('2027-01-01')
   })
   it('materializeParcels: base 0 ou sem dias = nada; senão 1..n com a forma do cabeçalho', () => {
-    expect(materializeParcels({ days: [0, 30], base: 0, baseDate: new Date(2026, 8, 6), paymentTypeId: 5 })).toEqual([])
-    expect(materializeParcels({ days: [], base: 100, baseDate: new Date(2026, 8, 6), paymentTypeId: 5 })).toEqual([])
-    expect(materializeParcels({ days: [0, 30], base: 100, baseDate: new Date(2026, 8, 6), paymentTypeId: 5 })).toEqual([
+    expect(materializeParcels({ days: [0, 30], base: 0, baseDate: '2026-09-06', paymentTypeId: 5 })).toEqual([])
+    expect(materializeParcels({ days: [], base: 100, baseDate: '2026-09-06', paymentTypeId: 5 })).toEqual([])
+    expect(materializeParcels({ days: [0, 30], base: 100, baseDate: '2026-09-06', paymentTypeId: 5 })).toEqual([
       { parcel: 1, dueDate: '2026-09-06', amount: 50, paymentTypeId: 5 },
       { parcel: 2, dueDate: '2026-10-06', amount: 50, paymentTypeId: 5 },
     ])
@@ -70,7 +70,7 @@ describe('getInstallments / replaceInstallments / clearInstallments', () => {
 })
 
 describe('resolveOrderParcels (composição — única fonte da tela e do faturamento)', () => {
-  const baseDate = new Date(2026, 8, 6)
+  const baseDate = '2026-09-06'
 
   it('financeiro > 0 sem billing → 422 ORDER_NO_BILLING', async () => {
     const conn = fakeConn()

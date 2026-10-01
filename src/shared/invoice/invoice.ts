@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import { HttpError } from '@shared/errors/http-error'
 
@@ -198,13 +199,14 @@ export async function issueInvoice(
     `INSERT INTO \`${s}\`.tb_invoice
        (id, tb_institution_id, terminal, issuer, number, serie,
         tb_entity_id, dt_emission, value, model, status, note, created_at, updated_at, deleted)
-     VALUES (?, ?, 0, ?, ?, ?, ?, CURDATE(), ?, ?, '0', ?, NOW(), NOW(), 'N')
+     VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, '0', ?, NOW(), NOW(), 'N')
      ON DUPLICATE KEY UPDATE
        issuer = VALUES(issuer), number = VALUES(number), serie = VALUES(serie),
-       tb_entity_id = VALUES(tb_entity_id), dt_emission = CURDATE(), value = VALUES(value),
+       tb_entity_id = VALUES(tb_entity_id), dt_emission = VALUES(dt_emission), value = VALUES(value),
        model = VALUES(model), status = '0', note = VALUES(note), deleted = 'N', updated_at = NOW()`,
     [input.orderId, institutionId, institutionId, invoiceNumber, input.serie,
-     input.recipientEntityId, input.totalValue, input.model, input.noteText || null]
+     input.recipientEntityId, await todayFor(s, institutionId, conn),   // Q-TZ1: dt_emission = hoje do estabelecimento
+     input.totalValue, input.model, input.noteText || null]
   )
   if (input.merchandise) {
     const m = input.merchandise
@@ -258,14 +260,10 @@ export async function issueInvoice(
     )
   }
   const event = await insertInvoiceEvent(conn, s, institutionId, input.orderId, userId, {
-    kind: 'E', dtRecord: input.dtRecord ?? localTodayIso(),
+    kind: 'E', dtRecord: input.dtRecord ?? await todayFor(s, institutionId, conn),
     snapshot: { number: invoiceNumber, serie: input.serie, model: input.model, value: input.totalValue },
   })
   return { invoiceNumber, event }
 }
 
-export function localTodayIso(): string {
-  const d = new Date()
-  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0')].join('-')
-}
+

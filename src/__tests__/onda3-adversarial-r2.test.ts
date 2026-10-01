@@ -487,7 +487,7 @@ describe('P1. registerEvent — o evento GERADO legítimo (Id EVT + dhProc + cha
     adnRoutes({ eventosPost: () => ok({ eventoXmlGZipB64: gz(generatedEventXml()) }) })
     const r = await cancelServiceInvoiceAtAuthority(S.schema, S.inst, S.user, INVOICE, 'cliente desistiu do serviço')
     expect(r).toMatchObject({ atAuthority: true, invoiceEvent: 2 })
-    expect(events).toEqual([expect.objectContaining({ kind: 'C', source: 'P', dh: '2026-09-28 10:00:00', invoiceEvent: 2 })])
+    expect(events).toEqual([expect.objectContaining({ kind: 'C', source: 'P', dh: '2026-09-28 13:00:00', invoiceEvent: 2 })])
     expect(invoice.cancelInvoice).toHaveBeenCalledTimes(1)
   })
 })

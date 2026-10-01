@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import { HttpError, FieldError } from '@shared/errors/http-error'
 import { assertSchema } from '@shared/db/schema'
@@ -9,7 +10,7 @@ import {
 import { reverseCheckEvent, isCheckEventCurrent } from '@shared/check'
 import { insertCommissions, getCommissionBalanceByItem, CommissionEntryInput } from '@shared/commission'
 import { findServiceOrderForReopen, reopenServiceOrder, releaseServiceOrderCompetences } from '@shared/service-order'
-import { lockInvoice, insertInvoiceEvent, localTodayIso, LockedInvoice } from './invoice'
+import { lockInvoice, insertInvoiceEvent, LockedInvoice } from './invoice'
 import {
   latestTransmission, isLiveTransmission, isAuthorized, findTransmissionEventByKind, setTransmissionEventEffect,
 } from '@shared/invoice-transmission/transmission.repository'
@@ -445,7 +446,7 @@ export async function cancelInvoice(
     }
   }
   const event = await insertInvoiceEvent(conn, s, institutionId, input.orderId, userId, {
-    kind: 'C', dtRecord: localTodayIso(), note: reason, originEvent: plan.invoice.lastEvent,
+    kind: 'C', dtRecord: await todayFor(schemaName, institutionId, conn), note: reason, originEvent: plan.invoice.lastEvent,
     snapshot: {
       number: plan.invoice.number, serie: plan.invoice.serie,
       model: plan.invoice.model, value: plan.invoice.value,

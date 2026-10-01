@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { getIssuer } from '@shared/fiscal-issuer'
 import { HttpError } from '@shared/errors/http-error'
 import {
@@ -645,7 +646,7 @@ export async function invoiceOrder(
   // do faturamento, depois do FOR UPDATE em tb_order — um PUT da negociação
   // concorrente não pode mais deixar tb_financial nascendo de uma grade que
   // já não existe; o retry em deadlock re-resolve junto com a transação.
-  const baseDate = new Date()
+  const baseDate = await todayFor(schemaName, institutionId)   // Q-TZ1: vencimentos a partir do HOJE do estabelecimento
   const resolveParcels = async (db: Queryable): Promise<ResolvedParcel[]> => {
     const resolved = await resolveOrderParcels(db, schemaName, institutionId, input.orderId,
       { noteBase: financialBase, baseDate })

@@ -20,7 +20,6 @@ jest.mock('../shared/title-automation', () => ({
   __esModule: true,
   applyTitleAutomation: jest.fn().mockResolvedValue({ autoSettled: 0, bankSlipsIssued: 0, chargeable: 2 }),
   resolveTitleAutomationConfig: jest.fn().mockResolvedValue({ autoBankSlip: false }),
-  localIsoDate: () => '2026-09-13',
 }))
 jest.mock('../shared/order-billing', () => ({
   __esModule: true,
@@ -175,7 +174,7 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
     // uma entrada por parcela, com a MESMA forma e as quotas do rateio
     expect(input).toMatchObject({
       orderId: 300,
-      dtPayment: '2026-09-13',
+      dtPayment: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),   // hoje do estabelecimento (Q-TZ1)
       parcels: [
         { parcel: 1, paymentTypeId: 6, amount: 75 },
         { parcel: 2, paymentTypeId: 6, amount: 75 },

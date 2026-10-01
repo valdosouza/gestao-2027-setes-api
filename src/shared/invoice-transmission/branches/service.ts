@@ -1,3 +1,4 @@
+import { institutionZoneFor, nowIsoIn, monthIn, DEFAULT_TIME_ZONE, Queryable } from '@shared/time-zone'
 import fs from 'fs'
 import path from 'path'
 import { PoolConnection } from 'mysql2/promise'
@@ -284,13 +285,15 @@ export interface DpsBase {
   emitter:  EmitterIdentity
 }
 
-/** ISO local com fuso do processo (formatDateTimeTz normaliza para o XSD). */
-export function nowIsoLocal(d = new Date()): string {
-  const off = -d.getTimezoneOffset()
-  const sign = off >= 0 ? '+' : '-'
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` +
-    `${sign}${p(Math.floor(Math.abs(off) / 60))}:${p(Math.abs(off) % 60)}`
+/**
+ * Agora na ZONA DO ESTABELECIMENTO, com o offset dela (formatDateTimeTz normaliza
+ * para o XSD). Q-TZ2 (Valdo 2026-09-30): antes usava o fuso do PROCESSO Node —
+ * servidor em UTC mandaria dhEmi/dhEvento com -00:00 (hora errada no fisco).
+ */
+export async function nowIsoForInstitution(
+  schemaName: string, institutionId: number, q: Queryable = pool, d = new Date()
+): Promise<string> {
+  return nowIsoIn(await institutionZoneFor(schemaName, institutionId, q), d)   // em transação: a conexão dela (C1)
 }
 
 /**
@@ -339,7 +342,7 @@ export async function buildDpsBase(
       [{ field: 'baseIss', message: 'Base do ISS ≠ valor do serviço' }], ErrorCodes.FISCAL_DPS_INVALID)
   }
   const input: Omit<DpsInput, 'serie' | 'nDps'> = {
-    environment, dhEmi: nowIsoLocal(), verAplic: VER_APLIC, dCompet: header.dtEmission,
+    environment, dhEmi: await nowIsoForInstitution(schemaName, institutionId), verAplic: VER_APLIC, dCompet: header.dtEmission,
     tpEmit: '1', cLocEmi: identity.cMunEmi, prest, toma,
     serv: {
       locPrest: { cLocPrestacao },
@@ -529,14 +532,22 @@ function cnpjRoot(cnpj: string, environment: FiscalFileEnvironment = 'P'): strin
   return environment === 'H' ? path.join(base, 'H') : base
 }
 
-function monthDir(cnpj: string, when: Date, environment: FiscalFileEnvironment = 'P'): string {
-  return path.join(cnpjRoot(cnpj, environment), String(when.getFullYear()), String(when.getMonth() + 1).padStart(2, '0'))
+/**
+ * Q-TZ7 (Valdo 2026-09-30): pasta = MÊS CONTÁBIL na zona do ESTABELECIMENTO (o mesmo
+ * mês do dCompet/dt_emission) — nunca o fuso do processo Node. Default = hora oficial.
+ */
+function monthDir(cnpj: string, when: Date, environment: FiscalFileEnvironment = 'P', zone: string = DEFAULT_TIME_ZONE): string {
+  const [year, month] = monthIn(zone, when).split('-')
+  return path.join(cnpjRoot(cnpj, environment), year, month)
 }
 
 /** Grava (mkdir -p) e devolve o caminho. Nome sem separadores por construção (Id/chave são dígitos). */
-export function saveFiscalXml(cnpj: string, name: string, xml: string, when = new Date(), environment: FiscalFileEnvironment = 'P'): string {
+export function saveFiscalXml(
+  cnpj: string, name: string, xml: string, when = new Date(), environment: FiscalFileEnvironment = 'P',
+  zone: string = DEFAULT_TIME_ZONE
+): string {
   if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error(`Nome de arquivo fiscal inválido: ${name}`)
-  const dir = monthDir(cnpj, when, environment)
+  const dir = monthDir(cnpj, when, environment, zone)
   fs.mkdirSync(dir, { recursive: true })
   const full = path.join(dir, name)
   fs.writeFileSync(full, xml, 'utf8')
@@ -554,15 +565,21 @@ export const cancelEventFileName = (accessKey: string) => `${digitsOf(accessKey)
  * Homologação procura em `<cnpj>/H` e, por compatibilidade, no layout antigo
  * (XMLs de H gravados antes da Q-N38a); produção nunca olha dentro de `H`.
  */
-export function findFiscalXml(cnpj: string, name: string, hints: (string | null | undefined)[] = [], environment: FiscalFileEnvironment = 'P'): string | null {
+export function findFiscalXml(
+  cnpj: string, name: string, hints: (string | null | undefined)[] = [], environment: FiscalFileEnvironment = 'P',
+  zone: string = DEFAULT_TIME_ZONE
+): string | null {
   const roots: FiscalFileEnvironment[] = environment === 'H' ? ['H', 'P'] : ['P']
   for (const env of roots) {
     for (const h of hints) {
       if (!h) continue
-      const d = new Date(String(h).replace(' ', 'T'))
+      const d = new Date(`${String(h).replace(' ', 'T')}Z`)   // Q-TZ1: dicas vêm do banco em UTC
       if (Number.isNaN(d.getTime())) continue
-      const p = path.join(monthDir(cnpj, d, env), name)
-      if (fs.existsSync(p)) return p
+      // Q-TZ7: o mês da zona do estabelecimento e, na virada, o da hora oficial (arquivos antigos)
+      for (const z of zone === DEFAULT_TIME_ZONE ? [zone] : [zone, DEFAULT_TIME_ZONE]) {
+        const p = path.join(monthDir(cnpj, d, env, z), name)
+        if (fs.existsSync(p)) return p
+      }
     }
     const root = cnpjRoot(cnpj, env)
     if (!fs.existsSync(root)) continue

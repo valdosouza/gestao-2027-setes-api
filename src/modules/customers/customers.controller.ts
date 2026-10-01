@@ -8,6 +8,7 @@ import {
   CustomerScope, fetchCustomers, fetchCustomer, createCustomer,
   editCustomer, removeCustomer, fetchSalesmanLookup, fetchCarrierLookup,
   fetchCustomerPartnership, saveCustomerPartnership,
+  CUSTOMER_SEARCH_CRITERIA, fetchCustomerSearchCriteria,
 } from './customers.service'
 
 /** Escopo SEMPRE do JWT (decisão 2 — o papel é por institution). */
@@ -18,7 +19,7 @@ function scopeOf(req: Request): CustomerScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'customers')
+    const query = await parseListQuery(req, 'customers', CUSTOMER_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchCustomers(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'customers GET')
@@ -67,6 +68,15 @@ export async function remove(req: Request, res: Response): Promise<void> {
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'customers/:id DELETE')
+  }
+}
+
+/** Critérios da pesquisa avançada da lista (D-BA2 — sem expressão SQL). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCustomerSearchCriteria(scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'customers/search-criteria GET')
   }
 }
 

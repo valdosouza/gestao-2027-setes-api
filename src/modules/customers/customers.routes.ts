@@ -5,6 +5,25 @@ const router = Router()
 
 /**
  * @swagger
+ * /api/customers/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de clientes
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2) — lista branca
+ *       declarada no módulo, sem expressão SQL. Com a carteira travada o
+ *       critério "salesman" não é servido (D-BA15).
+ *     tags: [Customers]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool), labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
  * /api/customers/salesman-lookup:
  *   get:
  *     summary: Lookup de vendedores (lista de apoio do form de cliente)
@@ -64,9 +83,15 @@ router.get('/carrier-lookup', controller.carrierLookup)
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, nickTrade, nameCompany, active }' }
+ *       400: { description: 'criteria malformado ou com chave desconhecida' }
  *       401: { description: Não autenticado }
+ *       422: { description: 'Valor inválido em critério (fields[])' }
  *       500: { description: Erro interno }
  *   post:
  *     summary: Criar cliente (cadeia de entidade fiscal com REUSO por documento)

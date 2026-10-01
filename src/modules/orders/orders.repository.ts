@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
@@ -301,8 +302,8 @@ export async function openOrder(
         `INSERT INTO \`${schemaName}\`.tb_order
            (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
             created_at, updated_at)
-         VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
-        [id, institutionId, userId]
+         VALUES (?, ?, 0, ?, ?, 'A', NOW(), NOW())`,
+        [id, institutionId, userId, await todayFor(schemaName, institutionId, conn)]   // Q-TZ1
       )
       await conn.query(
         `INSERT INTO \`${schemaName}\`.tb_order_sale
@@ -532,7 +533,7 @@ export async function getNegotiation(
     const days = parseDeadline(billing.deadline)
     if (days) {
       preview = materializeParcels({
-        days, base: base.base, baseDate: new Date(), paymentTypeId: billing.paymentTypeId,
+        days, base: base.base, baseDate: await todayFor(schemaName, institutionId), paymentTypeId: billing.paymentTypeId,
       }).map(p => describe(p, false))
     }
   }

@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertOrderOpen } from '@shared/order'
@@ -317,8 +318,8 @@ export async function openReturn(
         `INSERT INTO \`${schemaName}\`.tb_order
            (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
             created_at, updated_at)
-         VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
-        [id, institutionId, userId]
+         VALUES (?, ?, 0, ?, ?, 'A', NOW(), NOW())`,
+        [id, institutionId, userId, await todayFor(schemaName, institutionId, conn)]   // Q-TZ1
       )
       // tb_entity_id = cliente DERIVADO da origem (a validação "mesmo
       // cliente" do buildReturnPlan vira rede de segurança que nunca

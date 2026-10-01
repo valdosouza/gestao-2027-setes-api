@@ -5,12 +5,13 @@
 // billing e que a OS não tinha: o que é silêncio, o que é aviso, o que é
 // isolado por savepoint e o que derruba a transação.
 import {
-  applyTitleAutomation, localIsoDate, resolveTitleAutomationConfig,
+  applyTitleAutomation, resolveTitleAutomationConfig,
 } from '../shared/title-automation'
 import { tryAutoSettleByContract } from '../shared/financial-settlement'
 import { tryIssueBankSlipsOnBilling } from '../shared/bank-slip'
 import { getConfigContentFor } from '../shared/interface-config'
 import logger from '../shared/logger/logger'
+import { todayIn } from '../shared/time-zone'
 
 jest.mock('../shared/financial-settlement', () => ({
   __esModule: true,
@@ -233,11 +234,11 @@ describe('resolveTitleAutomationConfig', () => {
   })
 })
 
-describe('localIsoDate', () => {
-  it('usa a data LOCAL — 23h em Brasília não vira o dia seguinte (UTC viraria)', () => {
-    expect(localIsoDate(new Date(2026, 8, 13, 23, 30))).toBe('2026-09-13')
+describe('"hoje" do estabelecimento (Q-TZ1 — localIsoDate morreu)', () => {
+  it('23h30 em Brasília não vira o dia seguinte, com o processo em qualquer fuso', () => {
+    expect(todayIn('America/Sao_Paulo', new Date('2026-09-14T02:30:00Z'))).toBe('2026-09-13')
   })
   it('preenche mês e dia com zero à esquerda', () => {
-    expect(localIsoDate(new Date(2026, 0, 5, 10, 0))).toBe('2026-01-05')
+    expect(todayIn('America/Sao_Paulo', new Date('2026-01-05T13:00:00Z'))).toBe('2026-01-05')
   })
 })

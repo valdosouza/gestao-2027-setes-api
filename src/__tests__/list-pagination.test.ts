@@ -6,7 +6,7 @@ import { Request } from 'express'
 import { getConfigContent } from '../shared/interface-config'
 import {
   parseListQuery, pagedEnvelope, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PAGE,
-  escapeLike,
+  escapeLike, NO_CRITERIA,
 } from '../shared/list'
 
 jest.mock('../shared/interface-config', () => ({
@@ -29,12 +29,12 @@ beforeEach(() => jest.clearAllMocks())
 describe('parseListQuery (D3/D5)', () => {
   it('sem params: página 1 com default', async () => {
     const q = await parseListQuery(reqWith({}))
-    expect(q).toEqual({ filter: '', page: 1, pageSize: DEFAULT_PAGE_SIZE, offset: 0 })
+    expect(q).toEqual({ filter: '', page: 1, pageSize: DEFAULT_PAGE_SIZE, offset: 0, criteria: NO_CRITERIA })
   })
 
   it('page/pageSize válidos derivam o offset', async () => {
     const q = await parseListQuery(reqWith({ filter: 'jo', page: '3', pageSize: '50' }))
-    expect(q).toEqual({ filter: 'jo', page: 3, pageSize: 50, offset: 100 })
+    expect(q).toEqual({ filter: 'jo', page: 3, pageSize: 50, offset: 100, criteria: NO_CRITERIA })
   })
 
   it('valores inválidos caem no default (clamp, nunca rejeita)', async () => {

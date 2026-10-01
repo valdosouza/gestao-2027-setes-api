@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import { assertSchema } from '@shared/db/schema'
 import { HttpError } from '@shared/errors/http-error'
@@ -86,11 +87,6 @@ export const LAST_CHECK_STATE_SQL = (s: string, checkAlias = 'c') => `(
    ORDER BY ev.event DESC LIMIT 1
 )`
 
-function todayIso(): string {
-  const d = new Date()
-  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0')].join('-')
-}
 
 // ---------------------------------------------------------------------
 // Cabeçalho (tb_check) — imutável; D5: identidade reusa o registro
@@ -579,7 +575,7 @@ export async function returnCheckGood(
   const factoringEntityId = await lastDiscountEntity(conn, s, institutionId, check.id)
   // D7b: SEM movimento — o cheque volta à custódia (derivado: último ∈ {R,F}).
   return insertCheckEvent(conn, s, institutionId, check.id, userId, {
-    kind: 'F', dtRecord: todayIso(), entityId: factoringEntityId, note: note ?? null,
+    kind: 'F', dtRecord: await todayFor(schemaName, institutionId, conn), entityId: factoringEntityId, note: note ?? null,
   })
 }
 
@@ -744,8 +740,8 @@ export async function returnCheck(
   await conn.query(
     `INSERT INTO \`${s}\`.tb_order
        (id, tb_institution_id, terminal, tb_user_id, dt_record, status, created_at, updated_at)
-     VALUES (?, ?, 0, ?, CURDATE(), 'F', NOW(), NOW())`,
-    [newOrderId, institutionId, userId]
+     VALUES (?, ?, 0, ?, ?, 'F', NOW(), NOW())`,
+    [newOrderId, institutionId, userId, await todayFor(schemaName, institutionId, conn)]   // Q-TZ1
   )
   await conn.query(
     `INSERT INTO \`${s}\`.tb_order_financial
@@ -857,7 +853,7 @@ export async function reverseCheckEvent(
       undefined, 'CHECK_EVENT_NOT_REVERSIBLE')
   }
 
-  const dtRecord = todayIso()
+  const dtRecord = await todayFor(schemaName, institutionId, conn)
   const affected = new Set<number>([check.id])
   let core: ReversalCore | undefined
 
@@ -988,7 +984,7 @@ export async function reversePaymentWithChecks(
   }
   const core = await reverseOnePayment(conn, schemaName, institutionId, userId,
     input.orderId, input.parcel, input.paymentEvent, input.reason)
-  const dtRecord = todayIso()
+  const dtRecord = await todayFor(schemaName, institutionId, conn)
   for (const c of inCustody) {
     await insertCheckEvent(conn, s, institutionId, c.checkId, userId, {
       kind: 'X', dtRecord, settledCode: core.settledCode, originEvent: c.event, note: input.reason,

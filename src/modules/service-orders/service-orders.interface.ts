@@ -118,6 +118,12 @@ export interface InvoiceResult {
 }
 
 /** Lookup de produtos/serviços ativos (itens avulsos). */
+/** Lista de apoio de cliente do critério "cliente" da pesquisa avançada (D-BA2). */
+export interface ServiceOrderCustomerLookupRow {
+  id:   number
+  name: string
+}
+
 export interface ServiceProductLookupRow {
   id:          number
   description: string

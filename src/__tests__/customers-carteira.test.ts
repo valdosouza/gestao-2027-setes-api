@@ -2,6 +2,7 @@
 // Piloto do Framework de Configurações (decisão 15): filtro de carteira do
 // vendedor no módulo customers — restrict_customer_to_salesman='S' +
 // usuário-vendedor (tb_salesman) prende lista e GET :id à própria carteira.
+import { NO_CRITERIA } from '../shared/list'
 import * as customersRepo from '../modules/customers/customers.repository'
 import * as configRepo from '../shared/interface-config/interface-config.repository'
 import * as fieldConfigRepo from '../shared/field-config/field-config.repository'
@@ -39,7 +40,7 @@ function setRestriction(on: boolean) {
 }
 
 /** Query paginada padrão (paginação D3/D5) usada nos cenários de lista. */
-const listQuery = { filter: '', page: 1, pageSize: 25, offset: 0 }
+const listQuery = { filter: '', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA }
 
 beforeEach(() => {
   jest.clearAllMocks()

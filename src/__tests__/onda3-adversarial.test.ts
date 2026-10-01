@@ -579,7 +579,7 @@ describe('B. refreshServiceTransmission — voz do fisco, idempotência, efeito 
     adapter.queryNfse.mockResolvedValue(cancelledVoice())
     const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
     expect(r).toMatchObject({ changed: true, kind: 'C', invoiceEvent: null, effectRefused: expect.stringMatching(/baixa/) })
-    expect(events).toEqual([expect.objectContaining({ kind: 'C', dh: '2026-09-22 09:00:00', invoiceEvent: null, message: expect.stringMatching(/^Efeito recusado: /) })])
+    expect(events).toEqual([expect.objectContaining({ kind: 'C', dh: '2026-09-22 12:00:00', invoiceEvent: null, message: expect.stringMatching(/^Efeito recusado: /) })])
     const sqls = conn.query.mock.calls.map(c => String(c[0]))
     expect(sqls).toContain('SAVEPOINT fiscal_cancel_effect'); expect(sqls).toContain('ROLLBACK TO SAVEPOINT fiscal_cancel_effect')
     expect(conn.commit).toHaveBeenCalledTimes(1); expect(conn.rollback).not.toHaveBeenCalled()
@@ -990,9 +990,9 @@ describe('F. fiscal-issuer — PKCS#12 na porta de entrada (node-forge real)', (
     expect(() => storeIssuerCertificate(S.schema, S.inst, toPfx(EXPIRED.keyPem, [EXPIRED.cert], 'senha'), 'senha')).toThrow(expect.objectContaining({ statusCode: 409, code: 'FISCAL_CERT_EXPIRED' }))
     expect(hasSecret(vault('P').cert)).toBe(false); expect(hasSecret(vault('P').key)).toBe(false)
   })
-  it('toDbDateTime tolera lixo (null) e mantém a hora do fisco sem converter fuso', () => {
+  it('toDbDateTime tolera lixo (null) e grava a voz do fisco como INSTANTE UTC (Q-TZ1)', () => {
     expect(toDbDateTime('garbage')).toBeNull(); expect(toDbDateTime(null)).toBeNull()
-    expect(toDbDateTime('2026-09-21T10:15:30.123-03:00')).toBe('2026-09-21 10:15:30')
-    expect(toDbDateTime('2026-09-21')).toBe('2026-09-21 00:00:00')
+    expect(toDbDateTime('2026-09-21T10:15:30.123-03:00')).toBe('2026-09-21 13:15:30')
+    expect(toDbDateTime('2026-09-21')).toBe('2026-09-21 03:00:00')   // sem offset = hora de Brasília
   })
 })

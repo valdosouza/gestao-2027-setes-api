@@ -3,6 +3,7 @@
 // da OS é a existência do ciclo. Fecha o vazamento apontado pelo setes-conceito:
 // venda web com item de serviço (natureza sem ciclo) NÃO é alcançada pelo
 // módulo de OS (DELETE/itens/faturar → 404), e a lista/abertura só olham o ciclo.
+import { NO_CRITERIA } from '../shared/list'
 import pool from '../shared/db/connection'
 import { cancelOrder, listOrders, openOrder, addItem, updateItem, removeItem } from '../modules/service-orders/service-orders.repository'
 
@@ -57,7 +58,7 @@ describe('identidade da OS = ciclo (tb_service_order)', () => {
 
   it('lista parte do CICLO e lê o tomador da natureza', async () => {
     mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
-    await listOrders('A', { filter: '', page: 1, pageSize: 25, offset: 0 } as any, 'setes_setes', 1)
+    await listOrders('A', { filter: '', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any, 'setes_setes', 1)
     const sql = String(mockQuery.mock.calls[0][0])
     expect(sql).toMatch(/FROM `setes_setes`\.tb_service_order c[\s\S]*INNER JOIN `setes_setes`\.tb_order_service s/)
     expect(sql).toMatch(/c\.number/)

@@ -1,3 +1,4 @@
+import { runWithOperationClock } from '@shared/time-zone'
 import express from 'express'
 import swaggerUi from 'swagger-ui-express'
 import dotenv from 'dotenv'
@@ -33,6 +34,9 @@ app.use((req, res, next) => {
 })
 
 // Limite elevado para PUT /api/core/theme com logoBase64 (setes-app Fase 1, decisão 16)
+// Q-TZ8: relógio ÚNICO por operação — todo "hoje" calculado nesta requisição usa o
+// mesmo instante (um faturamento às 23:59:59 não grava dias diferentes)
+app.use((_req, _res, next) => runWithOperationClock(new Date(), next))
 app.use(express.json({ limit: '2mb' }))
 
 // Swagger documentation

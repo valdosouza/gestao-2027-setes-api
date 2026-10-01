@@ -1,9 +1,10 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import { assertSchema } from '@shared/db/schema'
 import { HttpError } from '@shared/errors/http-error'
 import { retargetTitleCharge } from '@shared/title-charge'
 import { round2 } from '@shared/money'
-import { localTodayIso } from '@shared/invoice/invoice'   // D-G36: liquidação não é no futuro   // L2: um arredondador por ponta (regra do DECIMAL)
+// D-G36: liquidação não é no futuro — "hoje" do estabelecimento (Q-TZ1)   // L2: um arredondador por ponta (regra do DECIMAL)
 import { PRINCIPAL_PAID_SQL } from '@shared/financial-settlement/title-balance'
 import {
   settleBatchTx, reverseOnePayment, SettleTitleInput,
@@ -338,11 +339,6 @@ async function insertEvent(
   return event
 }
 
-function todayIso(): string {
-  const d = new Date()
-  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0')].join('-')
-}
 
 /**
  * EMISSÃO (evento E): valida carteira ativa, títulos a RECEBER abertos do
@@ -467,7 +463,7 @@ export async function issueBankSlip(
       throw new HttpError(400, 'Boleto agrupado exige vencimento informado',
         [{ field: 'dtExpiration', message: 'Obrigatório' }], 'BANK_SLIP_EXPIRATION_REQUIRED')
     }
-    dtExpiration = locked[0].dtExpiration ?? todayIso()
+    dtExpiration = locked[0].dtExpiration ?? await todayFor(schemaName, institutionId, conn)
   }
   const value = round2(locked.reduce((acc, t) => acc + t.balance, 0))
 
@@ -504,10 +500,10 @@ export async function issueBankSlip(
         aliq_interest, aliq_late, value_late_min, aliq_fine, value_fine, value_rate,
         instruction, protest_days, protest_day_kind, negativation_days,
         tb_user_id, created_at, updated_at, deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
              ?, NOW(), NOW(), 'N')`,
     [id, institutionId, agreement.id, agreement.bankAccountId, agreement.chargeKindId,
-     ourNumber, documentNumber, dtExpiration, value, agreement.accept,
+     ourNumber, documentNumber, await todayFor(schemaName, institutionId, conn), dtExpiration,   // Q-TZ1 value, agreement.accept,
      agreement.aliqDiscount, discountValue, discountValue != null ? dtExpiration : null,
      agreement.aliqInterest, agreement.aliqLate, agreement.valueLateMin,
      agreement.aliqFine, agreement.valueFine, agreement.valueRate,
@@ -526,7 +522,7 @@ export async function issueBankSlip(
     )
   }
   await insertEvent(conn, s, institutionId, id, userId, {
-    kind: 'E', dtRecord: todayIso(), source: input.source ?? 'M',
+    kind: 'E', dtRecord: await todayFor(schemaName, institutionId, conn), source: input.source ?? 'M',
     bankAccountId: agreement.bankAccountId, paidValue: null,
   })
 
@@ -605,7 +601,7 @@ export async function settleBankSlip(
   // D-G36 (Valdo 2026-09-13): a data do pagamento decide se o desconto congelado
   // ainda vale (`dt_discount_until`) — sem limite, retro-datar ressuscitava um
   // desconto vencido. Liquidação não acontece no futuro.
-  if (input.dtPayment > localTodayIso()) {
+  if (input.dtPayment > await todayFor(schemaName, institutionId, conn)) {
     throw new HttpError(422, 'Data do pagamento no futuro — a liquidação registra o que já entrou',
       [{ field: 'dtPayment', message: 'Data futura' }], 'BANK_SLIP_FUTURE_PAYMENT')
   }
@@ -718,7 +714,7 @@ export async function cancelBankSlip(
     throw new HttpError(409, `Boleto ${slip.id} não está em aberto`, undefined, 'BANK_SLIP_NOT_OPEN')
   }
   return insertEvent(conn, s, institutionId, slip.id, userId, {
-    kind: 'C', dtRecord: todayIso(), source, note: note ?? null,
+    kind: 'C', dtRecord: await todayFor(schemaName, institutionId, conn), source, note: note ?? null,
   })
 }
 
@@ -768,7 +764,7 @@ export async function reverseBankSlipSettlement(
     reversalCode = core.settledCode
   }
   const event = await insertEvent(conn, s, institutionId, slip.id, userId, {
-    kind: 'X', dtRecord: todayIso(), source: 'M', settledCode: reversalCode,
+    kind: 'X', dtRecord: await todayFor(schemaName, institutionId, conn), source: 'M', settledCode: reversalCode,
     originEvent: slip.lastEvent, note: reason,
   })
   return { event, reversed: pays.length, settledCode: reversalCode }

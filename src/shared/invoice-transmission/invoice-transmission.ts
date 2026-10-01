@@ -1,3 +1,4 @@
+import { DEFAULT_TIME_ZONE, toUtcDb, institutionZoneFor, withZoneWall } from '@shared/time-zone'
 import fs from 'fs'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
@@ -22,7 +23,7 @@ import {
   readServiceInvoice, lockDpsNumber, buildDpsBase, buildSignedDps, buildSignedCancel, buildEmitter,
   openServiceIssuer, authorityContextFor, serviceAdapter, classifyAuthorityError, OUTCOME_KIND,
   firstAuthorityCode, authorityMessage, municipalTermsCached, saveFiscalXml, findFiscalXml,
-  dpsFileName, nfseFileName, cancelEventFileName, nowIsoLocal, ServiceInvoiceHeader, EMITTER_FAILURE_CODES, emitterCnpj,
+  dpsFileName, nfseFileName, cancelEventFileName, nowIsoForInstitution, ServiceInvoiceHeader, EMITTER_FAILURE_CODES, emitterCnpj,
 } from './branches/service'
 
 /**
@@ -68,11 +69,10 @@ export const IN_FLIGHT_MINUTES = 10
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 255)
 
 /** Data/hora do fisco (ISO com fuso) → 'YYYY-MM-DD HH:MM:SS' como veio (sem converter fuso — é a voz dele). */
+/** Voz do fisco/banco ('…T13:45:10-03:00', 'Z' ou só a data) → INSTANTE UTC para gravar
+ *  (Q-TZ1). Sem offset = hora oficial de Brasília (o terceiro fala na hora dele). */
 export function toDbDateTime(v: string | null | undefined): string | null {
-  if (!v) return null
-  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(String(v))
-  if (!m) return null
-  return `${m[1]} ${m[2] ?? '00'}:${m[3] ?? '00'}:${m[4] ?? '00'}`
+  return toUtcDb(v, DEFAULT_TIME_ZONE)
 }
 
 async function withInvoiceTx<T>(
@@ -211,7 +211,7 @@ export async function transmitServiceInvoice(
 
   // (e) o DPS assinado em disco — snapshot do que foi dito ao fisco
   try {
-    saveFiscalXml(base.emitter.cnpj, dpsFileName(reserved.dpsId), reserved.xml, new Date(), environment)
+    saveFiscalXml(base.emitter.cnpj, dpsFileName(reserved.dpsId), reserved.xml, new Date(), environment, await institutionZoneFor(s, institutionId))
   } catch (err) {
     logger.warn('DPS assinado não gravado em disco', { institutionId, invoiceId, attempt: reserved.attempt, err: errMsg(err) })
   }
@@ -252,7 +252,7 @@ export async function transmitServiceInvoice(
     }
   })
   try {
-    saveFiscalXml(base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment)
+    saveFiscalXml(base.emitter.cnpj, nfseFileName(outcome.accessKey), outcome.nfseXml, new Date(), environment, await institutionZoneFor(s, institutionId))
   } catch (err) {
     logger.error('XML da NFS-e autorizada NÃO gravado em disco — a consulta regrava', { institutionId, invoiceId, accessKey: outcome.accessKey, err: errMsg(err) })
   }
@@ -521,7 +521,7 @@ export async function refreshServiceTransmission(
       // ainda estar processando o pedido; "ambíguo não é N" (mesma lição do "ambíguo não é F")
       if (tx.lastKind === 'K' && (tx.lastEventAgeMinutes ?? 0) >= IN_FLIGHT_MINUTES) {
         await insertTransmissionEvent(conn, s, institutionId, invoiceId, tx.attempt, userId, {
-          kind: 'N', source, dh: toDbDateTime(nowIsoLocal()), message: 'Pedido de cancelamento não consta no fisco — NFS-e segue autorizada',
+          kind: 'N', source, dh: toDbDateTime(await nowIsoForInstitution(s, institutionId, conn)), message: 'Pedido de cancelamento não consta no fisco — NFS-e segue autorizada',
         })
         changed = true; kind = 'N'
       }
@@ -536,14 +536,15 @@ export async function refreshServiceTransmission(
   if (nfse.nfseXml && result.accessKey) {
     try {
       const cnpj = await emitterCnpj(institutionId)
-      const when = target.dhProc ? new Date(target.dhProc.replace(' ', 'T')) : new Date()
-      if (!findFiscalXml(cnpj, nfseFileName(result.accessKey), [target.dhProc, target.createdAt], target.environment)) {
-        saveFiscalXml(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, when, target.environment)
+      const zone = await institutionZoneFor(s, institutionId)   // Q-TZ7 (fora de transação)
+      const when = target.dhProc ? new Date(`${target.dhProc.replace(' ', 'T')}Z`) : new Date()   // Q-TZ1: banco em UTC
+      if (!findFiscalXml(cnpj, nfseFileName(result.accessKey), [target.dhProc, target.createdAt], target.environment, zone)) {
+        saveFiscalXml(cnpj, nfseFileName(result.accessKey), nfse.nfseXml, when, target.environment, zone)
       }
       // Q-N38: evento de cancelamento do fisco — grava se faltar (recupera o de cancelamentos antigos)
       const eventXml = nfse.cancelled?.eventXml
-      if (eventXml && !findFiscalXml(cnpj, cancelEventFileName(result.accessKey), [target.dhProc, target.createdAt], target.environment)) {
-        saveFiscalXml(cnpj, cancelEventFileName(result.accessKey), eventXml, when, target.environment)
+      if (eventXml && !findFiscalXml(cnpj, cancelEventFileName(result.accessKey), [target.dhProc, target.createdAt], target.environment, zone)) {
+        saveFiscalXml(cnpj, cancelEventFileName(result.accessKey), eventXml, when, target.environment, zone)
       }
     } catch (err) {
       logger.warn('XML da NFS-e não gravado na consulta', { institutionId, invoiceId, err: errMsg(err) })
@@ -626,12 +627,12 @@ export async function cancelServiceInvoiceAtAuthority(
   const warnings: string[] = []
   const terms = await municipalTermsCached(adapter, ctx, identity.cMunEmi)
   if (terms?.cancelDays != null && tx.dhProc) {
-    const limit = new Date(tx.dhProc.replace(' ', 'T')).getTime() + terms.cancelDays * 86_400_000
+    const limit = new Date(`${tx.dhProc.replace(' ', 'T')}Z`).getTime() + terms.cancelDays * 86_400_000   // Q-TZ1: UTC
     if (limit < Date.now()) warnings.push(`Prazo de cancelamento do município (${terms.cancelDays} dias após ${tx.dhProc}) já passou — o fisco pode recusar`)
   }
 
   // (4) pedido ao fisco — FORA de transação
-  const dhEvento = nowIsoLocal()
+  const dhEvento = await nowIsoForInstitution(s, institutionId)
   const signed = buildSignedCancel(tx.accessKey!, motive, dhEvento, tx.environment, identity.cnpj, opened)
   let registered
   try {
@@ -662,7 +663,8 @@ export async function cancelServiceInvoiceAtAuthority(
     try {
       // mesma pasta da NFS-e (mês da AUTORIZAÇÃO) — a consulta procura lá e não duplica
       saveFiscalXml(await emitterCnpj(institutionId), cancelEventFileName(tx.accessKey!), registered.eventXml,
-        tx.dhProc ? new Date(tx.dhProc.replace(' ', 'T')) : new Date(), tx.environment)
+        tx.dhProc ? new Date(`${tx.dhProc.replace(' ', 'T')}Z`) : new Date(), tx.environment,
+        await institutionZoneFor(s, institutionId))   // Q-TZ1: UTC · Q-TZ7: mês da zona
     } catch (err) {
       logger.warn('XML do evento de cancelamento não gravado em disco', { institutionId, invoiceId, err: errMsg(err) })
     }
@@ -806,10 +808,19 @@ export async function getServiceFiscalView(schemaName: string, institutionId: nu
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (withKey?.accessKey) {
     try {
-      xmlAvailable = !!findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment)   // L4
+      xmlAvailable = !!findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, await institutionZoneFor(s, institutionId))   // L4 · Q-TZ7
     } catch { xmlAvailable = false }
   }
-  return { invoiceId, state: fiscalStateOf(latest), transmissions, events, pendingEffects, xmlAvailable, danfseAvailable: xmlAvailable }
+  // Q-TZ1: instantes saem para a tela na hora do ESTABELECIMENTO (banco em UTC)
+  const zone = await institutionZoneFor(s, institutionId)
+  const txKeys = ['dhProc', 'createdAt', 'lastQueriedAt', 'lastDh', 'lastEventAt'] as const
+  const evKeys = ['dh', 'createdAt'] as const
+  return {
+    invoiceId, state: fiscalStateOf(latest),
+    transmissions: transmissions.map(t => withZoneWall(t, txKeys, zone)),
+    events: events.map(e => withZoneWall(e, evKeys, zone)),
+    pendingEffects, xmlAvailable, danfseAvailable: xmlAvailable,
+  }
 }
 
 /** XML da NFS-e autorizada (ou cancelada — o documento existiu) em disco; 404 se não há. */
@@ -820,7 +831,7 @@ export async function readNfseXml(schemaName: string, institutionId: number, inv
   if (!withKey?.accessKey) {
     throw new HttpError(404, `Nota ${invoiceId} sem NFS-e autorizada no fisco`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   }
-  const file = findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment)   // L4
+  const file = findFiscalXml(await emitterCnpj(institutionId), nfseFileName(withKey.accessKey), [withKey.dhProc, withKey.createdAt], withKey.environment, await institutionZoneFor(s, institutionId))   // L4 · Q-TZ7
   if (!file) {
     throw new HttpError(404, `XML da NFS-e ${withKey.accessKey} não está em disco — consulte a nota para regravar`, undefined, ErrorCodes.FISCAL_NFSE_NOT_FOUND)
   }

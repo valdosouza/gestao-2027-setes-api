@@ -1,7 +1,6 @@
 import { HttpError } from '@shared/errors/http-error'
-import { getConfigContent } from '@shared/interface-config'
-import { getSessionContext } from '@shared/session-context'
-import { ListQuery, PagedRows } from '@shared/list'
+import { walletSalesmanId } from '@shared/customer-wallet'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
   PartnershipPartnerRow, PartnershipPartnerInput,
@@ -11,7 +10,10 @@ import {
   insertCustomerCascade, updateCustomerCascade, deleteCustomer,
   listSalesmanLookup, listCarrierLookup,
   getCustomerPartnership, setCustomerPartnership,
+  CUSTOMER_SEARCH_CRITERIA,
 } from './customers.repository'
+
+export { CUSTOMER_SEARCH_CRITERIA }
 
 /**
  * Regras do módulo customers (Fase 3 Entidade Única): o reuso por documento
@@ -35,10 +37,7 @@ export interface CustomerScope {
  * restrição. Devolve o salesmanId a forçar, ou null (sem restrição).
  */
 async function restrictedSalesmanId(scope: CustomerScope): Promise<number | null> {
-  const content = await getConfigContent(scope, 'customers', 'restrict_customer_to_salesman')
-  if (content !== 'S') return null
-  const context = await getSessionContext(scope)
-  return context.isSalesman ? scope.userId : null
+  return walletSalesmanId(scope)   // peça @shared/customer-wallet (Q-BA13)
 }
 
 /** Corrida no INSERT (UNIQUE de cpf/cnpj ou PK do papel) vira 409 legível. */
@@ -48,6 +47,16 @@ function dupEntryTo409(err: any): never {
       undefined, 'CONFLICT_RETRY')
   }
   throw err
+}
+
+/**
+ * Critérios da pesquisa avançada servidos ao app (D-BA2). D-BA15: com a
+ * carteira TRAVADA (vendedor preso aos seus clientes) o critério "vendedor"
+ * some da tela — só apresentação: o escopo já é garantido pelo AND da lista.
+ */
+export async function fetchCustomerSearchCriteria(scope: CustomerScope): Promise<PublicSearchCriterion[]> {
+  const locked = (await restrictedSalesmanId(scope)) !== null
+  return publicCriteria(CUSTOMER_SEARCH_CRITERIA.filter(c => !(locked && c.key === 'salesman')))
 }
 
 export async function fetchCustomers(

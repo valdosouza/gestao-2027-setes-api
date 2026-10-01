@@ -1,3 +1,4 @@
+import { todayFor, todayIn, institutionZoneFor, toZoneWall, toUtcDb, DEFAULT_TIME_ZONE, legacyWallBeforeCutover } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
@@ -124,17 +125,12 @@ export async function buildPayer(schemaName: string, institutionId: number, slip
 // ---------------------------------------------------------------------------
 
 /** Data/hora do banco (date ou date-time ISO) → 'YYYY-MM-DD HH:MM:SS' local do banco (sem converter fuso). */
+/** Voz do fisco/banco ('…T13:45:10-03:00', 'Z' ou só a data) → INSTANTE UTC para gravar
+ *  (Q-TZ1). Sem offset = hora oficial de Brasília (o terceiro fala na hora dele). */
 export function toDbDateTime(v: string | null | undefined): string | null {
-  if (!v) return null
-  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(v)
-  if (!m) return null
-  return `${m[1]} ${m[2] ?? '00'}:${m[3] ?? '00'}:${m[4] ?? '00'}`
+  return toUtcDb(v, DEFAULT_TIME_ZONE)
 }
 const dateOnly = (v: string | null | undefined): string | null => v ? v.slice(0, 10) : null
-const localTodayIso = () => {
-  const d = new Date()
-  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-')
-}
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 255)
 
 interface SlipHeader {
@@ -207,7 +203,7 @@ export async function registerBankSlip(
   // Smoke do sandbox (2026-09-21): o banco recusa `dataVencimento` anterior a hoje (400) —
   // o vencimento é NOSSO e imutável no boleto, então falha aqui, com o campo, antes do
   // pagador, do canal e da reserva (evita uma tentativa F só para ouvir o óbvio).
-  if (header.dtExpiration < localTodayIso()) {
+  if (header.dtExpiration < await todayFor(schemaName, institutionId)) {
     throw new HttpError(422, `Vencimento ${header.dtExpiration} anterior a hoje — o banco não registra boleto vencido; cancele e emita outro com vencimento futuro`,
       [{ field: 'dtExpiration', message: 'Anterior a hoje' }], 'BANK_SLIP_EXPIRATION_PAST')
   }
@@ -347,7 +343,8 @@ function isAmbiguousBankOutcome(err: unknown): boolean {
 }
 
 function inFlightAgeMinutes(reg: RegistrationRow): number {
-  return reg.createdAt ? (Date.now() - new Date(reg.createdAt.replace(' ', 'T')).getTime()) / 60_000 : Infinity
+  // Q-TZ1 (M10): created_at vem do banco em UTC — lido como UTC (era hora local do processo)
+  return reg.createdAt ? (Date.now() - new Date(`${reg.createdAt.replace(' ', 'T')}Z`).getTime()) / 60_000 : Infinity
 }
 
 /** Reservada, sem código, sem evento, há mais de IN_FLIGHT_MINUTES: envio interrompido (crash/timeout). */
@@ -381,7 +378,7 @@ export async function applyBankStatus(
       if (state !== 'open') throw new HttpError(409, `Boleto ${slip.id} está ${state} — recebido no banco sem liquidar aqui`, undefined, 'BANK_SLIP_NOT_OPEN')
       const r = await settleBankSlip(conn, schemaName, institutionId, userId, {
         slipId: slip.id, paidValue: status.paidValue ?? slip.value,
-        dtPayment: dateOnly(status.statusAt) ?? localTodayIso(), source: 'A',
+        dtPayment: dateOnly(status.statusAt) ?? await todayFor(schemaName, institutionId, conn), source: 'A',
         bankMessage: `${status.paidBy ?? 'BANCO'} ${reg.requestCode ?? ''}`.trim().slice(0, 100),
       })
       return r.event
@@ -444,7 +441,10 @@ export async function refreshRegistration(
     }
     // idempotência: mesma situação e mesma data → nada a dizer (último evento OU qualquer
     // evento da tentativa — o UNIQUE de idempotência é cinto, não porta: A3)
-    if (reg.lastKind === kind && (reg.lastDtBankStatus ?? null) === (dt ?? null)) return unchanged(status.status)
+    // Q-TZ3 (transição): a última voz pode estar gravada na hora de PAREDE antiga — casa as duas formas
+    const sameDt = (reg.lastDtBankStatus ?? null) === (dt ?? null)
+      || (dt !== null && reg.lastDtBankStatus === legacyWallBeforeCutover(dt))
+    if (reg.lastKind === kind && sameDt) return unchanged(status.status)
     if (await hasRegistrationEvent(conn, schemaName, institutionId, slipId, reg.attempt, kind, dt)) return unchanged(status.status)
     const event = await insertRegistrationEvent(conn, schemaName, institutionId, slipId, reg.attempt, userId, {
       kind, bankStatus: status.status, dtBankStatus: dt, source,
@@ -674,8 +674,11 @@ export async function reconcileInFlightRegistration(
 ): Promise<boolean> {
   const h = header ?? await readSlipHeader(schemaName, institutionId, reg.slipId)
   const o = opened ?? await openForRegistration(schemaName, institutionId, h.bankAccountId, reg)
-  const from = (reg.createdAt ?? localTodayIso()).slice(0, 10)
-  const found = (await o.adapter.findByReference(o.ctx, h.ourNumber, from, localTodayIso())) ?? []
+  // Q-TZ1 (M11): created_at é instante UTC — a janela de busca no banco começa no DIA da zona
+  const zone = await institutionZoneFor(schemaName, institutionId)
+  const today = todayIn(zone)
+  const from = (toZoneWall(reg.createdAt, zone) ?? today).slice(0, 10)
+  const found = (await o.adapter.findByReference(o.ctx, h.ourNumber, from, today)) ?? []
   // MED-1 do gate: o banco lista TODAS as cobranças com este seuNumero, inclusive as
   // de tentativas anteriores (FALHA_EMISSAO, canceladas) — código já conhecido nunca é
   // adotado de novo (daria ER_DUP_ENTRY e a tentativa ficaria em voo para sempre).

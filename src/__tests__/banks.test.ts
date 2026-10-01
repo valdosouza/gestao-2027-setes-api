@@ -3,6 +3,7 @@
 // catálogo FEBRABAN GERAL da central, sem cadeia fiscal. id interno MAX+1;
 // number digitado, ÚNICO mesmo contra excluído (o UNIQUE do DDL não enxerga
 // soft delete); number editável no PUT (não é a PK — contas apontam pro id).
+import { NO_CRITERIA } from '../shared/list'
 import pool from '../shared/db/connection'
 import * as banksRepo from '../modules/banks/banks.repository'
 import { bankCreateDto } from '../modules/banks/banks.dto'
@@ -30,7 +31,7 @@ describe('banks repository', () => {
       .mockResolvedValueOnce([[{ total: 24 }]])
 
     const result = await banksRepo.listBanks(
-      { filter: 'bra', page: 2, pageSize: 10, offset: 10 })
+      { filter: 'bra', page: 2, pageSize: 10, offset: 10, criteria: NO_CRITERIA })
 
     expect(result.total).toBe(24)
     const pageSql  = mockQuery.mock.calls[0][0] as string

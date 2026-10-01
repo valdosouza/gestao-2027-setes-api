@@ -1,3 +1,4 @@
+import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertOrderOpen } from '@shared/order'
@@ -8,7 +9,7 @@ import { assertServiceProduct, serviceProductIssue } from '@shared/service-produ
 import { toCents } from '@shared/money'   // Q-G27: guarda única virou peça
 import { isLockWaitTimeout, isDeadlock } from '@shared/db/contention'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { upsertOrderBilling } from '@shared/order-billing'
 import { issueInvoice, InvoiceServiceInput } from '@shared/invoice'
 import { releaseServiceOrderCompetences } from '@shared/service-order'
@@ -19,7 +20,7 @@ import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { liabilityFromExigibilidade, IssLiability } from '@shared/entity-tax/entity-tax.types'
 import { getIssuer } from '@shared/fiscal-issuer'
 import {
-  applyTitleAutomation, localIsoDate, resolveTitleAutomationConfig,
+  applyTitleAutomation, resolveTitleAutomationConfig,
 } from '@shared/title-automation'
 import { assertPaymentRules } from '@shared/order-installment'
 import {
@@ -32,7 +33,7 @@ import {
 import {
   ServiceOrderListRow, ServiceOrderFull, OpenOrderInput, OrderItemInput,
   MonthlyRunInput, MonthlyRunReport, InvoiceInput, InvoiceResult,
-  ServiceProductLookupRow,
+  ServiceProductLookupRow, ServiceOrderCustomerLookupRow,
 } from './service-orders.interface'
 
 /**
@@ -54,6 +55,27 @@ const SERVICE_KIND = 'Service'
 // ---------------------------------------------------------------------
 // Leitura
 // ---------------------------------------------------------------------
+
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — D-BA2/D-BA3, piloto D-BA10):
+ * lista branca dos critérios da lista de OS. Vive AQUI (D-BA12) porque as
+ * expressões usam os aliases da query base (c = tb_service_order, s = ramo,
+ * o = tb_order, t = totalizador, inv = nota) — todos 1:1 pela PK, sem JOIN novo.
+ * A aba A/F continua sendo o parâmetro `status` (não é critério).
+ */
+export const SERVICE_ORDER_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'customer', kind: 'lookup', labelKey: 'search.service-orders.customer',
+    expr: 's.tb_customer_id', lookup: '/api/service-orders/customer-lookup' },
+  { key: 'dtRecord', kind: 'date', labelKey: 'search.service-orders.dtRecord',
+    expr: 'o.dt_record', storage: 'date' },   // DATE = dia de calendário, compara direto
+  { key: 'totalValue', kind: 'money', labelKey: 'search.service-orders.totalValue',
+    expr: 'COALESCE(t.total_value, 0)' },
+  { key: 'number', kind: 'number', labelKey: 'search.service-orders.number',
+    expr: 'c.number' },
+  // coluna GERADA numérica (migration 045) — nunca comparar o varchar `number` com número (L2 do gate)
+  { key: 'invoiceNumber', kind: 'number', labelKey: 'search.service-orders.invoiceNumber',
+    expr: 'inv.number_seq' },
+]
 
 /**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
@@ -86,11 +108,12 @@ export async function listOrders(
      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
        AND (? IS NULL OR o.status = ? OR (? = 'F' AND o.status = 'C'))
        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?
-            OR c.number = ? OR inv.number = ?)`
+            OR c.number = ? OR inv.number = ?)${query.criteria.sql}`
   // Filtro só com dígitos também acha pelo nº da OS ou da nota (igualdade exata)
   const numeric = query.filter && /^\d+$/.test(query.filter) ? query.filter : null
   // Q-CA3: a aba Faturadas também mostra a OS CANCELADA com nota fiscal ('C') — a nota nunca some da vista
-  const params = [institutionId, statusFilter, statusFilter, statusFilter, like, like, like, numeric, numeric]
+  const params = [institutionId, statusFilter, statusFilter, statusFilter, like, like, like, numeric, numeric,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
@@ -168,11 +191,32 @@ export async function getOrder(
   return { ...rows[0], items }
 }
 
+/** Clientes da institution para o critério "cliente" (D-BA2 — lookup do PRÓPRIO módulo). */
+export async function listCustomerLookup(
+  filter: string, schemaName: string, institutionId: number,
+  salesmanId: number | null = null
+): Promise<ServiceOrderCustomerLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT cu.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name
+     FROM \`${schemaName}\`.tb_customer cu
+     INNER JOIN setes_central.tb_entity e ON e.id = cu.id
+     WHERE cu.tb_institution_id = ? AND cu.deleted = 'N'
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+       AND (? IS NULL OR cu.tb_salesman_id = ?)
+     ORDER BY name, cu.id
+     LIMIT 50`,
+    [institutionId, like, like, like, salesmanId, salesmanId]
+  )
+  return rows
+}
+
 export async function listProductsLookup(
   filter: string, schemaName: string, institutionId: number
 ): Promise<ServiceProductLookupRow[]> {
   assertSchemaName(schemaName)
-  const like = filter ? `%${filter}%` : null
+  const like = filter ? `%${escapeLike(filter)}%` : null
   // Ordem de Serviço lista SERVIÇOS (tb_product.kind='S' — D2 do
   // prompt_notas_mercadoria_servico.md); mercadorias entram pela tela de venda.
   const [rows] = await pool.query<any[]>(
@@ -274,8 +318,8 @@ async function createOpenOrder(
     `INSERT INTO \`${schemaName}\`.tb_order
        (id, tb_institution_id, terminal, tb_user_id, dt_record, status,
         created_at, updated_at)
-     VALUES (?, ?, 0, ?, CURDATE(), 'A', NOW(), NOW())`,
-    [id, institutionId, userId]
+     VALUES (?, ?, 0, ?, ?, 'A', NOW(), NOW())`,
+    [id, institutionId, userId, await todayFor(schemaName, institutionId, conn)]   // Q-TZ1
   )
   // natureza (tomador) — number NULL: nº de origem é só do sync (ramos irmãos)
   await conn.query(
@@ -1157,7 +1201,7 @@ export async function generateInvoice(
       const automation = await applyTitleAutomation(
         conn, schemaName, institutionId, userId, {
           orderId,
-          dtPayment: localIsoDate(),
+          dtPayment: await todayFor(schemaName, institutionId, conn),   // Q-TZ1
           parcels: Array.from({ length: input.parcels }, (_, i) => ({
             parcel: i + 1,
             paymentTypeId: terms.paymentTypeId,

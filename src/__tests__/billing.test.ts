@@ -101,7 +101,7 @@ describe('billing.context', () => {
   })
 
   it('addDays soma dias em formato YYYY-MM-DD', () => {
-    expect(addDays(new Date('2026-08-20T12:00:00Z'), 28)).toBe('2026-09-17')
+    expect(addDays('2026-08-20', 28)).toBe('2026-09-17')
   })
 
   it('adjustMva aplica a fórmula P2.7 quando intra > inter', () => {

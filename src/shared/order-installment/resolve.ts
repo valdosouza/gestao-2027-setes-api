@@ -83,7 +83,7 @@ export interface ResolvedParcels {
 
 export async function resolveOrderParcels(
   db: Queryable, schemaName: string, institutionId: number, orderId: number,
-  input: { noteBase: number; baseDate: Date }
+  input: { noteBase: number; baseDate: string }
 ): Promise<ResolvedParcels> {
   const billing = await getOrderBilling(db, schemaName, institutionId, orderId)
   if (input.noteBase > 0 && !billing) {

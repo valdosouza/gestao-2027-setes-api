@@ -111,14 +111,11 @@ export function parcelQuotas(total: number, parcels: number): number[] {
   return quotas
 }
 
-/** Soma dias a uma data — formata em data LOCAL (nunca UTC: o vencimento não
- *  pode pular de dia por fuso, par do CURDATE() do MySQL). */
-export function addDays(baseDate: Date, days: number): string {
-  const d = new Date(baseDate)
-  d.setDate(d.getDate() + days)
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${mm}-${dd}`
+/** Soma dias a uma DATA DE CALENDÁRIO 'YYYY-MM-DD' (aritmética pura, sem fuso —
+ *  Q-TZ1: a base é o "hoje" do estabelecimento, nunca um Date do processo). */
+export function addDays(baseDate: string, days: number): string {
+  const [y, m, d] = baseDate.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10)
 }
 
 export interface MaterializedParcel {
@@ -135,7 +132,7 @@ export interface MaterializedParcel {
  * última, forma do cabeçalho em todas.
  */
 export function materializeParcels(input: {
-  days: number[]; base: number; baseDate: Date; paymentTypeId: number
+  days: number[]; base: number; baseDate: string; paymentTypeId: number
 }): MaterializedParcel[] {
   if (input.days.length === 0 || input.base <= 0) return []
   const quotas = parcelQuotas(input.base, input.days.length)

@@ -10,12 +10,13 @@ import {
   ServiceOrderScope, fetchOrders, fetchOrder, createOrder, createItem,
   editItem, deleteItem, removeOrder, runMonthly, invoiceOrder,
   invoiceOrderBatch, expirationSuggestion, fetchProductsLookup,
+  SERVICE_ORDER_SEARCH_CRITERIA, fetchServiceOrderSearchCriteria, fetchCustomerLookup,
 } from './service-orders.service'
 
 /** Escopo SEMPRE do JWT (institution + usuário que assina a tb_order). */
 function scopeOf(req: Request): ServiceOrderScope {
-  const { schemaName, institutionId, userId } = req.institution!
-  return { schemaName, institutionId, userId }
+  const { schemaName, institutionId, userId, role } = req.institution!
+  return { schemaName, institutionId, userId, role }
 }
 
 /** :itemId validado no mesmo espírito do parseId. */
@@ -32,7 +33,7 @@ export async function list(req: Request, res: Response): Promise<void> {
   try {
     const status = String(req.query.status ?? '')
     const parsed = status === 'A' || status === 'F' ? status : ''
-    const query = await parseListQuery(req, 'service-orders')
+    const query = await parseListQuery(req, 'service-orders', SERVICE_ORDER_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchOrders(parsed, query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'service-orders GET')
@@ -195,6 +196,20 @@ export async function suggestion(req: Request, res: Response): Promise<void> {
     } })
   } catch (err) {
     handleError(res, err, 'service-orders/expiration-suggestion GET')
+  }
+}
+
+/** Critérios da pesquisa avançada da lista (D-BA2). */
+export function searchCriteria(_req: Request, res: Response): void {
+  res.json({ ok: true, data: fetchServiceOrderSearchCriteria() })
+}
+
+export async function customerLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const filter = String(req.query.filter ?? '')
+    res.json({ ok: true, data: await fetchCustomerLookup(filter, scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'service-orders/customer-lookup GET')
   }
 }
 

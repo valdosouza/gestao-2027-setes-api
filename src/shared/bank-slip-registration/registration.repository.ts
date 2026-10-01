@@ -1,3 +1,4 @@
+import { institutionZoneFor, withZoneWall, legacyWallBeforeCutover } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
@@ -154,7 +155,14 @@ export async function listSlipRegistrations(
       ORDER BY attempt, event`,
     [institutionId, slipId]
   )
-  return { registrations: regs.map(mapReg), events: events as RegistrationEventRow[] }
+  // Q-TZ1: tela recebe os instantes na hora do ESTABELECIMENTO (banco em UTC)
+  const zone = await institutionZoneFor(s, institutionId)
+  const regKeys = ['createdAt', 'lastQueriedAt', 'lastDtBankStatus', 'lastEventAt'] as const
+  const evKeys = ['dtBankStatus', 'createdAt'] as const
+  return {
+    registrations: regs.map(mapReg).map(r => withZoneWall(r, regKeys, zone)),
+    events: (events as RegistrationEventRow[]).map(e => withZoneWall(e, evKeys, zone)),
+  }
 }
 
 export async function findRegistrationByRequestCode(
@@ -297,12 +305,16 @@ export async function hasRegistrationEvent(
   q: Q, schemaName: string, institutionId: number, slipId: number, attempt: number,
   kind: RegistrationEventKind, dtBankStatus: string | null
 ): Promise<boolean> {
+  // Q-TZ1/Q-TZ3 (transição): a voz é gravada como INSTANTE UTC desde 2026-09-30; antes era
+  // a hora de PAREDE de Brasília. A idempotência casa as DUAS formas — sem isso a mesma voz
+  // já gravada antes da troca viraria um 2º evento (ex.: 2ª liquidação do mesmo boleto).
   const s = assertSchema(schemaName)
   const [rows] = await q.query<any[]>(
     `SELECT COUNT(*) AS n FROM \`${s}\`.tb_bank_slip_registration_event
       WHERE tb_institution_id = ? AND tb_bank_slip_id = ? AND attempt = ? AND deleted = 'N'
-        AND kind = ? AND ${dtBankStatus === null ? 'dt_bank_status IS NULL' : 'dt_bank_status = ?'}`,
-    dtBankStatus === null ? [institutionId, slipId, attempt, kind] : [institutionId, slipId, attempt, kind, dtBankStatus]
+        AND kind = ? AND ${dtBankStatus === null ? 'dt_bank_status IS NULL' : 'dt_bank_status IN (?, ?)'}`,
+    dtBankStatus === null ? [institutionId, slipId, attempt, kind]
+      : [institutionId, slipId, attempt, kind, dtBankStatus, legacyWallBeforeCutover(dtBankStatus) ?? dtBankStatus]
   )
   return Number(rows?.[0]?.n ?? 0) > 0
 }

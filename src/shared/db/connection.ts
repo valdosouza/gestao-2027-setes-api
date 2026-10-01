@@ -14,6 +14,13 @@ const pool = mysql.createPool({
   // DECIMAL como number no JSON (senão o driver devolve string "12.00" e
   // quebra o fromJson do app). Precisão ok: nossos DECIMAL são (10,2).
   decimalNumbers: true,
+  // Q-TZ1 (Valdo 2026-09-30, prompt_pesquisa_avancada.md §10): INSTANTES em UTC.
+  // O driver serializa/lê DATETIME/TIMESTAMP em UTC ('Z') — TEM que concordar com
+  // o `SET time_zone = '+00:00'` da sessão abaixo (sem isso um Date JS gravaria a
+  // hora de SP como se fosse UTC). Data de NEGÓCIO nunca sai daqui: vem de
+  // `todayIn(zona do estabelecimento)` (@shared/time-zone). Colunas DATE são
+  // lidas com DATE_FORMAT (neutro); dado gravado antes da troca = data de corte (Q-TZ3).
+  timezone: 'Z',
 })
 
 // Q-G17 (cancelamento de nota, Valdo 2026-09-09): REPEATABLE READ é
@@ -22,8 +29,25 @@ const pool = mysql.createPool({
 // conexão: um default diferente do servidor (DBA) não desliga nada em
 // silêncio. `assertIsolationLevel` confere no boot (server.ts).
 pool.on('connection', conn => {
-  conn.query('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+  // L1 do gate socrático da onda TZ-1: falha do SET numa conexão nova (reconnect) não
+  // pode passar em silêncio — a conexão ficaria no fuso/isolamento do servidor.
+  const onFail = (what: string) => (err: unknown) =>
+    logger.error(`Conexão nova sem ${what} — invariante da casa violada`, { err })
+  // o evento entrega a conexão CRUA (estilo callback, apesar do tipo promise): erro vem no callback
+  const raw = conn as unknown as { query: (sql: string, cb: (err: unknown) => void) => void }
+  raw.query('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ', err => { if (err) onFail('REPEATABLE READ (Q-G17)')(err) })
+  raw.query(`SET time_zone = '+00:00'`, err => { if (err) onFail("time_zone '+00:00' (Q-TZ1)")(err) })
 })
+
+/** Q-TZ1: confere no boot que a sessão está em UTC (como o REPEATABLE READ). */
+export async function assertSessionTimeZoneUtc(): Promise<string> {
+  const [rows] = await pool.query<any[]>(`SELECT @@session.time_zone AS tz`)
+  const tz = String(rows[0]?.tz ?? '')
+  if (tz !== '+00:00') {
+    throw new Error(`Fuso da sessão do banco é ${tz || 'desconhecido'} — a casa exige '+00:00' (Q-TZ1)`)
+  }
+  return tz
+}
 
 /**
  * L7 (socrático da Rodada 6): `innodb_rollback_on_timeout` LIGADO faz o lock wait

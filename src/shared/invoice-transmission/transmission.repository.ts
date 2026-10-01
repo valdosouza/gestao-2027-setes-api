@@ -1,3 +1,4 @@
+import { legacyWallBeforeCutover } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
@@ -339,12 +340,16 @@ export async function hasTransmissionEvent(
   q: Q, schemaName: string, institutionId: number, invoiceId: number, attempt: number,
   kind: TransmissionEventKind, dh: string | null
 ): Promise<boolean> {
+  // Q-TZ1/Q-TZ3 (transição): a voz é gravada como INSTANTE UTC desde 2026-09-30; antes era
+  // a hora de PAREDE de Brasília. A idempotência casa as DUAS formas — sem isso a mesma voz
+  // já gravada antes da troca viraria um 2º evento (ex.: 2ª liquidação do mesmo boleto).
   const s = assertSchema(schemaName)
   const [rows] = await q.query<any[]>(
     `SELECT COUNT(*) AS n FROM \`${s}\`.tb_invoice_service_transmission_event
       WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ? AND deleted = 'N'
-        AND kind = ? AND ${dh === null ? 'dh IS NULL' : 'dh = ?'}`,
-    dh === null ? [institutionId, invoiceId, attempt, kind] : [institutionId, invoiceId, attempt, kind, dh]
+        AND kind = ? AND ${dh === null ? 'dh IS NULL' : 'dh IN (?, ?)'}`,
+    dh === null ? [institutionId, invoiceId, attempt, kind]
+      : [institutionId, invoiceId, attempt, kind, dh, legacyWallBeforeCutover(dh) ?? dh]
   )
   return Number(rows?.[0]?.n ?? 0) > 0
 }

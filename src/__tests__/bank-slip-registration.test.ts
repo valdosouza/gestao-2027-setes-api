@@ -193,7 +193,8 @@ describe('refreshRegistration — a voz do banco', () => {
     expect(repo.fillBankData).toHaveBeenCalledWith(conn, S.schema, S.inst, 262, 1,
       expect.objectContaining({ digitableLine: '7'.repeat(47), pixCopyPaste: 'pix' }))
     expect(repo.insertRegistrationEvent).toHaveBeenCalledWith(conn, S.schema, S.inst, 262, 1, S.user,
-      expect.objectContaining({ kind: 'G', bankStatus: 'A_RECEBER', dtBankStatus: '2026-09-19 12:00:00', source: 'Q' }))
+      // Q-TZ1: a voz do banco (12:00 em Brasília) é gravada como INSTANTE UTC
+      expect.objectContaining({ kind: 'G', bankStatus: 'A_RECEBER', dtBankStatus: '2026-09-19 15:00:00', source: 'Q' }))
     expect(slipPiece.settleBankSlip).not.toHaveBeenCalled(); expect(slipPiece.cancelBankSlip).not.toHaveBeenCalled()
     // consulta ao banco com o ambiente CONGELADO da apresentação
     expect((channel.openBankChannel as jest.Mock).mock.calls[0][3]).toMatchObject({ environment: 'S' })
@@ -201,6 +202,14 @@ describe('refreshRegistration — a voz do banco', () => {
 
   it('IDEMPOTÊNCIA: mesma situação e mesma data → nenhum evento novo (o mesmo webhook 2× não baixa 2×)', async () => {
     ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: 'G', lastBankStatus: 'A_RECEBER', lastDtBankStatus: '2026-09-19 12:00:00' }))
+    adapter.query.mockResolvedValue(status())
+    const r = await refreshRegistration(S.schema, S.inst, S.user, 262, 'W')
+    expect(r.changed).toBe(false)
+    expect(repo.insertRegistrationEvent).not.toHaveBeenCalled()
+  })
+
+  it('IDEMPOTÊNCIA (Q-TZ1): última voz já gravada em UTC também não duplica', async () => {
+    ;(repo.latestRegistration as jest.Mock).mockResolvedValue(regLive({ lastKind: 'G', lastBankStatus: 'A_RECEBER', lastDtBankStatus: '2026-09-19 15:00:00' }))
     adapter.query.mockResolvedValue(status())
     const r = await refreshRegistration(S.schema, S.inst, S.user, 262, 'W')
     expect(r.changed).toBe(false)
@@ -281,9 +290,10 @@ describe('refreshRegistration — a voz do banco', () => {
     expect(r.changed).toBe(false); expect(adapter.query).not.toHaveBeenCalled()
   })
 
-  it('toDbDateTime aceita date e date-time do banco', () => {
-    expect(toDbDateTime('2026-09-21')).toBe('2026-09-21 00:00:00')
-    expect(toDbDateTime('2026-09-21T13:45:10-03:00')).toBe('2026-09-21 13:45:10')
+  it('toDbDateTime: voz do banco vira INSTANTE UTC (Q-TZ1) — sem offset = hora de Brasília', () => {
+    expect(toDbDateTime('2026-09-21')).toBe('2026-09-21 03:00:00')
+    expect(toDbDateTime('2026-09-21T13:45:10-03:00')).toBe('2026-09-21 16:45:10')
+    expect(toDbDateTime('2026-09-21T16:45:10Z')).toBe('2026-09-21 16:45:10')
     expect(toDbDateTime(null)).toBeNull()
   })
 })
