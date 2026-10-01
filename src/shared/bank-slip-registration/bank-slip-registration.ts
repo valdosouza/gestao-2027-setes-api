@@ -203,7 +203,8 @@ export async function registerBankSlip(
   // Smoke do sandbox (2026-09-21): o banco recusa `dataVencimento` anterior a hoje (400) —
   // o vencimento é NOSSO e imutável no boleto, então falha aqui, com o campo, antes do
   // pagador, do canal e da reserva (evita uma tentativa F só para ouvir o óbvio).
-  if (header.dtExpiration < await todayFor(schemaName, institutionId)) {
+  // Q-TZ9: o banco julga pelo AGORA real, não pelo relógio congelado da operação
+  if (header.dtExpiration < await todayFor(schemaName, institutionId, undefined, new Date())) {
     throw new HttpError(422, `Vencimento ${header.dtExpiration} anterior a hoje — o banco não registra boleto vencido; cancele e emita outro com vencimento futuro`,
       [{ field: 'dtExpiration', message: 'Anterior a hoje' }], 'BANK_SLIP_EXPIRATION_PAST')
   }
@@ -378,7 +379,7 @@ export async function applyBankStatus(
       if (state !== 'open') throw new HttpError(409, `Boleto ${slip.id} está ${state} — recebido no banco sem liquidar aqui`, undefined, 'BANK_SLIP_NOT_OPEN')
       const r = await settleBankSlip(conn, schemaName, institutionId, userId, {
         slipId: slip.id, paidValue: status.paidValue ?? slip.value,
-        dtPayment: dateOnly(status.statusAt) ?? await todayFor(schemaName, institutionId, conn), source: 'A',
+        dtPayment: dateOnly(status.statusAt) ?? await todayFor(schemaName, institutionId, conn, new Date()), source: 'A',   // Q-TZ9: dia em que o banco falou
         bankMessage: `${status.paidBy ?? 'BANCO'} ${reg.requestCode ?? ''}`.trim().slice(0, 100),
       })
       return r.event

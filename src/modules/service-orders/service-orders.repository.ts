@@ -1,3 +1,4 @@
+import { runWithOperationClock } from '@shared/time-zone'
 import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
@@ -633,7 +634,8 @@ export async function monthlyRun(
       // cancelamento da nota da OS cruza com este SELECT … FOR UPDATE + INSERT);
       // os contadores só entram no relatório DEPOIS do commit — uma tentativa
       // desfeita não conta duas vezes.
-      const done = await withDeadlockRetry('rotina mensal', { institutionId, customerId }, 3, async () => {
+      // Q-TZ9: relógio POR CLIENTE (cada OS da rotina) — a rotina longa não grava o "ontem" depois da meia-noite
+      const done = await runWithOperationClock(new Date(), () => withDeadlockRetry('rotina mensal', { institutionId, customerId }, 3, async () => {
         const conn = await pool.getConnection()
         const local = { opened: 0, injected: 0, skipped: 0, invalid: [] as { contractId: number; productId: number; reason: string }[] }
         try {
@@ -751,7 +753,7 @@ export async function monthlyRun(
         } finally {
           conn.release()
         }
-      })
+      }))
       report.opened += done.opened
       report.injected += done.injected
       report.skipped += done.skipped

@@ -93,3 +93,25 @@ describe('Q-TZ8 — relógio ÚNICO por operação', () => {
     expect(real.operationNow()).toBeNull()
   })
 })
+
+describe('Q-TZ9 — relógio POR ORDEM dentro do lote', () => {
+  it('o relógio de cada ordem sobrepõe o da requisição; ao sair, volta o da requisição', async () => {
+    const conn = { query: jest.fn().mockResolvedValue([[{ zone: 'America/Sao_Paulo' }]]) }
+    const requisicao = new Date('2026-10-01T02:50:00Z')        // 30/09 23:50 em Brasília
+    const r = await real.runWithOperationClock(requisicao, async () => {
+      const ordem1 = await real.runWithOperationClock(new Date('2026-10-01T02:55:00Z'), () => real.todayFor('setes_acme', 30, conn))
+      const ordem2 = await real.runWithOperationClock(new Date('2026-10-01T03:05:00Z'), () => real.todayFor('setes_acme', 30, conn))
+      const depois = await real.todayFor('setes_acme', 30, conn)
+      return [ordem1, ordem2, depois]
+    })
+    expect(r).toEqual(['2026-09-30', '2026-10-01', '2026-09-30'])
+  })
+
+  it('guarda contra o mundo externo passa o AGORA real e ignora o relógio congelado', async () => {
+    const conn = { query: jest.fn().mockResolvedValue([[{ zone: 'America/Sao_Paulo' }]]) }
+    const real0 = new Date('2026-10-01T03:30:00Z')            // já é 01/10 em Brasília
+    const d = await real.runWithOperationClock(new Date('2026-10-01T02:50:00Z'),
+      () => real.todayFor('setes_acme', 31, conn, real0))
+    expect(d).toBe('2026-10-01')
+  })
+})

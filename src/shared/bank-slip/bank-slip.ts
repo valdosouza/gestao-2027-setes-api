@@ -601,7 +601,8 @@ export async function settleBankSlip(
   // D-G36 (Valdo 2026-09-13): a data do pagamento decide se o desconto congelado
   // ainda vale (`dt_discount_until`) — sem limite, retro-datar ressuscitava um
   // desconto vencido. Liquidação não acontece no futuro.
-  if (input.dtPayment > await todayFor(schemaName, institutionId, conn)) {
+  // Q-TZ9: "pagamento no futuro" é julgado pelo AGORA real (o relógio da operação pode estar no dia anterior)
+  if (input.dtPayment > await todayFor(schemaName, institutionId, conn, new Date())) {
     throw new HttpError(422, 'Data do pagamento no futuro — a liquidação registra o que já entrou',
       [{ field: 'dtPayment', message: 'Data futura' }], 'BANK_SLIP_FUTURE_PAYMENT')
   }

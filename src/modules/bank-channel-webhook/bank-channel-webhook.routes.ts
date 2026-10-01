@@ -1,3 +1,4 @@
+import { runWithOperationClock } from '@shared/time-zone'
 import { Router, Request, Response } from 'express'
 import pool from '@shared/db/connection'
 import logger from '@shared/logger/logger'
@@ -80,10 +81,11 @@ export async function receive(req: Request, res: Response): Promise<void> {
     const codes = extractRequestCodes(req.body)
     res.json({ ok: true, received: codes.length })
     if (codes.length === 0) return
-    void enqueue(institutionId, () =>
+    // Q-TZ9: o item roda no relógio de QUANDO é processado (a fila pode atrasar na virada do dia)
+    void enqueue(institutionId, () => runWithOperationClock(new Date(), () =>
       processor(schemaName, institutionId, codes)
         .then(r => logger.info('Webhook do banco processado', { institutionId, bankAccountId: channel.bankAccountId, ...(r as object) }))
-        .catch(err => logger.error('Webhook do banco falhou no processamento', { institutionId, err })))
+        .catch(err => logger.error('Webhook do banco falhou no processamento', { institutionId, err }))))
   } catch (err) {
     logger.error('Webhook do banco: erro ao receber', { institutionId, err })
     if (!res.headersSent) res.status(500).json({ error: 'Erro interno', code: 'INTERNAL' })

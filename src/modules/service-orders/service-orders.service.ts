@@ -1,3 +1,4 @@
+import { runWithOperationClock } from '@shared/time-zone'
 import { walletSalesmanId } from '@shared/customer-wallet'
 import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
@@ -138,7 +139,8 @@ export async function invoiceOrderBatch(
   const results: BatchInvoiceEntry[] = []
 
   for (const orderId of ids) {
-    results.push(await invoiceOneInBatch(orderId, input, scope))
+    // Q-TZ9: relógio POR ORDEM — um lote que cruza a meia-noite não fatura com o "ontem"
+    results.push(await runWithOperationClock(new Date(), () => invoiceOneInBatch(orderId, input, scope)))
   }
 
   // D25 (Q-P3, Valdo 2026-09-19): ordem recusada por CONTENÇÃO ganha UMA passada
@@ -148,7 +150,7 @@ export async function invoiceOrderBatch(
   // estado novo, sem fila: é o mesmo caminho, duas vezes.
   for (let i = 0; i < results.length; i++) {
     if (results[i].ok || results[i].code !== 'RESOURCE_BUSY') continue
-    const again = await invoiceOneInBatch(results[i].orderId, input, scope)
+    const again = await runWithOperationClock(new Date(), () => invoiceOneInBatch(results[i].orderId, input, scope))
     results[i] = again.ok || again.code !== 'RESOURCE_BUSY'
       ? again
       : { ...again, retryable: true }
