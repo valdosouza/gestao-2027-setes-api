@@ -21,6 +21,13 @@ import { getConfigContent, getConfigContentFor } from '@shared/interface-config'
 import { compileCriteria, SearchCriterion } from '../shared/list/search-criteria'
 import { hasRegistrationEvent } from '../shared/bank-slip-registration/registration.repository'
 import { hasTransmissionEvent } from '../shared/invoice-transmission/transmission.repository'
+import { saveFiscalXml, findFiscalXml } from '../shared/invoice-transmission/branches/service'
+import express from 'express'
+import mockedPool from '@shared/db/connection'
+import request from 'supertest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 
 // a peça REAL (o setup global só fixa a resolução pelo banco)
 const tz = jest.requireActual('@shared/time-zone') as typeof import('../shared/time-zone')
@@ -237,5 +244,162 @@ describe('idempotência de transição (UTC × parede antiga) — falso positivo
     const conn = q()
     await hasRegistrationEvent(conn as any, 'setes_x', 1, 10, 1, 'G' as any, '2026-09-30 21:00:00')
     expect(conn.query.mock.calls[0][1]).toContain('2026-09-30 18:00:00')
+  })
+})
+
+// ===========================================================================
+// DELTA (2026-09-30): relógio único por operação (Q-TZ8) + pasta fiscal por zona (Q-TZ7)
+// ===========================================================================
+const { runWithOperationClock, operationNow, todayFor } = tz
+const tick = () => new Promise(r => setTimeout(r, 5))
+
+describe('Q-TZ8 — relógio único por operação', () => {
+  const d1 = new Date('2026-10-01T02:59:59Z')   // 30/09 23:59:59 em SP
+  const d2 = new Date('2026-10-01T03:00:01Z')   // 01/10 00:00:01 em SP
+  beforeEach(() => {
+    tz.invalidateInstitutionZone()
+    ;(mockedPool.query as jest.Mock).mockResolvedValue([[{ zone: null }]])   // config ausente = default
+  })
+
+  it('fora de operação = null; todayFor cai no relógio real', async () => {
+    expect(operationNow()).toBeNull()
+    expect(await todayFor('setes_x', 1)).toBe(todayIn(DEFAULT_TIME_ZONE))
+  })
+
+  it('operações CONCORRENTES intercaladas não vazam relógio entre si', async () => {
+    const seen: string[] = []
+    await Promise.all([
+      runWithOperationClock(d1, async () => { for (let i = 0; i < 5; i++) { await tick(); seen.push(`A${await todayFor('s', 1)}`) } }),
+      runWithOperationClock(d2, async () => { for (let i = 0; i < 5; i++) { await tick(); seen.push(`B${await todayFor('s', 1)}`) } }),
+    ])
+    expect(seen.filter(s => s.startsWith('A')).every(s => s === 'A2026-09-30')).toBe(true)
+    expect(seen.filter(s => s.startsWith('B')).every(s => s === 'B2026-10-01')).toBe(true)
+    expect(seen).toHaveLength(10)
+  })
+
+  it('operação que atravessa a meia-noite segue no dia em que COMEÇOU (decisão Q-TZ8)', async () => {
+    const r = await runWithOperationClock(d1, async () => { await tick(); return todayFor('s', 1) })
+    expect(r).toBe('2026-09-30')
+  })
+
+  it('DOCUMENTA: setTimeout/setImmediate disparados DENTRO herdam o relógio — mesmo executando depois', async () => {
+    let fromTimer: Date | null = null, fromImmediate: Date | null = null
+    await runWithOperationClock(d1, () => new Promise<void>(res => {
+      setTimeout(() => { fromTimer = operationNow() }, 1)
+      setImmediate(() => { fromImmediate = operationNow(); res() })
+    }))
+    await tick()
+    expect(fromTimer).toBe(d1)
+    expect(fromImmediate).toBe(d1)
+  })
+
+  // LOW (provado): a fila serial do webhook do banco (bank-channel-webhook.routes.ts,
+  // enqueue → prev.then(task)) roda o item no relógio da requisição que o ENFILEIROU;
+  // com fila atrasada na virada, o fallback `dtPayment = todayFor(...)`
+  // (bank-slip-registration.ts:381, só quando o banco não manda statusAt) fica no dia anterior.
+  it('LOW: tarefa enfileirada atrás de outra roda no relógio de quem enfileirou', async () => {
+    let release!: () => void
+    const prev = new Promise<void>(r => { release = r })
+    let seen: string | null = null
+    const next = runWithOperationClock(d1, () => prev.then(() => todayFor('s', 1)).then(v => { seen = v }))
+    release()          // "horas depois", fora de qualquer operação
+    await next
+    expect(seen).toBe('2026-09-30')
+  })
+
+  // LOW (provado): o store guarda o MESMO Date — quem mutar o retorno de operationNow()
+  // muda o "hoje" do resto da operação. Hoje só todayFor lê (sem mutar).
+  it('LOW: mutar o Date de operationNow() altera o relógio da operação', async () => {
+    const r = await runWithOperationClock(new Date(d1), async () => {
+      operationNow()!.setUTCDate(operationNow()!.getUTCDate() + 1)
+      return todayFor('s', 1)
+    })
+    expect(r).toBe('2026-10-01')
+  })
+
+  // Middleware na MESMA ordem de app.ts:39-40 (relógio ANTES do express.json):
+  // o corpo é lido por eventos de stream — o contexto sobrevive até o handler?
+  it.each(['GET', 'POST'])('%s com corpo JSON grande: o handler ainda vê o relógio da operação', async method => {
+    const app = express()
+    app.use((_req, _res, next) => runWithOperationClock(d1, next))
+    app.use(express.json({ limit: '2mb' }))
+    app.all('/x', async (_req, res) => { await tick(); res.json({ now: operationNow()?.toISOString() ?? null }) })
+    const big = { pad: 'x'.repeat(200_000) }   // força várias leituras do stream
+    const res = method === 'GET' ? await request(app).get('/x') : await request(app).post('/x').send(big)
+    expect(res.body.now).toBe(d1.toISOString())
+  })
+
+  it('dhEmi NÃO usa o relógio da operação (instante real)', () => {
+    const real = runWithOperationClock(new Date('2020-01-01T00:00:00Z'), () => nowIsoIn(DEFAULT_TIME_ZONE))
+    expect(real.startsWith('2020')).toBe(false)
+  })
+})
+
+describe('Q-TZ7 — pasta fiscal por zona', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-adv-'))
+  const old = process.env.STORAGE_PATH
+  beforeAll(() => { process.env.STORAGE_PATH = root })
+  afterAll(() => {
+    if (old === undefined) delete process.env.STORAGE_PATH; else process.env.STORAGE_PATH = old
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  const rel = (p: string) => path.relative(root, p).split(path.sep).join('/')
+  const at = new Date('2027-01-01T02:30:00Z')   // 31/12 23:30 em SP; 01/01 00:30 em Noronha
+
+  it.each([
+    ['America/Noronha',    '2027/01'],
+    ['America/Sao_Paulo',  '2026/12'],
+    ['America/Manaus',     '2026/12'],
+    ['America/Rio_Branco', '2026/12'],
+  ])('%s: virada de ano cai no mês da zona', (zone, ym) => {
+    const name = `y-${zone.replace('/', '_')}.xml`
+    const p = saveFiscalXml('12.345.678/0001-90', name, '<x/>', at, 'P', zone)
+    expect(rel(p)).toBe(`12345678000190/${ym}/${name}`)
+  })
+
+  it('findFiscalXml acha pela dica em UTC na zona', () => {
+    saveFiscalXml('12345678000190', 'k1-nfse.xml', '<x/>', at, 'P', 'America/Noronha')
+    expect(rel(findFiscalXml('12345678000190', 'k1-nfse.xml', ['2027-01-01 02:30:00'], 'P', 'America/Noronha')!))
+      .toBe('12345678000190/2027/01/k1-nfse.xml')
+  })
+
+  it('zona inválida/vazia lança RangeError ao gravar (só institutionZoneFor protege)', () => {
+    expect(() => saveFiscalXml('1', 'a.xml', '<x/>', at, 'P', 'Foo/Bar')).toThrow(RangeError)
+    expect(() => saveFiscalXml('1', 'b.xml', '<x/>', at, 'P', '')).toThrow()
+  })
+
+  it('nome hostil: separador recusado; ".." não escapa (falha ao gravar)', () => {
+    expect(() => saveFiscalXml('1', '../x.xml', '<x/>', at)).toThrow(/inválido/)
+    expect(() => saveFiscalXml('1', 'a\\b.xml', '<x/>', at)).toThrow(/inválido/)
+    expect(() => saveFiscalXml('1', '..', '<x/>', at)).toThrow()
+  })
+
+  it('isolamento: produção NUNCA acha arquivo de homologação; outro CNPJ nunca acha', () => {
+    saveFiscalXml('11111111000111', 'h-nfse.xml', '<h/>', at, 'H')
+    expect(findFiscalXml('11111111000111', 'h-nfse.xml', [], 'P')).toBeNull()
+    expect(findFiscalXml('22222222000122', 'h-nfse.xml', [], 'H')).toBeNull()
+  })
+
+  // LOW (provado, por desenho — compat Q-N38a): HOMOLOGAÇÃO procura também na raiz de
+  // produção; o Id do DPS (mun+CNPJ+série+nDPS) não carrega o ambiente → se a numeração
+  // de H e P se cruzar, a busca de H devolve o XML de PRODUÇÃO.
+  it('LOW: homologação devolve arquivo de PRODUÇÃO com o mesmo nome', () => {
+    saveFiscalXml('33333333000133', 'same-dps.xml', '<P/>', at, 'P')
+    const p = findFiscalXml('33333333000133', 'same-dps.xml', [], 'H')!
+    expect(fs.readFileSync(p, 'utf8')).toBe('<P/>')
+  })
+
+  // LOW (provado): findFiscalXml não valida `name` como saveFiscalXml — hoje o nome é
+  // sempre construído de dígitos (dpsId/chave), não alcançável por usuário.
+  it('LOW corrigido: findFiscalXml recusa nome com ".." (não sai da pasta do CNPJ)', () => {
+    fs.mkdirSync(path.join(root, '44444444000144', '2026', '12'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'segredo.txt'), 's')
+    const p = findFiscalXml('44444444000144', path.join('..', '..', '..', 'segredo.txt'), ['2026-12-31 12:00:00'], 'P')
+    expect(p).toBeNull()   // CORRIGIDO 2026-09-30: a busca valida o nome como a gravação
+  })
+
+  it('cnpj vazio não varre outros CNPJs (pastas de 14 dígitos não casam ^\\d{4}$)', () => {
+    saveFiscalXml('55555555000155', 'only.xml', '<x/>', at)
+    expect(findFiscalXml('', 'only.xml', ['2026-12-31 12:00:00'], 'P')).toBeNull()
   })
 })

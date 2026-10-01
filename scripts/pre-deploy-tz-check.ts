@@ -19,14 +19,19 @@
 import 'dotenv/config'
 import pool from '../src/shared/db/connection'
 
-const RECENT_MINUTES = 240   // janela que cobre o deslocamento de 3h + a carência de 10 min
+// janela sobre updated_at gravado em hora local × NOW() UTC: ~1h efetiva no dado antigo — cobre o TTL de 15 min das chaves
+const RECENT_MINUTES = 240
 
 async function main(): Promise<void> {
   const [tz] = await pool.query<any[]>(
     `SELECT @@global.time_zone AS globalTz, @@system_time_zone AS systemTz, @@session.time_zone AS sessionTz`)
   console.log('— Q-TZ6: fuso do MySQL deste ambiente')
   console.log(`  global=${tz[0].globalTz}  sistema=${tz[0].systemTz}  sessão da API=${tz[0].sessionTz}`)
-  const utcServer = ['+00:00', 'UTC', 'Etc/UTC', 'GMT'].includes(String(tz[0].systemTz)) && String(tz[0].globalTz) !== '-03:00'
+  // MEDIUM do adversarial: o GLOBAL decide; o sistema operacional só vale quando o global é SYSTEM
+  const UTC_NAMES = ['+00:00', 'UTC', 'Etc/UTC', 'GMT', 'Z']
+  const effective = String(tz[0].globalTz) === 'SYSTEM' ? String(tz[0].systemTz) : String(tz[0].globalTz)
+  console.log(`  fuso efetivo do servidor = ${effective}`)
+  const utcServer = UTC_NAMES.includes(effective)
   console.log(utcServer
     ? '  ⚠️ servidor JÁ em UTC: o dado antigo deste ambiente NÃO está em hora de Brasília — registre a exceção (Q-TZ3).'
     : '  dado antigo em hora local do servidor — premissa da data de corte (Q-TZ3) vale.')
@@ -38,7 +43,11 @@ async function main(): Promise<void> {
     if (!/^[A-Za-z0-9_]+$/.test(schemaName)) continue
     const s = `\`${schemaName}\``
     const q = async (sql: string): Promise<number> => {
-      try { const [r] = await pool.query<any[]>(sql, [id]); return Number(r[0]?.n ?? 0) } catch { return -1 }   // tabela ausente
+      try { const [r] = await pool.query<any[]>(sql, [id]); return Number(r[0]?.n ?? 0) }
+      catch (err: any) {
+        if (err?.code === 'ER_NO_SUCH_TABLE') return -1                     // tabela ausente
+        throw err                                                           // LOW: SQL quebrado nunca vira luz verde
+      }
     }
     const cancelK = await q(
       `SELECT COUNT(*) AS n FROM ${s}.tb_invoice_service_transmission_event e

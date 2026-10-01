@@ -569,6 +569,8 @@ export function findFiscalXml(
   cnpj: string, name: string, hints: (string | null | undefined)[] = [], environment: FiscalFileEnvironment = 'P',
   zone: string = DEFAULT_TIME_ZONE
 ): string | null {
+  // LOW do adversarial: a busca valida o nome como a gravação ('../..' nunca sai da pasta do CNPJ)
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return null
   const roots: FiscalFileEnvironment[] = environment === 'H' ? ['H', 'P'] : ['P']
   for (const env of roots) {
     for (const h of hints) {
