@@ -9,6 +9,7 @@ import {
   SettlementScope, fetchBills, settle, fetchSettled, reverse,
   fetchStatements,
   retargetCharge,
+  BILL_SEARCH_CRITERIA, SETTLED_SEARCH_CRITERIA, fetchBillSearchCriteria, fetchSettledSearchCriteria, fetchBillEntityLookup, fetchBillPaymentTypesLookup,
 } from './settlements.service'
 
 /** Escopo SEMPRE do JWT (usuário assina o movimento). */
@@ -22,7 +23,7 @@ export async function bills(req: Request, res: Response): Promise<void> {
     const statusRaw = String(req.query.status ?? '')
     const status = statusRaw === 'open' || statusRaw === 'settled' ? statusRaw : ''
     const kind   = String(req.query.kind ?? '')
-    const query  = await parseListQuery(req, 'settlements')
+    const query  = await parseListQuery(req, 'settlements', BILL_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchBills(status, kind, query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'settlements/bills GET')
@@ -47,10 +48,46 @@ export async function create(req: Request, res: Response): Promise<void> {
 
 export async function settled(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'settlements')
+    const query = await parseListQuery(req, 'settlements', SETTLED_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchSettled(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'settlements/settled GET')
+  }
+}
+
+/** GET /bills/search-criteria — lista branca dos títulos (D-BA2). */
+export async function billsSearchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBillSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'settlements/bills/search-criteria GET')
+  }
+}
+
+/** GET /settled/search-criteria — lista branca das baixas (D-BA2). */
+export async function settledSearchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchSettledSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'settlements/settled/search-criteria GET')
+  }
+}
+
+/** GET /bills/entity-lookup — critério "cliente/fornecedor" (D-BA35). */
+export async function billEntityLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBillEntityLookup(String(req.query.filter ?? '').trim(), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'settlements/bills/entity-lookup GET')
+  }
+}
+
+/** GET /bills/payment-types-lookup — critério "forma de pagamento". */
+export async function billPaymentTypesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBillPaymentTypesLookup(String(req.query.filter ?? '').trim(), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'settlements/bills/payment-types-lookup GET')
   }
 }
 

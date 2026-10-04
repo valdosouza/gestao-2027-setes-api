@@ -1,12 +1,14 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import type { BankSlipState, IssueBankSlipResult, SettleBankSlipResult } from '@shared/bank-slip'
 import {
   BankSlipListRow, BankSlipFull, AgreementLookupRow, OpenTitleRow,
+  BankSlipLookupRow,
 } from './bank-slips.interface'
 import {
   listBankSlips, getBankSlip, listAgreementsLookup, listOpenTitles,
   issue, settle, reverse,
+  BANK_SLIP_SEARCH_CRITERIA, listAgreementSearchLookup,
 } from './bank-slips.repository'
 import {
   IssueBankSlipDto, SettleBankSlipDto, CancelBankSlipDto, ReverseBankSlipDto,
@@ -40,6 +42,17 @@ export function parsePendingOnly(raw: unknown): boolean {
   if (v === '' || v === 'false' || v === '0') return false
   if (v === 'true' || v === '1') return true
   throw new HttpError(400, 'pending inválido (true | false)', [{ field: 'pending', message: 'Valor inválido' }], 'INVALID_STATUS')
+}
+
+export { BANK_SLIP_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada dos boletos (D-BA2) — sem expressão SQL. */
+export async function fetchBankSlipSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(BANK_SLIP_SEARCH_CRITERIA)
+}
+
+export async function fetchAgreementSearchLookup(filter: string, scope: BankSlipScope): Promise<BankSlipLookupRow[]> {
+  return listAgreementSearchLookup(filter, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchBankSlips(

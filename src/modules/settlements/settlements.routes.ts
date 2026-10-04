@@ -39,12 +39,77 @@ const router = Router()
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET …/search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter e com a aba (status). Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { orderId, parcel, number, kind, situation, operation, stage, dtExpiration, tagValue, paidValue, balance, entityName, paymentTypeId, paymentTypeDescription }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */
 router.get('/bills', controller.bills)
+
+/**
+ * @swagger
+ * /api/settlements/bills/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada dos títulos
+ *     description: >
+ *       Onda 3 (prompt_pesquisa_avancada.md §13) — lista branca sem expressão SQL; a aba segue em status.
+ *     tags: [Settlements]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/bills/search-criteria', controller.billsSearchCriteria)
+
+/**
+ * @swagger
+ * /api/settlements/bills/entity-lookup:
+ *   get:
+ *     summary: Lookup de clientes/fornecedores que têm título (D-BA35)
+ *     description: >
+ *       Lista de apoio { id, name } do painel da pesquisa avançada.
+ *     tags: [Settlements]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/bills/entity-lookup', controller.billEntityLookup)
+
+/**
+ * @swagger
+ * /api/settlements/bills/payment-types-lookup:
+ *   get:
+ *     summary: Lookup de formas de pagamento vinculadas (critério dos títulos)
+ *     description: >
+ *       Lista de apoio { id, name } do painel da pesquisa avançada.
+ *     tags: [Settlements]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/bills/payment-types-lookup', controller.billPaymentTypesLookup)
 
 /**
  * @swagger
@@ -118,11 +183,32 @@ router.post('/', controller.create)
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET …/search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter e com a aba (status). Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { orderId, parcel, event, number, kind, entityName, paidValue, dtPayment, dtRealPayment, settledCode, status, originEvent, reversalReason }' }
  *       401: { description: Não autenticado }
  */
 router.get('/settled', controller.settled)
+
+/**
+ * @swagger
+ * /api/settlements/settled/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada das baixas realizadas
+ *     description: >
+ *       Onda 3 (§13) — lista branca sem expressão SQL; inclui o status da baixa (D-BA33).
+ *     tags: [Settlements]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/settled/search-criteria', controller.settledSearchCriteria)
 
 /**
  * @swagger

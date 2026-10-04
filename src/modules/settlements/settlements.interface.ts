@@ -91,3 +91,15 @@ export interface StatementReport {
   totalDebit:  number
   balance:     number
 }
+
+/** Domínios dos títulos e das baixas (lidos do código e do banco — Onda 3 da pesquisa avançada §13.1). */
+export const BILL_OPERATIONS = ['C', 'D'] as const            // receber · pagar
+export const BILL_KINDS = ['RA', 'RM', 'PA', 'PM', 'CH'] as const // recebimento/pagamento automático/manual · cheque devolvido
+export const BILL_STAGES = ['N', 'B', 'C'] as const           // sem baixa · baixado em conta bancária · baixado no caixa
+export const PAYMENT_STATUSES = ['N', 'E', 'R'] as const      // vigente · estornada · estorno
+
+/** Linha das listas de apoio da pesquisa avançada ({ id, name }). */
+export interface SettlementLookupRow {
+  id:   number
+  name: string | null
+}

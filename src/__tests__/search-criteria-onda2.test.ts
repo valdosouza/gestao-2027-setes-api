@@ -47,6 +47,11 @@ import { BANK_SEARCH_CRITERIA, listBanks } from '../modules/banks/banks.reposito
 import { PRIVILEGE_SEARCH_CRITERIA, listPrivileges } from '../modules/privileges/privileges.repository'
 import { MODULE_SEARCH_CRITERIA, listModules } from '../modules/modules/modules.repository'
 import { vitrineSearchCriteria, listVitrine } from '../shared/interface-vitrine'
+import { ORDER_SEARCH_CRITERIA, listOrders as listSaleOrders } from '../modules/orders/orders.repository'
+import { ORDER_RETURN_SEARCH_CRITERIA, listReturns } from '../modules/order-returns/order-returns.repository'
+import { BILL_SEARCH_CRITERIA, SETTLED_SEARCH_CRITERIA, listBills, listSettled } from '../modules/settlements/settlements.repository'
+import { BANK_SLIP_SEARCH_CRITERIA, listBankSlips } from '../modules/bank-slips/bank-slips.repository'
+import { CHECK_SEARCH_CRITERIA, listChecks } from '../modules/checks/checks.repository'
 import { TAX_RULE_ORIGINS, TAX_RULE_PURPOSES } from '../modules/tax-rules/tax-rules.dto'
 
 jest.mock('../shared/db/connection', () => ({
@@ -66,6 +71,8 @@ interface Target {
   /** chave do critério de NOME/descrição (D-BA21) */
   name:   string
   run:    (q: ListQuery) => Promise<unknown>
+  /** caminho base dos lookups quando o módulo tem MAIS de uma lista (ex.: /api/settlements/bills/) */
+  lookupBase?: string
 }
 
 const TARGETS: Target[] = [
@@ -115,6 +122,20 @@ const TARGETS: Target[] = [
     run: q => listVitrine(q, SCHEMA, INST) },
   { module: 'interface-fields', defs: vitrineSearchCriteria('interface-fields'), alias: 'i', name: 'name',
     run: q => listVitrine(q, SCHEMA, INST) },
+  // --- Onda 3, Bloco A (telas de processo — a aba `status` segue como parâmetro, aqui '' = todas)
+  { module: 'orders', defs: ORDER_SEARCH_CRITERIA, alias: 's', name: 'customerName',
+    run: q => listSaleOrders('', q, SCHEMA, INST) },
+  { module: 'order-returns', defs: ORDER_RETURN_SEARCH_CRITERIA, alias: 'r', name: 'customerName',
+    run: q => listReturns('', q, SCHEMA, INST) },
+  // --- Onda 3, Bloco B (financeiro)
+  { module: 'settlements-bills', defs: BILL_SEARCH_CRITERIA, alias: 'f', name: 'entityName',
+    lookupBase: '/api/settlements/bills/', run: q => listBills('', '', q, SCHEMA, INST) },
+  { module: 'settlements-settled', defs: SETTLED_SEARCH_CRITERIA, alias: 'p', name: 'entityName',
+    lookupBase: '/api/settlements/settled/', run: q => listSettled(q, SCHEMA, INST) },
+  { module: 'bank-slips', defs: BANK_SLIP_SEARCH_CRITERIA, alias: 'bs', name: 'customerName',
+    run: q => listBankSlips('', q, SCHEMA, INST) },
+  { module: 'checks', defs: CHECK_SEARCH_CRITERIA, alias: 'c', name: 'issuer',
+    run: q => listChecks('', q, SCHEMA, INST) },
 ]
 
 function sampleFor(def: SearchCriterion): unknown {
@@ -147,7 +168,7 @@ describe.each(TARGETS.map(t => [t.module, t] as const))('Onda 2 — %s', (_name,
       expect(p).not.toHaveProperty('expr')
       expect(p).not.toHaveProperty('boolValues')
       expect(p.labelKey).toBe(`search.${t.module}.${p.key}`)
-      if (p.kind === 'lookup') expect(p.lookup!.startsWith(`/api/${t.module}/`)).toBe(true)
+      if (p.kind === 'lookup') expect(p.lookup!.startsWith(t.lookupBase ?? `/api/${t.module}/`)).toBe(true)
       if (p.kind === 'options') expect(p.options!.length).toBeGreaterThan(0)
     }
   })
@@ -386,5 +407,61 @@ describe('gate adversarial do Bloco 2 (2026-10-03)', () => {
     const no  = compileCriteria(JSON.stringify({ active: false }), CFOP_SEARCH_CRITERIA)
     expect(yes.sql).toBe(" AND ((COALESCE(c.active, 'N') = 'S'))")
     expect(no.sql).toBe(" AND (NOT (COALESCE(c.active, 'N') = 'S'))")
+  })
+})
+
+describe('Onda 3 / Bloco A — pedidos e devoluções', () => {
+  it('D-BA41: "tem serviço" = LEFT JOIN 1:1 do ramo; coluna e critério são a MESMA expressão; o EXISTS do SELECT morreu', async () => {
+    mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
+    const criteria = compileCriteria(JSON.stringify({ hasService: true }), ORDER_SEARCH_CRITERIA)
+    await listSaleOrders('A', { filter: '', page: 1, pageSize: 25, offset: 0, criteria }, SCHEMA, INST)
+    const [sql, params] = mockQuery.mock.calls[0]
+    expect(sql).toMatch(/LEFT JOIN `setes_acme`\.tb_order_service os\s+ON os\.id = s\.id AND os\.tb_institution_id = s\.tb_institution_id\s+AND os\.terminal = s\.terminal AND os\.deleted = 'N'/)
+    expect(sql).toMatch(/\(os\.id IS NOT NULL\) AS hasService/)
+    expect(sql).not.toMatch(/EXISTS\(SELECT 1 FROM `setes_acme`\.tb_order_service/)
+    expect(criteria.sql).toBe(' AND ((os.id IS NOT NULL))')
+    // a aba (status) continua na where ANTES do critério — D-BA33
+    expect(params.slice(0, 4)).toEqual([INST, 'A', 'A', 'A'])
+  })
+
+  it('nota e negociação também 1:1 pela PK (nunca duplicam o COUNT)', async () => {
+    mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
+    await listSaleOrders('', { filter: '', page: 1, pageSize: 25, offset: 0, criteria: compileCriteria(undefined, ORDER_SEARCH_CRITERIA) }, SCHEMA, INST)
+    const [countSql] = mockQuery.mock.calls[1]
+    expect(countSql).toMatch(/tb_invoice inv\s+ON inv\.id = s\.id AND inv\.tb_institution_id = s\.tb_institution_id\s+AND inv\.terminal = s\.terminal/)
+    expect(countSql).toMatch(/tb_order_billing ob\s+ON ob\.id = s\.id AND ob\.tb_institution_id = s\.tb_institution_id\s+AND ob\.terminal = s\.terminal/)
+  })
+})
+
+describe('Onda 3 / Bloco B — títulos pela forma de LISTA da peça do saldo (D-BA37, parecer do guardião)', () => {
+  it('a aba virou predicado do WHERE sobre o alias `pp`; sem HAVING; COUNT simples; ordem dos `?` fixada', async () => {
+    mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
+    const criteria = compileCriteria(JSON.stringify({ balance: { from: 10 } }), BILL_SEARCH_CRITERIA)
+    await listBills('open', 'RA', { filter: 'x', page: 1, pageSize: 25, offset: 0, criteria }, SCHEMA, INST)
+    const [sql, params] = mockQuery.mock.calls[0]
+    const [countSql, countParams] = mockQuery.mock.calls[1]
+    expect(sql).not.toMatch(/HAVING/)
+    expect(sql).toMatch(/AND GREATEST\(ROUND\(f\.tag_value - COALESCE\(pp\.principal_paid, 0\), 2\), 0\) > 0/)
+    expect(countSql.startsWith('SELECT COUNT(*) AS total FROM `setes_acme`.tb_financial f')).toBe(true)
+    // derived table (institution) ANTES do WHERE: [inst(pp), inst(f), kind, kind, like×4, ...critério]
+    expect(params.slice(0, 8)).toEqual([INST, INST, 'RA', 'RA', '%x%', '%x%', '%x%', '%x%'])
+    expect(countParams).toEqual(params.slice(0, countParams.length))
+    expect(criteria.sql).toBe(' AND (GREATEST(ROUND(f.tag_value - COALESCE(pp.principal_paid, 0), 2), 0) >= ?)')
+  })
+
+  it('a aba "Baixados" filtra principal coberto > 0 (estornada sai, como antes)', async () => {
+    mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
+    await listBills('settled', '', { filter: '', page: 1, pageSize: 25, offset: 0, criteria: compileCriteria(undefined, BILL_SEARCH_CRITERIA) }, SCHEMA, INST)
+    expect(mockQuery.mock.calls[0][0]).toMatch(/AND COALESCE\(pp\.principal_paid, 0\) > 0/)
+  })
+
+  it('boletos: clientes de TODOS os títulos por derived table `sc` escopada (`?` antes do WHERE)', async () => {
+    mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
+    const criteria = compileCriteria(JSON.stringify({ customerName: 'k2' }), BANK_SLIP_SEARCH_CRITERIA)
+    await listBankSlips('', { filter: '', page: 1, pageSize: 25, offset: 0, criteria }, SCHEMA, INST)
+    const [sql, params] = mockQuery.mock.calls[0]
+    expect(sql).toMatch(/GROUP BY t\.tb_institution_id, t\.tb_bank_slip_id\) sc\s+ON sc\.tb_institution_id = bs\.tb_institution_id AND sc\.tb_bank_slip_id = bs\.id/)
+    expect(params.slice(0, 2)).toEqual([INST, INST])
+    expect(criteria.sql).toBe(' AND ((sc.customer_names LIKE ?))')   // texto = grupo OU (aqui 1 expressão)
   })
 })

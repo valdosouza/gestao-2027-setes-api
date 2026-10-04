@@ -2,7 +2,7 @@ import pool from '@shared/db/connection'
 import { assertSchemaName } from '@shared/field-config'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { OPEN_BALANCE_SQL } from '@shared/financial-settlement'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike, SearchCriterion } from '@shared/list'
 import { PENDING_EFFECT_WHERE } from '@shared/bank-slip-registration'
 import {
   LAST_EVENT_KIND_SQL, stateFromLastEvent, BankSlipState,
@@ -12,6 +12,7 @@ import {
 import {
   BankSlipListRow, BankSlipFull, BankSlipTitleRow, BankSlipEventRow,
   AgreementLookupRow, OpenTitleRow,
+  BankSlipLookupRow,
 } from './bank-slips.interface'
 
 /**
@@ -48,6 +49,40 @@ const PENDING_EFFECTS_SQL = (s: string) =>
        AND re.${PENDING_EFFECT_WHERE.replace(/ AND /g, ' AND re.')})`
 
 /**
+ * PESQUISA AVANÇADA — Onda 3 (§13): lista branca dos BOLETOS. O estado (derivado do último
+ * evento) segue como aba e "só pendências no banco" como checkbox (D-BA33). "Cliente" casa com
+ * QUALQUER cliente dos títulos do boleto: derived table `sc` 1:1 por boleto na query base (o
+ * mesmo princípio da cidade dos clientes — D-BA16); a coluna da linha segue mostrando o do 1º título.
+ */
+export const BANK_SLIP_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'customerName', kind: 'text', labelKey: 'search.bank-slips.customerName', expr: 'sc.customer_names' },
+  { key: 'ourNumber', kind: 'text', labelKey: 'search.bank-slips.ourNumber', expr: 'bs.our_number' },
+  { key: 'documentNumber', kind: 'text', labelKey: 'search.bank-slips.documentNumber', expr: 'bs.document_number' },
+  { key: 'dtEmission', kind: 'date', labelKey: 'search.bank-slips.dtEmission', expr: 'bs.dt_emission', storage: 'date' },
+  { key: 'dtExpiration', kind: 'date', labelKey: 'search.bank-slips.dtExpiration', expr: 'bs.dt_expiration', storage: 'date' },
+  { key: 'value', kind: 'money', labelKey: 'search.bank-slips.value', expr: 'bs.value' },
+  { key: 'agreement', kind: 'lookup', labelKey: 'search.bank-slips.agreement',
+    expr: 'bs.tb_bank_charge_agreement_id', lookup: '/api/bank-slips/agreement-lookup' },
+]
+
+/** Clientes de TODOS os títulos do boleto, 1 linha por boleto (escopo pela institution — `?`). */
+const SLIP_CUSTOMERS_JOIN = (s: string) => `
+     LEFT JOIN (SELECT t.tb_institution_id, t.tb_bank_slip_id,
+                       GROUP_CONCAT(DISTINCT COALESCE(ce.nick_trade, ce.name_company) SEPARATOR ' | ') AS customer_names
+                  FROM \`${s}\`.tb_bank_slip_title t
+                  LEFT JOIN \`${s}\`.tb_order_sale osl
+                    ON osl.id = t.tb_order_id AND osl.tb_institution_id = t.tb_institution_id AND osl.terminal = t.terminal
+                  LEFT JOIN \`${s}\`.tb_order_service osv
+                    ON osv.id = t.tb_order_id AND osv.tb_institution_id = t.tb_institution_id AND osv.terminal = t.terminal
+                  LEFT JOIN \`${s}\`.tb_order_financial ofn
+                    ON ofn.id = t.tb_order_id AND ofn.tb_institution_id = t.tb_institution_id AND ofn.terminal = t.terminal
+                  LEFT JOIN setes_central.tb_entity ce
+                    ON ce.id = COALESCE(osl.tb_customer_id, osv.tb_customer_id, ofn.tb_entity_id)
+                 WHERE t.tb_institution_id = ? AND t.deleted = 'N'
+                 GROUP BY t.tb_institution_id, t.tb_bank_slip_id) sc
+       ON sc.tb_institution_id = bs.tb_institution_id AND sc.tb_bank_slip_id = bs.id`
+
+/**
  * Lista PAGINADA por estado derivado (HAVING sobre alias — COUNT via
  * subquery, molde settlements.listBills). ORDER BY estável (D8).
  */
@@ -65,9 +100,11 @@ export async function listBankSlips(
      LEFT JOIN \`${s}\`.tb_bank_account a
             ON a.id = bs.tb_bank_account_id AND a.tb_institution_id = bs.tb_institution_id
      LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id
+     ${SLIP_CUSTOMERS_JOIN(s)}
      WHERE bs.tb_institution_id = ? AND bs.deleted = 'N'
-       AND (? IS NULL OR bs.our_number LIKE ? OR bs.document_number LIKE ?)`
-  const params: any[] = [institutionId, like, like, like]
+       AND (? IS NULL OR bs.our_number LIKE ? OR bs.document_number LIKE ?)${query.criteria.sql}`
+  // ordem dos `?`: o da derived table `sc` (institution) vem ANTES do WHERE no texto
+  const params: any[] = [institutionId, institutionId, like, like, like, ...query.criteria.params]
   const havingParams = status ? [status] : []
 
   const [rows] = await pool.query<any[]>(
@@ -290,4 +327,27 @@ export function reverse(
   assertSchemaName(schemaName)
   return inTx('estorno de boleto', { institutionId, slipId: id },
     conn => reverseBankSlipSettlement(conn, schemaName, institutionId, userId, id, reason))
+}
+
+/** Carteiras de cobrança para o critério "carteira" — ativas E inativas (a pesquisa é sobre histórico, D-BA42). */
+export async function listAgreementSearchLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<BankSlipLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT ag.id,
+            CONCAT(ag.agreement, ' — ', COALESCE(${ACCOUNT_LABEL}, ''),
+                   CASE WHEN ag.active = 'N' THEN ' (inativa)' ELSE '' END) AS name
+       FROM \`${schemaName}\`.tb_bank_charge_agreement ag
+       LEFT JOIN \`${schemaName}\`.tb_bank_account a
+              ON a.id = ag.tb_bank_account_id AND a.tb_institution_id = ag.tb_institution_id
+       LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id
+      WHERE ag.tb_institution_id = ? AND ag.deleted = 'N'
+        AND (? IS NULL OR ag.agreement LIKE ? OR b.description LIKE ?)
+      ORDER BY ag.active DESC, ag.agreement, ag.id
+      LIMIT 50`,
+    [institutionId, like, like, like]
+  )
+  return rows as BankSlipLookupRow[]
 }

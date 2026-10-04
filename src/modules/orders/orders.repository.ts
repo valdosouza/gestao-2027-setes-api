@@ -5,7 +5,7 @@ import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { lockInstitutionCounters } from '@shared/db/counters'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike, SearchCriterion } from '@shared/list'
 import { assertOrderOpen, getOrderFinancialBase } from '@shared/order'
 import { getOrderBilling, upsertOrderBilling, normalizeDeadline, parseDeadline } from '@shared/order-billing'
 import {
@@ -20,7 +20,32 @@ import {
   OrderListRow, OrderFull, OpenOrderInput, OrderItemInput,
   OrderProductLookupRow, OrderNegotiation, NegotiationInput, NegotiationParcelRow,
   OrderBankLookupRow,
+  OrderSearchLookupRow,
 } from './orders.interface'
+
+/**
+ * PESQUISA AVANÇADA — Onda 3 (prompt_pesquisa_avancada.md §13, D-BA32…D-BA44): lista branca
+ * dos pedidos de venda. A aba Abertos/Faturados continua sendo o parâmetro `status` (D-BA33).
+ * Ramos 1:1 pela PK (id + institution + terminal) entram na query base como LEFT JOIN — a
+ * coluna `hasService` da linha e o critério são a MESMA expressão (D-BA41); nota (`inv`) e
+ * negociação (`ob`) idem. Lookups do PRÓPRIO módulo; cliente respeita a carteira (D-BA34).
+ */
+export const ORDER_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'customerName', kind: 'text', labelKey: 'search.orders.customerName',
+    expr: ['ce.nick_trade', 'ce.name_company'] },
+  { key: 'customer', kind: 'lookup', labelKey: 'search.orders.customer',
+    expr: 's.tb_customer_id', lookup: '/api/orders/customer-lookup' },
+  { key: 'salesman', kind: 'lookup', labelKey: 'search.orders.salesman',
+    expr: 's.tb_salesman_id', lookup: '/api/orders/salesman-lookup' },
+  { key: 'number', kind: 'number', labelKey: 'search.orders.number', expr: 's.number' },
+  { key: 'dtRecord', kind: 'date', labelKey: 'search.orders.dtRecord', expr: 'o.dt_record', storage: 'date' },
+  { key: 'totalValue', kind: 'money', labelKey: 'search.orders.totalValue', expr: 'COALESCE(t.total_value, 0)' },
+  // coluna GERADA numérica (migration 045) — nunca o varchar `number`
+  { key: 'invoiceNumber', kind: 'number', labelKey: 'search.orders.invoiceNumber', expr: 'inv.number_seq' },
+  { key: 'paymentType', kind: 'lookup', labelKey: 'search.orders.paymentType',
+    expr: 'ob.tb_payment_types_id', lookup: '/api/orders/payment-types-lookup' },
+  { key: 'hasService', kind: 'bool', labelKey: 'search.orders.hasService', expr: 'os.id IS NOT NULL' },
+]
 
 /**
  * Repositório do Pedido de Venda/Conjugado. Backbone tb_order + ramo
@@ -54,11 +79,21 @@ export async function listOrders(
      LEFT JOIN \`${schemaName}\`.tb_order_totalizer t
         ON t.id = s.id AND t.tb_institution_id = s.tb_institution_id
        AND t.terminal = s.terminal AND t.deleted = 'N'
+     LEFT JOIN \`${schemaName}\`.tb_order_service os
+        ON os.id = s.id AND os.tb_institution_id = s.tb_institution_id
+       AND os.terminal = s.terminal AND os.deleted = 'N'
+     LEFT JOIN \`${schemaName}\`.tb_invoice inv
+        ON inv.id = s.id AND inv.tb_institution_id = s.tb_institution_id
+       AND inv.terminal = s.terminal AND inv.deleted = 'N'
+     LEFT JOIN \`${schemaName}\`.tb_order_billing ob
+        ON ob.id = s.id AND ob.tb_institution_id = s.tb_institution_id
+       AND ob.terminal = s.terminal AND ob.deleted = 'N'
      WHERE s.tb_institution_id = ? AND s.deleted = 'N'
        AND (? IS NULL OR o.status = ? OR (? = 'F' AND o.status = 'C'))
-       AND (? IS NULL OR ce.nick_trade LIKE ? OR ce.name_company LIKE ?)`
+       AND (? IS NULL OR ce.nick_trade LIKE ? OR ce.name_company LIKE ?)${query.criteria.sql}`
   // Q-CA7 (assunção = espelho da Q-CA3): a aba Faturados também mostra o pedido CANCELADO com nota fiscal
-  const params = [institutionId, statusFilter, statusFilter, statusFilter, like, like, like]
+  const params = [institutionId, statusFilter, statusFilter, statusFilter, like, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT s.id, s.number,
@@ -68,9 +103,7 @@ export async function listOrders(
             COALESCE(se.nick_trade, se.name_company) AS salesmanName,
             o.status,
             DATE_FORMAT(o.dt_record, '%Y-%m-%d') AS dtRecord,
-            EXISTS(SELECT 1 FROM \`${schemaName}\`.tb_order_service os
-                    WHERE os.id = s.id AND os.tb_institution_id = s.tb_institution_id
-                      AND os.terminal = s.terminal AND os.deleted = 'N') AS hasService,
+            (os.id IS NOT NULL) AS hasService,
             (SELECT COUNT(*) FROM \`${schemaName}\`.tb_order_item i
               WHERE i.tb_order_id = s.id AND i.tb_institution_id = s.tb_institution_id
                 AND i.terminal = s.terminal AND i.deleted = 'N') AS itemsCount,
@@ -642,9 +675,52 @@ export async function saveNegotiation(
 /** Lookup das formas de pagamento vinculadas/habilitadas (cabeçalho e forma por parcela da negociação). */
 export async function listPaymentTypesLookup(
   filter: string, schemaName: string, institutionId: number
-): Promise<EnabledPaymentType[]> {
+): Promise<(EnabledPaymentType & { name: string })[]> {
   assertSchemaName(schemaName)
-  return listEnabledPaymentTypes(pool, schemaName, institutionId, filter)
+  // `name` ADITIVO: contrato { id, name } das listas de apoio da pesquisa avançada (a negociação lê description)
+  const rows = await listEnabledPaymentTypes(pool, schemaName, institutionId, filter)
+  return rows.map(r => ({ ...r, name: r.description }))
+}
+
+/** Clientes para o critério "cliente" (D-BA34: a carteira travada do vendedor vale aqui). */
+export async function listCustomerLookup(
+  filter: string, schemaName: string, institutionId: number, salesmanId: number | null
+): Promise<OrderSearchLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT cu.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name
+       FROM \`${schemaName}\`.tb_customer cu
+       INNER JOIN setes_central.tb_entity e ON e.id = cu.id
+      WHERE cu.tb_institution_id = ? AND cu.deleted = 'N'
+        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+        AND (? IS NULL OR cu.tb_salesman_id = ?)
+      ORDER BY name, cu.id
+      LIMIT 50`,
+    [institutionId, like, like, like, salesmanId, salesmanId]
+  )
+  return rows as OrderSearchLookupRow[]
+}
+
+/** Vendedores para o critério "vendedor" — ATIVOS E INATIVOS (D-BA42: a pesquisa é sobre histórico). */
+export async function listSalesmanLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<OrderSearchLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT sm.id,
+            CONCAT(COALESCE(NULLIF(e.nick_trade, ''), e.name_company),
+                   CASE WHEN sm.active = 'N' THEN ' (inativo)' ELSE '' END) AS name
+       FROM \`${schemaName}\`.tb_salesman sm
+       INNER JOIN setes_central.tb_entity e ON e.id = sm.id
+      WHERE sm.tb_institution_id = ? AND sm.deleted = 'N'
+        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+      ORDER BY sm.active DESC, name, sm.id
+      LIMIT 50`,
+    [institutionId, like, like, like]
+  )
+  return rows as OrderSearchLookupRow[]
 }
 
 /** Lookup dos bancos do catálogo central (cheques no faturamento — mesmo shape de /api/checks/banks). */

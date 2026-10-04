@@ -1,5 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import type { CheckState } from '@shared/check'
 import {
   CheckListRow, CheckFull, BankLookupRow, BankAccountLookupRow,
@@ -9,6 +9,7 @@ import {
   listChecks, getCheck, listBanksLookup, listBankAccountsLookup,
   listProvidersLookup, listOpenPayables,
   deposit, discount, returnRefund, returnGood, payWith, returnToOrigin, reverse,
+  CHECK_SEARCH_CRITERIA,
 } from './checks.repository'
 import {
   DepositCheckDto, DiscountCheckDto, ReturnCheckRefundDto, ReturnCheckGoodDto,
@@ -29,6 +30,13 @@ export function parseState(raw: unknown): CheckState | '' {
   if (v === '') return ''
   if ((STATES as string[]).includes(v)) return v as CheckState
   throw new HttpError(400, 'status inválido', [{ field: 'status', message: 'Valor inválido' }], 'INVALID_STATUS')
+}
+
+export { CHECK_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada dos cheques (D-BA2) — sem expressão SQL. */
+export async function fetchCheckSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(CHECK_SEARCH_CRITERIA)
 }
 
 export async function fetchChecks(

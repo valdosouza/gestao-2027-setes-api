@@ -85,3 +85,9 @@ export interface OpenTitleRow {
   balance:                number
   paymentTypeDescription: string | null
 }
+
+/** Linha da lista de apoio da pesquisa avançada ({ id, name }). */
+export interface BankSlipLookupRow {
+  id:   number
+  name: string | null
+}

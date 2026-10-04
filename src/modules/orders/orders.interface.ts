@@ -131,3 +131,9 @@ export interface NegotiationInput {
   deadline?:     string | null
   installments?: { parcel: number; dueDate: string; amount: number; paymentTypeId?: number | null }[]
 }
+
+/** Linha das listas de apoio da pesquisa avançada ({ id, name }). */
+export interface OrderSearchLookupRow {
+  id:   number
+  name: string | null
+}

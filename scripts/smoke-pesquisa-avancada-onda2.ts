@@ -64,6 +64,10 @@ const MODULES: Record<string, string> = {
   'tax-rules': 'productName', 'service-tax-rules': 'serviceListName', cfop: 'description', cities: 'name',
   states: 'name', 'service-list': 'description', interfaces: 'description', countries: 'name', banks: 'description',
   privileges: 'description', modules: 'description', 'interface-configs': 'name', 'interface-fields': 'name',
+  // Onda 3 — Bloco A (sem `status` = todas as abas)
+  orders: 'customerName', 'order-returns': 'customerName',
+  // Onda 3 — Bloco B (caminho próprio por lista no módulo de baixas)
+  'settlements/bills': 'entityName', 'settlements/settled': 'entityName', 'bank-slips': 'customerName', checks: 'issuer',
 }
 
 async function smokeModule(mod: string, nameKey: string): Promise<void> {
@@ -76,7 +80,8 @@ async function smokeModule(mod: string, nameKey: string): Promise<void> {
   check(`${mod}: nenhuma expressão vazada`, !raw.includes('"expr"') && !raw.includes('SELECT') && !raw.includes('"shape"'))
   const defs: Criterion[] = cat.body?.data ?? []
   check(`${mod}: critério de nome "${nameKey}" é texto (D-BA21)`, defs.some(d => d.key === nameKey && d.kind === 'text'))
-  for (const d of defs) check(`${mod}.${d.key}: labelKey search.${mod}.${d.key}`, (cat.body.data.find((x: any) => x.key === d.key).labelKey) === `search.${mod}.${d.key}`)
+  const labelMod = mod.replace('/', '-')   // settlements/bills → search.settlements-bills.*
+  for (const d of defs) check(`${mod}.${d.key}: labelKey search.${labelMod}.${d.key}`, (cat.body.data.find((x: any) => x.key === d.key).labelKey) === `search.${labelMod}.${d.key}`)
 
   const all = await get(`/api/${mod}?pageSize=200${focus}`)
   check(`${mod} lista sem critério 200`, all.status === 200, `total=${all.body?.total}`)

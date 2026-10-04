@@ -36,6 +36,10 @@ const router = Router()
  *       - in: query
  *         name: pageSize
  *         schema: { type: integer }
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter e com a aba (status). Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: "{ ok, data[], page, pageSize, total }" }
  *       401: { description: Sem JWT }
@@ -68,6 +72,45 @@ const router = Router()
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/order-returns/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada das devoluções
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md §13, Onda 3) — lista branca sem expressão SQL; a aba segue em status.
+ *     tags: [order-returns]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
+ * /api/order-returns/customer-lookup:
+ *   get:
+ *     summary: Lookup de clientes do critério "cliente" (carteira do vendedor respeitada — D-BA34)
+ *     description: >
+ *       Lista de apoio { id, name } do painel da pesquisa avançada.
+ *     tags: [order-returns]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/customer-lookup', controller.customerLookup)
 router.post('/', controller.create)
 
 /**

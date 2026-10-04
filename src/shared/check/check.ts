@@ -28,7 +28,9 @@ import { reverseStatementLines } from '@shared/financial-settlement/statement-re
  * (2º produtor do ramo financial, molde `generatePartnershipOrders`).
  */
 
-export type CheckHeaderKind = 'P' | 'T' // próprio (do pagador) / terceiro
+/** Domínio do cabeçalho do cheque: P próprio (do pagador) · T terceiro — reusado pelo critério `kind`. */
+export const CHECK_HEADER_KINDS = ['P', 'T'] as const
+export type CheckHeaderKind = typeof CHECK_HEADER_KINDS[number]
 export type CheckEventKind = 'R' | 'B' | 'D' | 'P' | 'T' | 'F' | 'V' | 'X'
 export type CheckState = 'custody' | 'bank' | 'factoring' | 'supplier' | 'refunded' | 'collection'
 

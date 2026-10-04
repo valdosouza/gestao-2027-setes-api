@@ -5,8 +5,10 @@ import { assertSchemaName } from '@shared/field-config'
 import { reversePaymentWithChecks } from '@shared/check'
 import type { ReversalCore } from '@shared/financial-settlement/settlement-batch'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
-import { OPEN_BALANCE_SQL, PRINCIPAL_PAID_SQL } from '@shared/financial-settlement/title-balance'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import {
+  PRINCIPAL_PAID_JOIN_SQL, PRINCIPAL_PAID_OF, OPEN_BALANCE_OF,
+} from '@shared/financial-settlement/title-balance'
+import { ListQuery, PagedRows, escapeLike, SearchCriterion } from '@shared/list'
 import { round2 } from '@shared/money'   // L4 (socrático R6): peça única do arredondamento
 import {
   settleBatchTx, reverseOnePayment, createPaCompensation,
@@ -14,6 +16,7 @@ import {
 import {
   BillRow, SettleBatchInput, SettleBatchResult, SettledRow,
   ReversalInput, ReversalResult, StatementReport,
+  BILL_OPERATIONS, BILL_KINDS, BILL_STAGES, PAYMENT_STATUSES, SettlementLookupRow,
 } from './settlements.interface'
 
 /**
@@ -42,20 +45,45 @@ const ENTITY_JOINS = (schema: string) => `
 // Q-G21: saldo em aberto pela peça ÚNICA (@shared/financial-settlement/title-balance)
 // — principal coberto por baixa = paid − juros − multa + desconto; baixa com
 // desconto QUITA (antes: Σ paid bruto, e o título "quitado com desconto"
-// ficava em Abertos).
-const PAID_SUM = (schema: string) => PRINCIPAL_PAID_SQL(schema, 'f')
+// ficava em Abertos). D-BA37 (Onda 3): a LISTA usa a forma de lista da peça
+// (derived table agregada `pp`, LEFT JOIN 1:1 por título) — mesma fórmula.
 
 // ---------------------------------------------------------------------
 // Carteira de títulos
 // ---------------------------------------------------------------------
 
 /**
- * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
- * (D2). O status open/settled é HAVING sobre aliases DERIVADOS
- * (balance/paidValue) — o COUNT não pode ser um COUNT(*) simples: envolve
- * o SELECT interno (reduzido ao mínimo que o HAVING precisa) numa
- * subquery e conta as linhas dela. ORDER BY já tem desempate composto
- * (dt_expiration, orderId, parcel) — OFFSET estável (D8).
+ * PESQUISA AVANÇADA — Onda 3 (prompt_pesquisa_avancada.md §13, D-BA32…D-BA44): lista branca
+ * dos TÍTULOS. A aba Abertos/Baixados continua sendo o parâmetro `status` (D-BA33). Saldo pela
+ * peça (D-BA36) sobre o alias `pp` — expressão sem schema e sem `?`, cabe na lista `const`.
+ * Sem "vencido" derivado (D-BA38: critério não carrega relógio) e sem derivado de evento (D-BA39).
+ */
+export const BILL_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'entityName', kind: 'text', labelKey: 'search.settlements-bills.entityName',
+    expr: ['e.nick_trade', 'e.name_company'] },
+  { key: 'entity', kind: 'lookup', labelKey: 'search.settlements-bills.entity',
+    expr: 'e.id', lookup: '/api/settlements/bills/entity-lookup' },
+  { key: 'number', kind: 'text', labelKey: 'search.settlements-bills.number', expr: 'b.number' },
+  { key: 'operation', kind: 'options', labelKey: 'search.settlements-bills.operation',
+    expr: 'b.operation', options: BILL_OPERATIONS },
+  { key: 'kind', kind: 'options', labelKey: 'search.settlements-bills.kind', expr: 'b.kind', options: BILL_KINDS },
+  { key: 'stage', kind: 'options', labelKey: 'search.settlements-bills.stage', expr: 'b.stage', options: BILL_STAGES },
+  { key: 'dtExpiration', kind: 'date', labelKey: 'search.settlements-bills.dtExpiration',
+    expr: 'f.dt_expiration', storage: 'date' },
+  { key: 'tagValue', kind: 'money', labelKey: 'search.settlements-bills.tagValue', expr: 'f.tag_value' },
+  { key: 'balance', kind: 'money', labelKey: 'search.settlements-bills.balance', expr: OPEN_BALANCE_OF('f', 'pp') },
+  { key: 'paymentType', kind: 'lookup', labelKey: 'search.settlements-bills.paymentType',
+    expr: 'f.tb_payment_types_id', lookup: '/api/settlements/bills/payment-types-lookup' },
+]
+
+/**
+ * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE (D2).
+ * D-BA37 (Onda 3, parecer do guardião): o principal coberto vem da forma de LISTA da peça
+ * `title-balance` — derived table agregada 1:1 por título (`pp`, a peça emite o JOIN
+ * inteiro). A aba open/settled deixou de ser HAVING sobre 2 subselects correlacionados por
+ * linha e virou predicado do WHERE sobre o alias; o COUNT é um COUNT(*) simples. ORDER BY já
+ * tem desempate composto (dt_expiration, orderId, parcel) — OFFSET estável (D8).
+ * Ordem dos `?`: o da derived table (institution) vem ANTES do WHERE no texto.
  */
 export async function listBills(
   status: 'open' | 'settled' | '', kind: string, query: ListQuery,
@@ -64,8 +92,8 @@ export async function listBills(
   assertSchemaName(schemaName)
   const like = query.filter ? `%${escapeLike(query.filter)}%` : null
   const kindFilter = kind || null
-  const having = status === 'open' ? 'HAVING balance > 0'
-               : status === 'settled' ? 'HAVING paidValue > 0' : ''
+  const tab = status === 'open' ? `AND ${OPEN_BALANCE_OF('f', 'pp')} > 0`
+            : status === 'settled' ? `AND ${PRINCIPAL_PAID_OF('pp')} > 0` : ''
   const where =
     `FROM \`${schemaName}\`.tb_financial f
      INNER JOIN \`${schemaName}\`.tb_financial_bills b
@@ -74,10 +102,13 @@ export async function listBills(
        AND b.parcel = f.parcel AND b.deleted = 'N'
      ${ENTITY_JOINS(schemaName)}
      LEFT JOIN setes_central.tb_payment_types pt ON pt.id = f.tb_payment_types_id
+     ${PRINCIPAL_PAID_JOIN_SQL(schemaName, 'f', 'pp')}
      WHERE f.tb_institution_id = ? AND f.deleted = 'N'
        AND (? IS NULL OR b.kind = ?)
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)`
-  const params = [institutionId, kindFilter, kindFilter, like, like, like, like]
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)
+       ${tab}${query.criteria.sql}`
+  const params = [institutionId, institutionId, kindFilter, kindFilter, like, like, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT f.tb_order_id AS orderId,
@@ -85,27 +116,58 @@ export async function listBills(
             b.number, b.kind, b.situation, b.operation, b.stage,
             DATE_FORMAT(f.dt_expiration, '%Y-%m-%d') AS dtExpiration,
             f.tag_value AS tagValue,
-            ${PAID_SUM(schemaName)} AS paidValue,
-            ${OPEN_BALANCE_SQL(schemaName, 'f')} AS balance,   -- L6: peça única (com ROUND)
+            ${PRINCIPAL_PAID_OF('pp')} AS paidValue,
+            ${OPEN_BALANCE_OF('f', 'pp')} AS balance,   -- peça única (com ROUND)
             COALESCE(e.nick_trade, e.name_company) AS entityName,
             f.tb_payment_types_id AS paymentTypeId,
             pt.description AS paymentTypeDescription
      ${where}
-     ${having}
      ORDER BY f.dt_expiration, f.tb_order_id, f.parcel
      LIMIT ? OFFSET ?`,
     [...params, query.pageSize, query.offset]
   )
-  const [count] = await pool.query<any[]>(
-    `SELECT COUNT(*) AS total FROM (
-       SELECT ${PAID_SUM(schemaName)} AS paidValue,
-              ${OPEN_BALANCE_SQL(schemaName, 'f')} AS balance
-       ${where}
-       ${having}
-     ) t`,
-    params
-  )
+  const [count] = await pool.query<any[]>(`SELECT COUNT(*) AS total ${where}`, params)
   return { rows, total: Number(count[0].total) }
+}
+
+/** Entidades que TÊM título (D-BA35 — cliente OU fornecedor, sem trava de carteira). */
+export async function listBillEntityLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<SettlementLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT e.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name
+       FROM (SELECT DISTINCT COALESCE(osv.tb_customer_id, ofn.tb_entity_id) AS id
+               FROM \`${schemaName}\`.tb_financial f
+               ${ENTITY_JOINS(schemaName).replace(/LEFT JOIN setes_central\.tb_entity e[\s\S]*$/, '')}
+              WHERE f.tb_institution_id = ? AND f.deleted = 'N') te
+       INNER JOIN setes_central.tb_entity e ON e.id = te.id
+      WHERE (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+      ORDER BY name, e.id
+      LIMIT 50`,
+    [institutionId, like, like, like]
+  )
+  return rows as SettlementLookupRow[]
+}
+
+/** Formas de pagamento VINCULADAS à institution (habilitadas ou não — a pesquisa é sobre histórico). */
+export async function listBillPaymentTypesLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<SettlementLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT pt.id, pt.description AS name
+       FROM \`${schemaName}\`.tb_institution_has_payment_types h
+       INNER JOIN setes_central.tb_payment_types pt ON pt.id = h.tb_payment_types_id AND pt.deleted = 'N'
+      WHERE h.tb_institution_id = ? AND h.deleted = 'N'
+        AND (? IS NULL OR pt.description LIKE ?)
+      ORDER BY pt.description, pt.id
+      LIMIT 50`,
+    [institutionId, like, like]
+  )
+  return rows as SettlementLookupRow[]
 }
 
 // ---------------------------------------------------------------------
@@ -147,6 +209,23 @@ export async function settleBatch(
 // ---------------------------------------------------------------------
 
 /**
+ * PESQUISA AVANÇADA — Onda 3 (§13): lista branca das BAIXAS realizadas. Sem aba de status —
+ * por isso ganha o critério `status` (vigente/estornada/estorno, D-BA33).
+ */
+export const SETTLED_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'entityName', kind: 'text', labelKey: 'search.settlements-settled.entityName',
+    expr: ['e.nick_trade', 'e.name_company'] },
+  { key: 'number', kind: 'text', labelKey: 'search.settlements-settled.number', expr: 'b.number' },
+  { key: 'dtPayment', kind: 'date', labelKey: 'search.settlements-settled.dtPayment', expr: 'p.dt_payment', storage: 'date' },
+  { key: 'dtRealPayment', kind: 'date', labelKey: 'search.settlements-settled.dtRealPayment',
+    expr: 'p.dt_real_payment', storage: 'date' },
+  { key: 'paidValue', kind: 'money', labelKey: 'search.settlements-settled.paidValue', expr: 'p.paid_value' },
+  { key: 'settledCode', kind: 'number', labelKey: 'search.settlements-settled.settledCode', expr: 'p.settled_code' },
+  { key: 'status', kind: 'options', labelKey: 'search.settlements-settled.status', expr: 'p.status', options: PAYMENT_STATUSES },
+  { key: 'kind', kind: 'options', labelKey: 'search.settlements-settled.kind', expr: 'b.kind', options: BILL_KINDS },
+]
+
+/**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
  * (D2 — sem HAVING aqui: padrão puro do piloto). ORDER BY já tem
  * desempate composto (created_at DESC, orderId, parcel, event) — OFFSET
@@ -169,8 +248,8 @@ export async function listSettled(
        AND b.parcel = p.parcel AND b.deleted = 'N'
      ${ENTITY_JOINS(schemaName)}
      WHERE p.tb_institution_id = ? AND p.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)`
-  const params = [institutionId, like, like, like, like]
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR b.number LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT p.tb_order_id AS orderId, p.parcel, p.event,

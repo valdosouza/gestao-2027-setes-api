@@ -36,33 +36,79 @@ import { round2 } from '@shared/money'
  * Teste que fixa a semântica: `settlement-batch.test` ("D-A28").
  */
 
-/** Σ principal coberto pelas baixas VIVAS do título `fAlias` (subquery correlacionada). */
+/*
+ * As TRÊS formas da fórmula (correlacionada, de LISTA e travante) montam o SQL a partir
+ * destas três partes internas — a fórmula existe uma vez só (parecer do guardião, D-BA37):
+ * - PAYMENT_PRINCIPAL: principal coberto por UMA baixa;
+ * - LIVE_PAYMENT: o que é "baixa viva". ⚠️ NÃO "harmonizar" com a D-CH2 (saldo do caixa soma
+ *   TODAS as linhas porque lá o espelho 'R' compensa o original 'E'): aqui o espelho 'R' do
+ *   estorno é POSITIVO — somar tudo dobraria o valor. `status = 'N'` FAZ PARTE da fórmula;
+ * - balanceOver: saldo = valor do título − principal coberto, 2 casas, nunca negativo.
+ */
+const PAYMENT_PRINCIPAL = (p = 'p') =>
+  `${p}.paid_value - COALESCE(${p}.interest_value, 0) - COALESCE(${p}.late_value, 0)
+                         + COALESCE(${p}.discount_value, 0)`
+const LIVE_PAYMENT = (p = 'p') => `${p}.status = 'N' AND ${p}.deleted = 'N'`
+const balanceOver = (fAlias: string, principalExpr: string) =>
+  `GREATEST(ROUND(${fAlias}.tag_value - ${principalExpr}, 2), 0)`
+
+/** Σ principal coberto pelas baixas VIVAS do título `fAlias` (subquery correlacionada — 1 título). */
 export const PRINCIPAL_PAID_SQL = (schema: string, fAlias = 'f') => `
-    (SELECT COALESCE(SUM(p.paid_value - COALESCE(p.interest_value, 0) - COALESCE(p.late_value, 0)
-                         + COALESCE(p.discount_value, 0)), 0)
+    (SELECT COALESCE(SUM(${PAYMENT_PRINCIPAL('p')}), 0)
        FROM \`${schema}\`.tb_financial_payment p
       WHERE p.tb_institution_id = ${fAlias}.tb_institution_id
         AND p.tb_order_id = ${fAlias}.tb_order_id AND p.terminal = ${fAlias}.terminal
-        AND p.parcel = ${fAlias}.parcel AND p.status = 'N' AND p.deleted = 'N')`
+        AND p.parcel = ${fAlias}.parcel AND ${LIVE_PAYMENT('p')})`
 
-/** Saldo em aberto do título `fAlias` (nunca negativo), 2 casas. */
+/** Saldo em aberto do título `fAlias` (nunca negativo), 2 casas — forma correlacionada. */
 export const OPEN_BALANCE_SQL = (schema: string, fAlias = 'f') =>
-  `GREATEST(ROUND(${fAlias}.tag_value - ${PRINCIPAL_PAID_SQL(schema, fAlias)}, 2), 0)`
+  balanceOver(fAlias, PRINCIPAL_PAID_SQL(schema, fAlias))
+
+/**
+ * Forma de LISTA (D-BA37, Onda 3 da pesquisa avançada): o principal coberto de TODOS os
+ * títulos da institution numa derived table AGREGADA 1:1 por título, juntada à query base
+ * por LEFT JOIN — a lista deixa de fazer duas subconsultas por linha e o COUNT deixa de
+ * recalcular tudo. A peça emite o JOIN INTEIRO (derived table + ON): a chave do título
+ * (institution, order, terminal, parcel) vive num lugar só — o GROUP BY e o ON usam as
+ * MESMAS quatro colunas, e quem consome não escreve ON (sem fan-out por esquecimento).
+ *
+ * ⚠️ Carrega UM `?` = institution (escopo da derived table, parte da query base — como o
+ * `mv` dos contratos); ele vem ANTES do `?` do WHERE do consumidor no texto do SQL.
+ * Só para LEITURA de lista: derived table dentro de FOR UPDATE não trava (PADROES_BANCO §9,
+ * regra 2) — decisão travante segue em `getPrincipalPaidTx`.
+ */
+export const PRINCIPAL_PAID_JOIN_SQL = (schema: string, fAlias = 'f', ppAlias = 'pp') => `
+     LEFT JOIN (SELECT p.tb_institution_id, p.tb_order_id, p.terminal, p.parcel,
+                       SUM(${PAYMENT_PRINCIPAL('p')}) AS principal_paid
+                  FROM \`${schema}\`.tb_financial_payment p
+                 WHERE p.tb_institution_id = ? AND ${LIVE_PAYMENT('p')}
+                 GROUP BY p.tb_institution_id, p.tb_order_id, p.terminal, p.parcel) ${ppAlias}
+       ON ${ppAlias}.tb_institution_id = ${fAlias}.tb_institution_id
+      AND ${ppAlias}.tb_order_id = ${fAlias}.tb_order_id
+      AND ${ppAlias}.terminal = ${fAlias}.terminal
+      AND ${ppAlias}.parcel = ${fAlias}.parcel`
+
+/** Principal coberto sobre o alias juntado (sem schema, sem `?` — cabe em lista branca `const`). */
+export const PRINCIPAL_PAID_OF = (ppAlias = 'pp') => `COALESCE(${ppAlias}.principal_paid, 0)`
+
+/** Saldo em aberto sobre o alias juntado — mesma conta do `OPEN_BALANCE_SQL` (balanceOver). */
+export const OPEN_BALANCE_OF = (fAlias = 'f', ppAlias = 'pp') =>
+  balanceOver(fAlias, PRINCIPAL_PAID_OF(ppAlias))
 
 /**
  * Principal já coberto pelas baixas VIVAS (leitura TRAVANTE — ordem título →
- * payment; o chamador já travou o título).
+ * payment; o chamador já travou o título). `terminal = 0` é chave por desenho
+ * (baixa só existe no terminal 0), não diferença de fórmula.
  */
 export async function getPrincipalPaidTx(
   conn: PoolConnection, schema: string, institutionId: number,
   orderId: number, parcel: number
 ): Promise<number> {
   const [rows] = await conn.query<any[]>(
-    `SELECT COALESCE(SUM(paid_value - COALESCE(interest_value, 0) - COALESCE(late_value, 0)
-                        + COALESCE(discount_value, 0)), 0) AS principalPaid
-       FROM \`${schema}\`.tb_financial_payment
-      WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0 AND parcel = ?
-        AND status = 'N' AND deleted = 'N' FOR UPDATE`,
+    `SELECT COALESCE(SUM(${PAYMENT_PRINCIPAL('p')}), 0) AS principalPaid
+       FROM \`${schema}\`.tb_financial_payment p
+      WHERE p.tb_institution_id = ? AND p.tb_order_id = ? AND p.terminal = 0 AND p.parcel = ?
+        AND ${LIVE_PAYMENT('p')} FOR UPDATE`,
     [institutionId, orderId, parcel]
   )
   return round2(rows[0]?.principalPaid ?? 0)

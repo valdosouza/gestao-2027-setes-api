@@ -8,6 +8,7 @@ import {
 import {
   BankSlipScope, parseState, parsePendingOnly, fetchBankSlips, fetchBankSlipWithRegistrations, fetchAgreementsLookup,
   fetchOpenTitles, issueSlip, settleSlip, cancelSlip, reverseSlip,
+  BANK_SLIP_SEARCH_CRITERIA, fetchBankSlipSearchCriteria, fetchAgreementSearchLookup,
 } from './bank-slips.service'
 
 /** Escopo SEMPRE do JWT (institution + autor das ações). */
@@ -20,10 +21,28 @@ export async function list(req: Request, res: Response): Promise<void> {
   try {
     const status = parseState(req.query.status)
     const pendingOnly = parsePendingOnly(req.query.pending)
-    const query = await parseListQuery(req, 'bank-slips')
+    const query = await parseListQuery(req, 'bank-slips', BANK_SLIP_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchBankSlips(status, query, scopeOf(req), pendingOnly)))
   } catch (err) {
     handleError(res, err, 'bank-slips GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBankSlipSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'bank-slips/search-criteria GET')
+  }
+}
+
+/** GET /agreement-lookup — critério "carteira" (ativas e inativas). */
+export async function agreementSearchLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchAgreementSearchLookup(String(req.query.filter ?? '').trim(), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'bank-slips/agreement-lookup GET')
   }
 }
 

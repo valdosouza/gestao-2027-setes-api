@@ -1,12 +1,13 @@
 import pool from '@shared/db/connection'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike, SearchCriterion } from '@shared/list'
 import {
   LAST_CHECK_STATE_SQL, CheckState,
   depositCheck, discountCheck, returnCheckWithRefund, returnCheckGood,
   useCheckInPayment, returnCheck, reverseCheckEvent,
   DepositCheckInput, DiscountCheckInput, ReturnCheckRefundInput,
   UseCheckInPaymentInput, ReturnCheckInput, ReverseCheckEventInput,
+  CHECK_HEADER_KINDS,
 } from '@shared/check'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { OPEN_BALANCE_SQL } from '@shared/financial-settlement'
@@ -35,6 +36,21 @@ const LIST_FIELDS = (s: string) => `c.id,
             (SELECT COALESCE(e.nick_trade, e.name_company) FROM setes_central.tb_entity e
               WHERE e.id = ${ORIGIN_ENTITY_SQL(s)}) AS entityName`
 
+/**
+ * PESQUISA AVANÇADA — Onda 3 (§13): lista branca dos CHEQUES. O estado (derivado do último
+ * evento) segue como aba (D-BA33). O nome que o usuário digita é o do EMITENTE (`issuer`, D-BA21).
+ */
+export const CHECK_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'issuer', kind: 'text', labelKey: 'search.checks.issuer', expr: 'c.issuer' },
+  { key: 'number', kind: 'text', labelKey: 'search.checks.number', expr: 'c.number' },
+  { key: 'bank', kind: 'lookup', labelKey: 'search.checks.bank', expr: 'c.tb_bank_id', lookup: '/api/checks/banks' },
+  { key: 'agency', kind: 'text', labelKey: 'search.checks.agency', expr: 'c.agency' },
+  { key: 'account', kind: 'text', labelKey: 'search.checks.account', expr: 'c.account' },
+  { key: 'dtCheck', kind: 'date', labelKey: 'search.checks.dtCheck', expr: 'c.dt_check', storage: 'date' },
+  { key: 'value', kind: 'money', labelKey: 'search.checks.value', expr: 'c.value' },
+  { key: 'kind', kind: 'options', labelKey: 'search.checks.kind', expr: 'c.kind', options: CHECK_HEADER_KINDS },
+]
+
 /** Lista PAGINADA por estado derivado — HAVING sobre alias (molde bank-slips). */
 export async function listChecks(
   status: CheckState | '', query: ListQuery, schemaName: string, institutionId: number
@@ -47,8 +63,8 @@ export async function listChecks(
     `FROM \`${s}\`.tb_check c
      LEFT JOIN setes_central.tb_bank b ON b.id = c.tb_bank_id
      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
-       AND (? IS NULL OR c.number LIKE ? OR c.issuer LIKE ?)`
-  const params: any[] = [institutionId, like, like, like]
+       AND (? IS NULL OR c.number LIKE ? OR c.issuer LIKE ?)${query.criteria.sql}`
+  const params: any[] = [institutionId, like, like, like, ...query.criteria.params]
   const havingParams = status ? [status] : []
 
   const [rows] = await pool.query<any[]>(
@@ -99,7 +115,8 @@ export async function getCheck(
 export async function listBanksLookup(filter: string): Promise<BankLookupRow[]> {
   const like = filter ? `%${escapeLike(filter)}%` : null
   const [rows] = await pool.query<any[]>(
-    `SELECT id, number, description FROM setes_central.tb_bank
+    `SELECT id, number, description, CONCAT(number, ' - ', COALESCE(description, '')) AS name
+       FROM setes_central.tb_bank
       WHERE deleted = 'N' AND (? IS NULL OR description LIKE ? OR number LIKE ?)
       ORDER BY description LIMIT 100`,
     [like, like, like]

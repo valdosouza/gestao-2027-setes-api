@@ -54,6 +54,11 @@ import { BANK_SEARCH_CRITERIA, listBanks } from '../src/modules/banks/banks.repo
 import { PRIVILEGE_SEARCH_CRITERIA, listPrivileges } from '../src/modules/privileges/privileges.repository'
 import { MODULE_SEARCH_CRITERIA, listModules } from '../src/modules/modules/modules.repository'
 import { vitrineSearchCriteria, listVitrine } from '../src/shared/interface-vitrine'
+import { ORDER_SEARCH_CRITERIA, listOrders as listSaleOrders } from '../src/modules/orders/orders.repository'
+import { ORDER_RETURN_SEARCH_CRITERIA, listReturns } from '../src/modules/order-returns/order-returns.repository'
+import { BILL_SEARCH_CRITERIA, SETTLED_SEARCH_CRITERIA, listBills, listSettled } from '../src/modules/settlements/settlements.repository'
+import { BANK_SLIP_SEARCH_CRITERIA, listBankSlips } from '../src/modules/bank-slips/bank-slips.repository'
+import { CHECK_SEARCH_CRITERIA, listChecks } from '../src/modules/checks/checks.repository'
 
 const SCHEMA = process.env.EXPLAIN_SCHEMA ?? 'setes_setes'
 const INST   = Number(process.env.EXPLAIN_INSTITUTION ?? 1)
@@ -116,6 +121,20 @@ const TARGETS: Target[] = [
   { module: 'modules', defs: MODULE_SEARCH_CRITERIA, run: q => listModules(SCHEMA, q), base: [`${SCHEMA}.tb_module`] },
   { module: 'interface-configs', defs: vitrineSearchCriteria('interface-configs'),
     run: q => listVitrine(q, SCHEMA, INST), base: ['setes_central.tb_interface'] },
+  // --- Onda 3, Bloco A (§13 — telas de processo; a aba segue como parâmetro)
+  { module: 'orders', defs: ORDER_SEARCH_CRITERIA,
+    run: q => listSaleOrders('', q, SCHEMA, INST), base: [`${SCHEMA}.tb_order_sale`] },
+  { module: 'order-returns', defs: ORDER_RETURN_SEARCH_CRITERIA,
+    run: q => listReturns('', q, SCHEMA, INST), base: [`${SCHEMA}.tb_order_stock_adjust_return`] },
+  // --- Onda 3, Bloco B (financeiro — D-BA37: títulos pela forma de lista da peça do saldo)
+  { module: 'settlements-bills', defs: BILL_SEARCH_CRITERIA,
+    run: q => listBills('open', '', q, SCHEMA, INST), base: [`${SCHEMA}.tb_financial`, `${SCHEMA}.tb_financial_payment`] },
+  { module: 'settlements-settled', defs: SETTLED_SEARCH_CRITERIA,
+    run: q => listSettled(q, SCHEMA, INST), base: [`${SCHEMA}.tb_financial_payment`] },
+  { module: 'bank-slips', defs: BANK_SLIP_SEARCH_CRITERIA,
+    run: q => listBankSlips('', q, SCHEMA, INST), base: [`${SCHEMA}.tb_bank_slip`] },
+  { module: 'checks', defs: CHECK_SEARCH_CRITERIA,
+    run: q => listChecks('', q, SCHEMA, INST), base: [`${SCHEMA}.tb_check`] },
 ]
 
 // --- valores de amostra por kind (só precisam COMPILAR; o plano não depende do valor)

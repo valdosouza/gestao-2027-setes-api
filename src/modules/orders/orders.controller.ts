@@ -8,11 +8,12 @@ import {
   OrdersScope, fetchOrders, fetchOrder, createOrder, createItem,
   editItem, deleteItem, removeOrder, fetchProductsLookup,
   fetchNegotiation, updateNegotiation, fetchPaymentTypesLookup, fetchBanksLookup,
+  ORDER_SEARCH_CRITERIA, fetchOrderSearchCriteria, fetchCustomerLookup, fetchSalesmanLookup,
 } from './orders.service'
 
 function scopeOf(req: Request): OrdersScope {
-  const { schemaName, institutionId, userId } = req.institution!
-  return { schemaName, institutionId, userId }
+  const { schemaName, institutionId, userId, role } = req.institution!
+  return { schemaName, institutionId, userId, role }
 }
 
 function parseItemId(req: Request, res: Response): number | null {
@@ -28,10 +29,37 @@ export async function list(req: Request, res: Response): Promise<void> {
   try {
     const status = String(req.query.status ?? '')
     const parsed = status === 'A' || status === 'F' ? status : ''
-    const query = await parseListQuery(req, 'orders')
+    const query = await parseListQuery(req, 'orders', ORDER_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchOrders(parsed, query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'orders GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchOrderSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'orders/search-criteria GET')
+  }
+}
+
+/** GET /customer-lookup — critério "cliente" (carteira respeitada, D-BA34). */
+export async function customerLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCustomerLookup(String(req.query.filter ?? '').trim(), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'orders/customer-lookup GET')
+  }
+}
+
+/** GET /salesman-lookup — critério "vendedor" (ativos e inativos, D-BA42). */
+export async function salesmanLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchSalesmanLookup(String(req.query.filter ?? '').trim(), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'orders/salesman-lookup GET')
   }
 }
 

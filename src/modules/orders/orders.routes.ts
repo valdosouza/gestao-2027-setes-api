@@ -35,12 +35,77 @@ const router = Router()
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter e com a aba (status). Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, number, customerId, customerName, salesmanId, salesmanName, status, dtRecord, hasService, itemsCount, totalValue }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/orders/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada dos pedidos de venda
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md §13, Onda 3) — lista branca sem expressão SQL; a aba segue em status.
+ *     tags: [Orders]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
+ * /api/orders/customer-lookup:
+ *   get:
+ *     summary: Lookup de clientes do critério "cliente" (carteira do vendedor respeitada — D-BA34)
+ *     description: >
+ *       Lista de apoio { id, name } do painel da pesquisa avançada.
+ *     tags: [Orders]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/customer-lookup', controller.customerLookup)
+
+/**
+ * @swagger
+ * /api/orders/salesman-lookup:
+ *   get:
+ *     summary: Lookup de vendedores do critério "vendedor" (ativos e inativos — D-BA42)
+ *     description: >
+ *       Lista de apoio { id, name }; inativo vem com "(inativo)" no nome.
+ *     tags: [Orders]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/salesman-lookup', controller.salesmanLookup)
 
 /**
  * @swagger

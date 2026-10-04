@@ -10,6 +10,7 @@ import {
   fetchBankAccountsLookup, fetchProvidersLookup, fetchOpenPayables,
   depositCheckAction, discountCheckAction, returnCheckRefundAction,
   returnCheckGoodAction, useCheckInPaymentAction, returnCheckAction, reverseCheckAction,
+  CHECK_SEARCH_CRITERIA, fetchCheckSearchCriteria,
 } from './checks.service'
 
 /** Escopo SEMPRE do JWT (institution + autor das ações). */
@@ -21,10 +22,19 @@ function scopeOf(req: Request): CheckScope {
 export async function list(req: Request, res: Response): Promise<void> {
   try {
     const status = parseState(req.query.status)
-    const query = await parseListQuery(req, 'checks')
+    const query = await parseListQuery(req, 'checks', CHECK_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchChecks(status, query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'checks GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCheckSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'checks/search-criteria GET')
   }
 }
 

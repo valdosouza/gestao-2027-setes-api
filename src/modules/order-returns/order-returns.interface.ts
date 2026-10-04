@@ -49,3 +49,9 @@ export interface ReturnableProduct {
   available: number
   unitValue: number
 }
+
+/** Linha da lista de apoio da pesquisa avançada ({ id, name }). */
+export interface OrderReturnLookupRow {
+  id:   number
+  name: string | null
+}

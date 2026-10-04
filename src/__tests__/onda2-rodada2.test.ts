@@ -17,6 +17,7 @@ import { removeChannel, saveChannel } from '../modules/bank-accounts/bank-accoun
 import * as accountsRepo from '../modules/bank-accounts/bank-accounts.repository'
 import { parsePendingOnly } from '../modules/bank-slips/bank-slips.service'
 import { listBankSlips } from '../modules/bank-slips/bank-slips.repository'
+import { NO_CRITERIA } from '../shared/list'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true, default: { query: jest.fn(), getConnection: jest.fn(), on: jest.fn() },
@@ -256,7 +257,7 @@ describe('D-I28 — pendência da voz do banco na LISTA de boletos', () => {
 
   it('a lista carrega pendingBankEffects pela regra da PEÇA e o filtro entra no HAVING (lista E contagem)', async () => {
     q.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
-    await listBankSlips('open', { filter: '', page: 1, pageSize: 25, offset: 0 } as any, S.schema, S.inst, { pendingOnly: true })
+    await listBankSlips('open', { filter: '', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any, S.schema, S.inst, { pendingOnly: true })
     const [listSql, listParams] = q.mock.calls[0]
     const [countSql, countParams] = q.mock.calls[1]
     for (const sql of [listSql, countSql]) {
@@ -264,13 +265,14 @@ describe('D-I28 — pendência da voz do banco na LISTA de boletos', () => {
       expect(sql).toContain("re.kind IN ('R','C','V') AND re.slip_event IS NULL")
       expect(sql.replace(/\s+/g, ' ')).toContain('HAVING state = ? AND pendingBankEffects > 0')
     }
-    expect(listParams.slice(0, 5)).toEqual([S.inst, null, null, null, 'open'])
-    expect(countParams).toEqual([S.inst, null, null, null, 'open'])
+    // Onda 3 (pesquisa avançada): o `?` da derived table `sc` (clientes do boleto) vem ANTES do WHERE
+    expect(listParams.slice(0, 6)).toEqual([S.inst, S.inst, null, null, null, 'open'])
+    expect(countParams).toEqual([S.inst, S.inst, null, null, null, 'open'])
   })
 
   it('sem o filtro, o HAVING fica só com o estado (comportamento anterior preservado)', async () => {
     q.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
-    await listBankSlips('', { filter: '', page: 1, pageSize: 25, offset: 0 } as any, S.schema, S.inst)
+    await listBankSlips('', { filter: '', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any, S.schema, S.inst)
     expect(q.mock.calls[0][0]).not.toContain('HAVING')
     expect(q.mock.calls[0][0]).toContain('AS pendingBankEffects')
   })

@@ -42,7 +42,7 @@ describe('settleBatchTx — teto da baixa (D-A7 / TITLE_EXCEEDS_BALANCE)', () =>
       .rejects.toMatchObject({ statusCode: 409, code: 'TITLE_EXCEEDS_BALANCE', fields: [{ field: 'paidValue', message: 'Máximo 0.00' }] })
     expect(conn.query.mock.calls.some(c => /INSERT INTO/.test(String(c[0])))).toBe(false)
     // Q-G21/D-G28: peça única — principal coberto = paid − juros − multa + discount_value (valor gravado)
-    expect(String(conn.query.mock.calls[4][0])).toMatch(/SUM\(paid_value - COALESCE\(interest_value, 0\) - COALESCE\(late_value, 0\)[\s\S]*\+ COALESCE\(discount_value, 0\)\)[\s\S]*status = 'N'[\s\S]*FOR UPDATE/)
+    expect(String(conn.query.mock.calls[4][0])).toMatch(/SUM\(p\.paid_value - COALESCE\(p\.interest_value, 0\) - COALESCE\(p\.late_value, 0\)[\s\S]*\+ COALESCE\(p\.discount_value, 0\)\)[\s\S]*p\.status = 'N' AND p\.deleted = 'N'[\s\S]*FOR UPDATE/)
     expect(conn.query.mock.calls[4][1]).toEqual([1, 10, 1])
   })
   it('L1: regra na PEÇA — baixa sem principal (juros + multa = pago) → 409 SETTLEMENT_NO_PRINCIPAL, qualquer porta', async () => {

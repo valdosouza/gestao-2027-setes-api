@@ -6,11 +6,12 @@ import { openReturnDto, returnItemQuantityDto } from './order-returns.dto'
 import {
   OrderReturnsScope, fetchReturns, fetchReturn, createReturn,
   editItemQuantity, deleteItem, removeReturn,
+  ORDER_RETURN_SEARCH_CRITERIA, fetchOrderReturnSearchCriteria, fetchCustomerLookup,
 } from './order-returns.service'
 
 function scopeOf(req: Request): OrderReturnsScope {
-  const { schemaName, institutionId, userId } = req.institution!
-  return { schemaName, institutionId, userId }
+  const { schemaName, institutionId, userId, role } = req.institution!
+  return { schemaName, institutionId, userId, role }
 }
 
 function parseItemId(req: Request, res: Response): number | null {
@@ -26,10 +27,28 @@ export async function list(req: Request, res: Response): Promise<void> {
   try {
     const status = String(req.query.status ?? '')
     const parsed = status === 'A' || status === 'F' ? status : ''
-    const query = await parseListQuery(req, 'order-returns')
+    const query = await parseListQuery(req, 'order-returns', ORDER_RETURN_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchReturns(parsed, query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'order-returns GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchOrderReturnSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'order-returns/search-criteria GET')
+  }
+}
+
+/** GET /customer-lookup — critério "cliente" (carteira respeitada, D-BA34). */
+export async function customerLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCustomerLookup(String(req.query.filter ?? '').trim(), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'order-returns/customer-lookup GET')
   }
 }
 

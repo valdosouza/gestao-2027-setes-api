@@ -4,7 +4,7 @@ import pool from '@shared/db/connection'
 import { assertOrderOpen } from '@shared/order'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, escapeLike, SearchCriterion } from '@shared/list'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { lockInstitutionCounters } from '@shared/db/counters'
 import { getOrderBilling, upsertOrderBilling, normalizeDeadline } from '@shared/order-billing'
@@ -14,7 +14,24 @@ import {
 } from '@shared/order-return'
 import {
   OrderReturnListRow, OrderReturnFull, ReturnableProduct,
+  OrderReturnLookupRow,
 } from './order-returns.interface'
+
+/**
+ * PESQUISA AVANÇADA — Onda 3 (prompt_pesquisa_avancada.md §13, D-BA32…D-BA44): lista branca
+ * das devoluções. A aba Abertas/Faturadas continua sendo o parâmetro `status` (D-BA33).
+ * `originNumber` = nº da VENDA de origem (alias `s`, 1:1 pela âncora da devolução).
+ */
+export const ORDER_RETURN_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'customerName', kind: 'text', labelKey: 'search.order-returns.customerName',
+    expr: ['ce.nick_trade', 'ce.name_company'] },
+  { key: 'customer', kind: 'lookup', labelKey: 'search.order-returns.customer',
+    expr: 'a.tb_entity_id', lookup: '/api/order-returns/customer-lookup' },
+  { key: 'number', kind: 'number', labelKey: 'search.order-returns.number', expr: 'a.number' },
+  { key: 'originNumber', kind: 'number', labelKey: 'search.order-returns.originNumber', expr: 's.number' },
+  { key: 'dtRecord', kind: 'date', labelKey: 'search.order-returns.dtRecord', expr: 'o.dt_record', storage: 'date' },
+  { key: 'totalValue', kind: 'money', labelKey: 'search.order-returns.totalValue', expr: 'COALESCE(t.total_value, 0)' },
+]
 
 /**
  * Repositório da Devolução de Mercadoria — backbone tb_order + ramo
@@ -59,8 +76,8 @@ export async function listReturns(
        AND t.terminal = r.terminal AND t.deleted = 'N'
      WHERE r.tb_institution_id = ? AND r.deleted = 'N'
        AND (? IS NULL OR o.status = ?)
-       AND (? IS NULL OR ce.nick_trade LIKE ? OR ce.name_company LIKE ?)`
-  const params = [institutionId, statusFilter, statusFilter, like, like, like]
+       AND (? IS NULL OR ce.nick_trade LIKE ? OR ce.name_company LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, statusFilter, statusFilter, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT r.id, a.number,
@@ -507,4 +524,24 @@ export async function cancelReturn(
   } finally {
     conn.release()
   }
+}
+
+/** Clientes para o critério "cliente" (D-BA34: a carteira travada do vendedor vale aqui). */
+export async function listCustomerLookup(
+  filter: string, schemaName: string, institutionId: number, salesmanId: number | null
+): Promise<OrderReturnLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT cu.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name
+       FROM \`${schemaName}\`.tb_customer cu
+       INNER JOIN setes_central.tb_entity e ON e.id = cu.id
+      WHERE cu.tb_institution_id = ? AND cu.deleted = 'N'
+        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+        AND (? IS NULL OR cu.tb_salesman_id = ?)
+      ORDER BY name, cu.id
+      LIMIT 50`,
+    [institutionId, like, like, like, salesmanId, salesmanId]
+  )
+  return rows as OrderReturnLookupRow[]
 }

@@ -48,6 +48,8 @@ export interface BankLookupRow {
   id:          number
   number:      string
   description: string | null
+  /** "número - nome" — contrato { id, name } das listas de apoio da pesquisa avançada */
+  name:        string
 }
 
 /** Lookup das contas correntes da institution (depósito/desconto/reembolso). */

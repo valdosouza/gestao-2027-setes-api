@@ -22,3 +22,31 @@ describe('title-balance', () => {
     expect(settlementCeiling(100, 100, { discountAliquot: 10 })).toMatchObject({ openBalance: 0, discount: 0, ceiling: 0 })
   })
 })
+
+describe('D-BA37 — a fórmula do saldo existe UMA vez (parecer do guardião)', () => {
+  const { PRINCIPAL_PAID_JOIN_SQL, PRINCIPAL_PAID_OF, OPEN_BALANCE_OF } = require('../shared/financial-settlement/title-balance')
+  const PRINCIPAL = /p\.paid_value - COALESCE\(p\.interest_value, 0\) - COALESCE\(p\.late_value, 0\)\s+\+ COALESCE\(p\.discount_value, 0\)/
+  const LIVE = /p\.status = 'N' AND p\.deleted = 'N'/
+
+  it('correlacionada e de lista usam a MESMA expressão do principal e o MESMO predicado de baixa viva', () => {
+    for (const sql of [PRINCIPAL_PAID_SQL('setes_setes'), PRINCIPAL_PAID_JOIN_SQL('setes_setes')]) {
+      expect(sql).toMatch(PRINCIPAL)
+      expect(sql).toMatch(LIVE)
+    }
+  })
+
+  it('GROUP BY e ON da derived table usam as MESMAS quatro colunas da chave do título (sem fan-out)', () => {
+    const sql: string = PRINCIPAL_PAID_JOIN_SQL('setes_setes', 'f', 'pp')
+    expect(sql).toMatch(/GROUP BY p\.tb_institution_id, p\.tb_order_id, p\.terminal, p\.parcel\) pp/)
+    for (const col of ['tb_institution_id', 'tb_order_id', 'terminal', 'parcel']) {
+      expect(sql).toMatch(new RegExp(`pp\\.${col} = f\\.${col}`))
+    }
+    expect((sql.match(/\?/g) ?? []).length).toBe(1)   // um `?` = institution
+  })
+
+  it('o saldo sobre o alias é a MESMA conta do correlacionado (balanceOver)', () => {
+    expect(OPEN_BALANCE_OF('f', 'pp')).toBe(`GREATEST(ROUND(f.tag_value - ${PRINCIPAL_PAID_OF('pp')}, 2), 0)`)
+    expect(OPEN_BALANCE_SQL('setes_setes')).toMatch(/^GREATEST\(ROUND\(f\.tag_value - \s*\(SELECT COALESCE\(SUM\(/)
+    expect(OPEN_BALANCE_OF()).not.toMatch(/setes_|\?/)   // cabe em lista branca const (regra da Onda 2)
+  })
+})

@@ -1,7 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { findOpenSlip } from '@shared/bank-slip'
 import {
   retargetTitleCharge, RetargetTitleChargeResult,
@@ -10,9 +10,11 @@ import { RetargetChargeDto } from './settlements.dto'
 import {
   BillRow, SettleBatchInput, SettleBatchResult, SettledRow,
   ReversalInput, ReversalResult, StatementReport,
+  SettlementLookupRow,
 } from './settlements.interface'
 import {
   listBills, settleBatch, listSettled, reverseSettlement, listStatements,
+  BILL_SEARCH_CRITERIA, SETTLED_SEARCH_CRITERIA, listBillEntityLookup, listBillPaymentTypesLookup,
 } from './settlements.repository'
 
 /**
@@ -25,6 +27,25 @@ export interface SettlementScope {
   schemaName:    string
   institutionId: number
   userId:        number
+}
+
+export { BILL_SEARCH_CRITERIA, SETTLED_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada dos TÍTULOS e das BAIXAS (D-BA2) — sem expressão SQL. */
+export async function fetchBillSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(BILL_SEARCH_CRITERIA)
+}
+
+export async function fetchSettledSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(SETTLED_SEARCH_CRITERIA)
+}
+
+export async function fetchBillEntityLookup(filter: string, scope: SettlementScope): Promise<SettlementLookupRow[]> {
+  return listBillEntityLookup(filter, scope.schemaName, scope.institutionId)
+}
+
+export async function fetchBillPaymentTypesLookup(filter: string, scope: SettlementScope): Promise<SettlementLookupRow[]> {
+  return listBillPaymentTypesLookup(filter, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchBills(
