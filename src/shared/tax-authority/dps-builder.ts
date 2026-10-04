@@ -50,7 +50,9 @@ export function dec2(v: number): string {
 
 /** TSString: sem espaço nas pontas e sem controle; multiline mantém \n (TSStringComQuebraDeLinha). */
 function text(s: string, multiline = false): string {
-  const t = String(s ?? '').replace(/\r\n?/g, '\n')
+  // caractere de CONTROLE é proibido no XML 1.0 (gate adversarial da F1 da nfse-api, LOW — portado na D-F43 durante o
+  // dual-run): nunca vai cru ao XML assinado
+  const t = String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
   const cleaned = multiline ? t.replace(/[^\S\n]+\n/g, '\n') : t.replace(/[\n\t]+/g, ' ')
   return cleaned.trim()
 }

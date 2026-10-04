@@ -199,6 +199,12 @@ describe('buildCancelEventXml / parseNfseXml / parseEventXml', () => {
     expect(() => buildCancelEventXml({ accessKey: '123', dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'Erro na emissão da nota fiscal', environment: 'H', verAplic: 'v', cnpjAutor: '12345678000199' })).toThrow(/chave/)
   })
 
+  it('D-F43 (porte da nfse-api): caractere de CONTROLE no texto livre não vai cru ao XML (XML 1.0 o proíbe)', () => {
+    const xml = buildCancelEventXml({ accessKey: CHAVE, dhEvento: '2026-09-21T11:00:00-03:00', cMotivo: '1', xMotivo: 'erro\u0001 na emissão \u0007 da nota\u007F', environment: 'H', verAplic: 'v', cnpjAutor: '12345678000199' })
+    expect(xml).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/)
+    expect(xml).toContain('<xMotivo>erro na emissão  da nota</xMotivo>')
+  })
+
   it('parseNfseXml lê a chave sem o literal NFS, número, dhProc, cStat e o Id do DPS embutido', () => {
     const p = parseNfseXml(NFSE_XML)
     expect(p).toMatchObject({ accessKey: CHAVE, nNFSe: '123', dhProc: '2026-09-21T13:16:01-03:00', cStat: '100', nDFSe: '555', ambGer: '2', dpsId: DPS_ID, cancelled: null })
