@@ -64,3 +64,9 @@ export interface ProductLookupRow {
   id:          number
   description: string
 }
+
+/** Linha genérica de lista de apoio da pesquisa avançada ({ id, name }). */
+export interface LookupRow {
+  id:   number
+  name: string | null
+}

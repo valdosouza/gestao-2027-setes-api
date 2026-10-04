@@ -1,5 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   SettlementRuleListRow, SettlementRuleFull, SettlementRuleInput,
   SettlementRuleCreateInput, PaymentTypeLookupRow, BankAccountLookupRow,
@@ -8,6 +8,7 @@ import {
   listSettlementRules, getSettlementRule, insertSettlementRule,
   updateSettlementRule, softDeleteSettlementRule,
   listPaymentTypesLookup, listBankAccountsLookup,
+  SETTLEMENT_RULE_SEARCH_CRITERIA,
 } from './settlement-rules.repository'
 
 /**
@@ -21,6 +22,13 @@ import {
 export interface SettlementRuleScope {
   schemaName:    string
   institutionId: number
+}
+
+export { SETTLEMENT_RULE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchSettlementRuleSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(SETTLEMENT_RULE_SEARCH_CRITERIA)
 }
 
 export async function fetchSettlementRules(

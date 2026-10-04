@@ -1,9 +1,10 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { md5Password } from '@shared/auth/password'
 import {
   UserListRow, UserRow, UserInput, UserCreateInput, UserScope,
   UserInstitutionGrant, UserInstitutionLink, UserInterfacePrivileges,
+  InstitutionLookupRow,
 } from './users.interface'
 import {
   listUsers, getUser, findLoginEmailOwner, insertUserCascade,
@@ -11,6 +12,7 @@ import {
   listInstitutionLinks, setInstitutionLinks,
   findInstitutionSchema, listUserPrivileges, setUserPrivileges,
   listInterfaceCatalogPrivilegeIds,
+  USER_SEARCH_CRITERIA, listInstitutionLookup,
 } from './users.repository'
 
 /**
@@ -35,6 +37,30 @@ async function assertInScope(scope: UserScope, userId: number): Promise<void> {
   if (!(await userLinkedToInstitution(userId, scope.institutionId))) {
     throw new HttpError(404, 'Usuário não encontrado')
   }
+}
+
+export { USER_SEARCH_CRITERIA }
+
+/**
+ * Critérios servidos ao app (D-BA2). D-BA24: "instituição" só para o Super. Parecer do
+ * guardião (Onda 2): `kind` é atributo de VÍNCULO — sem vínculo em foco (Super sem
+ * institutionId) não tem significado e não é servido; a rota recebe o MESMO
+ * institutionId da lista (espelho da D-BA15).
+ */
+export async function fetchUserSearchCriteria(
+  scope: UserScope, institutionId: number | null
+): Promise<PublicSearchCriterion[]> {
+  const focus = scopeInstitution(scope, institutionId)
+  return publicCriteria(USER_SEARCH_CRITERIA.filter(c =>
+    !(c.key === 'institution' && !scope.isSuper) && !(c.key === 'kind' && focus === null)))
+}
+
+/** Lookup do critério "instituição" — só Super (D-BA24); admin recebe 403 explícito. */
+export async function fetchInstitutionLookup(
+  scope: UserScope, filter: string
+): Promise<InstitutionLookupRow[]> {
+  if (!scope.isSuper) throw new HttpError(403, 'Pesquisa por instituição é exclusiva do Super')
+  return listInstitutionLookup(filter)
 }
 
 export async function fetchUsers(

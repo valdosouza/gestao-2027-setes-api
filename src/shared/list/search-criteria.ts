@@ -24,6 +24,19 @@ import { DEFAULT_TIME_ZONE, dayStartUtc, nextDay } from '@shared/time-zone'
  * - `expr` NUNCA sai da API: a rota `/search-criteria` serializa por lista
  *   branca (`publicCriteria`);
  * - o JSON cru nunca chega ao repository.
+ *
+ * Regras da Onda 2 (parecer do guardião, 2026-10-03):
+ * - o ESCOPO (schema, institution, vínculo em foco) vive na QUERY BASE do
+ *   repository; o critério referencia ALIAS da query base ou tabela de schema
+ *   fixo (`setes_central`). A expressão NUNCA carrega `?` nem `${schemaName}` —
+ *   a lista branca é CATÁLOGO (`const`), não função do escopo. Atributo de
+ *   relação 1:1 entra como LEFT JOIN/derived table na base (a coluna da linha e
+ *   o critério viram a MESMA expressão); relação 1:N só como `shape: 'set'`;
+ * - alias interno de subselect nunca repete o alias da query base (um `p.id =
+ *   p.id` casa a tabela inteira — achado do EXPLAIN); helpers compartilhados usam
+ *   prefixo próprio (`RESERVED_ALIASES` de @shared/entity);
+ * - toda lista branca nova entra em `scripts/explain-pesquisa-avancada.ts` (cerca
+ *   M5: subselect correlacionado tem de chegar por chave).
  */
 
 export type CriterionKind =
@@ -56,6 +69,13 @@ export interface SearchCriterion {
    *  são convertidas (o dia na zona do estabelecimento → instante UTC → fuso da sessão
    *  do banco); a coluna nunca é convertida (índice preservado). */
   storage?:  'date' | 'datetime'
+  /** FORMA da expressão (parecer do guardião, Onda 2 — 2026-10-03). Default = ESCALAR
+   *  por linha. `'set'` (só `lookup`): a expressão é um subselect correlacionado
+   *  parentizado que devolve o CONJUNTO de ids da linha (ex.: as instituições de um
+   *  usuário) e o operador vira pertinência `? IN (expr)`. O subselect carrega o
+   *  escopo dele (`active`/`deleted` do vínculo) — a peça não consegue conferir, o
+   *  módulo prova com teste de escopo (mesma exigência da D-BA13). */
+  shape?:    'scalar' | 'set'
 }
 
 /** Projeção pública (o que o app recebe) — lista branca de propriedades. */
@@ -179,6 +199,9 @@ export function compileCriteria(
   if (entries.length > MAX_CRITERIA_KEYS) throw invalidRequest('Critérios demais na pesquisa avançada')
 
   const byKey = new Map((defs ?? []).map(d => [d.key, d]))
+  // erro de DECLARAÇÃO (bug do módulo, não do usuário): shape 'set' só faz sentido em lookup
+  const badShape = (defs ?? []).find(d => d.shape === 'set' && d.kind !== 'lookup')
+  if (badShape) throw new Error(`SearchCriterion "${badShape.key}": shape 'set' só é válido com kind 'lookup'`)
   const unknown = entries.map(([k]) => k).filter(k => !byKey.has(k))
   if (unknown.length) {
     throw new HttpError(400, `Critério de pesquisa desconhecido: ${unknown.join(', ')}`,
@@ -241,7 +264,8 @@ export function compileCriteria(
       case 'lookup': {
         const id = parseNumber(value)
         if (id === null || !Number.isSafeInteger(id) || id <= 0) { errors.push({ field: key, message: 'Registro escolhido inválido' }); break }
-        parts.push(`${exprOf(def)} = ?`)
+        // shape 'set': a expressão devolve o CONJUNTO de ids da linha → pertinência
+        parts.push(def.shape === 'set' ? `? IN ${exprOf(def)}` : `${exprOf(def)} = ?`)
         params.push(id)
         applied.push(key)
         break

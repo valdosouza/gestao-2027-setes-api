@@ -30,6 +30,10 @@ const router = Router()
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, customerId, customerName, dtStart, dtEnd, monthlyValue (SUM dos itens — DP3), active }' }
  *       401: { description: Não autenticado }
@@ -74,6 +78,64 @@ const router = Router()
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/contracts/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de contratos
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2, Onda 2 §12) — lista branca
+ *       declarada no módulo, sem expressão SQL.
+ *     tags: [Contracts]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind, labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
+ * /api/contracts/customer-lookup:
+ *   get:
+ *     summary: Lookup de clientes do critério "cliente" (carteira do vendedor respeitada — D-BA27)
+ *     tags: [Contracts]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome/apelido
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/customer-lookup', controller.customerLookup)
+
+/**
+ * @swagger
+ * /api/contracts/payment-types:
+ *   get:
+ *     summary: Lookup de formas de pagamento habilitadas (critério "forma" do contrato)
+ *     tags: [Contracts]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por descrição
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/payment-types', controller.paymentTypesLookup)
 router.post('/', controller.create)
 
 /**

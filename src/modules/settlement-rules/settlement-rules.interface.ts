@@ -45,6 +45,8 @@ export interface SettlementRuleCreateInput extends SettlementRuleInput {
 export interface PaymentTypeLookupRow {
   id:          number
   description: string
+  /** = description — contrato { id, name } das listas de apoio da pesquisa avançada */
+  name:        string
   kind:        string | null
   hasContract: 'S' | 'N'
 }
@@ -53,4 +55,6 @@ export interface PaymentTypeLookupRow {
 export interface BankAccountLookupRow {
   id:    number
   label: string
+  /** = label — contrato { id, name } das listas de apoio da pesquisa avançada */
+  name:  string
 }

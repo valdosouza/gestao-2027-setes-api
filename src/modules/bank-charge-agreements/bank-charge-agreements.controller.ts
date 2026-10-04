@@ -8,6 +8,7 @@ import { chargeAgreementDto } from './bank-charge-agreements.dto'
 import {
   ChargeAgreementScope, fetchChargeAgreements, fetchChargeAgreement, createChargeAgreement,
   editChargeAgreement, removeChargeAgreement, fetchBankAccountsLookup,
+  CHARGE_AGREEMENT_SEARCH_CRITERIA, fetchChargeAgreementSearchCriteria,
 } from './bank-charge-agreements.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
@@ -18,10 +19,19 @@ function scopeOf(req: Request): ChargeAgreementScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'bank-charge-agreements')
+    const query = await parseListQuery(req, 'bank-charge-agreements', CHARGE_AGREEMENT_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchChargeAgreements(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'bank-charge-agreements GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchChargeAgreementSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'bank-charge-agreements/search-criteria GET')
   }
 }
 

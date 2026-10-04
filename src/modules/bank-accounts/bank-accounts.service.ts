@@ -1,11 +1,12 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   BankAccountListRow, BankAccountFull, BankAccountInput, BankLookupRow,
 } from './bank-accounts.interface'
 import {
   listBankAccounts, getBankAccount, insertBankAccount, updateBankAccount,
   softDeleteBankAccount, listBanksLookup,
+  BANK_ACCOUNT_SEARCH_CRITERIA,
 } from './bank-accounts.repository'
 
 /**
@@ -17,6 +18,13 @@ import {
 export interface BankAccountScope {
   schemaName:    string
   institutionId: number
+}
+
+export { BANK_ACCOUNT_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchBankAccountSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(BANK_ACCOUNT_SEARCH_CRITERIA)
 }
 
 export async function fetchBankAccounts(

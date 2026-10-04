@@ -1,6 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
+import { entityRoleSearchCriteria, roleStatusSearchCriteria } from '@shared/entity'
 import {
   SalesmanInput, SalesmanListRow, SalesmanFull, CollaboratorLookupRow,
 } from './salesmen.interface'
@@ -18,6 +19,16 @@ import {
 // ---------------------------------------------------------------------
 
 /**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — D-BA2/D-BA3, Onda 2 §12):
+ * lista branca dos critérios desta lista. Vive AQUI (D-BA12) porque as expressões
+ * dependem dos aliases da query base. O operador é da peça @shared/list (D-BA4).
+ */
+export const SALESMAN_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  ...entityRoleSearchCriteria('salesmen', 's'),
+  ...roleStatusSearchCriteria('salesmen', 's'),
+]
+
+/**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE.
  * Desempate por s.id mantém o OFFSET estável.
  */
@@ -29,8 +40,9 @@ export async function listSalesmen(
     `FROM ?? s
      INNER JOIN setes_central.tb_entity e ON e.id = s.id
      WHERE s.tb_institution_id = ? AND s.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)`
-  const params = [`${schemaName}.tb_salesman`, institutionId, like, like, like]
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)${query.criteria.sql}`
+  const params = [`${schemaName}.tb_salesman`, institutionId, like, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT s.id,

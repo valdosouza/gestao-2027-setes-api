@@ -1,5 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   ServiceListRow, ServiceFull, ServiceInput, ServiceLookupRow,
 } from './services.interface'
@@ -7,6 +7,7 @@ import {
   listServices, getService, insertService, updateService, softDeleteService,
   listCategoriesLookup, listFinancialPlansLookup, listPriceListsLookup,
   listServiceTaxRulesLookup,
+  SERVICE_SEARCH_CRITERIA,
 } from './services.repository'
 
 /**
@@ -19,6 +20,13 @@ import {
 export interface ServiceScope {
   schemaName:    string
   institutionId: number
+}
+
+export { SERVICE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchServiceSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(SERVICE_SEARCH_CRITERIA)
 }
 
 export async function fetchServices(

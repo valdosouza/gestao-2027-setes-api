@@ -12,6 +12,7 @@ import {
   fetchUsers, fetchUser, createUser, editUser, removeUser,
   fetchInstitutionLinks, saveInstitutionLinks,
   fetchUserPrivileges, saveUserPrivileges,
+  USER_SEARCH_CRITERIA, fetchUserSearchCriteria, fetchInstitutionLookup,
 } from './users.service'
 
 /** Escopo derivado do JWT: super opera qualquer institution; admin, a sua. */
@@ -25,12 +26,33 @@ function scopeOf(req: Request): UserScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'users')
+    const query = await parseListQuery(req, 'users', USER_SEARCH_CRITERIA)
     const institutionId =
       req.query.institutionId ? Number(req.query.institutionId) : null
     res.json(pagedEnvelope(query, await fetchUsers(scopeOf(req), query, institutionId)))
   } catch (err) {
     handleError(res, err, 'users GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2); mesmo institutionId da lista. */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    const institutionId =
+      req.query.institutionId ? Number(req.query.institutionId) : null
+    res.json({ ok: true, data: await fetchUserSearchCriteria(scopeOf(req), institutionId) })
+  } catch (err) {
+    handleError(res, err, 'users/search-criteria GET')
+  }
+}
+
+/** GET /institution-lookup — lista de apoio do critério "instituição" (só Super). */
+export async function institutionLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const filter = String(req.query.filter ?? '').trim()
+    res.json({ ok: true, data: await fetchInstitutionLookup(scopeOf(req), filter) })
+  } catch (err) {
+    handleError(res, err, 'users/institution-lookup GET')
   }
 }
 

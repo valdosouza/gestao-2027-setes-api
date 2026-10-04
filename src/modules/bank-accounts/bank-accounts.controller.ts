@@ -7,6 +7,7 @@ import { bankAccountDto } from './bank-accounts.dto'
 import {
   BankAccountScope, fetchBankAccounts, fetchBankAccount, createBankAccount,
   editBankAccount, removeBankAccount, fetchBanksLookup,
+  BANK_ACCOUNT_SEARCH_CRITERIA, fetchBankAccountSearchCriteria,
 } from './bank-accounts.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
@@ -17,10 +18,19 @@ function scopeOf(req: Request): BankAccountScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'bank-accounts')
+    const query = await parseListQuery(req, 'bank-accounts', BANK_ACCOUNT_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchBankAccounts(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'bank-accounts GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBankAccountSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'bank-accounts/search-criteria GET')
   }
 }
 

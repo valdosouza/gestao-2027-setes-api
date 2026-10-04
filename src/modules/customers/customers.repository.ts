@@ -2,7 +2,10 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
-import { saveEntityFiscalChain, getEntityFiscalFull, PERSON_TYPES } from '@shared/entity'
+import {
+  saveEntityFiscalChain, getEntityFiscalFull,
+  entityRoleSearchCriteria, roleStatusSearchCriteria,
+} from '@shared/entity'
 import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
 import {
@@ -30,31 +33,12 @@ import {
  * sobre a cadeia central é SUBSELECT correlacionado pela PK (1 linha, sem JOIN
  * que duplicaria o COUNT). O operador é da peça @shared/list (D-BA4).
  */
-const PERSON_CPF  = `(SELECT p.cpf FROM setes_central.tb_person p WHERE p.id = c.id AND p.deleted = 'N')`
-const COMPANY_CNPJ = `(SELECT co.cnpj FROM setes_central.tb_company co WHERE co.id = c.id AND co.deleted = 'N')`
-
 export const CUSTOMER_SEARCH_CRITERIA: readonly SearchCriterion[] = [
-  { key: 'document', kind: 'text', digits: true, labelKey: 'search.customers.document',
-    expr: [PERSON_CPF, COMPANY_CNPJ] },
-  // Q-BA12 (Valdo 2026-09-30): casa com QUALQUER endereço principal do cliente —
-  // a expressão concatena as cidades de todos os endereços main='S' (o operador
-  // "contém" continua da peça; nenhum JOIN novo, 1 valor por cliente).
-  { key: 'city', kind: 'text', labelKey: 'search.customers.city',
-    expr: `(SELECT GROUP_CONCAT(ci.name SEPARATOR ' | ') FROM setes_central.tb_address a
-              INNER JOIN setes_central.tb_city ci ON ci.id = a.tb_city_id
-             WHERE a.id = c.id AND a.main = 'S' AND a.deleted = 'N')` },
+  // cadeia de entidade (nome, documento, cidade, tipo de pessoa) — helper único dos papéis (Onda 2)
+  ...entityRoleSearchCriteria('customers', 'c'),
   { key: 'salesman', kind: 'lookup', labelKey: 'search.customers.salesman',
     expr: 'c.tb_salesman_id', lookup: '/api/customers/salesman-lookup' },
-  { key: 'personType', kind: 'options', labelKey: 'search.customers.personType',
-    options: PERSON_TYPES,
-    expr: `(CASE WHEN EXISTS (SELECT 1 FROM setes_central.tb_person p WHERE p.id = c.id AND p.deleted = 'N') THEN 'F'
-                 WHEN EXISTS (SELECT 1 FROM setes_central.tb_company co WHERE co.id = c.id AND co.deleted = 'N') THEN 'J'
-                 ELSE 'N' END)` },
-  { key: 'active', kind: 'bool', labelKey: 'search.customers.active',
-    expr: 'c.active', boolValues: ['S', 'N'] },
-  // DATETIME = instante: o dia é o do FUSO DO ESTABELECIMENTO (Q-BA14)
-  { key: 'createdAt', kind: 'date', labelKey: 'search.customers.createdAt',
-    expr: 'c.created_at', storage: 'datetime' },
+  ...roleStatusSearchCriteria('customers', 'c'),
 ]
 
 /**

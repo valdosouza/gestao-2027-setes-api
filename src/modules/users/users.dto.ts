@@ -1,5 +1,11 @@
 import { z } from 'zod'
 
+/** Perfis do vínculo tb_institution_has_user.kind (vira o role do JWT) — D-BA23: domínio
+ *  TIPADO (a tela user_institutions_section já só oferecia estes três; roles.ts reconhece
+ *  'admin'/'super'). Reusado pelo critério `kind` da pesquisa avançada. */
+export const USER_KINDS = ['user', 'admin', 'super'] as const
+export type UserKind = typeof USER_KINDS[number]
+
 /**
  * DTOs (Zod) do módulo users — contrato de entrada da API.
  * Senha: mínimo 5 (padrão do seed), hash MD5 aplicado no SERVICE
@@ -21,7 +27,7 @@ export const userCreateDto = z.object({
   ...base,
   password:      z.string().min(5).max(100),
   institutionId: z.number().int().positive().nullable().optional(),
-  kind:          z.string().min(1).max(20).nullable().optional(),
+  kind:          z.enum(USER_KINDS).nullable().optional(),
 })
 
 // PUT: senha opcional — null/ausente mantém a atual.
@@ -34,7 +40,7 @@ export const userUpdateDto = z.object({
 export const userInstitutionsDto = z.object({
   links: z.array(z.object({
     institutionId: z.number().int().positive(),
-    kind:          z.string().min(1).max(20),
+    kind:          z.enum(USER_KINDS),
   })),
 })
 

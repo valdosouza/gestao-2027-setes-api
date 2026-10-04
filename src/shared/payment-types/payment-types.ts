@@ -12,6 +12,15 @@ import { HttpError } from '@shared/errors/http-error'
 
 type Queryable = Pick<PoolConnection, 'query'>
 
+/**
+ * Domínio do `kind` da tb_payment_types (migration 027 — classifica o COMPORTAMENTO
+ * DE QUITAÇÃO do meio): E espécie · X PIX · Q cheque · B boleto · W carteira/fiado ·
+ * C cartão · O outros. Constante única para critério de pesquisa/validação — nunca
+ * texto de descrição (QF3 do financeiro).
+ */
+export const PAYMENT_TYPE_KINDS = ['E', 'X', 'Q', 'B', 'W', 'C', 'O'] as const
+export type PaymentTypeKind = typeof PAYMENT_TYPE_KINDS[number]
+
 export interface EnabledPaymentType {
   id: number
   description: string

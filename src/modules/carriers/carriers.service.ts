@@ -1,9 +1,10 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { CarrierInput, CarrierListRow, CarrierFull } from './carriers.interface'
 import {
   listCarriers, getCarrier, carrierExists,
   insertCarrierCascade, updateCarrierCascade, deleteCarrier,
+  CARRIER_SEARCH_CRITERIA,
 } from './carriers.repository'
 
 /**
@@ -26,6 +27,13 @@ function dupEntryTo409(err: any): never {
       undefined, 'CONFLICT_RETRY')
   }
   throw err
+}
+
+export { CARRIER_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchCarrierSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(CARRIER_SEARCH_CRITERIA)
 }
 
 export async function fetchCarriers(

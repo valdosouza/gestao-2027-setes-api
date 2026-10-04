@@ -5,6 +5,7 @@ import { carrierCreateDto, carrierUpdateDto } from './carriers.dto'
 import {
   CarrierScope, fetchCarriers, fetchCarrier,
   createCarrier, editCarrier, removeCarrier,
+  CARRIER_SEARCH_CRITERIA, fetchCarrierSearchCriteria,
 } from './carriers.service'
 
 /** Escopo SEMPRE do JWT (o papel é por institution). */
@@ -15,10 +16,19 @@ function scopeOf(req: Request): CarrierScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'carriers')
+    const query = await parseListQuery(req, 'carriers', CARRIER_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchCarriers(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'carriers GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCarrierSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'carriers/search-criteria GET')
   }
 }
 

@@ -1,5 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   LinkedPaymentTypeRow, PaymentTypeCatalogRow, PaymentTypeLinkInput,
   PaymentTypeLinkUpdate,
@@ -7,6 +7,7 @@ import {
 import {
   listLinked, listCatalog, linkExists, linkOrCreatePaymentType,
   updateLink, unlinkPaymentType,
+  PAYMENT_TYPE_SEARCH_CRITERIA,
 } from './payment-types.repository'
 
 /**
@@ -21,6 +22,13 @@ import {
 export interface PaymentTypeScope {
   schemaName:    string
   institutionId: number
+}
+
+export { PAYMENT_TYPE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchPaymentTypeSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(PAYMENT_TYPE_SEARCH_CRITERIA)
 }
 
 export async function fetchLinked(

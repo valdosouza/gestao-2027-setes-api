@@ -31,3 +31,5 @@ export * from '../social-media/social-media.dto'
 export * from '../social-media/social-media.repository'
 
 export * from './entity-fiscal'
+
+export * from './entity-search-criteria'

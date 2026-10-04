@@ -1,11 +1,14 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
+import { walletSalesmanId } from '@shared/customer-wallet'
 import {
   ContractListRow, ContractFull, ContractInput, ProductLookupRow,
+  LookupRow,
 } from './contracts.interface'
 import {
   listContracts, getContract, insertContract, updateContract,
   softDeleteContract, listProductsLookup,
+  CONTRACT_SEARCH_CRITERIA, listCustomerLookup, listPaymentTypesLookup,
 } from './contracts.repository'
 
 /**
@@ -18,6 +21,26 @@ import {
 export interface ContractScope {
   schemaName:    string
   institutionId: number
+  /** quem pergunta — a carteira travada do vendedor vale no lookup de cliente (D-BA27) */
+  userId:        number
+  role?:         string
+}
+
+export { CONTRACT_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchContractSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(CONTRACT_SEARCH_CRITERIA)
+}
+
+/** D-BA27: a carteira é da PESSOA — vendedor travado só enxerga os seus clientes aqui também. */
+export async function fetchCustomerLookup(filter: string, scope: ContractScope): Promise<LookupRow[]> {
+  const salesmanId = await walletSalesmanId({ ...scope, role: scope.role ?? '' })
+  return listCustomerLookup(filter, scope.schemaName, scope.institutionId, salesmanId)
+}
+
+export async function fetchPaymentTypesLookup(filter: string, scope: ContractScope): Promise<LookupRow[]> {
+  return listPaymentTypesLookup(filter, scope.schemaName, scope.institutionId)
 }
 
 export async function fetchContracts(

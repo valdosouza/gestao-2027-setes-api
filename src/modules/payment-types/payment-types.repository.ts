@@ -1,7 +1,8 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
+import { PAYMENT_TYPE_KINDS } from '@shared/payment-types'
 import { ensureCatalogPaymentType, upsertLink } from '@shared/payment-types'
 import {
   LinkedPaymentTypeRow, PaymentTypeCatalogRow, PaymentTypeLinkInput,
@@ -14,6 +15,20 @@ import {
  * DESCRIÇÃO na transação) × vínculo em setes_<schema>.
  * tb_institution_has_payment_types (atributos operacionais — migration 012).
  */
+
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — D-BA2/D-BA3, Onda 2 §12):
+ * lista branca dos critérios desta lista. Vive AQUI (D-BA12) porque as expressões
+ * dependem dos aliases da query base. O operador é da peça @shared/list (D-BA4).
+ */
+export const PAYMENT_TYPE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.payment-types.description', expr: 'pt.description' },
+  { key: 'kind', kind: 'options', labelKey: 'search.payment-types.kind', expr: 'pt.kind', options: PAYMENT_TYPE_KINDS },
+  { key: 'enable', kind: 'bool', labelKey: 'search.payment-types.enable', expr: 'h.`enable`', boolValues: ['S', 'N'] },
+  { key: 'appMobile', kind: 'bool', labelKey: 'search.payment-types.appMobile', expr: 'h.app_mobile', boolValues: ['S', 'N'] },
+  { key: 'tef', kind: 'bool', labelKey: 'search.payment-types.tef', expr: 'h.tef', boolValues: ['S', 'N'] },
+  { key: 'maxParcels', kind: 'number', labelKey: 'search.payment-types.maxParcels', expr: 'h.max_parcels' },
+]
 
 /** Formas VINCULADAS à institution (lista da tela) — atributos do vínculo
  *  + descrições dos Planos de Conta (LEFT JOIN, 0 = não definido).
@@ -35,8 +50,9 @@ export async function listLinked(
         ON fpd.id = h.tb_financial_plans_id_deb
        AND fpd.tb_institution_id = h.tb_institution_id AND fpd.deleted = 'N'
      WHERE h.tb_institution_id = ? AND h.deleted = 'N'
-       AND (? IS NULL OR pt.description LIKE ?)`
-  const params = [institutionId, like, like]
+       AND (? IS NULL OR pt.description LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT pt.id,

@@ -1,9 +1,10 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { ProviderInput, ProviderListRow, ProviderFull } from './providers.interface'
 import {
   listProviders, getProvider, providerExists,
   insertProviderCascade, updateProviderCascade, deleteProvider,
+  PROVIDER_SEARCH_CRITERIA,
 } from './providers.repository'
 
 /**
@@ -26,6 +27,13 @@ function dupEntryTo409(err: any): never {
       undefined, 'CONFLICT_RETRY')
   }
   throw err
+}
+
+export { PROVIDER_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchProviderSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(PROVIDER_SEARCH_CRITERIA)
 }
 
 export async function fetchProviders(

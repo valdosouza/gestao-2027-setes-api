@@ -1,11 +1,12 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   CollaboratorInput, CollaboratorListRow, CollaboratorFull,
 } from './collaborators.interface'
 import {
   listCollaborators, getCollaborator, collaboratorExists,
   insertCollaboratorCascade, updateCollaboratorCascade, deleteCollaborator,
+  COLLABORATOR_SEARCH_CRITERIA,
 } from './collaborators.repository'
 
 /**
@@ -30,6 +31,13 @@ function dupEntryTo409(err: any): never {
       undefined, 'CONFLICT_RETRY')
   }
   throw err
+}
+
+export { COLLABORATOR_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchCollaboratorSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(COLLABORATOR_SEARCH_CRITERIA)
 }
 
 export async function fetchCollaborators(

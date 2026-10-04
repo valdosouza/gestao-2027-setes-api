@@ -1,7 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import {
   BankAccountListRow, BankAccountFull, BankAccountInput, BankLookupRow,
 } from './bank-accounts.interface'
@@ -21,6 +21,21 @@ const LIST_FIELDS = `a.id,
             a.manager, a.limit_value AS limitValue`
 
 /**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — D-BA2/D-BA3, Onda 2 §12):
+ * lista branca dos critérios desta lista. Vive AQUI (D-BA12) porque as expressões
+ * dependem dos aliases da query base. O operador é da peça @shared/list (D-BA4).
+ */
+export const BANK_ACCOUNT_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'bankName', kind: 'text', labelKey: 'search.bank-accounts.bankName', expr: 'b.description' },
+  { key: 'bank', kind: 'lookup', labelKey: 'search.bank-accounts.bank',
+    expr: 'a.tb_bank_id', lookup: '/api/bank-accounts/banks' },
+  { key: 'agency', kind: 'text', labelKey: 'search.bank-accounts.agency', expr: 'a.agency' },
+  { key: 'number', kind: 'text', labelKey: 'search.bank-accounts.number', expr: 'a.number' },
+  { key: 'manager', kind: 'text', labelKey: 'search.bank-accounts.manager', expr: 'a.manager' },
+  { key: 'limitValue', kind: 'money', labelKey: 'search.bank-accounts.limitValue', expr: 'a.limit_value' },
+]
+
+/**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
  * (D2). Desempate por a.id (D8) mantém o OFFSET estável.
  */
@@ -33,8 +48,9 @@ export async function listBankAccounts(
     `FROM \`${schemaName}\`.tb_bank_account a
      LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id
      WHERE a.tb_institution_id = ? AND a.deleted = 'N'
-       AND (? IS NULL OR b.description LIKE ? OR b.number LIKE ? OR a.number LIKE ?)`
-  const params = [institutionId, like, like, like, like]
+       AND (? IS NULL OR b.description LIKE ? OR b.number LIKE ? OR a.number LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT ${LIST_FIELDS}
@@ -195,9 +211,9 @@ export async function softDeleteBankAccount(
 
 /** Lookup do catálogo CENTRAL de bancos (form). */
 export async function listBanksLookup(filter: string): Promise<BankLookupRow[]> {
-  const like = filter ? `%${filter}%` : null
+  const like = filter ? `%${escapeLike(filter)}%` : null
   const [rows] = await pool.query<any[]>(
-    `SELECT id, number, description
+    `SELECT id, number, description, description AS name
      FROM setes_central.tb_bank
      WHERE deleted = 'N'
        AND (? IS NULL OR description LIKE ? OR number LIKE ?)

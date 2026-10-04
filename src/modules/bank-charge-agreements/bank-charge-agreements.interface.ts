@@ -59,4 +59,6 @@ export interface ChargeAgreementInput {
 export interface BankAccountLookupRow {
   id:    number
   label: string
+  /** = label — contrato { id, name } das listas de apoio da pesquisa avançada */
+  name:  string
 }

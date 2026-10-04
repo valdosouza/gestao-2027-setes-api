@@ -2,7 +2,7 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import {
   ServiceListRow, ServiceFull, ServiceInput, ServicePriceRow,
   ServiceLookupRow,
@@ -16,6 +16,19 @@ import {
  * (presença = sincroniza; priceTag null remove).
  */
 
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — D-BA2/D-BA3, Onda 2 §12):
+ * lista branca dos critérios desta lista. Vive AQUI (D-BA12) porque as expressões
+ * dependem dos aliases da query base. O operador é da peça @shared/list (D-BA4).
+ */
+export const SERVICE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.services.description', expr: 'p.description' },
+  { key: 'identifier', kind: 'text', labelKey: 'search.services.identifier', expr: 'p.identifier' },
+  { key: 'category', kind: 'lookup', labelKey: 'search.services.category',
+    expr: 'p.tb_category_id', lookup: '/api/services/categories' },
+  { key: 'active', kind: 'bool', labelKey: 'search.services.active', expr: "COALESCE(p.active, 'S')", boolValues: ['S', 'N'] },
+]
+
 /** Lista PAGINADA (shared/list): página + COUNT com a MESMA where. */
 export async function listServices(
   query: ListQuery, schemaName: string, institutionId: number
@@ -27,8 +40,9 @@ export async function listServices(
      LEFT JOIN \`${schemaName}\`.tb_category c
        ON c.id = p.tb_category_id AND c.tb_institution_id = p.tb_institution_id
      WHERE p.tb_institution_id = ? AND p.deleted = 'N' AND p.kind = 'S'
-       AND (? IS NULL OR p.description LIKE ? OR p.identifier LIKE ?)`
-  const params = [institutionId, like, like, like]
+       AND (? IS NULL OR p.description LIKE ? OR p.identifier LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT p.id, p.identifier, p.description,
@@ -303,7 +317,7 @@ async function lookup(
   assertSchemaName(schemaName)
   const like = filter ? `%${escapeLike(filter)}%` : null
   const [rows] = await pool.query<any[]>(
-    `SELECT id, description
+    `SELECT id, description, description AS name
        FROM \`${schemaName}\`.${table}
       WHERE tb_institution_id = ? AND deleted = 'N'
         AND (? IS NULL OR description LIKE ?)

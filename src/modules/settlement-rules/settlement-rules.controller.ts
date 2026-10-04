@@ -8,6 +8,7 @@ import {
   SettlementRuleScope, fetchSettlementRules, fetchSettlementRule,
   createSettlementRule, editSettlementRule, removeSettlementRule,
   fetchPaymentTypesLookup, fetchBankAccountsLookup,
+  SETTLEMENT_RULE_SEARCH_CRITERIA, fetchSettlementRuleSearchCriteria,
 } from './settlement-rules.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
@@ -18,10 +19,19 @@ function scopeOf(req: Request): SettlementRuleScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'settlement-rules')
+    const query = await parseListQuery(req, 'settlement-rules', SETTLEMENT_RULE_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchSettlementRules(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'settlement-rules GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchSettlementRuleSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'settlement-rules/search-criteria GET')
   }
 }
 

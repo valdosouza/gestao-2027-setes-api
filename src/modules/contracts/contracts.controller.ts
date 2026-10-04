@@ -7,20 +7,50 @@ import { contractDto } from './contracts.dto'
 import {
   ContractScope, fetchContracts, fetchContract, createContract,
   editContract, removeContract, fetchProductsLookup,
+  CONTRACT_SEARCH_CRITERIA, fetchContractSearchCriteria, fetchCustomerLookup, fetchPaymentTypesLookup,
 } from './contracts.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
 function scopeOf(req: Request): ContractScope {
-  const { schemaName, institutionId } = req.institution!
-  return { schemaName, institutionId }
+  const { schemaName, institutionId, userId, role } = req.institution!
+  return { schemaName, institutionId, userId, role }
 }
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'contracts')
+    const query = await parseListQuery(req, 'contracts', CONTRACT_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchContracts(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'contracts GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchContractSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'contracts/search-criteria GET')
+  }
+}
+
+/** GET /customer-lookup — lista de apoio do critério "cliente" (carteira respeitada, D-BA27). */
+export async function customerLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const filter = String(req.query.filter ?? '').trim()
+    res.json({ ok: true, data: await fetchCustomerLookup(filter, scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'contracts/customer-lookup GET')
+  }
+}
+
+/** GET /payment-types — lista de apoio do critério "forma de pagamento". */
+export async function paymentTypesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const filter = String(req.query.filter ?? '').trim()
+    res.json({ ok: true, data: await fetchPaymentTypesLookup(filter, scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'contracts/payment-types GET')
   }
 }
 

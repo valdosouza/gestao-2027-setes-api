@@ -45,6 +45,12 @@ export interface UserCreateInput extends UserInput {
 }
 
 /** Quem opera o cadastro (derivado do JWT no controller). */
+/** Linha do lookup de instituições do critério "instituição" (só Super — D-BA24). */
+export interface InstitutionLookupRow {
+  id:   number
+  name: string | null
+}
+
 export interface UserScope {
   isSuper:       boolean
   institutionId: number

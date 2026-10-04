@@ -1,7 +1,7 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import {
   SettlementRuleListRow, SettlementRuleFull, SettlementRuleInput,
   SettlementRuleCreateInput, PaymentTypeLookupRow, BankAccountLookupRow,
@@ -36,6 +36,23 @@ const FROM = (schemaName: string) =>
          AND a.deleted = 'N'
    LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id`
 
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — D-BA2/D-BA3, Onda 2 §12):
+ * lista branca dos critérios desta lista. Vive AQUI (D-BA12) porque as expressões
+ * dependem dos aliases da query base. O operador é da peça @shared/list (D-BA4).
+ */
+export const SETTLEMENT_RULE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'paymentTypeName', kind: 'text', labelKey: 'search.settlement-rules.paymentTypeName', expr: 'pt.description' },
+  { key: 'paymentType', kind: 'lookup', labelKey: 'search.settlement-rules.paymentType',
+    expr: 'c.tb_payment_types_id', lookup: '/api/settlement-rules/payment-types' },
+  // conta 0 = caixa não é escolhível aqui (lookup só lista contas reais, D-G1)
+  { key: 'bankAccount', kind: 'lookup', labelKey: 'search.settlement-rules.bankAccount',
+    expr: 'c.tb_bank_account_id', lookup: '/api/settlement-rules/bank-accounts' },
+  { key: 'feeRate', kind: 'number', labelKey: 'search.settlement-rules.feeRate', expr: 'c.fee_rate' },
+  { key: 'paymentTerm', kind: 'number', labelKey: 'search.settlement-rules.paymentTerm', expr: 'c.payment_term' },
+  { key: 'expirationDate', kind: 'date', labelKey: 'search.settlement-rules.expirationDate', expr: 'c.expiration_date' },
+]
+
 /** Lista PAGINADA (shared/list): página + COUNT com a MESMA where (D2 da paginação). */
 export async function listSettlementRules(
   query: ListQuery, schemaName: string, institutionId: number
@@ -45,8 +62,9 @@ export async function listSettlementRules(
   const where =
     `${FROM(schemaName)}
      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
-       AND (? IS NULL OR pt.description LIKE ? OR b.description LIKE ?)`
-  const params = [institutionId, like, like, like]
+       AND (? IS NULL OR pt.description LIKE ? OR b.description LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT ${LIST_FIELDS}
@@ -222,7 +240,7 @@ export async function listPaymentTypesLookup(
   assertSchemaName(schemaName)
   const like = filter ? `%${escapeLike(filter)}%` : null
   const [rows] = await pool.query<any[]>(
-    `SELECT pt.id, pt.description, pt.kind,
+    `SELECT pt.id, pt.description, pt.kind, pt.description AS name,
             CASE WHEN c.tb_payment_types_id IS NULL THEN 'N' ELSE 'S' END AS hasContract
        FROM \`${schemaName}\`.tb_institution_has_payment_types h
        INNER JOIN setes_central.tb_payment_types pt
@@ -248,7 +266,9 @@ export async function listBankAccountsLookup(
   const [rows] = await pool.query<any[]>(
     `SELECT a.id,
             CONCAT(COALESCE(b.description, ''), ' — ',
-                   COALESCE(a.agency, ''), '/', COALESCE(a.number, '')) AS label
+                   COALESCE(a.agency, ''), '/', COALESCE(a.number, '')) AS label,
+            CONCAT(COALESCE(b.description, ''), ' — ',
+                   COALESCE(a.agency, ''), '/', COALESCE(a.number, '')) AS name
        FROM \`${schemaName}\`.tb_bank_account a
        LEFT JOIN setes_central.tb_bank b ON b.id = a.tb_bank_id
       WHERE a.tb_institution_id = ? AND a.deleted = 'N'

@@ -6,6 +6,7 @@ import { assertClientRequired } from '@shared/field-config'
 import { paymentTypeLinkDto, paymentTypeLinkUpdateDto } from './payment-types.dto'
 import {
   PaymentTypeScope, fetchLinked, fetchCatalog, saveLink, editLink, removeLink,
+  PAYMENT_TYPE_SEARCH_CRITERIA, fetchPaymentTypeSearchCriteria,
 } from './payment-types.service'
 
 /** Escopo SEMPRE do JWT (o vínculo é por institution). */
@@ -16,10 +17,19 @@ function scopeOf(req: Request): PaymentTypeScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'payment-types')
+    const query = await parseListQuery(req, 'payment-types', PAYMENT_TYPE_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchLinked(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'payment-types GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchPaymentTypeSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'payment-types/search-criteria GET')
   }
 }
 

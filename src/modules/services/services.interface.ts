@@ -68,4 +68,6 @@ export interface ServiceInput {
 export interface ServiceLookupRow {
   id:          number
   description: string | null
+  /** = description — contrato { id, name } das listas de apoio da pesquisa avançada */
+  name?:       string | null
 }

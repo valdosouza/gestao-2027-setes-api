@@ -7,6 +7,7 @@ import { priceListDto } from './price-lists.dto'
 import {
   PriceListScope, fetchPriceLists, fetchPriceList, createPriceList,
   editPriceList, removePriceList,
+  PRICE_LIST_SEARCH_CRITERIA, fetchPriceListSearchCriteria,
 } from './price-lists.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
@@ -17,10 +18,19 @@ function scopeOf(req: Request): PriceListScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'price-lists')
+    const query = await parseListQuery(req, 'price-lists', PRICE_LIST_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchPriceLists(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'price-lists GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchPriceListSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'price-lists/search-criteria GET')
   }
 }
 

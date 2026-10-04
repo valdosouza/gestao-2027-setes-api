@@ -38,12 +38,61 @@ const router = Router()
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, name, email, active, kind }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/users/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de usuários
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2, Onda 2 §12) — lista branca
+ *       sem expressão SQL. "institution" só para o Super (D-BA24); "kind" (perfil do vínculo)
+ *       só com vínculo em foco — admin sempre, Super só com institutionId.
+ *     tags: [Users]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: institutionId
+ *         schema: { type: integer }
+ *         description: Foco (super) — o mesmo da lista
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind, labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
+ * /api/users/institution-lookup:
+ *   get:
+ *     summary: Lookup de instituições do critério "instituição" (só Super)
+ *     tags: [Users]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome/apelido
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name }' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Não é Super }
+ *       500: { description: Erro interno }
+ */
+router.get('/institution-lookup', controller.institutionLookup)
 
 /**
  * @swagger

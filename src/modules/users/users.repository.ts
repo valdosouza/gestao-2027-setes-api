@@ -1,9 +1,10 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
+import { USER_KINDS } from './users.dto'
 import { updateEntity } from '@shared/entity/entity.repository'
 import {
-  UserListRow, UserRow, UserInput, UserInstitutionGrant, UserInstitutionLink,
+  UserListRow, InstitutionLookupRow, UserRow, UserInput, UserInstitutionGrant, UserInstitutionLink,
   UserInterfacePrivileges, UserPrivilegeGrant,
 } from './users.interface'
 
@@ -24,6 +25,27 @@ export { findLoginEmailOwner, insertUserCascade }
  */
 
 /**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, D-BA21/D-BA23/D-BA24):
+ * lista branca da lista de usuários. `kind` é atributo do VÍNCULO em foco (alias ihu da
+ * query base — só servido com foco, service). `institution` = "pertence a X": a expressão
+ * devolve o CONJUNTO das instituições do usuário (shape 'set' → `? IN (…)`), escopada em
+ * active/deleted do vínculo; só o Super a recebe.
+ */
+export const USER_INSTITUTION_IDS =
+  `(SELECT uih.tb_institution_id FROM setes_central.tb_institution_has_user uih
+     WHERE uih.tb_user_id = u.id AND uih.active = 'S' AND uih.deleted = 'N')`
+
+export const USER_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'name', kind: 'text', labelKey: 'search.users.name', expr: ['e.nick_trade', 'e.name_company'] },
+  { key: 'email', kind: 'text', labelKey: 'search.users.email', expr: 'm.email' },
+  { key: 'kind', kind: 'options', labelKey: 'search.users.kind', expr: 'ihu.kind', options: USER_KINDS },
+  { key: 'institution', kind: 'lookup', labelKey: 'search.users.institution', shape: 'set',
+    expr: USER_INSTITUTION_IDS, lookup: '/api/users/institution-lookup' },
+  { key: 'active', kind: 'bool', labelKey: 'search.users.active', expr: 'u.active', boolValues: ['S', 'N'] },
+  { key: 'createdAt', kind: 'date', labelKey: 'search.users.createdAt', expr: 'u.created_at', storage: 'datetime' },
+]
+
+/**
  * [institutionId] null = todos (super); informado = só os vinculados.
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
  * (D2) — o escopo por institution vale para os dois SELECTs por construção.
@@ -33,6 +55,10 @@ export async function listUsers(
   query: ListQuery, institutionId: number | null
 ): Promise<PagedRows<UserListRow>> {
   const like = `%${escapeLike(query.filter)}%`
+  // Vínculo EM FOCO (parecer do guardião, Onda 2): o escopo entra na query base como
+  // LEFT JOIN 1:1 (PK institution × user) — a coluna `kind` da linha e o critério `kind`
+  // são a MESMA expressão (ihu.kind), e nenhum subselect correlacionado sobra.
+  // institutionId NULL (Super sem foco) = join vazio: kind NULL, todos os usuários.
   const where =
     `FROM setes_central.tb_user u
        INNER JOIN setes_central.tb_entity e ON e.id = u.id
@@ -42,31 +68,46 @@ export async function listUsers(
         AND ehm.deleted = 'N'
        LEFT JOIN setes_central.tb_mailing m
          ON m.id = ehm.tb_mailing_id AND m.deleted = 'N'
+       LEFT JOIN setes_central.tb_institution_has_user ihu
+         ON ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
+        AND ihu.active = 'S' AND ihu.deleted = 'N'
      WHERE u.deleted = 'N'
        AND (? = '' OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR m.email LIKE ?)
-       AND (? IS NULL OR EXISTS (
-             SELECT 1 FROM setes_central.tb_institution_has_user ihu
-             WHERE ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
-               AND ihu.active = 'S' AND ihu.deleted = 'N'))`
-  const params = [query.filter, like, like, like, institutionId, institutionId]
+       AND (? IS NULL OR ihu.tb_user_id IS NOT NULL)${query.criteria.sql}`
+  const params = [institutionId, query.filter, like, like, like, institutionId,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT u.id,
             COALESCE(e.nick_trade, e.name_company) AS name,
             m.email,
             u.active,
-            (SELECT ihu.kind FROM setes_central.tb_institution_has_user ihu
-              WHERE ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
-                AND ihu.active = 'S' AND ihu.deleted = 'N') AS kind
+            ihu.kind
      ${where}
      ORDER BY name, u.id
      LIMIT ? OFFSET ?`,
-    [institutionId, ...params, query.pageSize, query.offset]
+    [...params, query.pageSize, query.offset]
   )
   const [count] = await pool.query<any[]>(
     `SELECT COUNT(*) AS total ${where}`, params
   )
   return { rows: rows as UserListRow[], total: Number(count[0].total) }
+}
+
+/** Instituições para o critério "instituição" (D-BA24 — lookup do PRÓPRIO módulo, só Super). */
+export async function listInstitutionLookup(filter: string): Promise<InstitutionLookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT i.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name
+       FROM setes_central.tb_institution i
+       INNER JOIN setes_central.tb_entity e ON e.id = i.id
+      WHERE i.deleted = 'N'
+        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+      ORDER BY name, i.id
+      LIMIT 50`,
+    [like, like, like]
+  )
+  return rows as InstitutionLookupRow[]
 }
 
 /** Usuário tem vínculo ATIVO com a institution? (escopo do admin) */

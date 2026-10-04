@@ -24,6 +24,10 @@ const router = Router()
  *         name: pageSize
  *         schema: { type: integer, enum: [10, 25, 50, 100], default: 25 }
  *         description: Itens por página (omitido = config page_size do usuário; teto 200)
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, nickTrade, nameCompany, active }' }
  *       401: { description: Não autenticado }
@@ -61,6 +65,24 @@ const router = Router()
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/salesmen/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de vendedores
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2, Onda 2 §12) — lista branca
+ *       declarada no módulo, sem expressão SQL.
+ *     tags: [Salesmen]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool), labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
 router.post('/', controller.create)
 
 /**

@@ -4,6 +4,7 @@
 // enxerga mercadoria), identifier em branco vira o id (D1), grade de
 // preços tb_price na MESMA transação (D4/D7, presença = sincroniza).
 import pool from '../shared/db/connection'
+import { NO_CRITERIA } from '../shared/list'
 import { serviceDto } from '../modules/services/services.dto'
 import { priceListDto } from '../modules/price-lists/price-lists.dto'
 import * as svcRepo from '../modules/services/services.repository'
@@ -92,7 +93,7 @@ describe('services repository', () => {
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ total: 2 }]])
     const result = await svcRepo.listServices(
-      { filter: 'inst', page: 1, pageSize: 25, offset: 0 } as any,
+      { filter: 'inst', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any,
       'setes_setes', 1)
     expect(result.total).toBe(2)
     const pageSql = mockQuery.mock.calls[0][0] as string
@@ -208,7 +209,7 @@ describe('price-lists repository', () => {
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ total: 1 }]])
     const result = await plRepo.listPriceLists(
-      { filter: 'var', page: 1, pageSize: 25, offset: 0 } as any,
+      { filter: 'var', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any,
       'setes_setes', 1)
     expect(result.total).toBe(1)
     expect(mockQuery.mock.calls[0][0] as string).toContain('LIMIT ? OFFSET ?')

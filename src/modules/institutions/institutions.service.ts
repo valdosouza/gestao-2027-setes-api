@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import logger from '@shared/logger/logger'
 import { runMigrationsForSchema } from '../../migrations/runner'
 import {
@@ -17,7 +17,15 @@ import {
   setInstitutionActive, deleteInstitution, insertDefaultFlags,
   grantStructuralInterfaces,
   getSyncApiKey, insertSyncApiKey,
+  INSTITUTION_SEARCH_CRITERIA,
 } from './institutions.repository'
+
+export { INSTITUTION_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchInstitutionSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(INSTITUTION_SEARCH_CRITERIA)
+}
 
 export async function fetchInstitutions(query: ListQuery): Promise<PagedRows<InstitutionListRow>> {
   return listInstitutions(query)

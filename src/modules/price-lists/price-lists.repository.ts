@@ -1,6 +1,6 @@
 import pool from '@shared/db/connection'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { PriceListRow, PriceListInput } from './price-lists.interface'
 
 /**
@@ -12,6 +12,17 @@ const LIST_FIELDS = `l.id, l.description,
             DATE_FORMAT(l.validity, '%Y-%m-%d') AS validity,
             l.modality, l.published`
 
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — D-BA2/D-BA3, Onda 2 §12):
+ * lista branca dos critérios desta lista. Vive AQUI (D-BA12) porque as expressões
+ * dependem dos aliases da query base. O operador é da peça @shared/list (D-BA4).
+ */
+export const PRICE_LIST_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.price-lists.description', expr: 'l.description' },
+  { key: 'validity', kind: 'date', labelKey: 'search.price-lists.validity', expr: 'l.validity' },
+  { key: 'published', kind: 'bool', labelKey: 'search.price-lists.published', expr: 'l.published', boolValues: ['S', 'N'] },
+]
+
 /** Lista PAGINADA (shared/list): página + COUNT com a MESMA where. */
 export async function listPriceLists(
   query: ListQuery, schemaName: string, institutionId: number
@@ -21,8 +32,9 @@ export async function listPriceLists(
   const where =
     `FROM \`${schemaName}\`.tb_price_list l
      WHERE l.tb_institution_id = ? AND l.deleted = 'N'
-       AND (? IS NULL OR l.description LIKE ?)`
-  const params = [institutionId, like, like]
+       AND (? IS NULL OR l.description LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like,
+                  ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT ${LIST_FIELDS}

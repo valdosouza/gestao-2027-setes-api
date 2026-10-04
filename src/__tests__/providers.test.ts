@@ -16,6 +16,7 @@ jest.mock('../shared/db/connection', () => ({
   default: { query: jest.fn(), getConnection: jest.fn() },
 }))
 jest.mock('../shared/entity', () => ({
+  ...jest.requireActual('../shared/entity'),   // os helpers da pesquisa avançada são reais (lista branca nasce no load)
   saveEntityFiscalChain: jest.fn(),
   getEntityFiscalFull:   jest.fn(),
 }))

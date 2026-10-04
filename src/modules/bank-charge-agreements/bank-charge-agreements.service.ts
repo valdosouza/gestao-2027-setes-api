@@ -1,17 +1,25 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   ChargeAgreementListRow, ChargeAgreementFull, ChargeAgreementInput, BankAccountLookupRow,
 } from './bank-charge-agreements.interface'
 import {
   listChargeAgreements, getChargeAgreement, insertChargeAgreement,
   updateChargeAgreement, softDeleteChargeAgreement, listBankAccountsLookup,
+  CHARGE_AGREEMENT_SEARCH_CRITERIA,
 } from './bank-charge-agreements.repository'
 
 /** Regras do módulo: escopo SEMPRE da institution do JWT; conta validada na transação. */
 export interface ChargeAgreementScope {
   schemaName:    string
   institutionId: number
+}
+
+export { CHARGE_AGREEMENT_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchChargeAgreementSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(CHARGE_AGREEMENT_SEARCH_CRITERIA)
 }
 
 export async function fetchChargeAgreements(

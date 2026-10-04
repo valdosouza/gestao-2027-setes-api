@@ -9,6 +9,7 @@ import {
   fetchInstitutions, fetchInstitution, createInstitution,
   editInstitution, removeInstitution,
   fetchSyncApiKey, generateSyncApiKey,
+  INSTITUTION_SEARCH_CRITERIA, fetchInstitutionSearchCriteria,
 } from './institutions.service'
 
 /**
@@ -47,10 +48,19 @@ export async function fiscalExists(req: Request, res: Response): Promise<void> {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'institutions')
+    const query = await parseListQuery(req, 'institutions', INSTITUTION_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchInstitutions(query)))
   } catch (err) {
     handleError(res, err, 'institutions GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchInstitutionSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'institutions/search-criteria GET')
   }
 }
 

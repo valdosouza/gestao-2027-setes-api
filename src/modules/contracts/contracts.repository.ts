@@ -5,9 +5,11 @@ import { PoolConnection } from 'mysql2/promise'
 import { HttpError } from '@shared/errors/http-error'
 import { assertPaymentTypesEnabled } from '@shared/payment-types'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
+import { listEnabledPaymentTypes } from '@shared/payment-types'
 import {
   ContractListRow, ContractFull, ContractInput, ProductLookupRow,
+  LookupRow,
 } from './contracts.interface'
 
 /**
@@ -16,6 +18,26 @@ import {
  * papel local (tb_customer) DENTRO da transação; itens sincronizados por
  * productId (soft delete dos ausentes + upsert dos enviados).
  */
+
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, D-BA21/D-BA27): lista
+ * branca da lista de contratos. O valor mensal vem do alias `mv` (derived table 1:1 na
+ * query base — a coluna da linha e o critério são a MESMA expressão, parecer do guardião);
+ * cliente e forma por lookup do PRÓPRIO módulo.
+ */
+export const CONTRACT_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'customerName', kind: 'text', labelKey: 'search.contracts.customerName',
+    expr: ['e.nick_trade', 'e.name_company'] },
+  { key: 'customer', kind: 'lookup', labelKey: 'search.contracts.customer',
+    expr: 'c.tb_customer_id', lookup: '/api/contracts/customer-lookup' },
+  { key: 'paymentType', kind: 'lookup', labelKey: 'search.contracts.paymentType',
+    expr: 'c.tb_payment_types_id', lookup: '/api/contracts/payment-types' },
+  { key: 'paymentDay', kind: 'number', labelKey: 'search.contracts.paymentDay', expr: 'c.payment_day' },
+  { key: 'dtStart', kind: 'date', labelKey: 'search.contracts.dtStart', expr: 'c.dt_start' },
+  { key: 'dtEnd', kind: 'date', labelKey: 'search.contracts.dtEnd', expr: 'c.dt_end' },
+  { key: 'monthlyValue', kind: 'money', labelKey: 'search.contracts.monthlyValue', expr: 'COALESCE(mv.total, 0)' },
+  { key: 'active', kind: 'bool', labelKey: 'search.contracts.active', expr: 'c.active', boolValues: ['S', 'N'] },
+]
 
 /**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
@@ -29,9 +51,14 @@ export async function listContracts(
   const where =
     `FROM \`${schemaName}\`.tb_contract c
      INNER JOIN setes_central.tb_entity e ON e.id = c.tb_customer_id
+     LEFT JOIN (SELECT i.tb_contract_id, i.tb_institution_id, SUM(i.value) AS total
+                  FROM \`${schemaName}\`.tb_contract_item i
+                 WHERE i.deleted = 'N'
+                 GROUP BY i.tb_contract_id, i.tb_institution_id) mv
+       ON mv.tb_contract_id = c.id AND mv.tb_institution_id = c.tb_institution_id
      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
-       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)`
-  const params = [institutionId, like, like, like]
+       AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
@@ -39,10 +66,7 @@ export async function listContracts(
             COALESCE(e.nick_trade, e.name_company) AS customerName,
             DATE_FORMAT(c.dt_start, '%Y-%m-%d') AS dtStart,
             DATE_FORMAT(c.dt_end,   '%Y-%m-%d') AS dtEnd,
-            COALESCE((SELECT SUM(i.value) FROM \`${schemaName}\`.tb_contract_item i
-                       WHERE i.tb_contract_id = c.id
-                         AND i.tb_institution_id = c.tb_institution_id
-                         AND i.deleted = 'N'), 0) AS monthlyValue,
+            COALESCE(mv.total, 0) AS monthlyValue,
             c.active
      ${where}
      ORDER BY customerName, c.id
@@ -257,6 +281,35 @@ export async function softDeleteContract(
     [id, institutionId]
   )
   return result.affectedRows > 0
+}
+
+/** Clientes da institution para o critério "cliente" (D-BA27: carteira travada vale aqui). */
+export async function listCustomerLookup(
+  filter: string, schemaName: string, institutionId: number,
+  salesmanId: number | null = null
+): Promise<LookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT cu.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name
+       FROM \`${schemaName}\`.tb_customer cu
+       INNER JOIN setes_central.tb_entity e ON e.id = cu.id
+      WHERE cu.tb_institution_id = ? AND cu.deleted = 'N'
+        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+        AND (? IS NULL OR cu.tb_salesman_id = ?)
+      ORDER BY name, cu.id
+      LIMIT 50`,
+    [institutionId, like, like, like, salesmanId, salesmanId]
+  )
+  return rows as LookupRow[]
+}
+
+/** Formas de pagamento HABILITADAS para o critério "forma" (peça @shared/payment-types). */
+export async function listPaymentTypesLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<LookupRow[]> {
+  const rows = await listEnabledPaymentTypes(pool, schemaName, institutionId, filter)
+  return rows.map(r => ({ id: r.id, name: r.description }))
 }
 
 /** Lookup de SERVIÇOS ativos da institution (form de itens do contrato). */

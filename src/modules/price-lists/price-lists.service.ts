@@ -1,9 +1,10 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { PriceListRow, PriceListInput } from './price-lists.interface'
 import {
   listPriceLists, getPriceList, insertPriceList, updatePriceList,
   softDeletePriceList,
+  PRICE_LIST_SEARCH_CRITERIA,
 } from './price-lists.repository'
 
 /**
@@ -15,6 +16,13 @@ import {
 export interface PriceListScope {
   schemaName:    string
   institutionId: number
+}
+
+export { PRICE_LIST_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchPriceListSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(PRICE_LIST_SEARCH_CRITERIA)
 }
 
 export async function fetchPriceLists(

@@ -5,6 +5,7 @@ import { salesmanCreateDto, salesmanUpdateDto } from './salesmen.dto'
 import {
   SalesmanScope, fetchSalesmen, fetchSalesman, fetchCollaboratorLookup,
   createSalesman, editSalesman, removeSalesman,
+  SALESMAN_SEARCH_CRITERIA, fetchSalesmanSearchCriteria,
 } from './salesmen.service'
 
 /** Escopo SEMPRE do JWT (o papel é por institution). */
@@ -15,10 +16,19 @@ function scopeOf(req: Request): SalesmanScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'salesmen')
+    const query = await parseListQuery(req, 'salesmen', SALESMAN_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchSalesmen(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'salesmen GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchSalesmanSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'salesmen/search-criteria GET')
   }
 }
 

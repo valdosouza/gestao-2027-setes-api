@@ -5,6 +5,7 @@ import { collaboratorCreateDto, collaboratorUpdateDto } from './collaborators.dt
 import {
   CollaboratorScope, fetchCollaborators, fetchCollaborator,
   createCollaborator, editCollaborator, removeCollaborator,
+  COLLABORATOR_SEARCH_CRITERIA, fetchCollaboratorSearchCriteria,
 } from './collaborators.service'
 
 /** Escopo SEMPRE do JWT (o papel é por institution). */
@@ -15,10 +16,19 @@ function scopeOf(req: Request): CollaboratorScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'collaborators')
+    const query = await parseListQuery(req, 'collaborators', COLLABORATOR_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchCollaborators(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'collaborators GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCollaboratorSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'collaborators/search-criteria GET')
   }
 }
 

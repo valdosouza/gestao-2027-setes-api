@@ -1,11 +1,12 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   SalesmanInput, SalesmanListRow, SalesmanFull, CollaboratorLookupRow,
 } from './salesmen.interface'
 import {
   listSalesmen, getSalesman, salesmanExists, listCollaboratorLookup,
   insertSalesman, updateSalesman, deleteSalesman,
+  SALESMAN_SEARCH_CRITERIA,
 } from './salesmen.repository'
 
 /**
@@ -28,6 +29,13 @@ function dupEntryTo409(err: any): never {
       undefined, 'CONFLICT_RETRY')
   }
   throw err
+}
+
+export { SALESMAN_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchSalesmanSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(SALESMAN_SEARCH_CRITERIA)
 }
 
 export async function fetchSalesmen(
