@@ -1,14 +1,15 @@
 import { HttpError } from '@shared/errors/http-error'
 import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { parseCrt } from '@shared/entity-tax/entity-tax.types'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { findInvalidCatalogCodes, findInvalidSelectorRefs } from '@shared/tax-rule'
 import {
   listTaxRules, getTaxRule, insertTaxRuleCascade, updateTaxRuleCascade,
   deleteTaxRuleCascade, listCatalogs,
   getEmitterStateId, getStateAbbreviation, listCfopOptions,
+  TAX_RULE_SEARCH_CRITERIA, listProductsLookup, listStatesLookup,
 } from './tax-rules.repository'
-import { TaxRuleListRow, TaxRuleDetail, TaxRuleCatalogs } from './tax-rules.interface'
+import { TaxRuleListRow, TaxRuleDetail, TaxRuleCatalogs, LookupRow } from './tax-rules.interface'
 import { TaxRuleBodyDto } from './tax-rules.dto'
 
 /**
@@ -45,6 +46,23 @@ async function assertCatalogCodes(
   if (invalid.length > 0) {
     throw new HttpError(422, 'Código fiscal inexistente no catálogo', invalid)
   }
+}
+
+export { TAX_RULE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchTaxRuleSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(TAX_RULE_SEARCH_CRITERIA)
+}
+
+export async function fetchProductsLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<LookupRow[]> {
+  return listProductsLookup(filter, schemaName, institutionId)
+}
+
+export async function fetchStatesLookup(filter: string): Promise<LookupRow[]> {
+  return listStatesLookup(filter)
 }
 
 export async function fetchTaxRules(

@@ -28,6 +28,10 @@ const router = Router()
  *       - in: query
  *         name: pageSize
  *         schema: { type: integer }
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: "{ ok, data: [{ id, cityId, cityName, stateId, stateAbbreviation, serviceListId, serviceListDescription, localIncidence, aliq, municipalCode, active }], page, pageSize, total }" }
  *       401: { description: Sem JWT }
@@ -55,6 +59,44 @@ const router = Router()
  *       409: { description: SERVICE_TAX_RULE_DUPLICATE }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/service-tax-rules/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de regras de ISS
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2, Onda 2 §12) — lista branca
+ *       declarada no módulo, sem expressão SQL.
+ *     tags: [service-tax-rules]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool), labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
+ * /api/service-tax-rules/cities:
+ *   get:
+ *     summary: Lookup de cidades (critério "cidade" da pesquisa avançada)
+ *     tags: [service-tax-rules]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/cities', controller.citiesLookup)
 router.post('/', controller.create)
 
 /**

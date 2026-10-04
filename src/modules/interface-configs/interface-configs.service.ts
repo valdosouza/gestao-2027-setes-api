@@ -1,7 +1,7 @@
 import { invalidateInstitutionZone } from '@shared/time-zone'
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { isAdmin } from '@shared/auth/roles'
 import { findInterfaceIdByKey } from '@shared/field-config'
 import {
@@ -9,7 +9,7 @@ import {
   invalidateInterfaceConfig, validateConfigContent, listCatalogConfigs,
 } from '@shared/interface-config'
 import {
-  InterfaceVitrineRow, listVitrine, interfaceExists, isInterfaceAcquired,
+  InterfaceVitrineRow, listVitrine, interfaceExists, isInterfaceAcquired, vitrineSearchCriteria,
 } from '@shared/interface-vitrine'
 import { ConfigValueInput } from './interface-configs.interface'
 import {
@@ -23,6 +23,14 @@ import {
  * admin edita o valor da institution, usuário comum só o próprio override
  * de configs scope 'U'. Só grava o que DIVERGE do herdado (nota b).
  */
+
+/** Lista branca da vitrine deste painel (peça @shared/interface-vitrine — D-BA20). */
+export const INTERFACE_CONFIG_SEARCH_CRITERIA = vitrineSearchCriteria('interface-configs')
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchVitrineSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(INTERFACE_CONFIG_SEARCH_CRITERIA)
+}
 
 export async function fetchVitrine(
   institution: InstitutionPayload, query: ListQuery

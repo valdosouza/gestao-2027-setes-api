@@ -40,6 +40,20 @@ import { PRICE_LIST_SEARCH_CRITERIA, listPriceLists } from '../src/modules/price
 import { SERVICE_SEARCH_CRITERIA, listServices } from '../src/modules/services/services.repository'
 import { USER_SEARCH_CRITERIA, listUsers } from '../src/modules/users/users.repository'
 import { CONTRACT_SEARCH_CRITERIA, listContracts } from '../src/modules/contracts/contracts.repository'
+import { TAX_RULE_SEARCH_CRITERIA, listTaxRules } from '../src/modules/tax-rules/tax-rules.repository'
+import {
+  SERVICE_TAX_RULE_SEARCH_CRITERIA, listServiceTaxRules,
+} from '../src/modules/service-tax-rules/service-tax-rules.repository'
+import { CFOP_SEARCH_CRITERIA, listCfop } from '../src/modules/cfop/cfop.repository'
+import { CITY_SEARCH_CRITERIA, listCities } from '../src/modules/cities/cities.repository'
+import { STATE_SEARCH_CRITERIA, listStates } from '../src/modules/states/states.repository'
+import { SERVICE_LIST_SEARCH_CRITERIA, listServiceList } from '../src/modules/service-list/service-list.repository'
+import { INTERFACE_SEARCH_CRITERIA, listInterfaces } from '../src/modules/interfaces/interfaces.repository'
+import { COUNTRY_SEARCH_CRITERIA, listCountries } from '../src/modules/countries/countries.repository'
+import { BANK_SEARCH_CRITERIA, listBanks } from '../src/modules/banks/banks.repository'
+import { PRIVILEGE_SEARCH_CRITERIA, listPrivileges } from '../src/modules/privileges/privileges.repository'
+import { MODULE_SEARCH_CRITERIA, listModules } from '../src/modules/modules/modules.repository'
+import { vitrineSearchCriteria, listVitrine } from '../src/shared/interface-vitrine'
 
 const SCHEMA = process.env.EXPLAIN_SCHEMA ?? 'setes_setes'
 const INST   = Number(process.env.EXPLAIN_INSTITUTION ?? 1)
@@ -86,6 +100,22 @@ const TARGETS: Target[] = [
     run: q => listUsers(q, INST), base: ['setes_central.tb_user', 'setes_central.tb_institution_has_user'] },
   { module: 'contracts', defs: CONTRACT_SEARCH_CRITERIA,
     run: q => listContracts(q, SCHEMA, INST), base: [`${SCHEMA}.tb_contract`, `${SCHEMA}.tb_contract_item`] },
+  // --- Onda 2, Bloco 2 (§12.1 + D-BA20)
+  { module: 'tax-rules', defs: TAX_RULE_SEARCH_CRITERIA,
+    run: q => listTaxRules(SCHEMA, INST, q), base: [`${SCHEMA}.tb_tax_rule`] },
+  { module: 'service-tax-rules', defs: SERVICE_TAX_RULE_SEARCH_CRITERIA,
+    run: q => listServiceTaxRules(q, SCHEMA, INST), base: [`${SCHEMA}.tb_service_tax_rule`] },
+  { module: 'cfop', defs: CFOP_SEARCH_CRITERIA, run: q => listCfop(q), base: ['setes_central.tb_cfop'] },
+  { module: 'cities', defs: CITY_SEARCH_CRITERIA, run: q => listCities(q), base: ['setes_central.tb_city'] },
+  { module: 'states', defs: STATE_SEARCH_CRITERIA, run: q => listStates(q), base: ['setes_central.tb_state'] },
+  { module: 'service-list', defs: SERVICE_LIST_SEARCH_CRITERIA, run: q => listServiceList(q), base: ['setes_central.tb_service_list'] },
+  { module: 'interfaces', defs: INTERFACE_SEARCH_CRITERIA, run: q => listInterfaces(q), base: ['setes_central.tb_interface'] },
+  { module: 'countries', defs: COUNTRY_SEARCH_CRITERIA, run: q => listCountries(q), base: ['setes_central.tb_country'] },
+  { module: 'banks', defs: BANK_SEARCH_CRITERIA, run: q => listBanks(q), base: ['setes_central.tb_bank'] },
+  { module: 'privileges', defs: PRIVILEGE_SEARCH_CRITERIA, run: q => listPrivileges(q), base: ['setes_central.tb_privilege'] },
+  { module: 'modules', defs: MODULE_SEARCH_CRITERIA, run: q => listModules(SCHEMA, q), base: [`${SCHEMA}.tb_module`] },
+  { module: 'interface-configs', defs: vitrineSearchCriteria('interface-configs'),
+    run: q => listVitrine(q, SCHEMA, INST), base: ['setes_central.tb_interface'] },
 ]
 
 // --- valores de amostra por kind (só precisam COMPILAR; o plano não depende do valor)
@@ -119,7 +149,7 @@ function queryOf(defs: readonly SearchCriterion[], values: Record<string, unknow
 
 interface ExplainRow {
   id: number; select_type: string; table: string | null; type: string | null
-  key: string | null; rows: number | null; Extra: string | null
+  possible_keys: string | null; key: string | null; rows: number | null; Extra: string | null
 }
 
 const SCAN = new Set(['ALL', 'index'])
@@ -128,13 +158,22 @@ const PER_ROW = /DEPENDENT|UNCACHEABLE/
 let failures = 0
 let warnings = 0
 
+/**
+ * FALHA = subselect correlacionado que varre E não tem índice utilizável (`possible_keys`
+ * vazio) — custo por linha que cresce com a tabela. Com índice disponível e varredura
+ * escolhida (tabela minúscula no dev: o otimizador prefere ALL a 1 linha), é AVISO — o plano
+ * muda sozinho quando a tabela cresce (achado da 1ª rodada do Bloco 2: tb_module_has_interface
+ * tem PK + idx_mhi_interface e o dev tinha 1 linha).
+ */
 async function explainOne(label: string, c: Captured): Promise<void> {
   const [rows] = await realQuery(`EXPLAIN ${c.sql}`, c.params) as [ExplainRow[]]
   for (const r of rows) {
     const scan = r.type !== null && SCAN.has(r.type)
     const perRow = PER_ROW.test(r.select_type)
-    const mark = scan && perRow ? 'FALHA' : scan ? 'aviso' : 'ok   '
-    if (scan && perRow) failures++
+    const noIndex = !r.possible_keys
+    const fail = scan && perRow && noIndex
+    const mark = fail ? 'FALHA' : scan ? 'aviso' : 'ok   '
+    if (fail) failures++
     else if (scan) warnings++
     console.log(`  ${mark} ${label.padEnd(10)} ${String(r.id).padStart(2)} ${r.select_type.padEnd(20)} ` +
       `${String(r.table ?? '-').padEnd(14)} ${String(r.type ?? '-').padEnd(8)} key=${r.key ?? '-'} ` +
@@ -155,14 +194,18 @@ async function runTarget(t: Target): Promise<void> {
   for (const [label, values] of cases) {
     captured = []
     await t.run(queryOf(t.defs, values))
-    if (captured.length !== 2) {
+    // a lista pode fazer consultas auxiliares (ex.: interfaces carrega os privilégios das linhas):
+    // página = a que pagina, COUNT = a irmã com a mesma where
+    const page = captured.find(c => /LIMIT \? OFFSET \?/.test(c.sql))
+    const count = captured.find(c => /^\s*SELECT COUNT\(\*\)/.test(c.sql))
+    if (!page || !count) {
       failures++
-      console.log(`  FALHA ${label}: esperava 2 consultas (página + COUNT), capturou ${captured.length}`)
+      console.log(`  FALHA ${label}: não achei página + COUNT entre ${captured.length} consulta(s)`)
       continue
     }
     console.log(`  -- ${label}`)
-    await explainOne('página', captured[0])
-    await explainOne('COUNT', captured[1])
+    await explainOne('página', page)
+    await explainOne('COUNT', count)
   }
 }
 

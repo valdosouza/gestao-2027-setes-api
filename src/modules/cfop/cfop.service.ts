@@ -1,8 +1,9 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { CfopRow, CfopInput } from './cfop.interface'
 import {
   listCfop, getCfop, cfopCodeExists, insertCfop, updateCfop, deleteCfop,
+  CFOP_SEARCH_CRITERIA,
 } from './cfop.repository'
 
 /**
@@ -10,6 +11,13 @@ import {
  * externo, precedente countries/BACEN) — 409 se já existir MESMO com
  * deleted='S'; imutável na edição.
  */
+
+export { CFOP_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchCfopSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(CFOP_SEARCH_CRITERIA)
+}
 
 export async function fetchCfopList(query: ListQuery): Promise<PagedRows<CfopRow>> {
   return listCfop(query)

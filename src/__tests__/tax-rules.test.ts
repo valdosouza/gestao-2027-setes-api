@@ -4,6 +4,7 @@
 // sutilezas de tributacao.md §2 + desempate com B9 corrigido) e a cascata
 // seletor+peças (presença = incidência).
 import pool from '../shared/db/connection'
+import { NO_CRITERIA } from '../shared/list'
 import {
   findTaxRule, resolveMatchStateId, resolveEffectiveSt, pickRule,
   findInvalidCatalogCodes, savePieces,
@@ -431,7 +432,7 @@ describe('tax-rules repository', () => {
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ total: 3 }]])
     const result = await repo.listTaxRules('setes_setes', 1,
-      { filter: '8471', page: 1, pageSize: 25, offset: 0 } as any)
+      { filter: '8471', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any)
     expect(result.total).toBe(3)
     const pageSql = mockQuery.mock.calls[0][0] as string
     const countSql = mockQuery.mock.calls[1][0] as string

@@ -1,7 +1,17 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { assertSchemaName } from '@shared/field-config'
 import { BankRow } from './banks.interface'
+
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const BANK_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.banks.description', expr: 'description' },
+  { key: 'number', kind: 'text', labelKey: 'search.banks.number', expr: 'number' },
+]
 
 /**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
@@ -12,8 +22,8 @@ export async function listBanks(query: ListQuery): Promise<PagedRows<BankRow>> {
   const where =
     `FROM setes_central.tb_bank
      WHERE deleted = 'N'
-       AND (? IS NULL OR number LIKE ? OR description LIKE ?)`
-  const params = [like, like, like]
+       AND (? IS NULL OR number LIKE ? OR description LIKE ?)${query.criteria.sql}`
+  const params = [like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT id, number, description

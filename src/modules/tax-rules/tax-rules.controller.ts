@@ -7,6 +7,7 @@ import { taxRuleBodyDto } from './tax-rules.dto'
 import {
   fetchTaxRules, fetchTaxRule, createTaxRule, editTaxRule, removeTaxRule,
   fetchCatalogs, fetchEmitterCrt, fetchCfopOptions,
+  TAX_RULE_SEARCH_CRITERIA, fetchTaxRuleSearchCriteria, fetchProductsLookup, fetchStatesLookup,
 } from './tax-rules.service'
 import { cfopOptionsQueryDto } from './tax-rules.dto'
 
@@ -17,11 +18,40 @@ import { cfopOptionsQueryDto } from './tax-rules.dto'
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'tax-rules')
+    const query = await parseListQuery(req, 'tax-rules', TAX_RULE_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchTaxRules(
       req.institution!.schemaName, req.institution!.institutionId, query)))
   } catch (err) {
     handleError(res, err, 'tax-rules GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchTaxRuleSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'tax-rules/search-criteria GET')
+  }
+}
+
+/** GET /products — lista de apoio do critério "produto". */
+export async function productsLookup(req: Request, res: Response): Promise<void> {
+  try {
+    const { schemaName, institutionId } = req.institution!
+    const filter = String(req.query.filter ?? '').trim()
+    res.json({ ok: true, data: await fetchProductsLookup(filter, schemaName, institutionId) })
+  } catch (err) {
+    handleError(res, err, 'tax-rules/products GET')
+  }
+}
+
+/** GET /states — lista de apoio do critério "UF". */
+export async function statesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchStatesLookup(String(req.query.filter ?? '').trim()) })
+  } catch (err) {
+    handleError(res, err, 'tax-rules/states GET')
   }
 }
 

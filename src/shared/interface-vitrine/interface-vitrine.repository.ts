@@ -1,6 +1,6 @@
 import pool from '@shared/db/connection'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { InterfaceVitrineRow } from './interface-vitrine.types'
 
 /**
@@ -16,6 +16,20 @@ import { InterfaceVitrineRow } from './interface-vitrine.types'
  * (interface-fields e interface-configs): página + COUNT com a MESMA
  * cláusula WHERE (D2); desempate por i.id (D8).
  */
+/**
+ * PESQUISA AVANÇADA da vitrine (prompt_pesquisa_avancada.md — Onda 2 §12, D-BA20): a lista
+ * branca vive na PEÇA dona do SQL (os dois painéis a servem); só o `labelKey` muda por
+ * módulo. `acquired` = presença do contrato (alias `ihi` da query base — mesma expressão da
+ * coluna da linha). ⚠️ `name` olha a descrição TÉCNICA da interface (Q-BA26 — o app mostra o
+ * nome traduzido do catálogo do menu).
+ */
+export function vitrineSearchCriteria(moduleKey: string): SearchCriterion[] {
+  return [
+    { key: 'name', kind: 'text', labelKey: `search.${moduleKey}.name`, expr: ['i.description', 'i.i18n_key'] },
+    { key: 'acquired', kind: 'bool', labelKey: `search.${moduleKey}.acquired`, expr: 'ihi.tb_interface_id IS NOT NULL' },
+  ]
+}
+
 export async function listVitrine(
   query: ListQuery, schemaName: string, institutionId: number
 ): Promise<PagedRows<InterfaceVitrineRow>> {
@@ -28,8 +42,8 @@ export async function listVitrine(
       AND ihi.tb_institution_id = ?
       AND ihi.active = 'S' AND ihi.deleted = 'N'
      WHERE i.deleted = 'N'
-       AND (? = '' OR i.description LIKE ?)`
-  const params = [institutionId, query.filter, like]
+       AND (? = '' OR i.description LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, query.filter, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT i.id,

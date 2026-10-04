@@ -1,9 +1,10 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
+import { TAX_RULE_ORIGINS, TAX_RULE_PURPOSES } from './tax-rules.dto'
 import { assertSchema } from '@shared/db/schema'
 import { savePieces, loadPieces, TaxRulePieces, TaxRuleSelector } from '@shared/tax-rule'
-import { TaxRuleListRow, TaxRuleDetail, TaxRuleCatalogs } from './tax-rules.interface'
+import { TaxRuleListRow, TaxRuleDetail, TaxRuleCatalogs, LookupRow } from './tax-rules.interface'
 import { TaxRuleBodyDto } from './tax-rules.dto'
 
 /**
@@ -12,10 +13,6 @@ import { TaxRuleBodyDto } from './tax-rules.dto'
  * transacional seletor+peças (presença = incidência — savePieces da peça
  * @shared/tax-rule; o match NUNCA é reimplementado aqui).
  */
-
-const HAS = (table: string, s: string) =>
-  `EXISTS (SELECT 1 FROM \`${s}\`.${table} x
-            WHERE x.id = r.id AND x.deleted = 'N')`
 
 function toListRow(row: any): TaxRuleListRow {
   return {
@@ -31,6 +28,35 @@ function toListRow(row: any): TaxRuleListRow {
   }
 }
 
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const TAX_RULE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'ncm', kind: 'text', labelKey: 'search.tax-rules.ncm', expr: 'r.ncm' },
+  { key: 'productName', kind: 'text', labelKey: 'search.tax-rules.productName', expr: 'p.description' },
+  { key: 'product', kind: 'lookup', labelKey: 'search.tax-rules.product',
+    expr: 'r.tb_product_id', lookup: '/api/tax-rules/products' },
+  { key: 'stateName', kind: 'text', labelKey: 'search.tax-rules.stateName', expr: 'st.name' },
+  { key: 'state', kind: 'lookup', labelKey: 'search.tax-rules.state',
+    expr: 'r.tb_state_id', lookup: '/api/tax-rules/states' },
+  // CFOP tem id VARCHAR ('5.102') — não é lookup inteiro: texto "contém" sobre o código
+  { key: 'cfop', kind: 'text', labelKey: 'search.tax-rules.cfop', expr: 'r.tb_cfop_id' },
+  { key: 'origin', kind: 'options', labelKey: 'search.tax-rules.origin', expr: 'r.origin', options: TAX_RULE_ORIGINS },
+  { key: 'purpose', kind: 'options', labelKey: 'search.tax-rules.purpose', expr: 'r.purpose', options: TAX_RULE_PURPOSES },
+  { key: 'direction', kind: 'options', labelKey: 'search.tax-rules.direction', expr: 'r.direction', options: ['E', 'S'] },
+  { key: 'st', kind: 'bool', labelKey: 'search.tax-rules.st', expr: 'r.st', boolValues: ['S', 'N'] },
+  { key: 'finalConsumer', kind: 'bool', labelKey: 'search.tax-rules.finalConsumer', expr: 'r.final_consumer', boolValues: ['S', 'N'] },
+  { key: 'simples', kind: 'bool', labelKey: 'search.tax-rules.simples', expr: 'r.simples', boolValues: ['S', 'N'] },
+  // D-BA22: derivados = presença do filho (LEFT JOIN 1:1 na query base — a coluna da linha é a MESMA expressão)
+  { key: 'hasIcms', kind: 'bool', labelKey: 'search.tax-rules.hasIcms', expr: 'icms.id IS NOT NULL' },
+  { key: 'hasIcmsSt', kind: 'bool', labelKey: 'search.tax-rules.hasIcmsSt', expr: 'icmsst.id IS NOT NULL' },
+  { key: 'hasIpi', kind: 'bool', labelKey: 'search.tax-rules.hasIpi', expr: 'ipi.id IS NOT NULL' },
+  { key: 'hasPisCofins', kind: 'bool', labelKey: 'search.tax-rules.hasPisCofins', expr: 'pc.id IS NOT NULL' },
+  { key: 'hasIi', kind: 'bool', labelKey: 'search.tax-rules.hasIi', expr: 'ii.id IS NOT NULL' },
+]
+
 export async function listTaxRules(
   schemaName: string, institutionId: number, query: ListQuery
 ): Promise<PagedRows<TaxRuleListRow>> {
@@ -41,9 +67,15 @@ export async function listTaxRules(
      LEFT JOIN \`${s}\`.tb_product p
        ON (p.id = r.tb_product_id AND p.tb_institution_id = r.tb_institution_id)
      LEFT JOIN setes_central.tb_state st ON (st.id = r.tb_state_id)
+     LEFT JOIN \`${s}\`.tb_tax_rule_icms icms ON icms.id = r.id AND icms.deleted = 'N'
+     LEFT JOIN \`${s}\`.tb_tax_rule_icms_st icmsst ON icmsst.id = r.id AND icmsst.deleted = 'N'
+     LEFT JOIN \`${s}\`.tb_tax_rule_ipi ipi ON ipi.id = r.id AND ipi.deleted = 'N'
+     LEFT JOIN (SELECT pc0.id FROM \`${s}\`.tb_tax_rule_pis_cofins pc0 WHERE pc0.deleted = 'N' GROUP BY pc0.id) pc
+       ON pc.id = r.id
+     LEFT JOIN \`${s}\`.tb_tax_rule_ii ii ON ii.id = r.id AND ii.deleted = 'N'
      WHERE r.deleted = 'N' AND r.tb_institution_id = ?
-       AND (? IS NULL OR r.ncm LIKE ? OR p.description LIKE ?)`
-  const params = [institutionId, like, like, like]
+       AND (? IS NULL OR r.ncm LIKE ? OR p.description LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT r.id, r.ncm, r.origin, r.purpose, r.st,
@@ -52,11 +84,11 @@ export async function listTaxRules(
             r.tb_entity_id AS entityId,
             r.tb_state_id AS stateId, st.name AS stateName,
             r.tb_cfop_id AS cfopId,
-            ${HAS('tb_tax_rule_icms', s)} AS hasIcms,
-            ${HAS('tb_tax_rule_icms_st', s)} AS hasIcmsSt,
-            ${HAS('tb_tax_rule_ipi', s)} AS hasIpi,
-            ${HAS('tb_tax_rule_pis_cofins', s)} AS hasPisCofins,
-            ${HAS('tb_tax_rule_ii', s)} AS hasIi
+            (icms.id IS NOT NULL)   AS hasIcms,
+            (icmsst.id IS NOT NULL) AS hasIcmsSt,
+            (ipi.id IS NOT NULL)    AS hasIpi,
+            (pc.id IS NOT NULL)     AS hasPisCofins,
+            (ii.id IS NOT NULL)     AS hasIi
      ${where}
      ORDER BY r.ncm DESC, r.id
      LIMIT ? OFFSET ?`,
@@ -273,4 +305,36 @@ export async function listCfopOptions(
       LIMIT 200`,
     [...digits, like, like, like])
   return rows as Array<{ id: string; description: string | null }>
+}
+
+/** Produtos da institution para o critério "produto" (lookup do PRÓPRIO módulo, { id, name }). */
+export async function listProductsLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<LookupRow[]> {
+  const s = assertSchema(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT id, description AS name
+       FROM \`${s}\`.tb_product
+      WHERE tb_institution_id = ? AND deleted = 'N'
+        AND (? IS NULL OR description LIKE ? OR identifier LIKE ?)
+      ORDER BY description, id
+      LIMIT 50`,
+    [institutionId, like, like, like]
+  )
+  return rows as LookupRow[]
+}
+
+/** Estados para o critério "UF" ({ id, name } = nome + sigla). */
+export async function listStatesLookup(filter: string): Promise<LookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT id, CONCAT(name, ' (', abbreviation, ')') AS name
+       FROM setes_central.tb_state
+      WHERE deleted = 'N' AND (? IS NULL OR name LIKE ? OR abbreviation LIKE ?)
+      ORDER BY name, id
+      LIMIT 50`,
+    [like, like, like]
+  )
+  return rows as LookupRow[]
 }

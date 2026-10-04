@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { CfopRow, CfopInput } from './cfop.interface'
 
 /**
@@ -18,6 +18,21 @@ const CFOP_FIELDS = (input: CfopInput) => [
 ]
 
 /**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const CFOP_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.cfop.description', expr: 'c.description' },
+  { key: 'concise', kind: 'text', labelKey: 'search.cfop.concise', expr: 'c.concise' },
+  { key: 'code', kind: 'text', labelKey: 'search.cfop.code', expr: 'c.id' },
+  { key: 'way', kind: 'options', labelKey: 'search.cfop.way', expr: 'c.way', options: ['E', 'S'] },
+  { key: 'jurisdiction', kind: 'options', labelKey: 'search.cfop.jurisdiction', expr: 'c.jurisdiction', options: ['E', 'N', 'X'] },
+  // coluna NULLABLE e com '' residual no catálogo: ativo = 'S' (a semântica do motor), o resto é inativo
+  { key: 'active', kind: 'bool', labelKey: 'search.cfop.active', expr: "COALESCE(c.active, 'N') = 'S'" },
+]
+
+/**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
  * (D2). Ordenação já é pelo id (código fiscal) — sem desempate extra (D8).
  */
@@ -26,8 +41,8 @@ export async function listCfop(query: ListQuery): Promise<PagedRows<CfopRow>> {
   const where =
     `FROM setes_central.tb_cfop c
      WHERE c.deleted = 'N'
-       AND (? IS NULL OR c.id LIKE ? OR c.description LIKE ? OR c.concise LIKE ?)`
-  const params = [like, like, like, like]
+       AND (? IS NULL OR c.id LIKE ? OR c.description LIKE ? OR c.concise LIKE ?)${query.criteria.sql}`
+  const params = [like, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT c.id, c.description, c.concise, c.register, c.way,

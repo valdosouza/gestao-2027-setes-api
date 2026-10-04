@@ -6,6 +6,7 @@ import { assertClientRequired } from '@shared/field-config'
 import { bankCreateDto, bankUpdateDto } from './banks.dto'
 import {
   fetchBanks, fetchBank, createBank, editBank, removeBank,
+  BANK_SEARCH_CRITERIA, fetchBankSearchCriteria,
 } from './banks.service'
 
 /**
@@ -15,10 +16,19 @@ import {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'banks')
+    const query = await parseListQuery(req, 'banks', BANK_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchBanks(query)))
   } catch (err) {
     handleError(res, err, 'banks GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBankSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'banks/search-criteria GET')
   }
 }
 

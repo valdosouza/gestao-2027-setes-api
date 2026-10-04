@@ -1,6 +1,6 @@
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { assertSchema } from '@shared/db/schema'
 import { ModuleRow, ModuleInterfaceLookupRow } from './modules.interface'
 import { ModuleBodyDto } from './modules.dto'
@@ -34,6 +34,15 @@ function toRow(row: any): ModuleRow {
   }
 }
 
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const MODULE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.modules.description', expr: 'm.description' },
+]
+
 export async function listModules(
   schemaName: string, query: ListQuery
 ): Promise<PagedRows<ModuleRow>> {
@@ -42,8 +51,8 @@ export async function listModules(
   const where =
     `FROM \`${s}\`.tb_module m
      WHERE m.deleted = 'N'
-       AND (? IS NULL OR m.description LIKE ?)`
-  const params = [like, like]
+       AND (? IS NULL OR m.description LIKE ?)${query.criteria.sql}`
+  const params = [like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT ${selectFields(s)}

@@ -4,6 +4,7 @@
 // validações na transação (cidade central, item ativo, fato único 409),
 // DELETE 409 em uso, e o services gravando tb_service na mesma transação.
 import pool from '../shared/db/connection'
+import { NO_CRITERIA } from '../shared/list'
 import { serviceTaxRuleDto } from '../modules/service-tax-rules/service-tax-rules.dto'
 import * as repo from '../modules/service-tax-rules/service-tax-rules.repository'
 import * as svcRepo from '../modules/services/services.repository'
@@ -106,7 +107,7 @@ describe('service-tax-rules repository', () => {
   it('lista paginada: página + COUNT com a MESMA where (cidade/item/descrição)', async () => {
     mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 2 }]])
     const r = await repo.listServiceTaxRules(
-      { filter: 'curit', page: 1, pageSize: 25, offset: 0 } as any, 'setes_setes', 1)
+      { filter: 'curit', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any, 'setes_setes', 1)
     expect(r.total).toBe(2)
     expect(mockQuery.mock.calls[0][0] as string).toContain('c.name LIKE ?')
     expect(mockQuery.mock.calls[1][1]).toEqual([1, '%curit%', '%curit%', '%curit%', '%curit%'])

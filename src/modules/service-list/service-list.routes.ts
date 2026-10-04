@@ -27,6 +27,10 @@ const router = Router()
  *       - in: query
  *         name: pageSize
  *         schema: { type: integer }
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
  *       200: { description: "{ ok, data: [{ id, description, localIncidence, active }], page, pageSize, total }" }
  *       401: { description: Sem JWT }
@@ -53,6 +57,24 @@ const router = Router()
  *       409: { description: Item já cadastrado }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/service-list/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de serviços da LC 116
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2, Onda 2 §12) — lista branca
+ *       declarada no módulo, sem expressão SQL.
+ *     tags: [service-list]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool), labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
 router.post('/', controller.create)
 
 /**

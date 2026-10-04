@@ -4,7 +4,7 @@ import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { configValueDto } from './interface-configs.dto'
 import {
-  fetchVitrine, fetchResolvedConfigs, fetchResolvedConfigsByKey,
+  fetchVitrine, fetchVitrineSearchCriteria, INTERFACE_CONFIG_SEARCH_CRITERIA, fetchResolvedConfigs, fetchResolvedConfigsByKey,
   saveConfigValue, saveConfigValueByKey,
 } from './interface-configs.service'
 
@@ -13,10 +13,19 @@ const MODULE_KEY_RE  = /^[a-z][a-z0-9_-]{0,99}$/
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'interface-configs')
+    const query = await parseListQuery(req, 'interface-configs', INTERFACE_CONFIG_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchVitrine(req.institution!, query)))
   } catch (err) {
     handleError(res, err, 'interface-configs GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada da vitrine (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchVitrineSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'interface-configs/search-criteria GET')
   }
 }
 

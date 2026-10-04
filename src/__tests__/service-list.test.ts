@@ -4,6 +4,7 @@
 // ('1.01', código externo: 409 mesmo excluído, imutável na edição);
 // local_incidence P/E; lista paginada com ordem NUMÉRICA do item.
 import pool from '../shared/db/connection'
+import { NO_CRITERIA } from '../shared/list'
 import { serviceListCreateDto, serviceListUpdateDto } from '../modules/service-list/service-list.dto'
 import * as repo from '../modules/service-list/service-list.repository'
 import { createServiceListItem, editServiceListItem } from '../modules/service-list/service-list.service'
@@ -51,7 +52,7 @@ describe('service-list repository', () => {
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ total: 190 }]])
     const r = await repo.listServiceList(
-      { filter: 'soft', page: 1, pageSize: 25, offset: 0 } as any)
+      { filter: 'soft', page: 1, pageSize: 25, offset: 0, criteria: NO_CRITERIA } as any)
     expect(r.total).toBe(190)
     const pageSql = mockQuery.mock.calls[0][0] as string
     expect(pageSql).toContain("CAST(SUBSTRING_INDEX(s.id, '.', 1) AS UNSIGNED)")

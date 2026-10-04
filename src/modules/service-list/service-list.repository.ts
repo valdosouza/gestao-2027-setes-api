@@ -1,11 +1,23 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { ServiceListRow, ServiceListInput } from './service-list.interface'
 
 /** Repositório de setes_central.tb_service_list (catálogo central — Super). */
 
 const FIELDS = `s.id, s.description, s.local_incidence AS localIncidence,
             COALESCE(s.active, 'S') AS active`
+
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const SERVICE_LIST_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.service-list.description', expr: 's.description' },
+  { key: 'code', kind: 'text', labelKey: 'search.service-list.code', expr: 's.id' },
+  { key: 'localIncidence', kind: 'options', labelKey: 'search.service-list.localIncidence', expr: 's.local_incidence', options: ['P', 'E'] },
+  { key: 'active', kind: 'bool', labelKey: 'search.service-list.active', expr: "COALESCE(s.active, 'S')", boolValues: ['S', 'N'] },
+]
 
 /** Lista PAGINADA (shared/list): página + COUNT com a MESMA where. Ordem
  *  numérica pelo item (1.01 … 40.01), não alfabética. */
@@ -14,8 +26,8 @@ export async function listServiceList(query: ListQuery): Promise<PagedRows<Servi
   const where =
     `FROM setes_central.tb_service_list s
      WHERE s.deleted = 'N'
-       AND (? IS NULL OR s.id LIKE ? OR s.description LIKE ?)`
-  const params = [like, like, like]
+       AND (? IS NULL OR s.id LIKE ? OR s.description LIKE ?)${query.criteria.sql}`
+  const params = [like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT ${FIELDS} ${where}

@@ -60,6 +60,22 @@ export function parseId(req: Request, res: Response): number | null {
   return id
 }
 
+/**
+ * Id OPCIONAL vindo da query string (`?stateId=`, `?institutionId=`…): ausente/vazio = null;
+ * qualquer coisa que não seja inteiro positivo = 400 com `fields[]`. Gate adversarial da Onda 2
+ * da pesquisa avançada (2026-10-03): `Number('abc')` = NaN chegava ao SQL e virava 500.
+ */
+export function parseOptionalQueryId(req: Request, name: string): number | null {
+  const raw = req.query[name]
+  if (raw === undefined || raw === '') return null
+  const n = Number(raw)
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(n) || n <= 0) {
+    throw new HttpError(400, `${name} inválido`,
+      [{ field: name, message: 'Informe um id (inteiro positivo)' }], ErrorCodes.INVALID_ID)
+  }
+  return n
+}
+
 /** Converte os issues do Zod para o formato por campo da decisão 20. */
 export function zodToFields(error: z.ZodError): FieldError[] {
   return error.issues.map(issue => ({

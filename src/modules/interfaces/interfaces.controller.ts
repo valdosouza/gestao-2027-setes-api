@@ -7,16 +7,26 @@ import { interfaceDto, interfaceConfigDto } from './interfaces.dto'
 import {
   fetchInterfaces, fetchInterface, createInterface, editInterface, removeInterface,
   fetchInterfaceConfigs, saveInterfaceConfig, removeInterfaceConfig,
+  INTERFACE_SEARCH_CRITERIA, fetchInterfaceSearchCriteria,
 } from './interfaces.service'
 
 const CONFIG_NAME_RE = /^[a-z][a-z0-9_]{0,49}$/
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'interfaces')
+    const query = await parseListQuery(req, 'interfaces', INTERFACE_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchInterfaces(query)))
   } catch (err) {
     handleError(res, err, 'interfaces GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchInterfaceSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'interfaces/search-criteria GET')
   }
 }
 

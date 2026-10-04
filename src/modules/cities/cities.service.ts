@@ -1,10 +1,22 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
-import { CityRow, CityInput, CityCreateInput } from './cities.interface'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
+import { CityRow, CityInput, CityCreateInput, LookupRow } from './cities.interface'
 import {
   listCities, getCity, cityIdExists,
   insertCity, updateCity, deleteCity,
+  CITY_SEARCH_CRITERIA, listStatesLookup,
 } from './cities.repository'
+
+export { CITY_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchCitySearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(CITY_SEARCH_CRITERIA)
+}
+
+export async function fetchStatesLookup(filter: string): Promise<LookupRow[]> {
+  return listStatesLookup(filter)
+}
 
 export async function fetchCities(
   query: ListQuery, stateId?: number

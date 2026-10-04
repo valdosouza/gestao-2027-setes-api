@@ -7,7 +7,9 @@
 //  - alias interno de subselect nunca colide com o alias da query base (achado do EXPLAIN:
 //    `tb_provider p` × `tb_person p` casava a tabela inteira);
 //  - toda tela tem o critério de NOME/descrição (D-BA21).
+import { Request } from 'express'
 import pool from '../shared/db/connection'
+import { parseOptionalQueryId } from '../shared/http/controller-utils'
 import { compileCriteria, publicCriteria, SearchCriterion, ListQuery } from '../shared/list'
 import { RESERVED_ALIASES } from '../shared/entity'
 import { CUSTOMER_SEARCH_CRITERIA, listCustomers } from '../modules/customers/customers.repository'
@@ -31,6 +33,21 @@ import { CONTRACT_SEARCH_CRITERIA, listContracts, listCustomerLookup } from '../
 import { fetchUserSearchCriteria, fetchInstitutionLookup, userSearchCriteriaFor } from '../modules/users/users.service'
 import { USER_KINDS } from '../modules/users/users.dto'
 import { PAYMENT_TYPE_KINDS } from '../shared/payment-types'
+import { TAX_RULE_SEARCH_CRITERIA, listTaxRules } from '../modules/tax-rules/tax-rules.repository'
+import {
+  SERVICE_TAX_RULE_SEARCH_CRITERIA, listServiceTaxRules,
+} from '../modules/service-tax-rules/service-tax-rules.repository'
+import { CFOP_SEARCH_CRITERIA, listCfop } from '../modules/cfop/cfop.repository'
+import { CITY_SEARCH_CRITERIA, listCities } from '../modules/cities/cities.repository'
+import { STATE_SEARCH_CRITERIA, listStates } from '../modules/states/states.repository'
+import { SERVICE_LIST_SEARCH_CRITERIA, listServiceList } from '../modules/service-list/service-list.repository'
+import { INTERFACE_SEARCH_CRITERIA, listInterfaces } from '../modules/interfaces/interfaces.repository'
+import { COUNTRY_SEARCH_CRITERIA, listCountries } from '../modules/countries/countries.repository'
+import { BANK_SEARCH_CRITERIA, listBanks } from '../modules/banks/banks.repository'
+import { PRIVILEGE_SEARCH_CRITERIA, listPrivileges } from '../modules/privileges/privileges.repository'
+import { MODULE_SEARCH_CRITERIA, listModules } from '../modules/modules/modules.repository'
+import { vitrineSearchCriteria, listVitrine } from '../shared/interface-vitrine'
+import { TAX_RULE_ORIGINS, TAX_RULE_PURPOSES } from '../modules/tax-rules/tax-rules.dto'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
@@ -80,6 +97,24 @@ const TARGETS: Target[] = [
     run: q => listUsers(q, INST) },
   { module: 'contracts', defs: CONTRACT_SEARCH_CRITERIA, alias: 'c', name: 'customerName',
     run: q => listContracts(q, SCHEMA, INST) },
+  // --- Bloco 2 (alias '' = tabela base sem alias nos catálogos pequenos)
+  { module: 'tax-rules', defs: TAX_RULE_SEARCH_CRITERIA, alias: 'r', name: 'productName',
+    run: q => listTaxRules(SCHEMA, INST, q) },
+  { module: 'service-tax-rules', defs: SERVICE_TAX_RULE_SEARCH_CRITERIA, alias: 'r', name: 'serviceListName',
+    run: q => listServiceTaxRules(q, SCHEMA, INST) },
+  { module: 'cfop', defs: CFOP_SEARCH_CRITERIA, alias: 'c', name: 'description', run: q => listCfop(q) },
+  { module: 'cities', defs: CITY_SEARCH_CRITERIA, alias: 'c', name: 'name', run: q => listCities(q) },
+  { module: 'states', defs: STATE_SEARCH_CRITERIA, alias: 's', name: 'name', run: q => listStates(q) },
+  { module: 'service-list', defs: SERVICE_LIST_SEARCH_CRITERIA, alias: 's', name: 'description', run: q => listServiceList(q) },
+  { module: 'interfaces', defs: INTERFACE_SEARCH_CRITERIA, alias: 'i', name: 'description', run: q => listInterfaces(q) },
+  { module: 'countries', defs: COUNTRY_SEARCH_CRITERIA, alias: '', name: 'name', run: q => listCountries(q) },
+  { module: 'banks', defs: BANK_SEARCH_CRITERIA, alias: '', name: 'description', run: q => listBanks(q) },
+  { module: 'privileges', defs: PRIVILEGE_SEARCH_CRITERIA, alias: '', name: 'description', run: q => listPrivileges(q) },
+  { module: 'modules', defs: MODULE_SEARCH_CRITERIA, alias: 'm', name: 'description', run: q => listModules(SCHEMA, q) },
+  { module: 'interface-configs', defs: vitrineSearchCriteria('interface-configs'), alias: 'i', name: 'name',
+    run: q => listVitrine(q, SCHEMA, INST) },
+  { module: 'interface-fields', defs: vitrineSearchCriteria('interface-fields'), alias: 'i', name: 'name',
+    run: q => listVitrine(q, SCHEMA, INST) },
 ]
 
 function sampleFor(def: SearchCriterion): unknown {
@@ -302,5 +337,54 @@ describe('contracts — cliente pela carteira (D-BA27) e valor mensal pelo alias
     expect(sql).toMatch(/COALESCE\(mv\.total, 0\) AS monthlyValue/)
     expect(sql).toMatch(/AND \(COALESCE\(mv\.total, 0\) >= \?\)/)
     expect(sql).not.toMatch(/SELECT SUM\(i\.value\) FROM/)   // o subselect correlacionado morreu
+  })
+})
+
+describe('Bloco 2 — tax-rules: derivados por LEFT JOIN (D-BA22) e domínios do DTO', () => {
+  it('origem e finalidade reusam as constantes do DTO', () => {
+    expect(TAX_RULE_SEARCH_CRITERIA.find(d => d.key === 'origin')!.options).toEqual(TAX_RULE_ORIGINS)
+    expect(TAX_RULE_SEARCH_CRITERIA.find(d => d.key === 'purpose')!.options).toEqual(TAX_RULE_PURPOSES)
+  })
+
+  it('hasIcms = presença do filho: coluna da linha e critério são a MESMA expressão; HAS() correlacionado morreu', async () => {
+    mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
+    const criteria = compileCriteria(JSON.stringify({ hasIcms: true, hasIi: false }), TAX_RULE_SEARCH_CRITERIA)
+    await listTaxRules(SCHEMA, INST, { filter: '', page: 1, pageSize: 25, offset: 0, criteria })
+    const [sql] = mockQuery.mock.calls[0]
+    expect(sql).toMatch(/LEFT JOIN `setes_acme`\.tb_tax_rule_icms icms ON icms\.id = r\.id AND icms\.deleted = 'N'/)
+    expect(sql).toMatch(/\(icms\.id IS NOT NULL\)\s+AS hasIcms/)
+    expect(sql).not.toMatch(/EXISTS \(SELECT 1 FROM `setes_acme`\.tb_tax_rule_icms/)
+    expect(criteria.sql).toContain('icms.id IS NOT NULL')
+    expect(criteria.sql).toContain('ii.id IS NOT NULL')
+  })
+
+  it('PIS/COFINS (PK id+kind, 1:N) entra AGRUPADO — o COUNT não duplica a regra', async () => {
+    mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
+    await listTaxRules(SCHEMA, INST, {
+      filter: '', page: 1, pageSize: 25, offset: 0, criteria: compileCriteria(undefined, TAX_RULE_SEARCH_CRITERIA),
+    })
+    const [countSql] = mockQuery.mock.calls[1]
+    expect(countSql).toMatch(/LEFT JOIN \(SELECT pc0\.id FROM `setes_acme`\.tb_tax_rule_pis_cofins pc0 WHERE pc0\.deleted = 'N' GROUP BY pc0\.id\) pc/)
+  })
+})
+
+describe('gate adversarial do Bloco 2 (2026-10-03)', () => {
+  it('parseOptionalQueryId: ausente = null; id válido passa; lixo = 400 com fields[] (era NaN no SQL → 500)', () => {
+    const req = (q: Record<string, unknown>) => ({ query: q }) as unknown as Request
+    expect(parseOptionalQueryId(req({}), 'stateId')).toBeNull()
+    expect(parseOptionalQueryId(req({ stateId: '' }), 'stateId')).toBeNull()
+    expect(parseOptionalQueryId(req({ stateId: '41' }), 'stateId')).toBe(41)
+    for (const bad of ['abc', '-1', '0', '1.5', '1e3', ' 7', '99999999999999999999']) {
+      expect(() => parseOptionalQueryId(req({ stateId: bad }), 'stateId')).toThrow(
+        expect.objectContaining({ statusCode: 400, fields: [expect.objectContaining({ field: 'stateId' })] }))
+    }
+    expect(() => parseOptionalQueryId(req({ stateId: ['1', '2'] }), 'stateId')).toThrow(expect.objectContaining({ statusCode: 400 }))
+  })
+
+  it("cfop.active: ativo = 'S' (coluna nullable com '' residual) — sim + não cobre TODAS as linhas", () => {
+    const yes = compileCriteria(JSON.stringify({ active: true }), CFOP_SEARCH_CRITERIA)
+    const no  = compileCriteria(JSON.stringify({ active: false }), CFOP_SEARCH_CRITERIA)
+    expect(yes.sql).toBe(" AND ((COALESCE(c.active, 'N') = 'S'))")
+    expect(no.sql).toBe(" AND (NOT (COALESCE(c.active, 'N') = 'S'))")
   })
 })

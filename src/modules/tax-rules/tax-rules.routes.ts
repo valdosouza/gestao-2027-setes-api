@@ -21,6 +21,10 @@ const router = Router()
  *     parameters:
  *       - { in: query, name: page, schema: { type: integer } }
  *       - { in: query, name: pageSize, schema: { type: integer } }
+ *       - in: query
+ *         name: criteria
+ *         schema: { type: string }
+ *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *       - { in: query, name: filter, schema: { type: string } }
  *     responses:
  *       200: { description: "{ ok, data, page, pageSize, total }" }
@@ -29,6 +33,64 @@ const router = Router()
  *       500: { description: Erro interno }
  */
 router.get('/', controller.list)
+
+/**
+ * @swagger
+ * /api/tax-rules/search-criteria:
+ *   get:
+ *     summary: Critérios da pesquisa avançada da lista de regras de tributação
+ *     description: >
+ *       Pesquisa avançada (prompt_pesquisa_avancada.md, D-BA2, Onda 2 §12) — lista branca
+ *       declarada no módulo, sem expressão SQL.
+ *     tags: [tax-rules]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool), labelKey, lookup?, options? }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/search-criteria', controller.searchCriteria)
+
+/**
+ * @swagger
+ * /api/tax-rules/products:
+ *   get:
+ *     summary: Lookup de produtos da institution (critério "produto" da pesquisa avançada)
+ *     tags: [tax-rules]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/products', controller.productsLookup)
+
+/**
+ * @swagger
+ * /api/tax-rules/states:
+ *   get:
+ *     summary: Lookup de estados (critério "UF" da pesquisa avançada)
+ *     tags: [tax-rules]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *         description: Filtra por nome
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name }' }
+ *       401: { description: Não autenticado }
+ *       500: { description: Erro interno }
+ */
+router.get('/states', controller.statesLookup)
 
 /**
  * @swagger

@@ -4,7 +4,7 @@ import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { fieldConfigDto } from './interface-fields.dto'
 import {
-  fetchVitrine, fetchResolvedFields, fetchResolvedFieldsByKey, saveFieldConfig,
+  fetchVitrine, fetchVitrineSearchCriteria, INTERFACE_FIELD_SEARCH_CRITERIA, fetchResolvedFields, fetchResolvedFieldsByKey, saveFieldConfig,
 } from './interface-fields.service'
 
 const FIELD_NAME_RE  = /^[a-z][a-z0-9_]{0,99}$/
@@ -12,10 +12,19 @@ const MODULE_KEY_RE  = /^[a-z][a-z0-9_-]{0,99}$/
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'interface-fields')
+    const query = await parseListQuery(req, 'interface-fields', INTERFACE_FIELD_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchVitrine(req.institution!, query)))
   } catch (err) {
     handleError(res, err, 'interface-fields GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada da vitrine (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchVitrineSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'interface-fields/search-criteria GET')
   }
 }
 

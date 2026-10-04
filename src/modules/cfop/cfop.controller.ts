@@ -6,6 +6,7 @@ import { assertClientRequired } from '@shared/field-config'
 import { cfopCreateDto, cfopUpdateDto, CFOP_CODE_RE } from './cfop.dto'
 import {
   fetchCfopList, fetchCfop, createCfop, editCfop, removeCfop,
+  CFOP_SEARCH_CRITERIA, fetchCfopSearchCriteria,
 } from './cfop.service'
 
 /** O id do CFOP é STRING (código fiscal) — validação própria, sem parseId. */
@@ -20,10 +21,19 @@ function parseCode(req: Request, res: Response): string | null {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'cfop')
+    const query = await parseListQuery(req, 'cfop', CFOP_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchCfopList(query)))
   } catch (err) {
     handleError(res, err, 'cfop GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCfopSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'cfop/search-criteria GET')
   }
 }
 

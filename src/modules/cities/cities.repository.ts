@@ -1,9 +1,22 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
-import { CityRow, CityInput, CityCreateInput } from './cities.interface'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
+import { CityRow, CityInput, CityCreateInput, LookupRow } from './cities.interface'
 
 // O JOIN em tb_state é relação de BANCO (stateName para exibição no app) —
 // não cria acoplamento de código com o módulo states.
+
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const CITY_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'name', kind: 'text', labelKey: 'search.cities.name', expr: 'c.name' },
+  { key: 'stateName', kind: 'text', labelKey: 'search.cities.stateName', expr: 's.name' },
+  { key: 'state', kind: 'lookup', labelKey: 'search.cities.state', expr: 'c.tb_state_id', lookup: '/api/cities/states-lookup' },
+  { key: 'ibge', kind: 'text', labelKey: 'search.cities.ibge', expr: 'c.ibge' },
+  { key: 'population', kind: 'number', labelKey: 'search.cities.population', expr: 'c.population' },
+]
 
 /**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
@@ -19,8 +32,8 @@ export async function listCities(
      LEFT JOIN setes_central.tb_state s ON s.id = c.tb_state_id
      WHERE c.deleted = 'N'
        AND (? IS NULL OR c.name LIKE ?)
-       AND (? IS NULL OR c.tb_state_id = ?)`
-  const params = [like, like, stateId ?? null, stateId ?? null]
+       AND (? IS NULL OR c.tb_state_id = ?)${query.criteria.sql}`
+  const params = [like, like, stateId ?? null, stateId ?? null, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,
@@ -114,4 +127,18 @@ export async function deleteCity(id: number): Promise<void> {
     `UPDATE setes_central.tb_city SET deleted = 'S', updated_at = NOW() WHERE id = ?`,
     [id]
   )
+}
+
+/** Estados para o critério "estado" (lookup do PRÓPRIO módulo, { id, name }). */
+export async function listStatesLookup(filter: string): Promise<LookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT id, CONCAT(name, ' (', abbreviation, ')') AS name
+       FROM setes_central.tb_state
+      WHERE deleted = 'N' AND (? IS NULL OR name LIKE ? OR abbreviation LIKE ?)
+      ORDER BY name, id
+      LIMIT 50`,
+    [like, like, like]
+  )
+  return rows as LookupRow[]
 }

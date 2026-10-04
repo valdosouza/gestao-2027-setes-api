@@ -27,3 +27,9 @@ export interface CityInput {
 export interface CityCreateInput extends CityInput {
   id: number  // Código IBGE do município, informado pelo usuário na inclusão
 }
+
+/** Linha genérica de lista de apoio da pesquisa avançada ({ id, name }). */
+export interface LookupRow {
+  id:   number
+  name: string | null
+}

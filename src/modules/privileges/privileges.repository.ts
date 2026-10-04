@@ -1,9 +1,18 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { PrivilegeRow } from './privileges.interface'
 
 // A lista também alimenta os checkboxes da tela de Interfaces
 // (tb_interface_has_privilege — labels = description direto do banco).
+
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const PRIVILEGE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.privileges.description', expr: 'description' },
+]
 
 /**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
@@ -14,8 +23,8 @@ export async function listPrivileges(query: ListQuery): Promise<PagedRows<Privil
   const where =
     `FROM setes_central.tb_privilege
      WHERE deleted = 'N'
-       AND (? IS NULL OR description LIKE ?)`
-  const params = [like, like]
+       AND (? IS NULL OR description LIKE ?)${query.criteria.sql}`
+  const params = [like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT id, description

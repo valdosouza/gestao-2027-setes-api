@@ -1,20 +1,39 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
-import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { handleError, parseBody, parseId, parseOptionalQueryId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { cityCreateDto, cityUpdateDto } from './cities.dto'
 import {
   fetchCities, fetchCity, createCity, editCity, removeCity,
+  CITY_SEARCH_CRITERIA, fetchCitySearchCriteria, fetchStatesLookup,
 } from './cities.service'
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query   = await parseListQuery(req, 'cities')
-    const stateId = req.query.stateId ? Number(req.query.stateId) : undefined
+    const query   = await parseListQuery(req, 'cities', CITY_SEARCH_CRITERIA)
+    const stateId = parseOptionalQueryId(req, 'stateId') ?? undefined
     res.json(pagedEnvelope(query, await fetchCities(query, stateId)))
   } catch (err) {
     handleError(res, err, 'cities GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCitySearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'cities/search-criteria GET')
+  }
+}
+
+/** GET /states-lookup — lista de apoio do critério "estado". */
+export async function statesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchStatesLookup(String(req.query.filter ?? '').trim()) })
+  } catch (err) {
+    handleError(res, err, 'cities/states-lookup GET')
   }
 }
 

@@ -60,6 +60,10 @@ const MODULES: Record<string, string> = {
   users: 'name', contracts: 'customerName', 'bank-accounts': 'bankName', 'bank-charge-agreements': 'agreement',
   'settlement-rules': 'paymentTypeName', 'payment-types': 'description', 'price-lists': 'description',
   services: 'description', customers: 'name',
+  // Bloco 2
+  'tax-rules': 'productName', 'service-tax-rules': 'serviceListName', cfop: 'description', cities: 'name',
+  states: 'name', 'service-list': 'description', interfaces: 'description', countries: 'name', banks: 'description',
+  privileges: 'description', modules: 'description', 'interface-configs': 'name', 'interface-fields': 'name',
 }
 
 async function smokeModule(mod: string, nameKey: string): Promise<void> {

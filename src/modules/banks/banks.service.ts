@@ -1,11 +1,19 @@
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { BankRow } from './banks.interface'
 import {
   listBanks, getBank, bankNumberExists, getBankByNumber,
   insertBank, updateBank, deleteBank, listBankUsage, reviveBank,
+  BANK_SEARCH_CRITERIA,
 } from './banks.repository'
+
+export { BANK_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchBankSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(BANK_SEARCH_CRITERIA)
+}
 
 export async function fetchBanks(query: ListQuery): Promise<PagedRows<BankRow>> {
   return listBanks(query)

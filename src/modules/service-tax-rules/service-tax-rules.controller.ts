@@ -8,6 +8,7 @@ import {
   ServiceTaxRuleScope, fetchServiceTaxRules, fetchServiceTaxRule,
   createServiceTaxRule, editServiceTaxRule, removeServiceTaxRule,
   fetchServiceListLookup, fetchNationalCodeLookup,
+  SERVICE_TAX_RULE_SEARCH_CRITERIA, fetchServiceTaxRuleSearchCriteria, fetchCitiesLookup,
 } from './service-tax-rules.service'
 
 /** Escopo SEMPRE do JWT (cadastro por institution). */
@@ -18,10 +19,28 @@ function scopeOf(req: Request): ServiceTaxRuleScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'service-tax-rules')
+    const query = await parseListQuery(req, 'service-tax-rules', SERVICE_TAX_RULE_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchServiceTaxRules(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'service-tax-rules GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchServiceTaxRuleSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'service-tax-rules/search-criteria GET')
+  }
+}
+
+/** GET /cities — lista de apoio do critério "cidade". */
+export async function citiesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCitiesLookup(String(req.query.filter ?? '').trim()) })
+  } catch (err) {
+    handleError(res, err, 'service-tax-rules/cities GET')
   }
 }
 

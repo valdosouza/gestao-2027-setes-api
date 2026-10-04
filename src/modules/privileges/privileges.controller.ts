@@ -6,14 +6,24 @@ import { assertClientRequired } from '@shared/field-config'
 import { privilegeDto } from './privileges.dto'
 import {
   fetchPrivileges, fetchPrivilege, createPrivilege, editPrivilege, removePrivilege,
+  PRIVILEGE_SEARCH_CRITERIA, fetchPrivilegeSearchCriteria,
 } from './privileges.service'
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'privileges')
+    const query = await parseListQuery(req, 'privileges', PRIVILEGE_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchPrivileges(query)))
   } catch (err) {
     handleError(res, err, 'privileges GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchPrivilegeSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'privileges/search-criteria GET')
   }
 }
 

@@ -3,9 +3,10 @@ import pool from '@shared/db/connection'
 import { DERIVED_NATIONAL_CODE_SQL } from '@shared/service-tax-rule'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import {
   ServiceTaxRuleRow, ServiceTaxRuleInput, ServiceTaxRuleLookupRow,
+  LookupRow,
 } from './service-tax-rules.interface'
 
 /**
@@ -33,6 +34,25 @@ const JOINS = (schemaName: string) =>
    LEFT JOIN setes_central.tb_state st ON st.id = c.tb_state_id
    LEFT JOIN setes_central.tb_service_list sl ON sl.id = r.tb_service_list_id`
 
+/**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const SERVICE_TAX_RULE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'serviceListName', kind: 'text', labelKey: 'search.service-tax-rules.serviceListName', expr: 'sl.description' },
+  // item da LC 116 tem id '1.01' (texto) — não é lookup inteiro
+  { key: 'serviceListCode', kind: 'text', labelKey: 'search.service-tax-rules.serviceListCode', expr: 'r.tb_service_list_id' },
+  { key: 'cityName', kind: 'text', labelKey: 'search.service-tax-rules.cityName', expr: 'c.name' },
+  { key: 'city', kind: 'lookup', labelKey: 'search.service-tax-rules.city',
+    expr: 'r.tb_city_id', lookup: '/api/service-tax-rules/cities' },
+  { key: 'uf', kind: 'text', labelKey: 'search.service-tax-rules.uf', expr: 'st.abbreviation' },
+  { key: 'aliq', kind: 'number', labelKey: 'search.service-tax-rules.aliq', expr: 'r.aliq' },
+  // só o código INFORMADO na regra (o derivado do catálogo é apresentação da linha)
+  { key: 'nationalCode', kind: 'text', labelKey: 'search.service-tax-rules.nationalCode', expr: 'r.national_code' },
+  { key: 'active', kind: 'bool', labelKey: 'search.service-tax-rules.active', expr: "COALESCE(r.active, 'S')", boolValues: ['S', 'N'] },
+]
+
 /** Lista PAGINADA: página + COUNT com a MESMA where (filtro em cidade, item
  *  e descrição do item). */
 export async function listServiceTaxRules(
@@ -43,8 +63,8 @@ export async function listServiceTaxRules(
   const where =
     `${JOINS(schemaName)}
      WHERE r.tb_institution_id = ? AND r.deleted = 'N'
-       AND (? IS NULL OR c.name LIKE ? OR r.tb_service_list_id LIKE ? OR sl.description LIKE ?)`
-  const params = [institutionId, like, like, like, like]
+       AND (? IS NULL OR c.name LIKE ? OR r.tb_service_list_id LIKE ? OR sl.description LIKE ?)${query.criteria.sql}`
+  const params = [institutionId, like, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT ${FIELDS} ${where}
@@ -237,4 +257,19 @@ export async function listServiceListLookup(filter: string): Promise<ServiceTaxR
       LIMIT 100`,
     [like, like, like])
   return rows
+}
+
+/** Cidades para o critério "cidade" (lookup do PRÓPRIO módulo — { id, name } = cidade/UF). */
+export async function listCitiesLookup(filter: string): Promise<LookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT c.id, CONCAT(c.name, '/', COALESCE(s.abbreviation, '')) AS name
+       FROM setes_central.tb_city c
+       LEFT JOIN setes_central.tb_state s ON s.id = c.tb_state_id
+      WHERE c.deleted = 'N' AND (? IS NULL OR c.name LIKE ?)
+      ORDER BY c.name, c.id
+      LIMIT 50`,
+    [like, like]
+  )
+  return rows as LookupRow[]
 }

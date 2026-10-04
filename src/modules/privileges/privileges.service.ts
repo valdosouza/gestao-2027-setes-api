@@ -1,9 +1,17 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { PrivilegeRow } from './privileges.interface'
 import {
   listPrivileges, getPrivilege, insertPrivilege, updatePrivilege, deletePrivilege,
+  PRIVILEGE_SEARCH_CRITERIA,
 } from './privileges.repository'
+
+export { PRIVILEGE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchPrivilegeSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(PRIVILEGE_SEARCH_CRITERIA)
+}
 
 export async function fetchPrivileges(query: ListQuery): Promise<PagedRows<PrivilegeRow>> {
   return listPrivileges(query)

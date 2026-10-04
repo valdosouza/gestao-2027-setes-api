@@ -1,10 +1,22 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
-import { StateRow, StateInput } from './states.interface'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
+import { StateRow, StateInput, LookupRow } from './states.interface'
 import {
   listStates, getState, stateIdExists,
   insertState, updateState, deleteState,
+  STATE_SEARCH_CRITERIA, listCountriesLookup,
 } from './states.repository'
+
+export { STATE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchStateSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(STATE_SEARCH_CRITERIA)
+}
+
+export async function fetchCountriesLookup(filter: string): Promise<LookupRow[]> {
+  return listCountriesLookup(filter)
+}
 
 export async function fetchStates(
   query: ListQuery, countryId?: number

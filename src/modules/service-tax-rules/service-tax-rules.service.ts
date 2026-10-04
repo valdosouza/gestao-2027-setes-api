@@ -1,11 +1,13 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   ServiceTaxRuleRow, ServiceTaxRuleInput, ServiceTaxRuleLookupRow,
+  LookupRow,
 } from './service-tax-rules.interface'
 import {
   listServiceTaxRules, getServiceTaxRule, insertServiceTaxRule,
   updateServiceTaxRule, softDeleteServiceTaxRule, listServiceListLookup, listNationalCodeLookup,
+  SERVICE_TAX_RULE_SEARCH_CRITERIA, listCitiesLookup,
 } from './service-tax-rules.repository'
 
 /**
@@ -17,6 +19,17 @@ import {
 export interface ServiceTaxRuleScope {
   schemaName:    string
   institutionId: number
+}
+
+export { SERVICE_TAX_RULE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchServiceTaxRuleSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(SERVICE_TAX_RULE_SEARCH_CRITERIA)
+}
+
+export async function fetchCitiesLookup(filter: string): Promise<LookupRow[]> {
+  return listCitiesLookup(filter)
 }
 
 export async function fetchServiceTaxRules(

@@ -6,6 +6,7 @@ import { serviceListCreateDto, serviceListUpdateDto, SERVICE_LIST_CODE_RE } from
 import {
   fetchServiceList, fetchServiceListItem, createServiceListItem,
   editServiceListItem, removeServiceListItem,
+  SERVICE_LIST_SEARCH_CRITERIA, fetchServiceListSearchCriteria,
 } from './service-list.service'
 
 /** id de rota é o item da lista (string 'N.NN') — validado pelo regex. */
@@ -21,10 +22,19 @@ function parseCode(req: Request, res: Response): string | null {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'service-list')
+    const query = await parseListQuery(req, 'service-list', SERVICE_LIST_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchServiceList(query)))
   } catch (err) {
     handleError(res, err, 'service-list GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchServiceListSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'service-list/search-criteria GET')
   }
 }
 

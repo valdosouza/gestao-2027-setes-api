@@ -1,5 +1,9 @@
 import { z } from 'zod'
 
+/** Domínios do seletor da regra (origem da mercadoria e finalidade) — reusados pelo critério `options`. */
+export const TAX_RULE_ORIGINS  = ['0', '1', '2', '3', '4', '5', '6', '7', '8'] as const
+export const TAX_RULE_PURPOSES = ['0', '1', '2', '3', '4', '5', '6', '7'] as const
+
 /**
  * DTOs do cadastro da Regra de Tributação. PRESENÇA = incidência: peça
  * omitida = tributo não definido pela regra; regra sem NENHUMA peça é 422
@@ -12,11 +16,11 @@ const selectorDto = z.object({
   productId: z.number().int().positive().nullish(),   // null = coringa
   entityId:  z.number().int().positive().nullish(),   // null = coringa
   ncm:       z.string().regex(/^\d{2,8}$/).nullish(), // prefixos são regra do FCP; aqui NCM pleno ou parcial
-  origin:    z.enum(['0', '1', '2', '3', '4', '5', '6', '7', '8']),
+  origin:    z.enum(TAX_RULE_ORIGINS),
   finalConsumer: flagSN,
   simples:   flagSN,
   st:        flagSN,
-  purpose:   z.enum(['0', '1', '2', '3', '4', '5', '6', '7']),
+  purpose:   z.enum(TAX_RULE_PURPOSES),
   // Decisão 35 (Q-G1+RA-Q3): sentido OBRIGATÓRIO — regra nunca vale para os
   // dois sentidos ("Ambos" não existe; paridade com o legado por construção).
   direction: z.enum(['E', 'S']),

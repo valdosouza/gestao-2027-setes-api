@@ -7,6 +7,7 @@ import { moduleBodyDto } from './modules.dto'
 import {
   fetchModules, fetchModule, fetchEligibleInterfaces,
   createModule, editModule, removeModule,
+  MODULE_SEARCH_CRITERIA, fetchModuleSearchCriteria,
 } from './modules.service'
 
 /**
@@ -16,10 +17,19 @@ import {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'modules')
+    const query = await parseListQuery(req, 'modules', MODULE_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchModules(req.institution!.schemaName, query)))
   } catch (err) {
     handleError(res, err, 'modules GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchModuleSearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'modules/search-criteria GET')
   }
 }
 

@@ -6,6 +6,7 @@ import { assertClientRequired } from '@shared/field-config'
 import { countryCreateDto, countryUpdateDto } from './countries.dto'
 import {
   fetchCountries, fetchCountry, createCountry, editCountry, removeCountry,
+  COUNTRY_SEARCH_CRITERIA, fetchCountrySearchCriteria,
 } from './countries.service'
 
 /**
@@ -15,10 +16,19 @@ import {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'countries')
+    const query = await parseListQuery(req, 'countries', COUNTRY_SEARCH_CRITERIA)
     res.json(pagedEnvelope(query, await fetchCountries(query)))
   } catch (err) {
     handleError(res, err, 'countries GET')
+  }
+}
+
+/** GET /search-criteria — lista branca da pesquisa avançada (D-BA2). */
+export async function searchCriteria(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCountrySearchCriteria() })
+  } catch (err) {
+    handleError(res, err, 'countries/search-criteria GET')
   }
 }
 

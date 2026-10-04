@@ -1,9 +1,10 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { ServiceListRow, ServiceListInput } from './service-list.interface'
 import {
   listServiceList, getServiceListItem, serviceListCodeExists,
   insertServiceListItem, updateServiceListItem, deleteServiceListItem,
+  SERVICE_LIST_SEARCH_CRITERIA,
 } from './service-list.repository'
 
 /**
@@ -11,6 +12,13 @@ import {
  * código externo, precedente cfop) — 409 se já existir MESMO com
  * deleted='S'; imutável na edição.
  */
+
+export { SERVICE_LIST_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchServiceListSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(SERVICE_LIST_SEARCH_CRITERIA)
+}
 
 export async function fetchServiceList(query: ListQuery): Promise<PagedRows<ServiceListRow>> {
   return listServiceList(query)

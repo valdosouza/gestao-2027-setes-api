@@ -1,7 +1,6 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
-import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
-import { HttpError } from '@shared/errors/http-error'
+import { handleError, parseBody, parseId, parseOptionalQueryId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { isSuper } from '@shared/auth/roles'
@@ -28,14 +27,7 @@ function scopeOf(req: Request): UserScope {
 /** Foco (super): `institutionId` da query — ausente = sem foco; inválido = 400 (antes virava
  *  NaN no SQL → 500; achado do gate adversarial de 2026-10-03). */
 function focusOf(req: Request): number | null {
-  const raw = req.query.institutionId
-  if (raw === undefined || raw === '') return null
-  const n = Number(raw)
-  if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(n) || n <= 0) {
-    throw new HttpError(400, 'institutionId inválido',
-      [{ field: 'institutionId', message: 'Informe o id da instituição (inteiro positivo)' }])
-  }
-  return n
+  return parseOptionalQueryId(req, 'institutionId')
 }
 
 export async function list(req: Request, res: Response): Promise<void> {

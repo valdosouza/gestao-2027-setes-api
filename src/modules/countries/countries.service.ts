@@ -1,10 +1,18 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { CountryRow } from './countries.interface'
 import {
   listCountries, getCountry, countryIdExists,
   insertCountry, updateCountry, deleteCountry,
+  COUNTRY_SEARCH_CRITERIA,
 } from './countries.repository'
+
+export { COUNTRY_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchCountrySearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(COUNTRY_SEARCH_CRITERIA)
+}
 
 export async function fetchCountries(query: ListQuery): Promise<PagedRows<CountryRow>> {
   return listCountries(query)

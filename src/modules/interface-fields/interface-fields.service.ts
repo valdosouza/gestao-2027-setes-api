@@ -1,11 +1,11 @@
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   getResolvedFields, invalidateFieldConfig, findInterfaceIdByKey, ResolvedField,
 } from '@shared/field-config'
 import {
-  InterfaceVitrineRow, listVitrine, interfaceExists, isInterfaceAcquired,
+  InterfaceVitrineRow, listVitrine, interfaceExists, isInterfaceAcquired, vitrineSearchCriteria,
 } from '@shared/interface-vitrine'
 import { FieldConfigInput } from './interface-fields.interface'
 import { getCatalogFieldRequired, upsertFieldConfig } from './interface-fields.repository'
@@ -15,6 +15,14 @@ import { getCatalogFieldRequired, upsertFieldConfig } from './interface-fields.r
  * vitrine com todas as interfaces; campos resolvidos (inclusive travados);
  * gravação só em interface adquirida e NUNCA afrouxando o baseline técnico.
  */
+
+/** Lista branca da vitrine deste painel (peça @shared/interface-vitrine — D-BA20). */
+export const INTERFACE_FIELD_SEARCH_CRITERIA = vitrineSearchCriteria('interface-fields')
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchVitrineSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(INTERFACE_FIELD_SEARCH_CRITERIA)
+}
 
 export async function fetchVitrine(
   institution: InstitutionPayload, query: ListQuery

@@ -1,5 +1,5 @@
 import pool from '@shared/db/connection'
-import { ListQuery, PagedRows, escapeLike } from '@shared/list'
+import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { InterfaceRow, InterfaceInput, InterfaceConfigInput } from './interfaces.interface'
 
 // =====================================================================
@@ -31,6 +31,18 @@ async function privilegeIdsByInterface(interfaceIds: number[]): Promise<Map<numb
 }
 
 /**
+ * PESQUISA AVANÇADA (prompt_pesquisa_avancada.md — Onda 2 §12, Bloco 2): lista branca desta
+ * lista. Vive AQUI (D-BA12) porque as expressões dependem dos aliases da query base; o escopo
+ * (schema/institution) fica na query, o critério referencia ALIAS (parecer do guardião).
+ */
+export const INTERFACE_SEARCH_CRITERIA: readonly SearchCriterion[] = [
+  { key: 'description', kind: 'text', labelKey: 'search.interfaces.description', expr: 'i.description' },
+  { key: 'groupDefault', kind: 'text', labelKey: 'search.interfaces.groupDefault', expr: 'i.group_default' },
+  { key: 'i18nKey', kind: 'text', labelKey: 'search.interfaces.i18nKey', expr: 'i.i18n_key' },
+  { key: 'kind', kind: 'options', labelKey: 'search.interfaces.kind', expr: 'i.kind', options: ['T', 'R'] },
+]
+
+/**
  * Lista PAGINADA (shared/list): página + COUNT com a MESMA cláusula WHERE
  * (D2). Desempate por i.id (D8) mantém o OFFSET estável. Os privilegeIds
  * são agregados só para as linhas da página.
@@ -40,8 +52,8 @@ export async function listInterfaces(query: ListQuery): Promise<PagedRows<Interf
   const where =
     `FROM setes_central.tb_interface i
      WHERE i.deleted = 'N'
-       AND (? IS NULL OR i.description LIKE ? OR i.i18n_key LIKE ? OR i.group_default LIKE ?)`
-  const params = [like, like, like, like]
+       AND (? IS NULL OR i.description LIKE ? OR i.i18n_key LIKE ? OR i.group_default LIKE ?)${query.criteria.sql}`
+  const params = [like, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT i.id,

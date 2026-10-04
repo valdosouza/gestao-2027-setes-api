@@ -1,5 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   CatalogConfigRow, listCatalogConfigs, validateConfigContent,
   invalidateInterfaceConfigCatalog,
@@ -9,7 +9,15 @@ import {
   listInterfaces, getInterface, insertInterface, updateInterface,
   deleteInterface, syncInterfacePrivileges,
   upsertInterfaceConfig, interfaceConfigExists, softDeleteInterfaceConfig,
+  INTERFACE_SEARCH_CRITERIA,
 } from './interfaces.repository'
+
+export { INTERFACE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchInterfaceSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(INTERFACE_SEARCH_CRITERIA)
+}
 
 export async function fetchInterfaces(query: ListQuery): Promise<PagedRows<InterfaceRow>> {
   return listInterfaces(query)

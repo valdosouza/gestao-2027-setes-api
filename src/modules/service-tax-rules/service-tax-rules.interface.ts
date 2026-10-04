@@ -46,3 +46,9 @@ export interface ServiceTaxRuleLookupRow {
   id:          string | number
   description: string | null
 }
+
+/** Linha genérica de lista de apoio da pesquisa avançada ({ id, name }). */
+export interface LookupRow {
+  id:   number
+  name: string | null
+}

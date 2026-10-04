@@ -1,11 +1,12 @@
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
-import { ListQuery, PagedRows } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import { ModuleRow, ModuleInterfaceLookupRow } from './modules.interface'
 import { ModuleBodyDto } from './modules.dto'
 import {
   listModules, getModule, listEligibleInterfaces, findIneligibleInterfaceIds,
   insertModuleCascade, updateModuleCascade, deleteModuleCascade,
+  MODULE_SEARCH_CRITERIA,
 } from './modules.repository'
 
 /**
@@ -14,6 +15,13 @@ import {
  * trocando de institution). Interface vinculada precisa ser ELEGÍVEL
  * (contratada + kind 'T' + fora do Super) → 422 com os ids inválidos.
  */
+
+export { MODULE_SEARCH_CRITERIA }
+
+/** Critérios da pesquisa avançada servidos ao app (D-BA2) — sem expressão SQL. */
+export async function fetchModuleSearchCriteria(): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(MODULE_SEARCH_CRITERIA)
+}
 
 export async function fetchModules(
   schemaName: string, query: ListQuery
