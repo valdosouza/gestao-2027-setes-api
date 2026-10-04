@@ -28,7 +28,7 @@ import { PRICE_LIST_SEARCH_CRITERIA, listPriceLists } from '../modules/price-lis
 import { SERVICE_SEARCH_CRITERIA, listServices } from '../modules/services/services.repository'
 import { USER_SEARCH_CRITERIA, USER_INSTITUTION_IDS, listUsers, listInstitutionLookup } from '../modules/users/users.repository'
 import { CONTRACT_SEARCH_CRITERIA, listContracts, listCustomerLookup } from '../modules/contracts/contracts.repository'
-import { fetchUserSearchCriteria, fetchInstitutionLookup } from '../modules/users/users.service'
+import { fetchUserSearchCriteria, fetchInstitutionLookup, userSearchCriteriaFor } from '../modules/users/users.service'
 import { USER_KINDS } from '../modules/users/users.dto'
 import { PAYMENT_TYPE_KINDS } from '../shared/payment-types'
 
@@ -263,6 +263,18 @@ describe('users — critérios de VÍNCULO só com vínculo (parecer do guardiã
     expect(params).toEqual([7, '', '%%', '%%', '%%', 7, 'admin', 25, 0])
   })
 
+  it('catálogo servido = catálogo aceito: admin mandando "institution" (não servido) = 400, não lista', () => {
+    const defs = userSearchCriteriaFor(admin, null)
+    expect(defs.map(d => d.key)).not.toContain('institution')
+    expect(() => compileCriteria(JSON.stringify({ institution: 7 }), defs)).toThrow(
+      expect.objectContaining({ statusCode: 400, code: 'SEARCH_CRITERIA_INVALID' }))
+    // super sem foco mandando kind = idem (atributo de vínculo sem vínculo não é "lista vazia")
+    expect(() => compileCriteria(JSON.stringify({ kind: ['admin'] }), userSearchCriteriaFor(sup, null)))
+      .toThrow(expect.objectContaining({ statusCode: 400 }))
+    // com foco, aceito
+    expect(compileCriteria(JSON.stringify({ kind: ['admin'] }), userSearchCriteriaFor(sup, 7)).applied).toEqual(['kind'])
+  })
+
   it('listInstitutionLookup escapa o LIKE', async () => {
     mockQuery.mockResolvedValueOnce([[]])
     await listInstitutionLookup('50%_a')
@@ -284,8 +296,9 @@ describe('contracts — cliente pela carteira (D-BA27) e valor mensal pelo alias
     mockQuery.mockResolvedValueOnce([[]]).mockResolvedValueOnce([[{ total: 0 }]])
     const criteria = compileCriteria(JSON.stringify({ monthlyValue: { from: 100 } }), CONTRACT_SEARCH_CRITERIA)
     await listContracts({ filter: '', page: 1, pageSize: 25, offset: 0, criteria }, SCHEMA, INST)
-    const [sql] = mockQuery.mock.calls[0]
-    expect(sql).toMatch(/LEFT JOIN \(SELECT i\.tb_contract_id, i\.tb_institution_id, SUM\(i\.value\) AS total[\s\S]*WHERE i\.deleted = 'N'/)
+    const [sql, params] = mockQuery.mock.calls[0]
+    expect(sql).toMatch(/LEFT JOIN \(SELECT i\.tb_contract_id, i\.tb_institution_id, SUM\(i\.value\) AS total[\s\S]*WHERE i\.tb_institution_id = \? AND i\.deleted = 'N'/)
+    expect(params.slice(0, 2)).toEqual([INST, INST])   // derived table escopada + where da lista
     expect(sql).toMatch(/COALESCE\(mv\.total, 0\) AS monthlyValue/)
     expect(sql).toMatch(/AND \(COALESCE\(mv\.total, 0\) >= \?\)/)
     expect(sql).not.toMatch(/SELECT SUM\(i\.value\) FROM/)   // o subselect correlacionado morreu

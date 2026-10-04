@@ -8,7 +8,7 @@ import {
   CustomerScope, fetchCustomers, fetchCustomer, createCustomer,
   editCustomer, removeCustomer, fetchSalesmanLookup, fetchCarrierLookup,
   fetchCustomerPartnership, saveCustomerPartnership,
-  CUSTOMER_SEARCH_CRITERIA, fetchCustomerSearchCriteria,
+  customerSearchCriteriaFor, fetchCustomerSearchCriteria,
 } from './customers.service'
 
 /** Escopo SEMPRE do JWT (decisão 2 — o papel é por institution). */
@@ -19,7 +19,7 @@ function scopeOf(req: Request): CustomerScope {
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'customers', CUSTOMER_SEARCH_CRITERIA)
+    const query = await parseListQuery(req, 'customers', await customerSearchCriteriaFor(scopeOf(req)))
     res.json(pagedEnvelope(query, await fetchCustomers(query, scopeOf(req))))
   } catch (err) {
     handleError(res, err, 'customers GET')

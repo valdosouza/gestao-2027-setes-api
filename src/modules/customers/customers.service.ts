@@ -1,6 +1,6 @@
 import { HttpError } from '@shared/errors/http-error'
 import { walletSalesmanId } from '@shared/customer-wallet'
-import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, SearchCriterion, publicCriteria } from '@shared/list'
 import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
   PartnershipPartnerRow, PartnershipPartnerInput,
@@ -54,9 +54,15 @@ function dupEntryTo409(err: any): never {
  * carteira TRAVADA (vendedor preso aos seus clientes) o critério "vendedor"
  * some da tela — só apresentação: o escopo já é garantido pelo AND da lista.
  */
-export async function fetchCustomerSearchCriteria(scope: CustomerScope): Promise<PublicSearchCriterion[]> {
+export async function customerSearchCriteriaFor(scope: CustomerScope): Promise<readonly SearchCriterion[]> {
   const locked = (await restrictedSalesmanId(scope)) !== null
-  return publicCriteria(CUSTOMER_SEARCH_CRITERIA.filter(c => !(locked && c.key === 'salesman')))
+  return CUSTOMER_SEARCH_CRITERIA.filter(c => !(locked && c.key === 'salesman'))
+}
+
+/** Catálogo servido = catálogo aceito (gate da Onda 2): a lista compila contra a MESMA lista
+ *  branca filtrada — o vendedor travado nem pesquisa por outro vendedor (400, não lista vazia). */
+export async function fetchCustomerSearchCriteria(scope: CustomerScope): Promise<PublicSearchCriterion[]> {
+  return publicCriteria(await customerSearchCriteriaFor(scope))
 }
 
 export async function fetchCustomers(

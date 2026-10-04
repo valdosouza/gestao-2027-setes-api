@@ -53,12 +53,12 @@ export async function listContracts(
      INNER JOIN setes_central.tb_entity e ON e.id = c.tb_customer_id
      LEFT JOIN (SELECT i.tb_contract_id, i.tb_institution_id, SUM(i.value) AS total
                   FROM \`${schemaName}\`.tb_contract_item i
-                 WHERE i.deleted = 'N'
+                 WHERE i.tb_institution_id = ? AND i.deleted = 'N'
                  GROUP BY i.tb_contract_id, i.tb_institution_id) mv
        ON mv.tb_contract_id = c.id AND mv.tb_institution_id = c.tb_institution_id
      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)${query.criteria.sql}`
-  const params = [institutionId, like, like, like, ...query.criteria.params]
+  const params = [institutionId, institutionId, like, like, like, ...query.criteria.params]
 
   const [rows] = await pool.query<any[]>(
     `SELECT c.id,

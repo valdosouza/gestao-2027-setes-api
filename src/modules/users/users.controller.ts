@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { HttpError } from '@shared/errors/http-error'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { assertClientRequired } from '@shared/field-config'
 import { isSuper } from '@shared/auth/roles'
@@ -12,7 +13,7 @@ import {
   fetchUsers, fetchUser, createUser, editUser, removeUser,
   fetchInstitutionLinks, saveInstitutionLinks,
   fetchUserPrivileges, saveUserPrivileges,
-  USER_SEARCH_CRITERIA, fetchUserSearchCriteria, fetchInstitutionLookup,
+  userSearchCriteriaFor, fetchUserSearchCriteria, fetchInstitutionLookup,
 } from './users.service'
 
 /** Escopo derivado do JWT: super opera qualquer institution; admin, a sua. */
@@ -24,11 +25,24 @@ function scopeOf(req: Request): UserScope {
   }
 }
 
+/** Foco (super): `institutionId` da query — ausente = sem foco; inválido = 400 (antes virava
+ *  NaN no SQL → 500; achado do gate adversarial de 2026-10-03). */
+function focusOf(req: Request): number | null {
+  const raw = req.query.institutionId
+  if (raw === undefined || raw === '') return null
+  const n = Number(raw)
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(n) || n <= 0) {
+    throw new HttpError(400, 'institutionId inválido',
+      [{ field: 'institutionId', message: 'Informe o id da instituição (inteiro positivo)' }])
+  }
+  return n
+}
+
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const query = await parseListQuery(req, 'users', USER_SEARCH_CRITERIA)
-    const institutionId =
-      req.query.institutionId ? Number(req.query.institutionId) : null
+    const institutionId = focusOf(req)
+    // catálogo servido = catálogo aceito (chave fora do escopo = 400 "não existe nesta tela")
+    const query = await parseListQuery(req, 'users', userSearchCriteriaFor(scopeOf(req), institutionId))
     res.json(pagedEnvelope(query, await fetchUsers(scopeOf(req), query, institutionId)))
   } catch (err) {
     handleError(res, err, 'users GET')
@@ -38,9 +52,7 @@ export async function list(req: Request, res: Response): Promise<void> {
 /** GET /search-criteria — lista branca da pesquisa avançada (D-BA2); mesmo institutionId da lista. */
 export async function searchCriteria(req: Request, res: Response): Promise<void> {
   try {
-    const institutionId =
-      req.query.institutionId ? Number(req.query.institutionId) : null
-    res.json({ ok: true, data: await fetchUserSearchCriteria(scopeOf(req), institutionId) })
+    res.json({ ok: true, data: await fetchUserSearchCriteria(scopeOf(req), focusOf(req)) })
   } catch (err) {
     handleError(res, err, 'users/search-criteria GET')
   }

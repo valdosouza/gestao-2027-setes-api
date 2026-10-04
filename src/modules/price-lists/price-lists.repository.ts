@@ -20,7 +20,8 @@ const LIST_FIELDS = `l.id, l.description,
 export const PRICE_LIST_SEARCH_CRITERIA: readonly SearchCriterion[] = [
   { key: 'description', kind: 'text', labelKey: 'search.price-lists.description', expr: 'l.description' },
   { key: 'validity', kind: 'date', labelKey: 'search.price-lists.validity', expr: 'l.validity' },
-  { key: 'published', kind: 'bool', labelKey: 'search.price-lists.published', expr: 'l.published', boolValues: ['S', 'N'] },
+  // coluna NULLABLE com DEFAULT 'S' — nulo conta como publicada (sim + não = total)
+  { key: 'published', kind: 'bool', labelKey: 'search.price-lists.published', expr: "COALESCE(l.published, 'S')", boolValues: ['S', 'N'] },
 ]
 
 /** Lista PAGINADA (shared/list): página + COUNT com a MESMA where. */

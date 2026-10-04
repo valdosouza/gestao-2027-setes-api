@@ -1,5 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
-import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
+import { ListQuery, PagedRows, PublicSearchCriterion, SearchCriterion, publicCriteria } from '@shared/list'
 import { md5Password } from '@shared/auth/password'
 import {
   UserListRow, UserRow, UserInput, UserCreateInput, UserScope,
@@ -47,12 +47,21 @@ export { USER_SEARCH_CRITERIA }
  * institutionId) não tem significado e não é servido; a rota recebe o MESMO
  * institutionId da lista (espelho da D-BA15).
  */
+export function userSearchCriteriaFor(
+  scope: UserScope, institutionId: number | null
+): readonly SearchCriterion[] {
+  const focus = scopeInstitution(scope, institutionId)
+  return USER_SEARCH_CRITERIA.filter(c =>
+    !(c.key === 'institution' && !scope.isSuper) && !(c.key === 'kind' && focus === null))
+}
+
+/** Gate adversarial (2026-10-03): o catálogo SERVIDO é o catálogo ACEITO — a lista compila
+ *  contra a mesma lista branca filtrada; chave não servida = 400 "não existe nesta tela"
+ *  (um admin não pesquisa "meus usuários também vinculados à instituição X"). */
 export async function fetchUserSearchCriteria(
   scope: UserScope, institutionId: number | null
 ): Promise<PublicSearchCriterion[]> {
-  const focus = scopeInstitution(scope, institutionId)
-  return publicCriteria(USER_SEARCH_CRITERIA.filter(c =>
-    !(c.key === 'institution' && !scope.isSuper) && !(c.key === 'kind' && focus === null)))
+  return publicCriteria(userSearchCriteriaFor(scope, institutionId))
 }
 
 /** Lookup do critério "instituição" — só Super (D-BA24); admin recebe 403 explícito. */

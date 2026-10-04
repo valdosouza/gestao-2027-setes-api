@@ -26,8 +26,15 @@ function check(label: string, ok: boolean, detail = ''): void {
 }
 
 async function get(path: string, token = SUPER): Promise<{ status: number; body: any }> {
-  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } })
-  return { status: res.status, body: await res.json().catch(() => null) }
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } })
+    if (res.status === 429 && attempt < 2) {   // rate limit do gateway (300 req/min) — espera a janela
+      console.log('  … 429 do rate limit, aguardando 65 s')
+      await new Promise(r => setTimeout(r, 65_000))
+      continue
+    }
+    return { status: res.status, body: await res.json().catch(() => null) }
+  }
 }
 const q = (criteria: unknown, extra = '') =>
   `?pageSize=200&criteria=${encodeURIComponent(JSON.stringify(criteria))}${extra}`
@@ -57,6 +64,8 @@ const MODULES: Record<string, string> = {
 
 async function smokeModule(mod: string, nameKey: string): Promise<void> {
   console.log(`\n=== ${mod}`)
+  // users: o critério `kind` só existe COM foco — lista e catálogo recebem o mesmo institutionId
+  const focus = mod === 'users' ? '&institutionId=1' : ''
   const cat = await get(`/api/${mod}/search-criteria${mod === 'users' ? '?institutionId=1' : ''}`)
   const raw = JSON.stringify(cat.body ?? '')
   check(`${mod}/search-criteria 200`, cat.status === 200, `keys=${cat.body?.data?.map((c: any) => c.key).join(',')}`)
@@ -65,23 +74,23 @@ async function smokeModule(mod: string, nameKey: string): Promise<void> {
   check(`${mod}: critério de nome "${nameKey}" é texto (D-BA21)`, defs.some(d => d.key === nameKey && d.kind === 'text'))
   for (const d of defs) check(`${mod}.${d.key}: labelKey search.${mod}.${d.key}`, (cat.body.data.find((x: any) => x.key === d.key).labelKey) === `search.${mod}.${d.key}`)
 
-  const all = await get(`/api/${mod}?pageSize=200`)
+  const all = await get(`/api/${mod}?pageSize=200${focus}`)
   check(`${mod} lista sem critério 200`, all.status === 200, `total=${all.body?.total}`)
   const total = Number(all.body?.total ?? -1)
 
   // todos juntos
   const every = Object.fromEntries(defs.map(d => [d.key, sampleFor(d)]))
-  const withAll = await get(`/api/${mod}${q(every)}`)
+  const withAll = await get(`/api/${mod}${q(every, focus)}`)
   check(`${mod} TODOS os critérios 200 e total ≤ cheia`, withAll.status === 200 && withAll.body.total <= total,
     `status=${withAll.status} total=${withAll.body?.total}${withAll.status !== 200 ? ' ' + JSON.stringify(withAll.body) : ''}`)
 
   // cada um sozinho
   for (const d of defs) {
-    const one = await get(`/api/${mod}${q({ [d.key]: sampleFor(d) })}`)
+    const one = await get(`/api/${mod}${q({ [d.key]: sampleFor(d) }, focus)}`)
     check(`${mod}.${d.key} sozinho 200 e total ≤ cheia`, one.status === 200 && one.body.total <= total,
       `status=${one.status} total=${one.body?.total}${one.status !== 200 ? ' ' + JSON.stringify(one.body) : ''}`)
     if (d.kind === 'bool') {
-      const no = await get(`/api/${mod}${q({ [d.key]: false })}`)
+      const no = await get(`/api/${mod}${q({ [d.key]: false }, focus)}`)
       check(`${mod}.${d.key}: sim + não = total`, one.body.total + no.body.total === total,
         `${one.body.total} + ${no.body?.total} = ${total}`)
     }
@@ -92,18 +101,18 @@ async function smokeModule(mod: string, nameKey: string): Promise<void> {
         lk.status === 200 && Array.isArray(rows) && rows.every(r => typeof r.id === 'number' && 'name' in r),
         `n=${rows.length}${rows[0] ? ` 1º=${JSON.stringify(rows[0])}` : ''}`)
       if (rows[0]) {
-        const byId = await get(`/api/${mod}${q({ [d.key]: rows[0].id })}`)
+        const byId = await get(`/api/${mod}${q({ [d.key]: rows[0].id }, focus)}`)
         check(`${mod}.${d.key}: id ${rows[0].id} do lookup entra na lista`, byId.status === 200 && byId.body.total <= total, `total=${byId.body?.total}`)
       }
     }
   }
 
   // erros legíveis
-  const unknown = await get(`/api/${mod}${q({ naoExiste: 1 })}`)
+  const unknown = await get(`/api/${mod}${q({ naoExiste: 1 }, focus)}`)
   check(`${mod}: chave desconhecida = 400 SEARCH_CRITERIA_INVALID`, unknown.status === 400 && unknown.body?.code === 'SEARCH_CRITERIA_INVALID')
   const firstRange = defs.find(d => ['number', 'money', 'date'].includes(d.kind))
   if (firstRange) {
-    const bad = await get(`/api/${mod}${q({ [firstRange.key]: { from: 'x' } })}`)
+    const bad = await get(`/api/${mod}${q({ [firstRange.key]: { from: 'x' } }, focus)}`)
     check(`${mod}.${firstRange.key}: valor inválido = 422 com fields[]`,
       bad.status === 422 && bad.body?.fields?.[0]?.field === firstRange.key, `status=${bad.status}`)
   }
@@ -138,6 +147,18 @@ async function main(): Promise<void> {
   check('users kind admin + user + super = vinculados à 1',
     kindAdmin.body.total + kindUser.body.total + kindSuper.body.total === focused.body.total,
     `${kindAdmin.body?.total} + ${kindUser.body?.total} + ${kindSuper.body?.total} = ${focused.body?.total}`)
+
+  console.log('\n=== gate adversarial (2026-10-03): catálogo servido = catálogo aceito; foco inválido = 400')
+  const adminInst = await get(`/api/users${q({ institution: 1 })}`, ADMIN)
+  check('admin mandando "institution" = 400 (não servido → não aceito)', adminInst.status === 400 && adminInst.body?.code === 'SEARCH_CRITERIA_INVALID', `status=${adminInst.status}`)
+  const superKind = await get(`/api/users${q({ kind: ['admin'] })}`)
+  check('super SEM foco mandando "kind" = 400', superKind.status === 400, `status=${superKind.status}`)
+  const badFocus = await get('/api/users?institutionId=abc')
+  check('users?institutionId=abc = 400 (era 500)', badFocus.status === 400 && badFocus.body?.fields?.[0]?.field === 'institutionId', `status=${badFocus.status}`)
+  const badFocusCat = await get('/api/users/search-criteria?institutionId=-1')
+  check('users/search-criteria?institutionId=-1 = 400', badFocusCat.status === 400, `status=${badFocusCat.status}`)
+  const okFocus = await get('/api/users?institutionId=1&pageSize=200')
+  check('users?institutionId=1 segue 200', okFocus.status === 200, `total=${okFocus.body?.total}`)
 
   console.log(`\n${failures ? 'REPROVADO' : 'APROVADO'}: ${failures} falha(s)`)
   process.exit(failures ? 1 : 0)
