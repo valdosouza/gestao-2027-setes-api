@@ -121,6 +121,62 @@ router.get('/tax-rules', controller.taxRulesLookup)
 
 /**
  * @swagger
+ * /api/services/nbs:
+ *   get:
+ *     summary: Lookup da NBS (catálogo oficial central — fase IBS/CBS, D-IB6)
+ *     description: Filtra por parte da descrição ou pelo início do código (dígitos; pontos ignorados). LIMIT 100.
+ *     tags: [services]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: "{ ok, data: [{ code, description }] }" }
+ *       401: { description: Sem JWT }
+ *       500: { description: Erro interno }
+ */
+router.get('/nbs', controller.nbsLookup)
+
+/**
+ * @swagger
+ * /api/services/ibscbs-classifications:
+ *   get:
+ *     summary: Lookup dos cClassTrib vigentes HOJE (data do estabelecimento) e aceitos na NFS-e
+ *     description: Exclui os que exigem tributação regular (gTribRegular ainda não emitido) e os ainda não confirmados pela Calculadora oficial (A-IB1). LIMIT 100.
+ *     tags: [services]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: "{ ok, data: [{ code, description }] }" }
+ *       401: { description: Sem JWT }
+ *       500: { description: Erro interno }
+ */
+router.get('/ibscbs-classifications', controller.ibscbsClassificationsLookup)
+
+/**
+ * @swagger
+ * /api/services/ibscbs-place-indicators:
+ *   get:
+ *     summary: Lookup dos cIndOp (indicador da operação — Anexo VII) aceitos na NFS-e
+ *     tags: [services]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: "{ ok, data: [{ code, description }] }" }
+ *       401: { description: Sem JWT }
+ *       500: { description: Erro interno }
+ */
+router.get('/ibscbs-place-indicators', controller.ibscbsPlaceIndicatorsLookup)
+
+/**
+ * @swagger
  * /api/services/{id}:
  *   get:
  *     summary: Serviço por id, com a grade de preços (todas as tabelas vivas + preço atual)
@@ -132,7 +188,7 @@ router.get('/tax-rules', controller.taxRulesLookup)
  *         required: true
  *         schema: { type: integer }
  *     responses:
- *       200: { description: "{ ok, data: ServiceFull (prices[]) }" }
+ *       200: { description: "{ ok, data: ServiceFull (prices[], nbs, nbsDescription, ibscbs: { classificationCode, cst, classificationName, placeIndicatorCode, placeIndicatorDescription } | null) }" }
  *       404: { description: Não encontrado (inclui id que é MERCADORIA — kind fora do módulo) }
  */
 router.get('/:id', controller.getOne)
@@ -162,6 +218,14 @@ router.get('/:id', controller.getOne)
  *               active:           { type: string, enum: [S, N], default: S }
  *               note:             { type: string, nullable: true }
  *               serviceTaxRuleId: { type: integer, nullable: true, description: Regra de tributacao de servico (FK literal D1) }
+ *               nbs:              { type: string, nullable: true, pattern: '^\d{9}$', description: "NBS sem pontos (fase IBS/CBS, D-IB6). Ausente = não mexe; null = remove" }
+ *               ibscbs:
+ *                 type: object
+ *                 nullable: true
+ *                 description: "Classificação IBS/CBS que o serviço presume (D-IB6). Ausente = não mexe; null = remove. Conferida na data de hoje do estabelecimento (vigência, aceitação na NFS-e, sem tributação regular)"
+ *                 properties:
+ *                   classificationCode: { type: string, pattern: '^\d{6}$', description: cClassTrib (CST derivado = prefixo) }
+ *                   placeIndicatorCode: { type: string, pattern: '^\d{6}$', description: cIndOp (Anexo VII) }
  *               prices:
  *                 type: array
  *                 description: Grade por tabela de preço (priceTag null remove)
@@ -173,6 +237,7 @@ router.get('/:id', controller.getOne)
  *     responses:
  *       201: { description: "{ ok, data: { id } }" }
  *       400: { description: Validação/FK inexistente }
+ *       422: { description: "Classificação IBS/CBS inválida (IBSCBS_* em code; campo em fields[])" }
  */
 router.post('/', controller.create)
 
@@ -180,7 +245,8 @@ router.post('/', controller.create)
  * @swagger
  * /api/services/{id}:
  *   put:
- *     summary: Atualiza serviço + grade de preços (mesma transação; kind='S' no WHERE)
+ *     summary: Atualiza serviço + grade de preços + NBS/classificação IBS/CBS (mesma transação; kind='S' no WHERE)
+ *     description: Mesmo corpo do POST. nbs/ibscbs AUSENTES não mexem no que está gravado (app antigo não apaga nada).
  *     tags: [services]
  *     security: [{ BearerAuth: [] }]
  *     parameters:
@@ -191,6 +257,7 @@ router.post('/', controller.create)
  *     responses:
  *       200: { description: "{ ok }" }
  *       404: { description: Não encontrado }
+ *       422: { description: "Classificação IBS/CBS inválida (IBSCBS_* em code; campo em fields[])" }
  *   delete:
  *     summary: Exclui (soft delete) — usos históricos permanecem
  *     tags: [services]

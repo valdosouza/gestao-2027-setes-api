@@ -3,9 +3,11 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
+import { todayFor } from '@shared/time-zone'
+import { assertServiceClassification, deriveCst } from '@shared/ibscbs-classification'
 import {
   ServiceListRow, ServiceFull, ServiceInput, ServicePriceRow,
-  ServiceLookupRow,
+  ServiceLookupRow, ServiceIbscbsRow,
 } from './services.interface'
 
 /**
@@ -81,8 +83,10 @@ async function listServicePrices(
   return rows
 }
 
+/** `today` (data do estabelecimento): o NOME do cClassTrib vem da linha vigente nela; sem
+ *  linha vigente (expirada/futura), a mais recente — o GET nunca esconde o que está gravado. */
 export async function getService(
-  id: number, schemaName: string, institutionId: number
+  id: number, schemaName: string, institutionId: number, today: string | null = null
 ): Promise<ServiceFull | null> {
   assertSchemaName(schemaName)
   const [rows] = await pool.query<any[]>(
@@ -99,10 +103,24 @@ export async function getService(
             sv.tb_service_tax_rule_id   AS serviceTaxRuleId,
             CASE WHEN r.id IS NULL THEN NULL ELSE
               CONCAT(r.tb_service_list_id, ' \u00b7 ', COALESCE(ct.name, ''), '/', COALESCE(st.abbreviation, ''),
-                     ' \u00b7 ', FORMAT(r.aliq, 2), '%') END AS serviceTaxRuleLabel
+                     ' \u00b7 ', FORMAT(r.aliq, 2), '%') END AS serviceTaxRuleLabel,
+            sv.nbs                  AS nbs,
+            nb.description          AS nbsDescription,
+            si.classification_code  AS ibsClassificationCode,
+            (SELECT v.name FROM setes_central.tb_tax_ibscbs_classification_validity v
+              WHERE v.code = si.classification_code AND v.deleted = 'N'
+              ORDER BY (v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?)) DESC,
+                       v.valid_from DESC
+              LIMIT 1) AS ibsClassificationName,
+            si.place_indicator_code AS ibsPlaceIndicatorCode,
+            pi.description          AS ibsPlaceIndicatorDescription
      FROM \`${schemaName}\`.tb_product p
      LEFT JOIN \`${schemaName}\`.tb_service sv
        ON sv.id = p.id AND sv.tb_institution_id = p.tb_institution_id AND sv.deleted = 'N'
+     LEFT JOIN setes_central.tb_nbs nb ON nb.code = sv.nbs
+     LEFT JOIN \`${schemaName}\`.tb_service_ibscbs si
+       ON si.id = p.id AND si.tb_institution_id = p.tb_institution_id AND si.deleted = 'N'
+     LEFT JOIN setes_central.tb_ibscbs_place_indicator pi ON pi.code = si.place_indicator_code
      LEFT JOIN \`${schemaName}\`.tb_service_tax_rule r
        ON r.id = sv.tb_service_tax_rule_id AND r.tb_institution_id = sv.tb_institution_id AND r.deleted = 'N'
      LEFT JOIN setes_central.tb_city ct ON ct.id = r.tb_city_id
@@ -113,11 +131,22 @@ export async function getService(
        ON f.id = p.tb_financial_plans_id AND f.tb_institution_id = p.tb_institution_id
      WHERE p.id = ? AND p.tb_institution_id = ? AND p.deleted = 'N'
        AND p.kind = 'S'`,
-    [id, institutionId]
+    [today, today, id, institutionId]
   )
   if (!rows[0]) return null
   const prices = await listServicePrices(id, schemaName, institutionId)
-  return { ...rows[0], prices }
+  const {
+    ibsClassificationCode, ibsClassificationName, ibsPlaceIndicatorCode, ibsPlaceIndicatorDescription,
+    ...base
+  } = rows[0]
+  const ibscbs: ServiceIbscbsRow | null = ibsClassificationCode ? {
+    classificationCode:        ibsClassificationCode,
+    cst:                       deriveCst(ibsClassificationCode),
+    classificationName:        ibsClassificationName ?? null,
+    placeIndicatorCode:        ibsPlaceIndicatorCode,
+    placeIndicatorDescription: ibsPlaceIndicatorDescription ?? null,
+  } : null
+  return { ...base, prices, ibscbs }
 }
 
 /** FKs do form validadas DENTRO da transação — 400 com fields[]. */
@@ -150,6 +179,52 @@ async function assertRefs(
   if (input.serviceTaxRuleId != null) {
     await check('tb_service_tax_rule', input.serviceTaxRuleId,
       'serviceTaxRuleId', 'Regra de tributação de serviço')
+  }
+  // Fase IBS/CBS (D-IB6): NBS e classificação conferidas no catálogo central pela peça,
+  // na data de HOJE do estabelecimento (PADROES §10 — conexão da transação). 422 com fields[].
+  if (input.nbs != null || input.ibscbs != null) {
+    const today = await todayFor(schemaName, institutionId, conn)
+    await assertServiceClassification(conn, { nbs: input.nbs, ibscbs: input.ibscbs }, today)
+  }
+}
+
+/** Fase IBS/CBS (D-IB6/D-IB22): NBS em tb_service e a peça 1:1 tb_service_ibscbs, na MESMA
+ *  transação do serviço. Ausente = não mexe; null = remove; valor = grava (presença). */
+async function syncServiceClassification(
+  conn: PoolConnection, serviceId: number, input: ServiceInput,
+  schemaName: string, institutionId: number, userId: number | null
+): Promise<void> {
+  if (input.nbs !== undefined) {
+    await conn.query(
+      `UPDATE \`${schemaName}\`.tb_service SET nbs = ?, updated_at = NOW()
+        WHERE id = ? AND tb_institution_id = ?`,
+      [input.nbs, serviceId, institutionId]
+    )
+  }
+  if (input.ibscbs === null) {
+    await conn.query(
+      `UPDATE \`${schemaName}\`.tb_service_ibscbs SET deleted = 'S', tb_user_id = ?, updated_at = NOW()
+        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+      [userId, serviceId, institutionId]
+    )
+  } else if (input.ibscbs !== undefined) {
+    await conn.query(
+      `INSERT INTO \`${schemaName}\`.tb_service_ibscbs
+         (id, tb_institution_id, classification_code, place_indicator_code, tb_user_id, created_at, updated_at, deleted)
+       VALUES (?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+       ON DUPLICATE KEY UPDATE
+         -- AUTOR e data só mudam quando a classificação MUDA (o app reenvia o par em todo
+         -- salvar — re-score socrático da IB-1). As atribuições são avaliadas da esquerda
+         -- para a direita: autor/data comparam o estado ANTIGO, por isso vêm primeiro.
+         tb_user_id = IF(deleted = 'N' AND classification_code = VALUES(classification_code)
+                         AND place_indicator_code = VALUES(place_indicator_code), tb_user_id, VALUES(tb_user_id)),
+         updated_at = IF(deleted = 'N' AND classification_code = VALUES(classification_code)
+                         AND place_indicator_code = VALUES(place_indicator_code), updated_at, NOW()),
+         classification_code = VALUES(classification_code),
+         place_indicator_code = VALUES(place_indicator_code),
+         deleted = 'N'`,
+      [serviceId, institutionId, input.ibscbs.classificationCode, input.ibscbs.placeIndicatorCode, userId]
+    )
   }
 }
 
@@ -206,8 +281,9 @@ const PRODUCT_FIELDS = (input: ServiceInput) => [
   input.active ?? 'S', input.note ?? null,
 ]
 
+/** `userId` (do JWT): autor da classificação IBS/CBS (tb_service_ibscbs.tb_user_id — gate da IB-1). */
 export async function insertService(
-  input: ServiceInput, schemaName: string, institutionId: number
+  input: ServiceInput, schemaName: string, institutionId: number, userId: number | null = null
 ): Promise<number> {
   assertSchemaName(schemaName)
   const conn = await pool.getConnection()
@@ -238,6 +314,7 @@ export async function insertService(
     )
     await syncPrices(conn, id, input, schemaName, institutionId)
     await upsertServiceRule(conn, id, input, schemaName, institutionId)
+    await syncServiceClassification(conn, id, input, schemaName, institutionId, userId)
 
     await conn.commit()
     return id
@@ -250,7 +327,7 @@ export async function insertService(
 }
 
 export async function updateService(
-  id: number, input: ServiceInput, schemaName: string, institutionId: number
+  id: number, input: ServiceInput, schemaName: string, institutionId: number, userId: number | null = null
 ): Promise<boolean> {
   assertSchemaName(schemaName)
   const conn = await pool.getConnection()
@@ -281,6 +358,7 @@ export async function updateService(
     )
     await syncPrices(conn, id, input, schemaName, institutionId)
     await upsertServiceRule(conn, id, input, schemaName, institutionId)
+    await syncServiceClassification(conn, id, input, schemaName, institutionId, userId)
 
     await conn.commit()
     return true

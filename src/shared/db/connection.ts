@@ -83,6 +83,43 @@ export async function assertIsolationLevel(): Promise<string> {
   return level
 }
 
+/**
+ * D-IB26 (fase IBS/CBS, Valdo 2026-10-10 — molde da D-F45 da fiscal-api): os domínios do
+ * catálogo IBS/CBS e das colunas congeladas são CHECK no banco — num servidor SEM modo
+ * estrito, é a única guarda contra carga/SQL direto. MySQL < 8.0.16 aceita o CHECK e o
+ * IGNORA em silêncio (MySQL 8 pode tê-lo NOT ENFORCED). A prova é o próprio ato: uma NBS
+ * fora do formato, numa transação SEMPRE desfeita, tem de ser RECUSADA pelo banco — senão o
+ * boot falha alto. Sem a tabela (script sql/61 não aplicado) o erro 1146 sobe com o nome.
+ * Por que a tabela REAL e não uma TEMPORARY (re-score socrático da IB-1): prova que o CHECK
+ * do catálogo EXISTE, não só que o motor sabe aplicar CHECK. Trava: o CHECK é avaliado antes
+ * de a linha ir ao índice — a recusa não espera a carga do catálogo em andamento. Privilégio:
+ * o usuário do setes-api já escreve em setes_central (entidades, institutions).
+ */
+export async function assertCheckConstraintsEnforced(q: Pick<mysql.Pool, 'getConnection'> = pool): Promise<string> {
+  const conn = await q.getConnection()
+  let accepted = false
+  try {
+    await conn.beginTransaction()
+    try {
+      await conn.query(
+        `INSERT INTO setes_central.tb_nbs (code, description, source_version, deleted)
+         VALUES ('ZZZZZZZZZ', 'conferência do boot (D-IB26)', 'boot', 'S')`)
+      accepted = true
+    } catch (err: any) {
+      // ER_CONSTRAINT_FAILED (MariaDB 4025) · ER_CHECK_CONSTRAINT_VIOLATED (MySQL 3819) = o motor aplicou
+      if (!(err?.errno === 4025 || err?.errno === 3819)) throw err
+    }
+  } finally {
+    try { await conn.rollback() } catch { /* a conexão pode ter caído — o release resolve */ }
+    conn.release()
+  }
+  if (accepted) {
+    throw new Error('O banco ACEITOU uma NBS fora do formato — o motor não aplica CHECK (exige MariaDB ≥ 10.2 '
+      + 'ou MySQL ≥ 8.0.16 com o CHECK ENFORCED; D-IB26, script sql/61)')
+  }
+  return 'aplicado'
+}
+
 export async function getConnection(schemaName: string) {
   const conn = await pool.getConnection()
   await conn.query(`USE \`${schemaName}\``)

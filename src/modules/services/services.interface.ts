@@ -40,6 +40,20 @@ export interface ServiceFull extends ServiceListRow {
   note:                      string | null
   /** Grade: TODAS as tabelas de preço vivas, com o preço atual (null = sem). */
   prices:                    ServicePriceRow[]
+  /** NBS do serviço (natureza — cNBS do DPS; fase IBS/CBS D-IB6). */
+  nbs:                       string | null
+  nbsDescription:            string | null
+  /** Classificação IBS/CBS que o serviço presume (D-IB6/D-IB22); null = não classificado. */
+  ibscbs:                    ServiceIbscbsRow | null
+}
+
+export interface ServiceIbscbsRow {
+  classificationCode:        string
+  /** CST derivado (= prefixo do cClassTrib — E0959; nunca guardado). */
+  cst:                       string
+  classificationName:        string | null
+  placeIndicatorCode:        string
+  placeIndicatorDescription: string | null
 }
 
 export interface ServicePriceInput {
@@ -62,6 +76,9 @@ export interface ServiceInput {
   active?:           'S' | 'N'
   note?:             string | null
   prices?:           ServicePriceInput[]
+  /** Fase IBS/CBS (D-IB6): ausente = não mexe · null = remove · valor = grava. */
+  nbs?:              string | null
+  ibscbs?:           { classificationCode: string; placeIndicatorCode: string } | null
 }
 
 /** Lookups de apoio do form (id + descrição, LIMIT 100). */

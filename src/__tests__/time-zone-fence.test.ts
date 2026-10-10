@@ -38,3 +38,19 @@ it('nenhum padrão proibido de "hoje"/fuso do processo em src/ (fora a peça de 
   }
   expect(hits).toEqual([])
 })
+
+// Gate socrático da IB-1 (2026-10-10): a rotina do Super que carrega o catálogo IBS/CBS
+// usava o dia UTC e a cerca não a via — scripts/ (rotinas de operação) também são varridos.
+it('nenhum padrão proibido de "hoje"/fuso do processo em scripts/', () => {
+  const SCRIPTS = path.resolve(SRC, '..', 'scripts')
+  const hits: string[] = []
+  for (const file of walk(SCRIPTS)) {
+    const rel = path.relative(SCRIPTS, file)
+    fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+      const code = line.replace(/\/\/.*$/, '')
+      if (/^\s*\*/.test(code)) return
+      for (const [re, why] of FORBIDDEN) if (re.test(code)) hits.push(`scripts/${rel}:${i + 1} ${why}`)
+    })
+  }
+  expect(hits).toEqual([])
+})

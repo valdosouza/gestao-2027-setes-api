@@ -24,6 +24,7 @@ import fs from 'fs'
 import path from 'path'
 import mysql from 'mysql2/promise'
 import dotenv from 'dotenv'
+import { todayIn, DEFAULT_TIME_ZONE } from '../src/shared/time-zone'
 dotenv.config()
 
 const DEFAULT_SCHEMA = 'setes_central'
@@ -128,7 +129,7 @@ async function main() {
 
     const sql = `-- =====================================================================
 -- Seed de tb_interface_has_field — ${interfaceLabel}
--- Gerado por setes-api/scripts/gerar-interface-fields.ts em ${new Date().toISOString().slice(0, 10)}
+-- Gerado por setes-api/scripts/gerar-interface-fields.ts em ${todayIn(DEFAULT_TIME_ZONE)}
 -- Tabelas de origem: ${tables.join(', ')}
 -- REVISAR MANUALMENTE antes de aplicar: kind, required (baseline técnico
 -- 'S' = travado no painel do cliente) e campos que não devem aparecer.

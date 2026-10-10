@@ -1,4 +1,8 @@
 import { HttpError } from '@shared/errors/http-error'
+import { todayFor } from '@shared/time-zone'
+import {
+  CodeLookupRow, listNbsLookup, listClassificationsLookup, listPlaceIndicatorsLookup,
+} from '@shared/ibscbs-classification'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import {
   ServiceListRow, ServiceFull, ServiceInput, ServiceLookupRow,
@@ -20,6 +24,8 @@ import {
 export interface ServiceScope {
   schemaName:    string
   institutionId: number
+  /** Autor (JWT) — gravado na classificação IBS/CBS do serviço. */
+  userId?:       number
 }
 
 export { SERVICE_SEARCH_CRITERIA }
@@ -38,7 +44,8 @@ export async function fetchServices(
 export async function fetchService(
   id: number, scope: ServiceScope
 ): Promise<ServiceFull> {
-  const service = await getService(id, scope.schemaName, scope.institutionId)
+  const today = await todayFor(scope.schemaName, scope.institutionId)
+  const service = await getService(id, scope.schemaName, scope.institutionId, today)
   if (!service) throw new HttpError(404, `Serviço ${id} não encontrado`)
   return service
 }
@@ -46,13 +53,13 @@ export async function fetchService(
 export async function createService(
   input: ServiceInput, scope: ServiceScope
 ): Promise<number> {
-  return insertService(input, scope.schemaName, scope.institutionId)
+  return insertService(input, scope.schemaName, scope.institutionId, scope.userId ?? null)
 }
 
 export async function editService(
   id: number, input: ServiceInput, scope: ServiceScope
 ): Promise<void> {
-  const found = await updateService(id, input, scope.schemaName, scope.institutionId)
+  const found = await updateService(id, input, scope.schemaName, scope.institutionId, scope.userId ?? null)
   if (!found) throw new HttpError(404, `Serviço ${id} não encontrado`)
 }
 
@@ -85,4 +92,23 @@ export async function fetchPriceListsLookup(
   scope: ServiceScope
 ): Promise<ServiceLookupRow[]> {
   return listPriceListsLookup(scope.schemaName, scope.institutionId)
+}
+
+// Fase IBS/CBS (D-IB6) — listas de apoio do formulário, servidas pelo PRÓPRIO módulo (o app fala
+// só com /api/services). Catálogo central; classificação filtrada pela vigência de HOJE do
+// estabelecimento e pela aceitação na NFS-e (peça @shared/ibscbs-classification).
+
+export async function fetchNbsLookup(filter: string): Promise<CodeLookupRow[]> {
+  return listNbsLookup(filter)
+}
+
+export async function fetchIbscbsClassificationsLookup(
+  filter: string, scope: ServiceScope
+): Promise<CodeLookupRow[]> {
+  const today = await todayFor(scope.schemaName, scope.institutionId)
+  return listClassificationsLookup(filter, today)
+}
+
+export async function fetchIbscbsPlaceIndicatorsLookup(filter: string): Promise<CodeLookupRow[]> {
+  return listPlaceIndicatorsLookup(filter)
 }

@@ -74,16 +74,30 @@ async function findInterfaceIdByKeyCached(moduleKey: string): Promise<number | n
   return id
 }
 
+/** Valor no payload por caminho com ponto ('ibscbs.classificationCode'). */
+function valueAtPath(values: Record<string, unknown>, path: string): unknown {
+  return path.split('.').reduce<unknown>(
+    (acc, key) => (acc !== null && typeof acc === 'object'
+      ? (acc as Record<string, unknown>)[key] : undefined),
+    values)
+}
+
 /**
  * Obrigatoriedade COMERCIAL no salvar (decisões 1 e 2): valida apenas os
  * campos que o CLIENTE apertou (requiredTech='N' e required efetivo='S') —
  * o baseline técnico já é coberto pelo DTO Zod do módulo. Erro por campo
  * em camelCase (decisão 20). Módulo sem catálogo: nada a validar.
+ *
+ * `payloadPaths`: o nome da coluna do catálogo nem sempre é a chave do DTO
+ * (`tb_financial_plans_id` × `financialPlansId`; peça 1:1 aninhada
+ * `ibscbs.classificationCode`) — o módulo declara o caminho; o erro sai
+ * nesse caminho (é por ele que o fields[] ancora no campo da tela).
  */
 export async function assertClientRequired(
   institution: InstitutionPayload,
   moduleKey: string,
-  values: Record<string, unknown>
+  values: Record<string, unknown>,
+  payloadPaths: Readonly<Record<string, string>> = {},
 ): Promise<void> {
   const interfaceId = await findInterfaceIdByKeyCached(moduleKey)
   if (interfaceId === null) return
@@ -94,10 +108,11 @@ export async function assertClientRequired(
   const missing: FieldError[] = []
   for (const field of fields) {
     if (field.requiredTech === 'S' || field.required !== 'S') continue
-    const value = values[fieldNameToCamel(field.fieldName)]
+    const path = payloadPaths[field.fieldName] ?? fieldNameToCamel(field.fieldName)
+    const value = valueAtPath(values, path)
     if (value === undefined || value === null || String(value).trim() === '') {
       missing.push({
-        field:   fieldNameToCamel(field.fieldName),
+        field:   path,
         message: 'Campo obrigatório (configuração do cliente)',
       })
     }

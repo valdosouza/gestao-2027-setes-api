@@ -97,6 +97,51 @@ describe('assertClientRequired (obrigatoriedade comercial no salvar)', () => {
       .resolves.toBeUndefined()
   })
 
+  // IB-1 (catálogo da interface services — seed sql/62): coluna do catálogo ≠ chave do DTO.
+  // Sem o caminho, o campo apertado nunca era achado no payload e TODO salvar caía em 400.
+  it('caminho declarado pelo módulo: acha a chave do DTO e a peça aninhada', async () => {
+    mockFindByKey.mockResolvedValue(4)
+    mockCatalog.mockResolvedValue([
+      { fieldName: 'tb_financial_plans_id', tableName: 'tb_product',        kind: 'Integer', required: 'N' },
+      { fieldName: 'classification_code',   tableName: 'tb_service_ibscbs', kind: 'String',  required: 'N' },
+    ])
+    mockConfig.mockResolvedValue([
+      { fieldName: 'tb_financial_plans_id', fieldCaption: null, required: 'S', mask: null },
+      { fieldName: 'classification_code',   fieldCaption: null, required: 'S', mask: null },
+    ])
+    const paths = {
+      tb_financial_plans_id: 'financialPlansId',
+      classification_code:   'ibscbs.classificationCode',
+    }
+
+    await expect(assertClientRequired(institution, 'services',
+      { financialPlansId: 3, ibscbs: { classificationCode: '000001', placeIndicatorCode: '100301' } }, paths))
+      .resolves.toBeUndefined()
+
+    // ausente / null / objeto pai null → erro NO CAMINHO do payload (ancora no campo da tela)
+    await expect(assertClientRequired(institution, 'services', { ibscbs: null }, paths))
+      .rejects.toMatchObject({
+        statusCode: 400,
+        fields: [
+          { field: 'financialPlansId' },
+          { field: 'ibscbs.classificationCode' },
+        ],
+      })
+  })
+
+  it('sem caminho declarado o comportamento segue o camelCase da coluna', async () => {
+    mockFindByKey.mockResolvedValue(4)
+    mockCatalog.mockResolvedValue([
+      { fieldName: 'aliq_iss', tableName: 'tb_city', kind: 'Float', required: 'N' },
+    ])
+    mockConfig.mockResolvedValue([
+      { fieldName: 'aliq_iss', fieldCaption: null, required: 'S', mask: null },
+    ])
+
+    await expect(assertClientRequired(institution, 'cities', { aliqIss: 0 }, {}))
+      .resolves.toBeUndefined()
+  })
+
   it('módulo sem catálogo: nada a validar', async () => {
     mockFindByKey.mockResolvedValue(null)
 
