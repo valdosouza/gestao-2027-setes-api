@@ -324,26 +324,104 @@ describe('adaptador ADN — consultas e eventos', () => {
     await expect(adn.queryDpsAccessKey(ctx, DPS_ID)).rejects.toMatchObject({ code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
   })
 
-  it('queryNfse: NFS-e + eventos 404 → authorized; 404 na nota → FISCAL_NFSE_NOT_FOUND', async () => {
-    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce({ status: 404, headers: {}, text: '' })
+  // D-F61 (= Q-F68 (a), Valdo 2026-10-10) — contrato REAL da Sefin cravado ao vivo em H (prompt das APIs fiscais §21.2):
+  // `GET /nfse/{chave}/eventos` = 405 (Allow: POST); a leitura é `GET /nfse/{chave}/eventos/{tipo}/{nSeq}`; evento inexistente =
+  // 404 com o envelope JSON da Sefin; `arquivoXml` = base64 do TEXTO gzip+base64 (duas camadas).
+  const SEFIN = { dataHoraProcessamento: '2026-10-10T18:45:27.438738-03:00', tipoAmbiente: 2, versaoAplicativo: 'SefinNacional_1.6.0' }
+  const noEvent = () => ({ status: 404, headers: {}, text: JSON.stringify(SEFIN) })
+  const arquivoXml = (xml: string) => Buffer.from(gz(xml), 'utf8').toString('base64')
+  const eventsOf = (file: string, tipoEvento = 101101) => ok({ ...SEFIN, eventos: [{ chaveAcesso: CHAVE, tipoEvento, numeroPedidoRegistroEvento: 1, dataHoraRecebimento: '2026-10-10T18:43:04.82', arquivoXml: file }] })
+  const BASE_URL = `https://sefin.producaorestrita.nfse.gov.br/SefinNacional/nfse/${CHAVE}`
+
+  it('queryNfse (D-F61): NFS-e + os 4 códigos de cancelamento com 404 NO ENVELOPE da Sefin → authorized, por /eventos/{tipo}/1 (nunca GET /eventos); 404 na nota → FISCAL_NFSE_NOT_FOUND', async () => {
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) }))
+    for (let i = 0; i < 4; i++) mockHttp.mockResolvedValueOnce(noEvent())
     const q = await adn.queryNfse(ctx, CHAVE)
     expect(q).toMatchObject({ accessKey: CHAVE, status: 'authorized', nfseXml: NFSE_XML, dhProc: '2026-09-21T13:16:01-03:00' })
     expect(q.cancelled).toBeUndefined()
-    expect(mockHttp.mock.calls[0][0].url).toBe(`https://sefin.producaorestrita.nfse.gov.br/SefinNacional/nfse/${CHAVE}`)
-    expect(mockHttp.mock.calls[1][0].url).toBe(`https://sefin.producaorestrita.nfse.gov.br/SefinNacional/nfse/${CHAVE}/eventos`)
+    expect(mockHttp.mock.calls.map((c: any[]) => [c[0].method, c[0].url])).toEqual([
+      ['GET', BASE_URL],
+      ['GET', `${BASE_URL}/eventos/101101/1`], ['GET', `${BASE_URL}/eventos/105102/1`],
+      ['GET', `${BASE_URL}/eventos/105104/1`], ['GET', `${BASE_URL}/eventos/305101/1`],
+    ])
     mockHttp.mockResolvedValueOnce({ status: 404, headers: {}, text: '{"erros":[{"codigo":"E0001","descricao":"NFS-e não encontrada"}]}' })
     await expect(adn.queryNfse(ctx, CHAVE)).rejects.toMatchObject({ statusCode: 404, code: 'FISCAL_NFSE_NOT_FOUND' })
   })
 
-  it('queryNfse: eventos com e101101 → cancelled (dhProc do evento + motivo); lista vazia → authorized; lista ilegível → unknown', async () => {
-    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) }))
-      .mockResolvedValueOnce(ok({ eventos: [{ tipoEvento: '101101', eventoXmlGZipB64: gz(EVENT_XML) }] }))
+  it('queryNfse (D-F61): cancelamento lido do arquivoXml na forma REAL (base64 do gzip+b64) → cancelled; 1 camada e XML cru também; 105102 achado depois de 101101 inexistente', async () => {
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(eventsOf(arquivoXml(EVENT_XML)))
     const c = await adn.queryNfse(ctx, CHAVE)
     expect(c).toMatchObject({ status: 'cancelled', cancelled: { dhEvento: '2026-09-22T09:00:00-03:00', motive: 'Erro na emissão: valor & tomador' } })
-    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(ok([]))
-    expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('authorized')
-    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce({ status: 200, headers: {}, text: 'algo que não é JSON' })
+    expect(c.cancelled!.eventXml).toBe(EVENT_XML)
+    expect(mockHttp).toHaveBeenCalledTimes(2)                          // achou no 1º código: não pergunta os outros
+    for (const file of [gz(EVENT_XML), EVENT_XML]) {                  // tolerância: uma camada (gzip+b64) e XML cru
+      mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(eventsOf(file))
+      expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('cancelled')
+    }
+    mockHttp.mockReset()
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(noEvent())
+      .mockResolvedValueOnce(eventsOf(arquivoXml(EVENT_XML), 105102))
+    expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('cancelled')
+    expect(mockHttp.mock.calls[2][0].url).toBe(`${BASE_URL}/eventos/105102/1`)
+  })
+
+  it('queryNfse (D-F61): 404 em HTML (rota inexistente) ou JSON fora do envelope → 502 ambíguo (NUNCA authorized); 2xx sem lista ou vazia → 502; lista ilegível → unknown; evento de outra chave → unknown (D-F63)', async () => {
+    for (const text of ['<!DOCTYPE html><html><head><title>404 - File or directory not found.</title></head></html>', '', '{"erro":{"codigo":"E9999"}}', '{"tipoAmbiente":2}']) {
+      mockHttp.mockReset()
+      mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce({ status: 404, headers: {}, text })
+      await expect(adn.queryNfse(ctx, CHAVE)).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    }
+    for (const text of ['algo que não é JSON', JSON.stringify(SEFIN)]) {
+      mockHttp.mockReset()
+      mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce({ status: 200, headers: {}, text })
+      await expect(adn.queryNfse(ctx, CHAVE)).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    }
+    // a Sefin listou um 101101 ILEGÍVEL → unknown (nunca inventa "autorizada")
+    mockHttp.mockReset()
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(eventsOf(Buffer.from('lixo').toString('base64')))
     expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('unknown')
+    // …de OUTRA chave no GET TIPADO (resposta trocada) → D-F63 (= Q-F70): ambíguo, NUNCA "autorizada" (gravaria N falso num K)
+    const otherKey = EVENT_XML.split(CHAVE).join(CHAVE.slice(0, -1) + (CHAVE.endsWith('7') ? '8' : '7'))
+    mockHttp.mockReset()
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(eventsOf(arquivoXml(otherKey)))
+    expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('unknown')
+    expect(mockHttp).toHaveBeenCalledTimes(2)
+    // 200 com a lista VAZIA (fora da forma cravada) → 502
+    mockHttp.mockReset()
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(ok({ ...SEFIN, eventos: [] }))
+    await expect(adn.queryNfse(ctx, CHAVE)).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+  })
+
+  it('queryNfse (Rodada 11): o envelope do 404 vale só no AMBIENTE perguntado (L8); 401/403 numa rota de evento = 502 da NOTA (D-F65); a substituição traz eventCode 105102 (D-F64)', async () => {
+    // envelope de PRODUÇÃO (tipoAmbiente 1) respondendo a uma pergunta de homologação → não é "sem evento": 502
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce({ status: 404, headers: {}, text: JSON.stringify({ ...SEFIN, tipoAmbiente: 1 }) })
+    await expect(adn.queryNfse(ctx, CHAVE)).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    for (const status of [401, 403]) {
+      mockHttp.mockReset()
+      mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce({ status, headers: {}, text: '' })
+      await expect(adn.queryNfse(ctx, CHAVE)).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE', authorityStatus: status })
+    }
+    // 401/403 no próprio GET /nfse segue sendo falha do EMISSOR (409 AUTH_FAILED)
+    mockHttp.mockReset()
+    mockHttp.mockResolvedValueOnce({ status: 403, headers: {}, text: '' })
+    await expect(adn.queryNfse(ctx, CHAVE)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_AUTHORITY_AUTH_FAILED' })
+    const subst = EVENT_XML.split('e101101').join('e105102').split('101101').join('105102')
+    mockHttp.mockReset()
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(noEvent()).mockResolvedValueOnce(eventsOf(arquivoXml(subst), 105102))
+    const q = await adn.queryNfse(ctx, CHAVE)
+    expect(q).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '105102' } })
+  })
+
+  it('cliente HTTP (D-F61): 405 do fisco (método inexistente na rota) → 502 FISCAL_AUTHORITY_UNKNOWN_RESPONSE, nunca FISCAL_DPS_REJECTED (um 405 na transmissão gravaria R por erro de contrato); 501 segue 503 indisponível', async () => {
+    for (const status of [405, 406, 415]) {
+      mockHttp.mockReset()
+      mockHttp.mockResolvedValueOnce({ status, headers: { allow: 'POST' }, text: '{"message":"The requested resource does not support http method \'GET\'."}' })
+      await expect(adn.queryDpsAccessKey(ctx, DPS_ID)).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE', authorityStatus: status })
+      mockHttp.mockResolvedValueOnce({ status, headers: {}, text: '' })
+      await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 502, code: 'FISCAL_AUTHORITY_UNKNOWN_RESPONSE' })
+    }
+    mockHttp.mockResolvedValueOnce({ status: 501, headers: {}, text: '' })
+    await expect(adn.transmit(ctx, '<DPS/>')).rejects.toMatchObject({ statusCode: 503, code: 'FISCAL_AUTHORITY_UNAVAILABLE' })
   })
 
   it('registerEvent: POST /nfse/{chave}/eventos com {pedidoRegistroEventoXmlGZipB64}; resposta com o evento → dhEvento/protocol; rejeição vai em field "event"', async () => {

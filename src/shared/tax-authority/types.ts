@@ -175,7 +175,8 @@ export interface NfseQuery {
   nfseXml:    string
   dhProc:     string | null
   /** eventXml (Q-N38): o XML do evento GERADO pelo fisco, para o arquivo fiscal do contribuinte. */
-  cancelled?: { dhEvento: string | null; motive: string | null; eventXml?: string | null }
+  /** eventCode (D-F64): 101101 · 105102 (substituição) · 105104 · 305101 — o efeito local depende dele */
+  cancelled?: { dhEvento: string | null; motive: string | null; eventXml?: string | null; eventCode?: string | null }
 }
 
 export interface EventRegisterResult {

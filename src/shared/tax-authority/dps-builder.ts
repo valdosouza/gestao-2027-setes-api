@@ -61,9 +61,22 @@ const TYPOGRAPHY: Record<string, string> = {
   '\u2026': '...', '\u2022': '-', '\u2028': ' ', '\u2029': ' ',
 }
 export function toTsString(s: string): string {
-  return String(s ?? '')
+  // D-F66 (= Q-F73 (a), Valdo 2026-10-10): NFC ANTES do filtro — acento digitado decomposto (e + U+0301) vira o 'é' do Latin-1
+  // em vez de perder o diacrítico (gate adversarial DF61-06). O filtro Latin-1 vale para TODO texto livre do DPS/evento,
+  // inclusive onde o XSD aceitaria mais (xNome, xDescServ): escolha registrada — o fisco serializa mal fora do ASCII (§21.2)
+  return String(s ?? '').normalize('NFC')
     .replace(/[\u2010-\u2015\u2212\u2018-\u201E\u2026\u2022\u2028\u2029]/g, c => TYPOGRAPHY[c] ?? '')
-    .replace(/[^\u0000-\u00FF]/g, '')
+    // re-gate R11-04: fora do Latin-1 cai na LETRA-BASE (Š→S, č→c — o NFC tinha juntado letra + marca num caractere só);
+    // sem base no Latin-1 (ł, CJK, emoji) o caractere sai
+    .replace(/[^\u0000-\u00FF]/g, c => {
+      const base = c.normalize('NFD').replace(/[\u0300-\u036F]/g, '')
+      return /^[\u0020-\u00FF]+$/.test(base) ? base : ''
+    })
+}
+
+/** Corte em N SEM espaço no fim: o padrão TSString exige o último caractere não branco (gate DF61-05 / L2). */
+function cut(s: string, n: number): string {
+  return s.slice(0, n).trimEnd()
 }
 
 function text(s: string, multiline = false): string {
@@ -152,13 +165,13 @@ function servXml(s: DpsInput['serv']): string {
   inner += grp('cServ',
     el('cTribNac', digits(s.cServ.cTribNac, 'cTribNac', 6)) +
     el('cTribMun', s.cServ.cTribMun ? digits(s.cServ.cTribMun, 'cTribMun', 3) : null) +
-    el('xDescServ', text(s.cServ.xDescServ, true).slice(0, 2000)) +
+    el('xDescServ', cut(text(s.cServ.xDescServ, true), 2000)) +
     el('cNBS', s.cServ.cNBS ? digits(s.cServ.cNBS, 'cNBS', 9) : null))
   if (s.infoCompl && (s.infoCompl.docRef || s.infoCompl.xPed || s.infoCompl.xInfComp)) {
     inner += grp('infoCompl',
-      el('docRef', s.infoCompl.docRef ? text(s.infoCompl.docRef).slice(0, 255) : null) +
-      el('xPed', s.infoCompl.xPed ? text(s.infoCompl.xPed).slice(0, 60) : null) +
-      el('xInfComp', s.infoCompl.xInfComp ? text(s.infoCompl.xInfComp).slice(0, 2000) : null))
+      el('docRef', s.infoCompl.docRef ? cut(text(s.infoCompl.docRef), 255) : null) +
+      el('xPed', s.infoCompl.xPed ? cut(text(s.infoCompl.xPed), 60) : null) +
+      el('xInfComp', s.infoCompl.xInfComp ? cut(text(s.infoCompl.xInfComp), 2000) : null))
   }
   return grp('serv', inner)
 }
@@ -191,7 +204,7 @@ export function buildDpsXml(input: DpsInput, id: string): string {
   const inf =
     el('tpAmb', tpAmbOf(input.environment)) +
     el('dhEmi', formatDateTimeTz(input.dhEmi)) +
-    el('verAplic', text(input.verAplic).slice(0, 20)) +
+    el('verAplic', cut(text(input.verAplic), 20)) +
     // [INCERTO] série SEM zero à esquerda no elemento (o Id leva 5 posições); TSSerieDPS aceita ambos
     el('serie', String(serie)) +
     el('nDPS', String(nDps)) +
@@ -227,7 +240,7 @@ export function buildCancelEventXml(input: CancelEventInput): string {
   const chave = digits(input.accessKey, 'chave de acesso', 50)
   const inf =
     el('tpAmb', tpAmbOf(input.environment)) +
-    el('verAplic', text(input.verAplic).slice(0, 20)) +
+    el('verAplic', cut(text(input.verAplic), 20)) +
     el('dhEvento', formatDateTimeTz(input.dhEvento)) +
     (input.cnpjAutor ? el('CNPJAutor', digits(input.cnpjAutor, 'CNPJ do autor', 14)) : el('CPFAutor', digits(input.cpfAutor!, 'CPF do autor', 11))) +
     el('chNFSe', chave) +

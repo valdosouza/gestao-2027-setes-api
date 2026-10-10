@@ -414,16 +414,33 @@ async function lockInvoiceIfAlive(conn: PoolConnection, s: string, institutionId
  * Voz C do fisco nesta tentativa (idempotente por KIND — HIGH-3a: um C por
  * transmissão, qualquer dh) + efeito; pendência (invoice_event NULL) é retentada.
  */
+/** D-F64 (= Q-F71, Valdo 2026-10-10): cancelamento POR SUBSTITUIÇÃO (e105102) feito fora do produto — existe uma NFS-e
+ *  SUBSTITUTA que o ERP não conhece; cancelar a nota/títulos daqui desfaria um serviço que continua faturado. */
+export const SUBSTITUTION_EVENT_CODE = '105102'
+export const SUBSTITUTION_EFFECT_SUSPENDED = 'Efeito suspenso: NFS-e SUBSTITUÍDA no fisco (e105102) — a substituta não está no ERP; '
+  + 'confira e cancele a nota manualmente se for o caso'
+
 async function recordCancelVoice(
   conn: PoolConnection, s: string, institutionId: number, userId: number | null, invoiceId: number, attempt: number,
-  source: TransmissionSource, dh: string | null, motive: string | null
+  source: TransmissionSource, dh: string | null, motive: string | null, eventCode: string | null = null
 ): Promise<{ event: number; invoiceEvent: number | null; refused: string | null; inserted: boolean }> {
   const existing = await findTransmissionEventByKind(conn, s, institutionId, invoiceId, attempt, 'C', true)
   if (existing && existing.invoiceEvent != null) return { event: existing.event, invoiceEvent: existing.invoiceEvent, refused: null, inserted: false }
+  // re-gate R11-03b: a marca de substituição é PEGAJOSA — uma voz já suspensa continua suspensa mesmo que uma re-consulta leia
+  // outro código (resposta contraditória do fisco nunca aplica o efeito sozinha)
+  const substitution = eventCode === SUBSTITUTION_EVENT_CODE || /e105102/.test(existing?.message ?? '')
+  const voiceText = `Cancelada no fisco${substitution ? ' por SUBSTITUIÇÃO (e105102)' : ''}${motive ? ': ' + motive : ''}`
   const event = existing ? existing.event
     : await insertTransmissionEvent(conn, s, institutionId, invoiceId, attempt, userId, {
-        kind: 'C', source, dh, message: (motive ? `Cancelada no fisco: ${motive}` : 'Cancelada no fisco').slice(0, 255),
+        kind: 'C', source, dh, message: voiceText.slice(0, 255),
       })
+  if (substitution) {
+    // D-F64: a VOZ fica (o fisco disse); o EFEITO local não é automático — pendência visível, só por ação humana (reaplicar)
+    // re-gate R11-02: a nota da suspensão leva o motivo do fisco junto (o UPDATE troca a mensagem da voz)
+    await setTransmissionEventEffect(conn, s, institutionId, invoiceId, attempt, event, null,
+      `${SUBSTITUTION_EFFECT_SUSPENDED}${motive ? ` | motivo do fisco: ${motive}` : ''}`.slice(0, 255))
+    return { event, invoiceEvent: null, refused: SUBSTITUTION_EFFECT_SUSPENDED, inserted: !existing }
+  }
   const eff = await applyEffectIsolated(conn, s, institutionId, userId ?? 0, invoiceId, attempt, event, motive)
   return { event, invoiceEvent: eff.invoiceEvent, refused: eff.refused, inserted: !existing }
 }
@@ -529,7 +546,7 @@ export async function refreshServiceTransmission(
     }
     // C do fisco: voz (por KIND) + EFEITO (única porta); pendência retentada
     const v = await recordCancelVoice(conn, s, institutionId, userId, invoiceId, tx.attempt, source,
-      toDbDateTime(nfse.cancelled?.dhEvento), nfse.cancelled?.motive ?? null)
+      toDbDateTime(nfse.cancelled?.dhEvento), nfse.cancelled?.motive ?? null, nfse.cancelled?.eventCode ?? null)
     return { invoiceId, attempt: tx.attempt, changed: changed || v.inserted || v.invoiceEvent != null, kind: 'C', accessKey: nfse.accessKey, invoiceEvent: v.invoiceEvent, effectRefused: v.refused }
   })
   // XML autorizado em disco (regrava se faltar — o transmit pode ter falhado ao gravar)

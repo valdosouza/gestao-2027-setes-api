@@ -21,7 +21,7 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import forge from 'node-forge'
-import { gzipSync } from 'zlib'
+import { gzipSync, gunzipSync } from 'zlib'
 
 const SECRETS_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'setes-onda3-adv-r3-secrets-'))
 const STORAGE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'setes-onda3-adv-r3-storage-'))
@@ -95,7 +95,7 @@ import { AuthorityHttpError, transport, HttpsCall } from '../shared/tax-authorit
 import { adnAdapter } from '../shared/tax-authority/adapters/adn'
 import { parseEventXml } from '../shared/tax-authority/dps-builder'
 import {
-  transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, refreshOpenServiceTransmissions,
+  transmitServiceInvoice, refreshServiceTransmission, cancelServiceInvoiceAtAuthority, refreshOpenServiceTransmissions, SUBSTITUTION_EFFECT_SUSPENDED,
   IN_FLIGHT_MINUTES,
 } from '../shared/invoice-transmission'
 import { resetMunicipalTermsCache } from '../shared/invoice-transmission/branches/service'
@@ -352,12 +352,32 @@ afterAll(() => {
 const authorized = () => ({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
 const authorizedVoice = () => ({ accessKey: KEY, status: 'authorized' as const, nfseXml: NFSE_XML, dhProc: '2026-09-21T10:15:30-03:00' })
 const withAuthorizedTx = () => setTx(tx({ lastKind: 'A' }))
+/**
+ * D-F61 (Valdo 2026-10-10): a Sefin REAL só atende `GET /nfse/{chave}/eventos/{tipo}/{nSeq}` (o `GET …/eventos` dá 405 —
+ * cravado ao vivo em H). O roteador traduz a lista "antiga" de cada teste (`[{ eventoXmlGZipB64 }]`) para a forma real, filtrada
+ * pelo TIPO pedido: 200 `{ …envelope, eventos: [{ arquivoXml: base64 do gzip+b64 }] }`; sem evento desse tipo = 404 com o
+ * envelope JSON da Sefin. Resposta que não é lista (ilegível) passa como veio.
+ */
+function sefinTypedEvents(legacy: any, code: string) {
+  const env = { dataHoraProcessamento: '2026-10-10T18:45:27-03:00', tipoAmbiente: 2, versaoAplicativo: 'SefinNacional_1.6.0' }
+  const none = { status: 404, headers: {}, text: JSON.stringify(env) }
+  if (!legacy) return none
+  let list: any[]
+  try { const j = JSON.parse(legacy.text); list = Array.isArray(j) ? j : Array.isArray(j?.eventos) ? j.eventos : [j] } catch { return legacy }
+  const mine = list.map(it => it?.eventoXmlGZipB64).filter((b: unknown): b is string => typeof b === 'string')
+    .filter(b => { try { return parseEventXml(gunzipSync(Buffer.from(b, 'base64')).toString('utf8')).eventCode === code } catch { return false } })
+  return mine.length
+    ? ok({ ...env, eventos: mine.map(b => ({ tipoEvento: Number(code), numeroPedidoRegistroEvento: 1, arquivoXml: Buffer.from(b, 'utf8').toString('base64') })) })
+    : none
+}
 /** Roteador HTTP do ADN real: convênio sempre OK; o resto por rota. */
 function adnRoutes(routes: { dps?: (c: HttpsCall) => any; nfse?: (c: HttpsCall) => any; eventosGet?: (c: HttpsCall) => any; eventosPost?: (c: HttpsCall) => any }) {
   mockHttp.mockImplementation(async (call: HttpsCall) => {
     if (/convenio/.test(call.url)) return ok({ prazoCancelamentoDias: 365 })
     if (/\/dps\//.test(call.url)) return routes.dps?.(call) ?? notFound()
     if (/\/eventos$/.test(call.url)) return call.method === 'POST' ? (routes.eventosPost?.(call) ?? ok(null)) : (routes.eventosGet?.(call) ?? notFound())
+    const typed = call.url.match(/\/eventos\/(\d+)\/(\d+)$/)
+    if (typed && call.method === 'GET') return sefinTypedEvents(routes.eventosGet?.(call), typed[1])
     if (/\/nfse\/\d+$/.test(call.url)) return routes.nfse?.(call) ?? notFound()
     if (/\/nfse$/.test(call.url)) return routes.nfse?.(call) ?? ok(null)
     return notFound()
@@ -461,6 +481,18 @@ describe('ACHADO R3-3 (MEDIUM) — o adaptador só conhece DOIS dos QUATRO cance
       expect(r).toMatchObject({ kind: 'C', invoiceEvent: 2 })
       expect(invoice.cancelInvoice).toHaveBeenCalledTimes(1)
     })
+})
+
+describe('D-F64 (= Q-F71, Valdo 2026-10-10) — cancelamento por SUBSTITUIÇÃO (e105102) lido na consulta: voz C SIM, efeito local automático NÃO', () => {
+  it('GET tipado traz e105102 GERADO desta chave → voz C "por SUBSTITUIÇÃO", cancelInvoice NÃO chamado, efeito suspenso (pendência visível)', async () => {
+    useRealAdn(); withAuthorizedTx()
+    adnRoutes({ nfse: () => ok({ nfseXmlGZipB64: gz(NFSE_XML) }), eventosGet: () => ok([{ eventoXmlGZipB64: gz(generatedEventXml({ code: '105102' })) }]) })
+    const r = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
+    expect(r).toMatchObject({ kind: 'C', invoiceEvent: null, effectRefused: SUBSTITUTION_EFFECT_SUSPENDED })
+    expect(invoice.cancelInvoice).not.toHaveBeenCalled()
+    expect(kinds()).toEqual(['C'])
+    expect(repo.setTransmissionEventEffect).toHaveBeenCalledWith(expect.anything(), S.schema, S.inst, INVOICE, expect.any(Number), expect.any(Number), null, expect.stringContaining(SUBSTITUTION_EFFECT_SUSPENDED))
+  })
 })
 
 describe('ACHADO R3-4 (MEDIUM) — D-N29 deixa passar o e-CPF: CN "NOME:CPF" (11 dígitos) não tem 14 dígitos, `cnpj` fica null e o cofre aceita com `expectedCnpj` informado', () => {
@@ -572,11 +604,11 @@ describe('P1. isGeneratedEventFor (contornos da R2-1) — registerEvent', () => 
     expect(parseEventXml(xml).eventCode).toBe('202201')
     refusedAmbiguous(await attack(() => ok({ eventoXmlGZipB64: gz(xml) })))
   })
-  it('na CONSULTA (/eventos): e101101 com zero à esquerda a mais ou de outra chave → segue autorizada, nenhum C', async () => {
+  it('na CONSULTA (GET tipado — D-F63): e101101 com zero à esquerda a mais ou de outra chave → resposta trocada: 502, nada gravado (nem C nem N nem "autorizada")', async () => {
     useRealAdn(); withAuthorizedTx()
     adnRoutes({ nfse: () => ok({ nfseXmlGZipB64: gz(NFSE_XML) }), eventosGet: () => ok([{ eventoXmlGZipB64: gz(generatedEventXml({ key: '0' + KEY })) }, { eventoXmlGZipB64: gz(generatedEventXml({ key: OTHER_KEY })) }]) })
-    const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
-    expect(r).toMatchObject({ kind: 'A', changed: false }); expect(invoice.cancelInvoice).not.toHaveBeenCalled()
+    await expect(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')).rejects.toMatchObject({ statusCode: 502 })
+    expect(invoice.cancelInvoice).not.toHaveBeenCalled(); expect(kinds()).toEqual([])
   })
 })
 

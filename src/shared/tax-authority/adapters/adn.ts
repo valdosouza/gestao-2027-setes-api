@@ -126,6 +126,70 @@ const asAccessKey = (v: unknown): string | null => {
   return s.length === 50 ? s : null
 }
 
+/**
+ * D-F61 (= Q-F68 (a), Valdo 2026-10-10) — 404 que É a voz da Sefin "não há esse evento": o envelope JSON dela
+ * (`versaoAplicativo` + `tipoAmbiente`) sem `eventos` e sem `erro` — forma cravada ao vivo em H (prompt das APIs fiscais §21.2).
+ * 404 em HTML (rota inexistente, gateway) ou JSON de outra forma NÃO é: ambíguo — molde do E2404 do `GET /dps` (Q-ADV2f).
+ */
+function isSefinNoEventEnvelope(text: string, environment: 'H' | 'P'): boolean {
+  let j: any
+  try { j = JSON.parse(text) } catch { return false }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return false
+  if (j.erro !== undefined || j.erros !== undefined || j.eventos !== undefined) return false
+  // gates do delta (L8): o envelope é do AMBIENTE perguntado — 1 = produção, 2 = homologação (cravado: H=2, P=1)
+  return typeof j.versaoAplicativo === 'string' && j.versaoAplicativo.length > 0 && Number(j.tipoAmbiente) === (environment === 'P' ? 1 : 2)
+}
+
+/**
+ * D-F61 — o `arquivoXml` do evento vem como base64 do TEXTO gzip+base64 (duas camadas — cravado ao vivo em H); tolera uma
+ * camada (gzip+b64 ou XML em b64) e XML cru. Ilegível = null.
+ */
+function decodeEventFile(v: unknown): string | null {
+  const s = typeof v === 'string' ? v.trim() : ''
+  if (!s) return null
+  if (s.startsWith('<')) return s
+  const once = decodeXmlField(s)
+  if (once) return once
+  try {
+    const inner = Buffer.from(s, 'base64').toString('utf8').trim()
+    return /^[A-Za-z0-9+/=\r\n]+$/.test(inner) ? decodeXmlField(inner) : null
+  } catch { return null }
+}
+
+/**
+ * D-F61 — eventos de UM código de cancelamento da chave: `GET /nfse/{chave}/eventos/{tipo}/1` (o cancelamento é único por nota
+ * — sequência 1). `GET /nfse/{chave}/eventos` (sem tipo) NÃO existe na Sefin (405, Allow: POST). `null` = a Sefin disse que não
+ * há esse evento; lista = os XML dos eventos; qualquer outra resposta = 502 ambíguo (nunca voz).
+ */
+async function cancelEventXmls(ctx: AuthorityContext, key: string, code: string): Promise<string[] | null> {
+  let res: { status: number; data: any; text: string }
+  try {
+    res = await call<any>(ctx, 'GET', `/nfse/${key}/eventos/${encodeURIComponent(code)}/1`, undefined, 'eventos')
+  } catch (err) {
+    if (err instanceof AuthorityHttpError && err.authorityStatus === 404) {
+      if (isSefinNoEventEnvelope(err.body, ctx.environment)) return null
+      // M5 dos gates: contrato do fisco DIVERGENTE do cravado — log de ERRO próprio (o alarme por padrão de log é da F3)
+      logger.error('Contrato da Sefin divergente: 404 de evento fora do envelope cravado', { code, environment: ctx.environment, bytes: Buffer.byteLength(err.body ?? '', 'utf8') })
+      throw unknownResponse(`eventos ${code}: 404 fora do envelope da Sefin`, 404, err.body)
+    }
+    // D-F65 (= Q-F72 (a), Valdo 2026-10-10): 401/403 numa rota de EVENTO depois do 200 do GET /nfse da MESMA nota (mesmo
+    // certificado) é falha DESTA nota, não do emissor — 502 ambíguo: o rodízio carimba e segue (antes parava a passada para sempre)
+    if (err instanceof AuthorityHttpError && (err.authorityStatus === 401 || err.authorityStatus === 403)) {
+      logger.error('Fisco recusou a rota de EVENTO depois de aceitar o GET da NFS-e (mesmo certificado)', { code, environment: ctx.environment, status: err.authorityStatus })
+      throw new AuthorityHttpError(502, `Fisco recusou (${err.authorityStatus}) a consulta do evento ${code} desta NFS-e — situação ambígua; a próxima consulta pergunta de novo`,
+        ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, err.authorityStatus, err.body)
+    }
+    throw err
+  }
+  const items = Array.isArray(res.data?.eventos) ? res.data.eventos : null
+  if (!items) throw unknownResponse(`eventos ${code}: 2xx sem a lista de eventos`, res.status, res.text)
+  // D-F63: 200 com lista VAZIA não é forma cravada (sem evento a Sefin responde 404) — ambíguo
+  if (!items.length) throw unknownResponse(`eventos ${code}: 2xx com a lista vazia`, res.status, res.text)
+  return items
+    .map((it: any) => decodeEventFile(it?.arquivoXml) ?? collectGzipXmlFields(it).map(decodeXmlField).find((x): x is string => !!x) ?? null)
+    .filter((x: string | null): x is string => !!x)
+}
+
 export const adnAdapter: TaxAuthorityAdapter = {
   authority: ADN_AUTHORITY,
 
@@ -170,30 +234,28 @@ export const adnAdapter: TaxAuthorityAdapter = {
     if (parsed.cancelled) return { ...base, status: 'cancelled', cancelled: { dhEvento: parsed.cancelled.dhEvento, motive: parsed.cancelled.xMotivo } }
 
     // cStat (100/102/103/107) NÃO expressa cancelamento: a situação vem dos EVENTOS da chave.
-    // [INCERTO] formato do GET /nfse/{chave}/eventos (lista de XML gzip+b64?) — leitura tolerante;
-    // 404 = nenhum evento; 2xx ilegível = 'unknown' (nunca inventa "autorizada").
-    let ev: { status: number; data: any; text: string }
-    try {
-      ev = await call<any>(ctx, 'GET', `/nfse/${key}/eventos`, undefined, 'eventos')
-    } catch (err) {
-      if (err instanceof AuthorityHttpError && err.authorityStatus === 404) return base
-      throw err
+    // D-F61 (= Q-F68 (a), Valdo 2026-10-10): pelo contrato REAL da Sefin (cravado ao vivo em H — `GET /nfse/{chave}/eventos`
+    // dava 405 e TODA consulta de autorizada falhava): um código de cancelamento por vez, por tipo + sequência.
+    for (const code of CANCEL_EVENT_CODES) {
+      const xmls = await cancelEventXmls(ctx, key, code)
+      if (xmls === null) continue                                   // a Sefin disse: não há esse evento
+      if (!xmls.length) return { ...base, status: 'unknown' }       // listou e nada se lê: ilegível nunca vira "autorizada"
+      // R2-2 (d): só evento GERADO (Id EVT + dhProc) e DESTA chave cancela — evento de outra NFS-e (resposta trocada) ou
+      // pedido ecoado (sem Id/dhProc) não é voz sobre esta
+      const found = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).find(({ ev: e }) =>
+        !!e.eventCode && CANCEL_EVENT_CODES.has(e.eventCode) && isGeneratedEventFor(e, accessKey))
+      // D-F63 (= Q-F70, Valdo 2026-10-10): no GET TIPADO (chave + tipo + sequência) um 200 diz "esse evento EXISTE" — o que
+      // não se confere como cancelamento gerado desta chave (ilegível, outra chave, eco, outro tipo) é resposta trocada/ilegível:
+      // ambíguo, NUNCA "autorizada" (antes gravava N falso num K em voo — gates DF61-01/02, M3). A R2-2 (d) "segue autorizada"
+      // era da LISTA `GET /eventos`, que a Sefin não tem
+      if (!found) {
+        logger.error('Contrato da Sefin divergente: 200 de evento que não se confere como cancelamento desta chave', { code, environment: ctx.environment, items: xmls.length })
+        return { ...base, status: 'unknown' }
+      }
+      const cancel = found.ev
+      return { ...base, status: 'cancelled', cancelled: { dhEvento: cancel.dhProc ?? cancel.dhEvento, motive: cancel.xMotivo, eventXml: found.xml, eventCode: cancel.eventCode } }
     }
-    if (ev.data === null) return ev.text.trim() ? { ...base, status: 'unknown' } : base
-    const xmls = collectGzipXmlFields(ev.data).map(decodeXmlField).filter((x): x is string => !!x)
-    if (!xmls.length) {
-      const empty = Array.isArray(ev.data) ? ev.data.length === 0
-        : Array.isArray(ev.data?.eventos) ? ev.data.eventos.length === 0
-        : Object.keys(ev.data ?? {}).length === 0
-      return empty ? base : { ...base, status: 'unknown' }
-    }
-    // R2-2 (d): só evento GERADO (Id EVT + dhProc) e DESTA chave cancela — evento de outra NFS-e na
-    // lista (resposta trocada) não é voz sobre esta; pedido ecoado (sem Id/dhProc) tampouco
-    const found = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).find(({ ev: e }) =>
-      !!e.eventCode && CANCEL_EVENT_CODES.has(e.eventCode) && isGeneratedEventFor(e, accessKey))
-    if (!found) return base
-    const cancel = found.ev
-    return { ...base, status: 'cancelled', cancelled: { dhEvento: cancel.dhProc ?? cancel.dhEvento, motive: cancel.xMotivo, eventXml: found.xml } }
+    return base
   },
 
   async queryDpsAccessKey(ctx, dpsId): Promise<string | null> {

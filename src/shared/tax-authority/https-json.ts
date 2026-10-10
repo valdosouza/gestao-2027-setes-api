@@ -206,6 +206,14 @@ export async function authorityJson<T = any>(call: HttpsCall, label: string, opt
     throw new AuthorityHttpError(409, `Fisco recusou a autenticação (${res.status}): ${msg || 'certificado não aceito para este CNPJ/ambiente'}`,
       ErrorCodes.FISCAL_AUTHORITY_AUTH_FAILED, res.status, res.text)
   }
+  // D-F61 (Valdo 2026-10-10): 405 = o MÉTODO não existe na rota do fisco (cravado ao vivo: `GET /nfse/{chave}/eventos` → 405,
+  // Allow: POST); 406/415 = Accept/Content-Type que o fisco não aceita (gate DF61-09) — é contrato do ADAPTADOR, nunca recusa de
+  // REGRA do documento: ambíguo (502), jamais "DPS rejeitado"/voz R (o 501 já cai no ramo 5xx acima — indisponível, também nunca R)
+  if (res.status === 405 || res.status === 406 || res.status === 415) {
+    logger.error('Contrato do fisco divergente: rota/método/formato não atendido', { label, status: res.status, url: call.url })
+    throw new AuthorityHttpError(502, `Fisco não atende esta rota/método (${res.status}, ${label}) — contrato do adaptador desatualizado`,
+      ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, res.status, res.text)
+  }
   if (res.status === 404) {
     throw new AuthorityHttpError(404, `Fisco não encontrou o recurso: ${msg || label}`,
       ErrorCodes.FISCAL_NFSE_NOT_FOUND, res.status, res.text)
