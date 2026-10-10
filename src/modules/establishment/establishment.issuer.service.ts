@@ -80,8 +80,8 @@ export async function saveIssuer(model: IssuerModel, input: IssuerDto, scope: Is
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
-    // D-F49: 1ª instrução, a HISTÓRIA da linha travada pela PK (a mesma linha que o ato da virada trava primeiro).
-    // D-F51 (= Q-F59 (a), Valdo 2026-10-10): no dual-run a SE do ERP só muda pelo ATO — excluída NÃO revive, QUALQUER que
+    // D-F56: 1ª instrução, a HISTÓRIA da linha travada pela PK (a mesma linha que o ato da virada trava primeiro).
+    // D-F58 (= Q-F65 (a), Valdo 2026-10-10): no dual-run a SE do ERP só muda pelo ATO — excluída NÃO revive, QUALQUER que
     // seja o contador (o ato também aposenta SE com contador 0, e o revive cunharia 1, 2… na série que a nfse-api já usa)
     if (model === 'SE') {
       const history = await lockIssuerHistory(conn, scope.schemaName, scope.institutionId, model)
@@ -127,7 +127,7 @@ export async function removeIssuer(model: IssuerModel, scope: IssuerScope): Prom
     if (!current) {
       throw new HttpError(404, `Estabelecimento não tem habilitação do emissor para o modelo ${model}`, undefined, ErrorCodes.FISCAL_ISSUER_MISSING)
     }
-    // D-F49/D-F51 (= Q-F59 (a)): a SE só sai pelo ATO da virada (D-F44) — excluir pelo ERP não teria volta (o revive recusa),
+    // D-F56/D-F58 (= Q-F65 (a)): a SE só sai pelo ATO da virada (D-F44) — excluir pelo ERP não teria volta (o revive recusa),
     // qualquer que seja o contador. (A guarda de "transmissão viva" que vivia aqui ficou inalcançável e saiu.)
     if (history) {
       throw new HttpError(409, 'A habilitação de NFS-e só é aposentada pela virada para a API fiscal — não se exclui pelo ERP',

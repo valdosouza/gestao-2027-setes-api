@@ -311,7 +311,7 @@ export async function buildDpsBase(
   }
   const { identity, prest, simplesTotalTaxAliquot } = await buildEmitter(schemaName, institutionId)
   const totTrib = emitterDpsFacts(prest, simplesTotalTaxAliquot)
-  // D-F53 (= Q-F61 (a), Valdo 2026-10-10): a IM do PRESTADOR vai ao DPS só em HOMOLOGAÇÃO — o CNC de H a EXIGE (E0116,
+  // D-F59 (= Q-F67 (a), Valdo 2026-10-10): a IM do PRESTADOR vai ao DPS só em HOMOLOGAÇÃO — o CNC de H a EXIGE (E0116,
   // smoke da nfse-api de 2026-10-10; porte no dual-run — D-F43) e o de PRODUÇÃO a RECUSA (E0120 — Q-N35). A IM é FATO do emitente (`tb_company.im`); quem decide se
   // ela entra no DPS é o AMBIENTE da habilitação (dado do fisco, não preferência). A IM do TOMADOR não muda.
   const { im: _prestIm, ...prestWithoutIm } = prest

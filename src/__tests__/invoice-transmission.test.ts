@@ -131,7 +131,7 @@ beforeEach(() => {
   adapter.municipalTerms.mockResolvedValue({ cancelDays: null, raw: {} })
 })
 
-describe('D-F53 (= Q-F61 (a), Valdo 2026-10-10) — IM do PRESTADOR no DPS só em HOMOLOGAÇÃO', () => {
+describe('D-F59 (= Q-F67 (a), Valdo 2026-10-10) — IM do PRESTADOR no DPS só em HOMOLOGAÇÃO', () => {
   // o cadastro do emitente TEM a IM (777): em H o CNC exige (E0116); em P o CNC recusa (E0120 — Q-N35)
   it('habilitação em PRODUÇÃO: o mesmo emitente sai SEM <IM> no <prest>; em HOMOLOGAÇÃO sai COM', async () => {
     adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })

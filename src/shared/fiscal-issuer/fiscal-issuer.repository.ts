@@ -51,10 +51,10 @@ export async function getIssuer(
 }
 
 /**
- * D-F49/D-F51 (Valdo 2026-10-10) — HISTÓRIA da habilitação, travada pela PK (registro): viva ou excluída e o contador do
+ * D-F56/D-F58 (Valdo 2026-10-10) — HISTÓRIA da habilitação, travada pela PK (registro): viva ou excluída e o contador do
  * DPS. No dual-run a habilitação SE só é aposentada pelo ATO da virada (`nfse-api/scripts/cutover-erp.ts`, D-F44): o ERP
  * não a REVIVE (o revive voltaria a cunhar os nDPS que a API fiscal já cunhou depois da virada — cenário R2-2; com contador
- * 0, a partir do 1 — ADV-R8-01) nem a EXCLUI (sem volta pelo revive). D-F51: QUALQUER que seja o contador.
+ * 0, a partir do 1 — ADV-R8-01) nem a EXCLUI (sem volta pelo revive). D-F58: QUALQUER que seja o contador.
  */
 export async function lockIssuerHistory(
   conn: PoolConnection, schemaName: string, institutionId: number, model: IssuerModel
@@ -71,7 +71,7 @@ export async function lockIssuerHistory(
 
 /**
  * Cria ou altera a habilitação do modelo; linha excluída REVIVE (deleted = 'N')
- * — a habilitação é ato normal de implantação, não precisa de id novo. D-F49/D-F51: a SE
+ * — a habilitação é ato normal de implantação, não precisa de id novo. D-F56/D-F58: a SE
  * excluída NÃO revive (o serviço confere antes) — só 55/65 revivem.
  */
 export async function upsertIssuer(

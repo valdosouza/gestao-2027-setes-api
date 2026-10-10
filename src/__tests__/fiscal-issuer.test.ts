@@ -286,7 +286,7 @@ describe('PUT /issuer/:model', () => {
     expect(conn.commit).toHaveBeenCalledTimes(1)
   })
 
-  it('DELETE: a SE não se exclui pelo ERP (D-F51 — 409, nada gravado); o 55 soft-deleta e o certificado do estabelecimento FICA', async () => {
+  it('DELETE: a SE não se exclui pelo ERP (D-F58 — 409, nada gravado); o 55 soft-deleta e o certificado do estabelecimento FICA', async () => {
     storeIssuerCertificate(S.schemaName, S.institutionId, validPfx, PASSWORD)
     conn.query.mockImplementation(async (sql: string) => {
       if (issuerSql(sql)) return [[{ institutionId: 1, model: 'SE', environment: 'H', serie: '1', userId: 7 }]]
@@ -314,7 +314,7 @@ describe('PUT /issuer/:model', () => {
   })
 })
 
-describe('D-F49 (= Q-F57 (a)) — SE com numeração emitida só sai pelo ATO da virada', () => {
+describe('D-F56 (= Q-F63 (a)) — SE com numeração emitida só sai pelo ATO da virada', () => {
   const historySql = (sql: string) => /dps_last_number AS dpsLastNumber/.test(sql)
   const rowSql = (sql: string) => /tb_establishment_issuer/.test(sql) && /SELECT/.test(sql) && !historySql(sql)
   const mockRow = (history: { deleted: string; dpsLastNumber: number } | null, live: boolean) => {
@@ -337,7 +337,7 @@ describe('D-F49 (= Q-F57 (a)) — SE com numeração emitida só sai pelo ATO da
     expect(conn.rollback).toHaveBeenCalled()
   })
 
-  it('D-F51: SE excluída NÃO revive MESMO com contador 0; SE viva (com ou sem história) segue editável; SE nova nasce; o 55 não é tocado pela guarda', async () => {
+  it('D-F58: SE excluída NÃO revive MESMO com contador 0; SE viva (com ou sem história) segue editável; SE nova nasce; o 55 não é tocado pela guarda', async () => {
     mockRow({ deleted: 'S', dpsLastNumber: 0 }, false)
     await expect(saveIssuer('SE', { environment: 'P', serie: '1' }, S)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_RETIRED' })
     expect(conn.query.mock.calls.some(c => /INSERT INTO/.test(c[0]))).toBe(false)
@@ -353,7 +353,7 @@ describe('D-F49 (= Q-F57 (a)) — SE com numeração emitida só sai pelo ATO da
     expect(conn.query.mock.calls.some(c => historySql(c[0]))).toBe(false)
   })
 
-  it('D-F51: DELETE da SE → 409 FISCAL_ISSUER_CUTOVER_ONLY com OU sem história (só o ato a aposenta); nada gravado', async () => {
+  it('D-F58: DELETE da SE → 409 FISCAL_ISSUER_CUTOVER_ONLY com OU sem história (só o ato a aposenta); nada gravado', async () => {
     for (const n of [711, 0]) {
       jest.clearAllMocks(); ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
       mockRow({ deleted: 'N', dpsLastNumber: n }, true)

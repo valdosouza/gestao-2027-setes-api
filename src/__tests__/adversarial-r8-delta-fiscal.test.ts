@@ -1,12 +1,12 @@
 /// <reference types="jest" />
 // GATE ADVERSARIAL do delta das APIs fiscais (sessão 2026-10-10) — lado setes-api, SÓ unit/mocks (nenhuma escrita no
 // `setes_setes` real). Alvos:
-//  - D-F49 (`lockIssuerHistory` + `saveIssuer`/`removeIssuer`): a habilitação SE com numeração emitida não é REVIVIDA nem
+//  - D-F56 (`lockIssuerHistory` + `saveIssuer`/`removeIssuer`): a habilitação SE com numeração emitida não é REVIVIDA nem
 //    EXCLUÍDA pelo ERP — só o ato da virada (nfse-api `scripts/cutover-erp.ts`) a aposenta.
 //  - L2 (`normalizeCancelMotive`): Unicode e tamanhos-limite no motivo do cancelamento (o piso de 15 contado depois de
 //    limpar o controle).
 // Achados (os `it.failing` fixam o estado atual — a correção/decisão é do Valdo):
-//  - [MEDIUM ADV-R8-01 → Q-F59] o ato da virada aposenta a SE com `deleted='S'` SEM olhar o contador: numa institution que
+//  - [MEDIUM ADV-R8-01 → Q-F65] o ato da virada aposenta a SE com `deleted='S'` SEM olhar o contador: numa institution que
 //    vira com `dps_last_number = 0` (cliente novo do dual-run que configurou a SE no ERP e nunca emitiu), a linha aposentada
 //    é indistinguível de "SE excluída sem história" e o PUT da aba "Emissor fiscal" a REVIVE — o setes-api volta a cunhar
 //    nDPS a partir de 0 na MESMA série que a nfse-api já cunha (R2-2 / M1 reaberto para quem virou sem numeração).
@@ -55,7 +55,7 @@ beforeEach(() => {
   ;((pool as any).query as jest.Mock).mockResolvedValue([[]])
 })
 
-describe('D-F49 — a SE aposentada pelo ATO não volta pelo ERP', () => {
+describe('D-F56 — a SE aposentada pelo ATO não volta pelo ERP', () => {
   it('sem achado: `lockIssuerHistory` é UMA leitura pela PK (institution × modelo) com FOR UPDATE — viva OU excluída (sem filtro de deleted)', async () => {
     const c = { query: jest.fn(async () => [[{ deleted: 'S', dpsLastNumber: '12' }]]) } as any
     expect(await lockIssuerHistory(c, 'setes_setes', 1, 'SE')).toEqual({ deleted: true, dpsLastNumber: 12 })
@@ -108,7 +108,7 @@ describe('D-F49 — a SE aposentada pelo ATO não volta pelo ERP', () => {
   // `nextDpsNumber` do setes-api cunha 1, 2, 3… — os MESMOS nDPS que a nfse-api cunhou a partir do contador copiado (0) na
   // MESMA série (a D-F44 exige série '1' no ato): mesmo Id de DPS (cMun+CNPJ+série+nDPS) para notas DIFERENTES.
   // ---------------------------------------------------------------------------------------------------------------
-  it('[MEDIUM ADV-R8-01 → D-F51 — CORRIGIDO] a SE aposentada pelo ATO da virada não revive pelo ERP MESMO com o contador 0 (nada gravado)', async () => {
+  it('[MEDIUM ADV-R8-01 → D-F58 — CORRIGIDO] a SE aposentada pelo ATO da virada não revive pelo ERP MESMO com o contador 0 (nada gravado)', async () => {
     const db = erpRow({ model: 'SE', deleted: 'S', dpsLastNumber: 0 })
     await expect(saveIssuer('SE', { environment: 'P', serie: '1' }, S)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_RETIRED' })
     expect(db.calls.some(s => /INSERT INTO/.test(s))).toBe(false)
