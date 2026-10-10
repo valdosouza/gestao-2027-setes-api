@@ -15,6 +15,7 @@ import {
   adapterFor, buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, signXml, ADN_SIGN_ALGORITHM, isLocalCredentialError,
 } from '@shared/tax-authority'
 import { TransmissionEventKind } from '../transmission.repository'
+import { toTsString } from '@shared/tax-authority/dps-builder'
 
 /**
  * ESTRATÉGIA DO RAMO DE SERVIÇO (D-E6 / §3.11 da NF-e: UMA composição, o ramo
@@ -310,6 +311,11 @@ export async function buildDpsBase(
   }
   const { identity, prest, simplesTotalTaxAliquot } = await buildEmitter(schemaName, institutionId)
   const totTrib = emitterDpsFacts(prest, simplesTotalTaxAliquot)
+  // D-F53 (= Q-F61 (a), Valdo 2026-10-10): a IM do PRESTADOR vai ao DPS só em HOMOLOGAÇÃO — o CNC de H a EXIGE (E0116,
+  // smoke da nfse-api de 2026-10-10; porte no dual-run — D-F43) e o de PRODUÇÃO a RECUSA (E0120 — Q-N35). A IM é FATO do emitente (`tb_company.im`); quem decide se
+  // ela entra no DPS é o AMBIENTE da habilitação (dado do fisco, não preferência). A IM do TOMADOR não muda.
+  const { im: _prestIm, ...prestWithoutIm } = prest
+  const prestDps = environment === 'H' ? prest : prestWithoutIm
   const toma = await buildRecipient(header.entityId)
   const cLocPrestacao = await cityIbge(b.cityId)
   if (!cLocPrestacao) {
@@ -343,7 +349,7 @@ export async function buildDpsBase(
   }
   const input: Omit<DpsInput, 'serie' | 'nDps'> = {
     environment, dhEmi: await nowIsoForInstitution(schemaName, institutionId), verAplic: VER_APLIC, dCompet: header.dtEmission,
-    tpEmit: '1', cLocEmi: identity.cMunEmi, prest, toma,
+    tpEmit: '1', cLocEmi: identity.cMunEmi, prest: prestDps, toma,
     serv: {
       locPrest: { cLocPrestacao },
       cServ: {
@@ -420,11 +426,20 @@ export function buildSignedCancel(
   return { xml: signLocal(xml, referenceId, opened), xMotivo }
 }
 
-/** xMotivo 15–255: motivo curto ganha o complemento padrão; longo é cortado. */
+/**
+ * xMotivo 15–255: motivo curto ganha o complemento padrão; longo é cortado. D-F43 (gate do delta da Rodada 6, L2 — porte da
+ * nfse-api): o caractere de controle sai ANTES do piso — o `text()` do builder o remove depois e o motivo encolhia abaixo de
+ * 15 (Error cru → 500).
+ */
 export function normalizeCancelMotive(reason: string): string {
-  let m = String(reason ?? '').replace(/\s+/g, ' ').trim()
-  if (m.length < XMOTIVO_MIN) m = `${m}${m ? ' — ' : ''}Cancelamento solicitado pelo emissor`
-  return m.slice(0, XMOTIVO_MAX)
+  let m = toTsString(String(reason ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ''))
+    // gate adversarial r8 (ADV-R8-07) + TSString do XSD (só U+0020–U+00FF): não-caractere, surrogate solto, invisível e TODO
+    // caractere acima de U+00FF saem (tipografia vira ASCII) ANTES do piso — o piso de 15 não pode ser cumprido por eles
+    .replace(/\s+/g, ' ').trim()
+  // complemento com hífen ASCII — o travessão (U+2014) estava FORA do TSString e o fisco recusava o evento (NFS-e 706, 2026-10-10)
+  if (m.length < XMOTIVO_MIN) m = `${m}${m ? ' - ' : ''}Cancelamento solicitado pelo emissor`
+  const cut = m.slice(0, XMOTIVO_MAX)
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut          // o corte em 255 nunca parte um par (emoji)
 }
 
 // ---------------------------------------------------------------------------

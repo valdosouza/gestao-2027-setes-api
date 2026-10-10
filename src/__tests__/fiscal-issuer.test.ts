@@ -286,25 +286,23 @@ describe('PUT /issuer/:model', () => {
     expect(conn.commit).toHaveBeenCalledTimes(1)
   })
 
-  it('DELETE: viva em QUALQUER ambiente prende (409); sem viva soft-deleta e o certificado do estabelecimento FICA', async () => {
+  it('DELETE: a SE não se exclui pelo ERP (D-F51 — 409, nada gravado); o 55 soft-deleta e o certificado do estabelecimento FICA', async () => {
     storeIssuerCertificate(S.schemaName, S.institutionId, validPfx, PASSWORD)
-    conn.query.mockImplementation(async (sql: string) => {
-      if (issuerSql(sql)) return [[{ institutionId: 1, model: 'SE', environment: 'H', serie: '1', userId: 7 }]]
-      if (countSql(sql)) return [[{ n: 1 }]]
-      return [{ affectedRows: 1 }]
-    })
-    await expect(removeIssuer('SE', S)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_HAS_LIVE_TRANSMISSIONS' })
-    const cnt = conn.query.mock.calls.find(c => countSql(c[0]))!
-    expect(cnt[1]).toEqual([1, null, null])
-    expect(conn.rollback).toHaveBeenCalled()
-    jest.clearAllMocks()
-    ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
     conn.query.mockImplementation(async (sql: string) => {
       if (issuerSql(sql)) return [[{ institutionId: 1, model: 'SE', environment: 'H', serie: '1', userId: 7 }]]
       if (countSql(sql)) return [[{ n: 0 }]]
       return [{ affectedRows: 1 }]
     })
-    await removeIssuer('SE', S)
+    await expect(removeIssuer('SE', S)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_CUTOVER_ONLY' })
+    expect(conn.query.mock.calls.some(c => /SET deleted = 'S'/.test(c[0]))).toBe(false)
+    expect(conn.rollback).toHaveBeenCalled()
+    jest.clearAllMocks()
+    ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+    conn.query.mockImplementation(async (sql: string) => {
+      if (issuerSql(sql)) return [[{ institutionId: 1, model: '55', environment: 'H', serie: '3', userId: 7 }]]
+      return [{ affectedRows: 1 }]
+    })
+    await removeIssuer('55', S)
     expect(conn.query.mock.calls.some(c => /SET deleted = 'S'/.test(c[0]))).toBe(true)
     expect(conn.commit).toHaveBeenCalledTimes(1)
     expect(hasSecret(certRef('H'))).toBe(true); expect(hasSecret(keyRef('H'))).toBe(true)
@@ -313,5 +311,54 @@ describe('PUT /issuer/:model', () => {
   it('DELETE de linha inexistente → 404 FISCAL_ISSUER_MISSING', async () => {
     conn.query.mockResolvedValue([[]])
     await expect(removeIssuer('55', S)).rejects.toMatchObject({ statusCode: 404, code: 'FISCAL_ISSUER_MISSING' })
+  })
+})
+
+describe('D-F49 (= Q-F57 (a)) — SE com numeração emitida só sai pelo ATO da virada', () => {
+  const historySql = (sql: string) => /dps_last_number AS dpsLastNumber/.test(sql)
+  const rowSql = (sql: string) => /tb_establishment_issuer/.test(sql) && /SELECT/.test(sql) && !historySql(sql)
+  const mockRow = (history: { deleted: string; dpsLastNumber: number } | null, live: boolean) => {
+    let alive = live                                                  // o INSERT/revive faz a linha existir para o getIssuer
+    conn.query.mockImplementation(async (sql: string) => {
+      if (historySql(sql)) return [history ? [history] : []]
+      if (rowSql(sql)) return [alive ? [{ institutionId: 1, model: 'SE', environment: 'P', serie: '1', userId: 7 }] : []]
+      if (/tb_invoice_service_transmission/.test(sql)) return [[{ n: 0 }]]
+      if (/INSERT INTO/.test(sql)) alive = true
+      return [{ affectedRows: 1 }]
+    })
+  }
+
+  it('PUT da SE aposentada (deleted=S) COM história → 409 FISCAL_ISSUER_RETIRED, nada gravado; a história é a 1ª trava', async () => {
+    mockRow({ deleted: 'S', dpsLastNumber: 711 }, false)
+    await expect(saveIssuer('SE', { environment: 'P', serie: '1' }, S)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_RETIRED' })
+    expect(conn.query.mock.calls.some(c => /INSERT INTO/.test(c[0]))).toBe(false)
+    expect(historySql(conn.query.mock.calls[0][0])).toBe(true)
+    expect(conn.query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
+    expect(conn.rollback).toHaveBeenCalled()
+  })
+
+  it('D-F51: SE excluída NÃO revive MESMO com contador 0; SE viva (com ou sem história) segue editável; SE nova nasce; o 55 não é tocado pela guarda', async () => {
+    mockRow({ deleted: 'S', dpsLastNumber: 0 }, false)
+    await expect(saveIssuer('SE', { environment: 'P', serie: '1' }, S)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_RETIRED' })
+    expect(conn.query.mock.calls.some(c => /INSERT INTO/.test(c[0]))).toBe(false)
+    for (const h of [{ deleted: 'N', dpsLastNumber: 711 }, { deleted: 'N', dpsLastNumber: 0 }, null]) {
+      jest.clearAllMocks(); ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+      mockRow(h, h?.deleted === 'N')
+      await saveIssuer('SE', { environment: 'P', serie: '1' }, S)
+      expect(conn.query.mock.calls.some(c => /INSERT INTO/.test(c[0]))).toBe(true)
+    }
+    jest.clearAllMocks(); ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+    mockRow({ deleted: 'S', dpsLastNumber: 711 }, false)
+    await saveIssuer('55', { environment: 'P', serie: '3' }, S)
+    expect(conn.query.mock.calls.some(c => historySql(c[0]))).toBe(false)
+  })
+
+  it('D-F51: DELETE da SE → 409 FISCAL_ISSUER_CUTOVER_ONLY com OU sem história (só o ato a aposenta); nada gravado', async () => {
+    for (const n of [711, 0]) {
+      jest.clearAllMocks(); ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
+      mockRow({ deleted: 'N', dpsLastNumber: n }, true)
+      await expect(removeIssuer('SE', S)).rejects.toMatchObject({ statusCode: 409, code: 'FISCAL_ISSUER_CUTOVER_ONLY' })
+      expect(conn.query.mock.calls.some(c => /SET deleted = 'S'/.test(c[0]))).toBe(false)
+    }
   })
 })

@@ -49,10 +49,27 @@ export function dec2(v: number): string {
 }
 
 /** TSString: sem espaço nas pontas e sem controle; multiline mantém \n (TSStringComQuebraDeLinha). */
+/**
+ * TSString do XSD (TODO texto do DPS e dos eventos): só U+0020–U+00FF — padrão `[!-ÿ]{1}[ -ÿ]{0,}[!-ÿ]{1}`. Tipografia comum
+ * vira o ASCII equivalente e o resto fora da faixa (emoji, símbolos, separadores Unicode) SAI — senão o fisco recusa o documento
+ * pelo ESQUEMA com 400 sem detalhe (achado em PRODUÇÃO, 2026-10-10: o cancelamento da NFS-e 706 com o motivo "teste" levou o
+ * travessão U+2014 do complemento automático).
+ */
+const TYPOGRAPHY: Record<string, string> = {
+  '\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2013': '-', '\u2014': '-', '\u2015': '-', '\u2212': '-',
+  '\u2018': "'", '\u2019': "'", '\u201A': "'", '\u201B': "'", '\u201C': '"', '\u201D': '"', '\u201E': '"',
+  '\u2026': '...', '\u2022': '-', '\u2028': ' ', '\u2029': ' ',
+}
+export function toTsString(s: string): string {
+  return String(s ?? '')
+    .replace(/[\u2010-\u2015\u2212\u2018-\u201E\u2026\u2022\u2028\u2029]/g, c => TYPOGRAPHY[c] ?? '')
+    .replace(/[^\u0000-\u00FF]/g, '')
+}
+
 function text(s: string, multiline = false): string {
   // caractere de CONTROLE é proibido no XML 1.0 (gate adversarial da F1 da nfse-api, LOW — portado na D-F43 durante o
   // dual-run): nunca vai cru ao XML assinado
-  const t = String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+  const t = toTsString(String(s ?? '')).replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
   const cleaned = multiline ? t.replace(/[^\S\n]+\n/g, '\n') : t.replace(/[\n\t]+/g, ' ')
   return cleaned.trim()
 }

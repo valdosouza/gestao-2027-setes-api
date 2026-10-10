@@ -131,6 +131,19 @@ beforeEach(() => {
   adapter.municipalTerms.mockResolvedValue({ cancelDays: null, raw: {} })
 })
 
+describe('D-F53 (= Q-F61 (a), Valdo 2026-10-10) — IM do PRESTADOR no DPS só em HOMOLOGAÇÃO', () => {
+  // o cadastro do emitente TEM a IM (777): em H o CNC exige (E0116); em P o CNC recusa (E0120 — Q-N35)
+  it('habilitação em PRODUÇÃO: o mesmo emitente sai SEM <IM> no <prest>; em HOMOLOGAÇÃO sai COM', async () => {
+    adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
+    ;(issuer.openIssuer as jest.Mock).mockResolvedValue({ ...opened(), issuer: { ...opened().issuer, environment: 'P' } })
+    await transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE)
+    const sentP = adapter.transmit.mock.calls[0][1] as string
+    expect(sentP).toContain('<prest><CNPJ>12345678000199</CNPJ><regTrib>')
+    expect(sentP).not.toMatch(/<prest>(?:(?!<\/prest>)[\s\S])*<IM>/)
+    expect(sentP).toContain('<toma><CNPJ>98765432000188</CNPJ>')                      // a do tomador segue a regra dele
+  })
+})
+
 describe('transmitServiceInvoice — reserva sob lock → fisco FORA da transação → A', () => {
   it('caminho feliz: institution travada PRIMEIRO, nDPS cunhado write-once, DPS assinado em disco, fisco entre os commits, A source P + XML da NFS-e', async () => {
     adapter.transmit.mockResolvedValue({ accessKey: KEY, nfseNumber: '123', dhProc: '2026-09-21T10:15:30-03:00', nfseXml: NFSE_XML, raw: {} })
@@ -357,7 +370,7 @@ describe('cancelServiceInvoiceAtAuthority — D-N7: plano local → estado fisca
     adapter.registerEvent.mockResolvedValue({ dhEvento: null, raw: {} })
     const r = await cancelServiceInvoiceAtAuthority(S.schema, S.inst, S.user, INVOICE, 'erro')
     expect(r.warnings).toEqual([expect.stringMatching(/Prazo de cancelamento .*30 dias/)])
-    expect(adapter.registerEvent.mock.calls[0][2]).toContain('<xMotivo>erro — Cancelamento solicitado pelo emissor</xMotivo>')
+    expect(adapter.registerEvent.mock.calls[0][2]).toContain('<xMotivo>erro - Cancelamento solicitado pelo emissor</xMotivo>')
   })
 
   it('fisco RECUSA (422 → E0822 prazo) → 409 FISCAL_CANCEL_REFUSED, nada gravado', async () => {

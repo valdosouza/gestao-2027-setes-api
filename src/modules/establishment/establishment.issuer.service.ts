@@ -5,7 +5,7 @@ import logger from '@shared/logger/logger'
 import {
   IssuerModel, IssuerEnvironment, IssuerAuthority, IssuerCertificateStatus,
   authorityOf, isIssuerEnabled, issuerCertificateStatus, storeIssuerCertificate, clearIssuerCertificate,
-  listIssuers, getIssuer, upsertIssuer, softDeleteIssuer, countLiveServiceTransmissions,
+  listIssuers, getIssuer, upsertIssuer, softDeleteIssuer, countLiveServiceTransmissions, lockIssuerHistory,
 } from '@shared/fiscal-issuer'
 import { IssuerDto, IssuerCertificateDto } from './establishment.issuer.dto'
 import { DPS_SERIE_MIN, DPS_SERIE_MAX } from '@shared/tax-authority/dps-builder'
@@ -80,6 +80,16 @@ export async function saveIssuer(model: IssuerModel, input: IssuerDto, scope: Is
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
+    // D-F49: 1ª instrução, a HISTÓRIA da linha travada pela PK (a mesma linha que o ato da virada trava primeiro).
+    // D-F51 (= Q-F59 (a), Valdo 2026-10-10): no dual-run a SE do ERP só muda pelo ATO — excluída NÃO revive, QUALQUER que
+    // seja o contador (o ato também aposenta SE com contador 0, e o revive cunharia 1, 2… na série que a nfse-api já usa)
+    if (model === 'SE') {
+      const history = await lockIssuerHistory(conn, scope.schemaName, scope.institutionId, model)
+      if (history?.deleted) {
+        throw new HttpError(409, 'A habilitação de NFS-e deste estabelecimento está aposentada — a emissão de NFS-e passou para a API fiscal e não volta pelo ERP',
+          [{ field: 'model', message: `Último nDPS cunhado pelo ERP: ${history.dpsLastNumber}` }], ErrorCodes.FISCAL_ISSUER_RETIRED)
+      }
+    }
     const current = await getIssuer(conn, scope.schemaName, scope.institutionId, model, true)
     if (current && current.environment !== input.environment && model === 'SE') {
       const live = await countLiveServiceTransmissions(conn, scope.schemaName, scope.institutionId, current.environment)
@@ -112,16 +122,16 @@ export async function removeIssuer(model: IssuerModel, scope: IssuerScope): Prom
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
+    const history = model === 'SE' ? await lockIssuerHistory(conn, scope.schemaName, scope.institutionId, model) : null
     const current = await getIssuer(conn, scope.schemaName, scope.institutionId, model, true)
     if (!current) {
       throw new HttpError(404, `Estabelecimento não tem habilitação do emissor para o modelo ${model}`, undefined, ErrorCodes.FISCAL_ISSUER_MISSING)
     }
-    if (model === 'SE') {
-      const live = await countLiveServiceTransmissions(conn, scope.schemaName, scope.institutionId)
-      if (live > 0) {
-        throw new HttpError(409, `Emissor tem ${live} transmissão(ões) viva(s) no fisco — aguarde a voz do fisco antes de excluir a habilitação`,
-          undefined, ErrorCodes.FISCAL_ISSUER_HAS_LIVE_TRANSMISSIONS)
-      }
+    // D-F49/D-F51 (= Q-F59 (a)): a SE só sai pelo ATO da virada (D-F44) — excluir pelo ERP não teria volta (o revive recusa),
+    // qualquer que seja o contador. (A guarda de "transmissão viva" que vivia aqui ficou inalcançável e saiu.)
+    if (history) {
+      throw new HttpError(409, 'A habilitação de NFS-e só é aposentada pela virada para a API fiscal — não se exclui pelo ERP',
+        [{ field: 'model', message: `Último nDPS cunhado pelo ERP: ${history.dpsLastNumber}` }], ErrorCodes.FISCAL_ISSUER_CUTOVER_ONLY)
     }
     await softDeleteIssuer(conn, scope.schemaName, scope.institutionId, model)
     await conn.commit()

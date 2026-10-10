@@ -51,8 +51,28 @@ export async function getIssuer(
 }
 
 /**
+ * D-F49/D-F51 (Valdo 2026-10-10) — HISTÓRIA da habilitação, travada pela PK (registro): viva ou excluída e o contador do
+ * DPS. No dual-run a habilitação SE só é aposentada pelo ATO da virada (`nfse-api/scripts/cutover-erp.ts`, D-F44): o ERP
+ * não a REVIVE (o revive voltaria a cunhar os nDPS que a API fiscal já cunhou depois da virada — cenário R2-2; com contador
+ * 0, a partir do 1 — ADV-R8-01) nem a EXCLUI (sem volta pelo revive). D-F51: QUALQUER que seja o contador.
+ */
+export async function lockIssuerHistory(
+  conn: PoolConnection, schemaName: string, institutionId: number, model: IssuerModel
+): Promise<{ deleted: boolean; dpsLastNumber: number } | null> {
+  const s = assertSchema(schemaName)
+  const [rows] = await conn.query<any[]>(
+    `SELECT deleted, dps_last_number AS dpsLastNumber FROM \`${s}\`.tb_establishment_issuer
+      WHERE tb_institution_id = ? AND model = ? FOR UPDATE`,
+    [institutionId, model]
+  )
+  const r = Array.isArray(rows) ? rows[0] : undefined
+  return r ? { deleted: r.deleted === 'S', dpsLastNumber: Number(r.dpsLastNumber ?? 0) || 0 } : null
+}
+
+/**
  * Cria ou altera a habilitação do modelo; linha excluída REVIVE (deleted = 'N')
- * — a habilitação é ato normal de implantação, não precisa de id novo.
+ * — a habilitação é ato normal de implantação, não precisa de id novo. D-F49/D-F51: a SE
+ * excluída NÃO revive (o serviço confere antes) — só 55/65 revivem.
  */
 export async function upsertIssuer(
   conn: PoolConnection, schemaName: string, institutionId: number, model: IssuerModel, input: IssuerInput

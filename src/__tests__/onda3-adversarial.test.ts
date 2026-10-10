@@ -743,7 +743,7 @@ describe('C. cancelServiceInvoiceAtAuthority — D-N7 na ordem, com o adaptador 
     withAuthorizedTx()
     await cancelServiceInvoiceAtAuthority(S.schema, S.inst, S.user, INVOICE, 'a<script>b</b>')
     const xml1 = adapter.registerEvent.mock.calls[0][2] as string
-    expect(xml1).toContain('<xMotivo>a&lt;script&gt;b&lt;/b&gt; — Cancelamento solicitado pelo emissor</xMotivo>')
+    expect(xml1).toContain('<xMotivo>a&lt;script&gt;b&lt;/b&gt; - Cancelamento solicitado pelo emissor</xMotivo>')
     await cancelServiceInvoiceAtAuthority(S.schema, S.inst, S.user, INVOICE, 'x'.repeat(300))
     const xml2 = adapter.registerEvent.mock.calls[1][2] as string
     expect(xml2).toContain(`<xMotivo>${'x'.repeat(255)}</xMotivo>`)
@@ -894,11 +894,12 @@ describe('E. dps-builder / xmldsig — escape, série, forma dos códigos', () =
   it('(21) xDescServ com <, &, ]]>, aspas e acentos → escapado, XML bem formado, assinatura verifica e o texto volta igual', () => {
     const desc = 'Licença <ERP> & suporte ]]> "aspas" \'apóstrofo\' — ação ç ü 日本'
     const xml = buildDpsXml({ ...base, serv: { ...base.serv, cServ: { ...base.serv.cServ, xDescServ: desc } } }, DPS_ID)
-    expect(xml).toContain('<xDescServ>Licença &lt;ERP&gt; &amp; suporte ]]&gt; &quot;aspas&quot; &apos;apóstrofo&apos; — ação ç ü 日本</xDescServ>')
+    // TSString do XSD (só U+0020–U+00FF — achado em produção 2026-10-10): o travessão vira "-" e "日本" sai; o acento fica
+    expect(xml).toContain('<xDescServ>Licença &lt;ERP&gt; &amp; suporte ]]&gt; &quot;aspas&quot; &apos;apóstrofo&apos; - ação ç ü</xDescServ>')
     expect(xml).not.toContain('<ERP>'); expect(xml).not.toContain(' & '); expect(xml).not.toContain(']]>')
     const signed = sign(xml)
     expect(verifyXml(signed, PAIR.certPem)).toBe(true)
-    expect(unescapeXml(/<xDescServ>(.*?)<\/xDescServ>/.exec(signed)![1])).toBe(desc)
+    expect(unescapeXml(/<xDescServ>(.*?)<\/xDescServ>/.exec(signed)![1])).toBe('Licença <ERP> & suporte ]]> "aspas" \'apóstrofo\' - ação ç ü')
     // 1 char alterado depois da assinatura → falha
     expect(verifyXml(signed.replace('suporte', 'suportE'), PAIR.certPem)).toBe(false)
   })
