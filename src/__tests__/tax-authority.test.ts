@@ -359,9 +359,16 @@ describe('adaptador ADN — consultas e eventos', () => {
       expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('cancelled')
     }
     mockHttp.mockReset()
+    // a rota 105102 devolve um e105102 (o XML confere com o tipo perguntado — D-F69)
+    const substXml = EVENT_XML.split('e101101').join('e105102').split('101101').join('105102')
+    mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(noEvent())
+      .mockResolvedValueOnce(eventsOf(arquivoXml(substXml), 105102))
+    expect((await adn.queryNfse(ctx, CHAVE))).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '105102' } })
+    // D-F69: a rota 105102 devolvendo um e101101 (contradição que apagaria a marca da substituição) → ambíguo
+    mockHttp.mockReset()
     mockHttp.mockResolvedValueOnce(ok({ nfseXmlGZipB64: gz(NFSE_XML) })).mockResolvedValueOnce(noEvent())
       .mockResolvedValueOnce(eventsOf(arquivoXml(EVENT_XML), 105102))
-    expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('cancelled')
+    expect((await adn.queryNfse(ctx, CHAVE)).status).toBe('unknown')
     expect(mockHttp.mock.calls[2][0].url).toBe(`${BASE_URL}/eventos/105102/1`)
   })
 

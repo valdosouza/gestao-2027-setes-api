@@ -231,7 +231,8 @@ export const adnAdapter: TaxAuthorityAdapter = {
     // pergunta — é ilegível (502), nunca voz; um <e101101> dentro dele viraria C irreversível
     if (!xmlKey && !parsed.dpsId) throw unknownResponse('consultar: NFS-e sem identidade (sem Id do infNFSe nem do infDPS)', status, text)
     const base: NfseQuery = { accessKey, status: 'authorized', nfseXml, dhProc: parsed.dhProc }
-    if (parsed.cancelled) return { ...base, status: 'cancelled', cancelled: { dhEvento: parsed.cancelled.dhEvento, motive: parsed.cancelled.xMotivo } }
+    // L6 do gate da Rodada 13: o bloco embutido é por construção um <e101101> (cancelBlock) — o código vai junto (D-F71)
+    if (parsed.cancelled) return { ...base, status: 'cancelled', cancelled: { dhEvento: parsed.cancelled.dhEvento, motive: parsed.cancelled.xMotivo, eventCode: EVENT_CANCEL } }
 
     // cStat (100/102/103/107) NÃO expressa cancelamento: a situação vem dos EVENTOS da chave.
     // D-F61 (= Q-F68 (a), Valdo 2026-10-10): pelo contrato REAL da Sefin (cravado ao vivo em H — `GET /nfse/{chave}/eventos`
@@ -242,14 +243,22 @@ export const adnAdapter: TaxAuthorityAdapter = {
       if (!xmls.length) return { ...base, status: 'unknown' }       // listou e nada se lê: ilegível nunca vira "autorizada"
       // R2-2 (d): só evento GERADO (Id EVT + dhProc) e DESTA chave cancela — evento de outra NFS-e (resposta trocada) ou
       // pedido ecoado (sem Id/dhProc) não é voz sobre esta
-      const found = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).find(({ ev: e }) =>
+      // L7 do gate da Rodada 13: entre os itens que se conferem, o do TIPO PERGUNTADO primeiro (outro tipo antes dele não vira 502)
+      const candidates = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).filter(({ ev: e }) =>
         !!e.eventCode && CANCEL_EVENT_CODES.has(e.eventCode) && isGeneratedEventFor(e, accessKey))
+      const found = candidates.find(({ ev: e }) => e.eventCode === code) ?? candidates[0]
       // D-F63 (= Q-F70, Valdo 2026-10-10): no GET TIPADO (chave + tipo + sequência) um 200 diz "esse evento EXISTE" — o que
       // não se confere como cancelamento gerado desta chave (ilegível, outra chave, eco, outro tipo) é resposta trocada/ilegível:
       // ambíguo, NUNCA "autorizada" (antes gravava N falso num K em voo — gates DF61-01/02, M3). A R2-2 (d) "segue autorizada"
       // era da LISTA `GET /eventos`, que a Sefin não tem
       if (!found) {
         logger.error('Contrato da Sefin divergente: 200 de evento que não se confere como cancelamento desta chave', { code, environment: ctx.environment, items: xmls.length })
+        return { ...base, status: 'unknown' }
+      }
+      // D-F69 (= Q-F76 (a), Valdo 2026-10-10): tipo PERGUNTADO × código do XML divergentes = resposta contraditória → ambíguo,
+      // SALVO quando o XML diz SUBSTITUIÇÃO (fica a marca mais restritiva — D-F64: sem efeito local automático)
+      if (found.ev.eventCode !== code && found.ev.eventCode !== '105102') {
+        logger.error('Contrato da Sefin divergente: evento de tipo diferente do perguntado', { code, eventCode: found.ev.eventCode, environment: ctx.environment })
         return { ...base, status: 'unknown' }
       }
       const cancel = found.ev

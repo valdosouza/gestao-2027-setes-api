@@ -187,6 +187,9 @@ export const ErrorCodes = {
   FISCAL_EFFECT_PENDING:             'FISCAL_EFFECT_PENDING',
   FISCAL_BATCH_RUNNING:              'FISCAL_BATCH_RUNNING',
   FISCAL_DPS_INVALID:                'FISCAL_DPS_INVALID',
+  // Rodada 13 das APIs fiscais (D-F67/D-F74, 2026-10-10): NFS-e cancelada por SUBSTITUIÇÃO (e105102)
+  FISCAL_NFSE_SUBSTITUTED:           'FISCAL_NFSE_SUBSTITUTED',
+  INVOICE_CANCEL_WAIVER_NOT_APPLICABLE: 'INVOICE_CANCEL_WAIVER_NOT_APPLICABLE',
 } as const
 
 export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
@@ -348,4 +351,6 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   FISCAL_EFFECT_PENDING:             'Fisco já cancelou a NFS-e (irreversível), mas o efeito local foi recusado — pendência gravada na transmissão; resolva e consulte a nota de novo',
   FISCAL_BATCH_RUNNING:              'Já existe um lote de transmissão em andamento para esta empresa — aguarde o relatório dele (MEDIUM-4)',
   FISCAL_DPS_INVALID:                'DPS não pôde ser montado com os dados da nota/cadastros (leiaute do XSD) — campo e motivo em fields[]; nada foi reservado',
+  FISCAL_NFSE_SUBSTITUTED:           'NFS-e desta nota foi cancelada por SUBSTITUIÇÃO no fisco (e105102) — existe uma substituta; não se transmite de novo: cancele a nota ou mantenha-a',
+  INVOICE_CANCEL_WAIVER_NOT_APPLICABLE: 'Manter a nota só vale para NFS-e cancelada por SUBSTITUIÇÃO no fisco (e105102), com a nota viva e sem efeito aplicado',
 }

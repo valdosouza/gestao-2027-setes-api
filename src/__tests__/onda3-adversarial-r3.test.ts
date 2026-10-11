@@ -473,7 +473,7 @@ describe('ACHADO R3-3 (MEDIUM) — o adaptador só conhece DOIS dos QUATRO cance
   // contribuinte é a análise fiscal (README: "fora do prazo E0822 → resta a análise fiscal") — e o de ofício
   // é do fisco. Os dois chegam por GET /nfse/{chave}/eventos como evento GERADO desta chave e são ignorados
   // pelo filtro `eventCode === '101101' || '105102'` → nada de C, financeiro/ISS seguem com a nota viva.
-  it.each([['e105104 (deferido por análise fiscal)', '105104'], ['e305101 (cancelamento de ofício)', '305101']])(
+  it.each([['e105104 (deferido por análise fiscal)', '105104']])(
     'GET /eventos traz %s GERADO (Id EVT + dhProc) desta chave → voz C + cancelInvoice', async (_l, code) => {
       useRealAdn(); withAuthorizedTx()
       adnRoutes({ nfse: () => ok({ nfseXmlGZipB64: gz(NFSE_XML) }), eventosGet: () => ok([{ eventoXmlGZipB64: gz(generatedEventXml({ code })) }]) })
@@ -481,6 +481,14 @@ describe('ACHADO R3-3 (MEDIUM) — o adaptador só conhece DOIS dos QUATRO cance
       expect(r).toMatchObject({ kind: 'C', invoiceEvent: 2 })
       expect(invoice.cancelInvoice).toHaveBeenCalledTimes(1)
     })
+  // D-F82 (= Q-F89, Valdo 2026-10-10): o DE OFÍCIO (e305101) é lido (voz C), mas o efeito local espera o HUMANO (cancelar a nota)
+  it('GET /eventos traz e305101 (cancelamento de ofício) GERADO desta chave → voz C, efeito SUSPENSO (D-F82), cancelInvoice NÃO chamado', async () => {
+    useRealAdn(); withAuthorizedTx()
+    adnRoutes({ nfse: () => ok({ nfseXmlGZipB64: gz(NFSE_XML) }), eventosGet: () => ok([{ eventoXmlGZipB64: gz(generatedEventXml({ code: '305101' })) }]) })
+    const r = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
+    expect(r).toMatchObject({ kind: 'C', invoiceEvent: null, effectRefused: expect.stringContaining('DE OFÍCIO') })
+    expect(invoice.cancelInvoice).not.toHaveBeenCalled()
+  })
 })
 
 describe('D-F64 (= Q-F71, Valdo 2026-10-10) — cancelamento por SUBSTITUIÇÃO (e105102) lido na consulta: voz C SIM, efeito local automático NÃO', () => {

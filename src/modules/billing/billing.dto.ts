@@ -66,6 +66,13 @@ export const cancelBodyDto = z.object({
 })
 export type CancelBody = z.infer<typeof cancelBodyDto>
 
+/** D-F67/D-F73 (Rodada 13 das APIs fiscais): "manter a nota" diante da NFS-e SUBSTITUÍDA no fisco — motivo obrigatório. */
+export const cancelWaiverBodyDto = z.object({
+  orderId: z.number().int().positive(),
+  reason:  z.string().trim().min(1).max(255),
+})
+export type CancelWaiverBody = z.infer<typeof cancelWaiverBodyDto>
+
 export const invoiceBodyDto = z.object({
   orderId: z.number().int().positive(),
   // P3.2 — decisão POR FATURAMENTO: false (default) = MVA ajustada pela

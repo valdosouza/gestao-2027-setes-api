@@ -150,6 +150,8 @@ export interface ParsedEvent {
   nSeqEvento: string | null
   cMotivo:    string | null
   xMotivo:    string | null
+  /** D-F76 (= Q-F83): chave da NFS-e SUBSTITUTA (e105102 — chSubstituta); só exibição */
+  substituteKey?: string | null
 }
 
 // ---------------------------------------------------------------------------

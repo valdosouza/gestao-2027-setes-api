@@ -23,9 +23,17 @@ type Q = PoolConnection | typeof pool
  * voz da consulta depois de um K: a NFS-e segue autorizada, o cancelamento pode
  * ser pedido de novo).
  */
-import { TransmissionEventKind, FINAL_TRANSMISSION_KINDS, AUTHORIZED_KINDS } from './transmission-kinds'
+import {
+  TransmissionEventKind, FINAL_TRANSMISSION_KINDS, AUTHORIZED_KINDS, CANCEL_EVENT_CODES, ISSUER_CANCEL_CODE, SUBSTITUTION_CANCEL_CODE,
+  EX_OFFICIO_CANCEL_CODE, HUMAN_EFFECT_CANCEL_CODES,
+} from './transmission-kinds'
 import { LAST_INVOICE_EVENT_KIND_SQL } from '@shared/invoice/invoice'
-export { TransmissionEventKind, FINAL_TRANSMISSION_KINDS, AUTHORIZED_KINDS }
+export {
+  TransmissionEventKind, FINAL_TRANSMISSION_KINDS, AUTHORIZED_KINDS, CANCEL_EVENT_CODES, ISSUER_CANCEL_CODE, SUBSTITUTION_CANCEL_CODE,
+  EX_OFFICIO_CANCEL_CODE, HUMAN_EFFECT_CANCEL_CODES,
+}
+/** Lista SQL dos códigos de efeito humano (constantes nossas — nunca entrada do usuário). */
+const HUMAN_CODES_SQL = [...HUMAN_EFFECT_CANCEL_CODES].map(c => `'${c}'`).join(', ')
 export type TransmissionSource = 'P' | 'Q'
 export type TransmissionEnvironment = 'H' | 'P'
 
@@ -100,6 +108,12 @@ const LIFE_WHERE = (s: string) => `
            (SELECT MAX(ev.event) FROM \`${s}\`.tb_invoice_event ev
              WHERE ev.tb_institution_id = t.tb_institution_id AND ev.tb_invoice_id = t.tb_invoice_id
                AND ev.terminal = t.terminal AND ev.kind = 'E' AND ev.deleted = 'N'), 0))`
+
+/** D-F67/D-F74: existe a decisão "manter a nota" para a chave da transmissão `t` (alias obrigatório). */
+const WAIVED_SQL = (s: string) => `EXISTS (
+          SELECT 1 FROM \`${s}\`.tb_invoice_cancel_waiver w
+           WHERE w.tb_institution_id = t.tb_institution_id AND w.tb_invoice_id = t.tb_invoice_id
+             AND w.terminal = t.terminal AND w.access_key = t.access_key AND w.deleted = 'N')`
 
 function mapTx(r: any): TransmissionRow {
   return {
@@ -335,6 +349,25 @@ export async function setTransmissionEventEffect(
   )
 }
 
+/**
+ * D-F71/D-F75 (Valdo 2026-10-10): o código do evento de cancelamento na voz C — preenche o que falta e SÓ SOBE para
+ * 105102 (substituição), nunca volta: uma leitura contraditória do fisco nunca rebaixa a marca mais restritiva.
+ */
+export async function setCancelEventCode(
+  conn: PoolConnection, schemaName: string, institutionId: number, invoiceId: number, attempt: number,
+  event: number, code: string
+): Promise<void> {
+  const s = assertSchema(schemaName)
+  if (!CANCEL_EVENT_CODES.has(code)) return
+  await conn.query(
+    `UPDATE \`${s}\`.tb_invoice_service_transmission_event
+        SET authority_code = ?, updated_at = NOW()
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND attempt = ? AND event = ? AND kind = 'C'
+        AND (authority_code IS NULL OR (? = '${SUBSTITUTION_CANCEL_CODE}' AND authority_code <> '${SUBSTITUTION_CANCEL_CODE}'))`,
+    [code, institutionId, invoiceId, attempt, event, code]
+  )
+}
+
 /** Já existe esta fala (kind, dh) na tentativa? Idempotência por TODOS os eventos. */
 export async function hasTransmissionEvent(
   q: Q, schemaName: string, institutionId: number, invoiceId: number, attempt: number,
@@ -395,7 +428,10 @@ export async function findTransmissionEvent(
   return { ...r, attempt: Number(r.attempt), event: Number(r.event), invoiceEvent: r.invoiceEvent == null ? null : Number(r.invoiceEvent) } as TransmissionEventRow
 }
 
-/** Vozes C do fisco cujo efeito local (cancelInvoice) ficou pendente — D-I10 espelhada. */
+/**
+ * Vozes C do fisco cujo efeito local (cancelInvoice) ficou pendente — D-I10 espelhada. D-F67/D-F74: a SUBSTITUIÇÃO
+ * (e105102) com a decisão humana "manter a nota" (`tb_invoice_cancel_waiver` da chave) deixou de ser pendência.
+ */
 export async function countPendingEffects(
   q: Q, schemaName: string, institutionId: number, invoiceId: number
 ): Promise<number> {
@@ -405,7 +441,8 @@ export async function countPendingEffects(
        JOIN \`${s}\`.tb_invoice_service_transmission t
          ON t.tb_institution_id = e.tb_institution_id AND t.tb_invoice_id = e.tb_invoice_id AND t.terminal = e.terminal AND t.attempt = e.attempt
       WHERE e.tb_institution_id = ? AND e.tb_invoice_id = ? AND e.terminal = 0 AND e.deleted = 'N' AND t.deleted = 'N'
-        AND e.kind = 'C' AND e.invoice_event IS NULL${LIFE_WHERE(s)}`,
+        AND e.kind = 'C' AND e.invoice_event IS NULL${LIFE_WHERE(s)}
+        AND NOT (e.authority_code <=> '${SUBSTITUTION_CANCEL_CODE}' AND ${WAIVED_SQL(s)})`,
     [institutionId, invoiceId]
   )
   return Number(rows?.[0]?.n ?? 0)
@@ -432,7 +469,8 @@ export const REFRESH_PENDING_EFFECT_MINUTES = 15
  * as nunca consultadas primeiro — molde da Onda 2):
  *   - VIVAS (em voo / S / K): a cada `minMinutes`;
  *   - AUTORIZADAS (A/N): a cada 24 h (D-N21 — o fisco pode ter cancelado sem nós);
- *   - C com efeito local PENDENTE (invoice_event NULL): a cada 15 min (retenta o efeito).
+ *   - C com efeito local PENDENTE (invoice_event NULL): a cada 15 min (retenta o efeito — sem o fisco quando a voz é a
+ *     resposta ao NOSSO pedido, D-F77) — salvo SUBSTITUIÇÃO e DE OFÍCIO (D-F67/D-F82: efeito só por ato humano).
  */
 export async function listLiveTransmissionsToRefresh(
   schemaName: string, institutionId: number, minMinutes: number, limit: number,
@@ -454,6 +492,9 @@ export async function listLiveTransmissionsToRefresh(
                      AND ev.terminal = t.terminal AND ev.deleted = 'N'
                    ORDER BY ev.event DESC LIMIT 1), '-') <> 'C')
           OR (le.kind = 'C' AND le.invoice_event IS NULL
+             -- D-F67 (= Q-F74 (a), re-gate R11-01) + D-F82: SUBSTITUIÇÃO (e105102) e DE OFÍCIO (e305101) não se retentam —
+             -- o efeito só nasce de ato humano; consultar de novo não muda nada
+             AND (le.authority_code IS NULL OR le.authority_code NOT IN (${HUMAN_CODES_SQL}))
              AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)))
         )
       ORDER BY (t.last_queried_at IS NULL) DESC, t.last_queried_at ASC, t.tb_invoice_id ASC
@@ -466,7 +507,8 @@ export async function listLiveTransmissionsToRefresh(
 /**
  * Notas do ramo de serviço SEM transmissão vigente/autorizada (lote "Transmitir
  * pendentes"). LOW-3: reserva em voo (sem evento) NÃO é pendente de transmissão
- * — o COALESCE trata "sem evento" como viva.
+ * — o COALESCE trata "sem evento" como viva. D-F67 (= Q-F74 (a), re-gate R11-01): voz C vigente (efeito
+ * pendente ou SUBSTITUIÇÃO) também não — transmitir de novo é 409 garantido; quem resolve é o humano.
  */
 export async function listPendingServiceInvoices(
   schemaName: string, institutionId: number, limit: number
@@ -486,7 +528,7 @@ export async function listPendingServiceInvoices(
              AND COALESCE((SELECT le.kind FROM \`${s}\`.tb_invoice_service_transmission_event le
                    WHERE le.tb_institution_id = t.tb_institution_id AND le.tb_invoice_id = t.tb_invoice_id
                      AND le.terminal = t.terminal AND le.attempt = t.attempt AND le.deleted = 'N'
-                   ORDER BY le.event DESC LIMIT 1), '-') IN ('A','N','S','K','-') )
+                   ORDER BY le.event DESC LIMIT 1), '-') IN ('A','N','S','K','C','-') )
       ORDER BY i.dt_emission, i.id
       LIMIT ?`,
     [institutionId, limit]

@@ -1,4 +1,4 @@
-import { todayFor } from '@shared/time-zone'
+import { todayFor, institutionZoneFor, withZoneWall } from '@shared/time-zone'
 import { getIssuer } from '@shared/fiscal-issuer'
 import { HttpError } from '@shared/errors/http-error'
 import {
@@ -18,8 +18,8 @@ import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
 import pool from '@shared/db/connection'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
-import { cancelInvoice, CancelInvoiceResult } from '@shared/invoice'
-import { CancelBody } from './billing.dto'
+import { cancelInvoice, CancelInvoiceResult, waiveSubstitutedCancel, CancelWaiverResult } from '@shared/invoice'
+import { CancelBody, CancelWaiverBody } from './billing.dto'
 import { resolveOrderParcels, MaterializedParcel as ResolvedParcel } from '@shared/order-installment'
 import { hasServiceOrderCycle } from '@shared/service-order'
 import { Queryable, assertOrderOpen } from '@shared/order'
@@ -873,6 +873,34 @@ export async function cancelOrderInvoice(
         conn.release()
       }
     })
+}
+
+/**
+ * D-F67/D-F72/D-F73/D-F74 (Rodada 13 das APIs fiscais): "manter a nota" — a NFS-e foi cancelada por SUBSTITUIÇÃO no
+ * fisco (e105102) e o humano decide NÃO cancelar a nota no ERP. A peça `@shared/invoice.waiveSubstitutedCancel` faz
+ * tudo em UMA transação; deadlock reexecuta do zero. Privilégio CANCELAR do ramo (rota).
+ */
+export async function waiveOrderInvoiceCancel(
+  institution: InstitutionPayload, input: CancelWaiverBody
+): Promise<CancelWaiverResult> {
+  const { schemaName, institutionId, userId } = institution
+  const result = await withDeadlockRetry('manter a nota substituída', { institutionId, orderId: input.orderId }, 3,
+    async () => {
+      const conn = await pool.getConnection()
+      try {
+        await conn.beginTransaction()
+        const out = await waiveSubstitutedCancel(conn, schemaName, institutionId, userId, input)
+        await conn.commit()
+        return out
+      } catch (err: any) {
+        await conn.rollback()
+        throw err
+      } finally {
+        conn.release()
+      }
+    })
+  // Q-TZ1: o instante sai na hora do ESTABELECIMENTO (banco em UTC)
+  return withZoneWall(result, ['createdAt'] as const, await institutionZoneFor(schemaName, institutionId))
 }
 
 function round2(v: number): number {

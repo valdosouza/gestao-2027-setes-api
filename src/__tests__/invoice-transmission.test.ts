@@ -59,6 +59,7 @@ jest.mock('../shared/entity', () => ({ __esModule: true, getEntityFiscalFull: je
 jest.mock('../shared/entity-tax/entity-tax.repository', () => ({ __esModule: true, getEntityTax: jest.fn() }))
 jest.mock('../shared/invoice', () => ({
   __esModule: true, lockInvoice: jest.fn(), buildCancelPlan: jest.fn(), cancelInvoice: jest.fn(),
+  findCurrentCancelWaiver: jest.fn(async () => null),   // D-F67/D-F81: sem decisão "manter a nota" vigente
 }))
 
 const q = (pool as any).query as jest.Mock

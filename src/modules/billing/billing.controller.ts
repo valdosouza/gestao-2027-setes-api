@@ -1,8 +1,8 @@
 import { Request, Response } from 'express'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody } from '@shared/http/controller-utils'
-import { validateBodyDto, invoiceBodyDto, cancelBodyDto } from './billing.dto'
-import { validateOrder, invoiceOrder, cancelOrderInvoice } from './billing.service'
+import { validateBodyDto, invoiceBodyDto, cancelBodyDto, cancelWaiverBodyDto } from './billing.dto'
+import { validateOrder, invoiceOrder, cancelOrderInvoice, waiveOrderInvoiceCancel } from './billing.service'
 
 /** Controller: HTTP ↔ service (envelope { ok, data }). Autoria = JWT. */
 
@@ -28,6 +28,20 @@ export async function cancel(req: Request, res: Response): Promise<void> {
     res.json({ ok: true, data: result })
   } catch (err) {
     handleError(res, err, 'billing/cancel POST')
+  }
+}
+
+export async function cancelWaiver(req: Request, res: Response): Promise<void> {
+  const body = parseBody(cancelWaiverBodyDto, req, res)
+  if (body === null) return
+  try {
+    const result = await waiveOrderInvoiceCancel(req.institution!, body)
+    logger.info('Nota mantida diante da NFS-e substituída', {
+      ...result, schema: req.institution!.schemaName, userId: req.institution!.userId,
+    })
+    res.json({ ok: true, data: result })
+  } catch (err) {
+    handleError(res, err, 'billing/cancel-waiver POST')
   }
 }
 

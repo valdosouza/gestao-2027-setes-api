@@ -449,11 +449,12 @@ const ctxP = { environment: 'P' as const, cert: Buffer.from(PAIR.certPem), key: 
 const substItem = () => typedItem(arquivo2(generatedEventXml({ code: '105102' })), '105102')
 /** A Sefin: 101101 não existe (404 do envelope), 105102 existe (200 tipado). */
 const sefinSubstituted = () => sefin({ typed: code => (code === '105102' ? typedOk(substItem()) : undefined) })
-/** Voz C de substituição JÁ gravada com o efeito SUSPENSO (estado depois da 1ª leitura — D-F64). */
+/** Voz C de substituição JÁ gravada com o efeito SUSPENSO (estado depois da 1ª leitura — D-F64; código na voz desde a
+ *  migration 067 — D-F71, que fez o backfill das vozes antigas pela marca do texto). */
 function seedSuspendedVoice() {
   events.push({ attempt: 1, event: 1, kind: 'A', dh: '2026-09-21 10:15:30', source: 'P', message: 'NFS-e 123', authorityCode: null, invoiceEvent: null })
-  events.push({ attempt: 1, event: 2, kind: 'C', dh: '2026-09-28 10:00:00', source: 'Q', message: SUBSTITUTION_EFFECT_SUSPENDED, authorityCode: null, invoiceEvent: null })
-  setTx(tx({ lastKind: 'C', lastEvent: 2 }))
+  events.push({ attempt: 1, event: 2, kind: 'C', dh: '2026-09-28 10:00:00', source: 'Q', message: SUBSTITUTION_EFFECT_SUSPENDED, authorityCode: '105102', invoiceEvent: null })
+  setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '105102' }))
 }
 const fiscoCalls = () => mockHttp.mock.calls.filter((c: any[]) => !/convenio/.test(c[0].url)).length
 
@@ -468,7 +469,7 @@ describe('ACHADO R11-01 (LOW) — D-F64 × rodízio: a voz de substituição com
     await actualRepo.listLiveTransmissionsToRefresh(S.schema, S.inst, 5, 8)
     expect(captured.replace(/\s+/g, ' ')).toMatch(/le\.kind = 'C' AND le\.invoice_event IS NULL/)
   })
-  it.failing('[LOW R11-01] passada com a voz de substituição já suspensa como candidata → não volta ao fisco por ela (nada a retentar sem humano)', async () => {
+  it('[CORRIGIDO — D-F67] [LOW R11-01] passada com a voz de substituição já suspensa como candidata → não volta ao fisco por ela (nada a retentar sem humano)', async () => {
     useRealAdn(); seedSuspendedVoice()
     ;(repo.listLiveTransmissionsToRefresh as jest.Mock).mockResolvedValue([{ invoiceId: INVOICE, attempt: 1 }])
     sefinSubstituted()
@@ -492,7 +493,7 @@ describe('ACHADO R11-02 (LOW) — D-F64: a voz C "por SUBSTITUIÇÃO (e105102): 
 })
 
 describe('ACHADO R11-03 (LOW) — D-F64 não é PEGAJOSA nem confere o TIPO perguntado: a suspensão é recalculada a cada consulta pelo código do XML LIDO — resposta contraditória (o GET do 105102 trazendo e101101, ou a re-consulta de 15 min trazendo e101101 depois de ter lido e105102) aplica o efeito AUTOMÁTICO numa nota já lida como substituída (D-F63: "outro tipo" = ambíguo)', () => {
-  it.failing('[LOW R11-03a] adaptador: /eventos/101101/1 = 404 e /eventos/105102/1 = 200 com um e101101 desta chave → nunca "cancelled" sem a marca 105102 (unknown/502 ou eventCode 105102)', async () => {
+  it('[CORRIGIDO — D-F69] [LOW R11-03a] adaptador: /eventos/101101/1 = 404 e /eventos/105102/1 = 200 com um e101101 desta chave → nunca "cancelled" sem a marca 105102 (unknown/502 ou eventCode 105102)', async () => {
     sefin({ typed: code => (code === '105102' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })), '105102')) : undefined) })
     const out = await settle(adnAdapter.queryNfse(ctxH, KEY))
     const downgraded = out?.status === 'cancelled' && out?.cancelled?.eventCode !== '105102'
@@ -632,5 +633,204 @@ describe('RESISTIU — `cut()` nunca esvazia nem deixa espaço na ponta; NFC no 
   it('resistiu: NFC compõe "c+cedilha", "a+til", "A+anel" (Latin-1) e o Kelvin/Ångström viram K/Å', () => {
     expect(toTsString('Serviço, manutenção, Ångström')).toBe('Serviço, manutenção, Ångström')
     expect(toTsString('KÅ')).toBe('KÅ')
+  })
+})
+
+// ===========================================================================
+// RODADA 13 (Valdo 2026-10-10, "Sim, siga tudo"): D-F67 (fim da pendência da substituição), D-F71 (código do evento na
+// voz C), D-F74 (dispensa só da 105102), D-F75 (o código só sobe), D-F76 (chave da substituta pelo XML). Fecha R11-01 e,
+// no setes-api, o equivalente da R11-06 (a substituição nunca vira "efeito pendente" que outra porta aplica sozinha).
+// ===========================================================================
+import { getServiceFiscalView } from '../shared/invoice-transmission'
+import { saveFiscalXml, cancelEventFileName } from '../shared/invoice-transmission/branches/service'
+import { institutionZoneFor } from '../shared/time-zone'
+
+const SUBST_KEY = '4106902212345678000199000000000099920261010000099999'.slice(0, 50)
+/** Evento e105102 GERADO com a chave da SUBSTITUTA (TE105102.chSubstituta). */
+const substEventXml = (substitute: string | null = SUBST_KEY) => generatedEventXml({ code: '105102' })
+  .replace('</xMotivo></e105102>', `</xMotivo>${substitute ? `<chSubstituta>${substitute}</chSubstituta>` : ''}</e105102>`)
+
+describe('RODADA 13 — D-F67/D-F71/D-F74/D-F75/D-F76', () => {
+  it('D-F67: transmitir com a voz C de SUBSTITUIÇÃO vigente → 409 FISCAL_NFSE_SUBSTITUTED antes de reservar — mesmo MANTIDA (sem pendência)', async () => {
+    seedSuspendedVoice()
+    ;(repo.countPendingEffects as jest.Mock).mockResolvedValue(0)          // mantida pelo humano: não é mais pendência
+    const out = await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))
+    expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_NFSE_SUBSTITUTED })
+    expect(repo.insertTransmission).not.toHaveBeenCalled(); expect(mockHttp).not.toHaveBeenCalled()
+  })
+  it('D-F67: voz C 101101 com o efeito pendente → 409 FISCAL_EFFECT_PENDING (como antes); a C vigente nunca reapresenta', async () => {
+    events.push({ attempt: 1, event: 1, kind: 'A', dh: '2026-09-21 10:15:30', source: 'P', message: 'NFS-e 123', authorityCode: null, invoiceEvent: null })
+    events.push({ attempt: 1, event: 2, kind: 'C', dh: '2026-09-28 10:00:00', source: 'Q', message: 'Efeito recusado: título baixado', authorityCode: '101101', invoiceEvent: null })
+    setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '101101' }))
+    const out = await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))
+    expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_EFFECT_PENDING })
+    expect(repo.insertTransmission).not.toHaveBeenCalled()
+  })
+  it('D-F71: a 1ª leitura de uma SUBSTITUIÇÃO grava o código 105102 NA VOZ (fato estruturado, não só o texto)', async () => {
+    useRealAdn(); withAuthorizedTx(); sefinSubstituted()
+    await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(expect.anything(), S.schema, S.inst, INVOICE, 1, S.user,
+      expect.objectContaining({ kind: 'C', authorityCode: '105102' }))
+  })
+  it('D-F71: o cancelamento que o produto PEDE (POST /eventos aceito — source P) grava 101101 na voz', async () => {
+    withAuthorizedTx()
+    const out = await cancelServiceInvoiceAtAuthority(S.schema, S.inst, S.user, INVOICE, 'cliente desistiu do serviço')
+    expect(out).toMatchObject({ atAuthority: true })
+    expect(repo.insertTransmissionEvent).toHaveBeenCalledWith(expect.anything(), S.schema, S.inst, INVOICE, 1, S.user,
+      expect.objectContaining({ kind: 'C', source: 'P', authorityCode: '101101' }))
+  })
+  it('D-F75: voz C 101101 com efeito RECUSADO + a re-consulta lê e105102 desta chave → o código SOBE para 105102 e o efeito fica suspenso', async () => {
+    useRealAdn()
+    events.push({ attempt: 1, event: 1, kind: 'A', dh: '2026-09-21 10:15:30', source: 'P', message: 'NFS-e 123', authorityCode: null, invoiceEvent: null })
+    events.push({ attempt: 1, event: 2, kind: 'C', dh: '2026-09-28 10:00:00', source: 'Q', message: 'Efeito recusado: título baixado', authorityCode: '101101', invoiceEvent: null })
+    setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '101101' }))
+    sefinSubstituted()
+    const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', { attempt: 1 })
+    expect(r).toMatchObject({ kind: 'C', invoiceEvent: null, effectRefused: SUBSTITUTION_EFFECT_SUSPENDED })
+    const promote = conn.query.mock.calls.find((c: any[]) => /SET authority_code = \?/.test(String(c[0])))
+    expect(promote?.[1]).toEqual(['105102', S.inst, INVOICE, 1, 2, '105102'])
+    expect(invoice.cancelInvoice).not.toHaveBeenCalled()
+  })
+  it('D-F75: o UPDATE do código é de mão única — preenche NULL, sobe para 105102, nunca rebaixa (SQL real)', async () => {
+    const qq = { query: jest.fn(async (..._a: any[]) => [{}]) }
+    await actualRepo.setCancelEventCode(qq, S.schema, S.inst, INVOICE, 1, 2, '101101')
+    const sql = String(qq.query.mock.calls[0][0]).replace(/\s+/g, ' ')
+    expect(sql).toContain("kind = 'C' AND (authority_code IS NULL OR (? = '105102' AND authority_code <> '105102'))")
+    await actualRepo.setCancelEventCode(qq, S.schema, S.inst, INVOICE, 1, 2, 'E0116')      // fora do domínio: nada
+    expect(qq.query).toHaveBeenCalledTimes(1)
+  })
+  it('D-F74: pendência = C sem efeito, MENOS a substituição mantida (SQL real do countPendingEffects)', async () => {
+    let captured = ''
+    q.mockImplementationOnce(async (sql: string) => { captured = sql; return [[{ n: 0 }]] })
+    await actualRepo.countPendingEffects(pool, S.schema, S.inst, INVOICE)
+    const sql = captured.replace(/\s+/g, ' ')
+    expect(sql).toContain("AND NOT (e.authority_code <=> '105102' AND EXISTS ( SELECT 1 FROM `setes_setes`.tb_invoice_cancel_waiver w")
+    expect(sql).toContain('w.access_key = t.access_key')
+  })
+  describe('D-F76: a tela "No fisco" mostra a substituição, a chave da SUBSTITUTA (do XML do evento) e a decisão "manter a nota"', () => {
+    const seedView = async (waived: boolean, xml: string | null) => {
+      const t = tx({ lastKind: 'C', lastEvent: 2, lastCode: '105102' })
+      ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({
+        transmissions: [t],
+        events: [{ attempt: 1, event: 1, kind: 'A', invoiceEvent: null, authorityCode: null }, { attempt: 1, event: 2, kind: 'C', invoiceEvent: null, authorityCode: '105102' }],
+      })
+      fs.rmSync(path.join(STORAGE_ROOT, CNPJ), { recursive: true, force: true })
+      if (xml) saveFiscalXml(CNPJ, cancelEventFileName(KEY), xml, new Date(`${t.dhProc.replace(' ', 'T')}Z`), 'H', await institutionZoneFor(S.schema, S.inst))
+      // D-F79: a tela conta a pendência pelo MESMO predicado de `countPendingEffects` (aqui mockado na fronteira do repositório);
+      // D-F81: a decisão vigente vem do leitor que exige a nota viva
+      ;(repo.countPendingEffects as jest.Mock).mockResolvedValue(waived ? 0 : 1)
+      q.mockImplementation(async (sql: string) => (/COUNT\(\*\) AS n FROM `setes_setes`\.tb_invoice_service_transmission_event e/.test(sql)
+        ? [[{ n: waived ? 0 : 1 }]]
+        : /tb_invoice_cancel_waiver w/.test(sql)
+        ? [waived ? [{ accessKey: KEY, reason: 'substituta emitida pelo portal, serviço segue faturado', userId: 7, createdAt: '2026-10-10 21:00:00' }] : []]
+        : [[]]))
+    }
+    afterEach(() => { fs.rmSync(path.join(STORAGE_ROOT, CNPJ), { recursive: true, force: true }); poolDefaults() })
+    it('sem decisão: pendência 1, substituição com a chave da substituta, waived=false, cancelWaiver null', async () => {
+      await seedView(false, substEventXml())
+      const v = await getServiceFiscalView(S.schema, S.inst, INVOICE)
+      expect(v).toMatchObject({ state: 'cancelled', pendingEffects: 1, substitution: { substituteAccessKey: SUBST_KEY, waived: false }, cancelWaiver: null })
+    })
+    it('mantida: pendência 0, waived=true e a decisão (motivo/autor) na resposta', async () => {
+      await seedView(true, substEventXml())
+      const v = await getServiceFiscalView(S.schema, S.inst, INVOICE)
+      expect(v).toMatchObject({ pendingEffects: 0, substitution: { substituteAccessKey: SUBST_KEY, waived: true },
+        cancelWaiver: { accessKey: KEY, reason: 'substituta emitida pelo portal, serviço segue faturado', userId: 7 } })
+    })
+    it('XML do evento ausente ou sem chSubstituta → substituteAccessKey null (só exibição — nunca regra)', async () => {
+      await seedView(false, null)
+      expect((await getServiceFiscalView(S.schema, S.inst, INVOICE)).substitution).toEqual({ substituteAccessKey: null, waived: false })
+      await seedView(false, substEventXml(null))
+      expect((await getServiceFiscalView(S.schema, S.inst, INVOICE)).substitution).toEqual({ substituteAccessKey: null, waived: false })
+    })
+  })
+})
+
+// ===========================================================================
+// RODADA 14 (Valdo 2026-10-10, "siga as recomendações" do gate socrático da Rodada 13): D-F77 (voz P nunca promovida; efeito
+// pendente da voz P sem o fisco), D-F78 (a consulta HUMANA arquiva o XML do evento que faltou), D-F79 (um predicado de
+// pendência), D-F80 (homologação), D-F81 (a dispensa é história), D-F82 (de ofício espera o humano) + L6/L7.
+// ===========================================================================
+describe('RODADA 14 — D-F77/D-F78/D-F82 + L6/L7', () => {
+  const ourCancel = (over: Partial<Ev> = {}) => {
+    events.push({ attempt: 1, event: 1, kind: 'A', dh: '2026-09-21 10:15:30', source: 'P', message: 'NFS-e 123', authorityCode: null, invoiceEvent: null })
+    events.push({ attempt: 1, event: 2, kind: 'C', dh: '2026-09-28 10:00:00', source: 'P', message: 'Efeito recusado: título baixado', authorityCode: '101101', invoiceEvent: null, ...over })
+    setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '101101', lastSource: 'P' }))
+  }
+  it('D-F77 (M1): C do NOSSO pedido (P, 101101) com efeito pendente → o rodízio retenta o efeito LOCAL sem ir ao fisco (nenhuma leitura contraditória possível)', async () => {
+    useRealAdn(); ourCancel(); sefinSubstituted()
+    ;(repo.listLiveTransmissionsToRefresh as jest.Mock).mockResolvedValue([{ invoiceId: INVOICE, attempt: 1 }])
+    const r = await refreshOpenServiceTransmissions(S.schema, S.inst, S.user)
+    expect(r.errors).toEqual([]); expect(fiscoCalls()).toBe(0)
+    expect(invoice.cancelInvoice).toHaveBeenCalledTimes(1)                                  // o efeito local retentado
+    expect(events.find(e => e.kind === 'C')).toMatchObject({ authorityCode: '101101', invoiceEvent: cancelled.event })
+    expect(conn.query.mock.calls.some((c: any[]) => /SET authority_code = \?/.test(String(c[0])))).toBe(false)   // nunca promovida
+  })
+  it('D-F77: mesmo com uma leitura contraditória NAS MÃOS (query injetada dizendo e105102), a voz P não é promovida — retenta só o efeito local', async () => {
+    useRealAdn(); ourCancel(); sefinSubstituted()
+    const query = await adnAdapter.queryNfse(ctxH, KEY)
+    expect(query.cancelled?.eventCode).toBe('105102')
+    const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', { query })
+    expect(r).toMatchObject({ kind: 'C', invoiceEvent: cancelled.event })
+    expect(events.find(e => e.kind === 'C')!.authorityCode).toBe('101101')
+    expect(conn.query.mock.calls.some((c: any[]) => /SET authority_code = \?/.test(String(c[0])))).toBe(false)
+  })
+  it('D-F77: C por CONSULTA (Q, 101101) com efeito pendente segue relendo o fisco — e a D-F75 promove para 105102 (suspende)', async () => {
+    useRealAdn(); ourCancel({ source: 'Q' }); setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '101101', lastSource: 'Q' })); sefinSubstituted()
+    const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', { attempt: 1 })
+    expect(r).toMatchObject({ kind: 'C', invoiceEvent: null, effectRefused: SUBSTITUTION_EFFECT_SUSPENDED })
+    expect(fiscoCalls()).toBeGreaterThan(0)
+  })
+  describe('D-F78 (M2): a consulta HUMANA de uma C relê o fisco SÓ para arquivar o XML do evento que faltou; o rodízio nunca', () => {
+    afterEach(() => fs.rmSync(path.join(STORAGE_ROOT, CNPJ), { recursive: true, force: true }))
+    const eventFile = async () => {
+      const { findFiscalXml } = jest.requireActual('../shared/invoice-transmission/branches/service')
+      return findFiscalXml(CNPJ, cancelEventFileName(KEY), ['2026-09-21 10:15:30', '2026-09-21 10:15:00'], 'H', await institutionZoneFor(S.schema, S.inst))
+    }
+    it('substituída sem o XML do e105102 → "Consultar" arquiva (voz intacta, nada inserido); depois não volta mais ao fisco', async () => {
+      useRealAdn(); seedSuspendedVoice(); sefinSubstituted()
+      const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
+      expect(r).toMatchObject({ changed: false, kind: 'C' }); expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
+      expect(await eventFile()).toBeTruthy()
+      mockHttp.mockClear()
+      await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
+      expect(fiscoCalls()).toBe(0)
+    })
+    it('o fisco devolve OUTRO código para a voz 105102 → nada arquivado (só aviso); o rodízio (fromRun) nem pergunta', async () => {
+      useRealAdn(); seedSuspendedVoice()
+      sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })))) : undefined) })
+      await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
+      expect(await eventFile()).toBeFalsy(); expect(logger.warn).toHaveBeenCalled()
+      mockHttp.mockClear()
+      await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', { attempt: 1, fromRun: true })
+      expect(fiscoCalls()).toBe(0)
+    })
+  })
+  it('D-F82 (= Q-F89): voz C DE OFÍCIO (305101) já suspensa → fora do retentar; transmitir de novo = 409 FISCAL_EFFECT_PENDING', async () => {
+    events.push({ attempt: 1, event: 1, kind: 'A', dh: '2026-09-21 10:15:30', source: 'P', message: 'NFS-e 123', authorityCode: null, invoiceEvent: null })
+    events.push({ attempt: 1, event: 2, kind: 'C', dh: '2026-09-28 10:00:00', source: 'Q', message: 'Efeito suspenso: DE OFÍCIO', authorityCode: '305101', invoiceEvent: null })
+    setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '305101', lastSource: 'Q' }))
+    useRealAdn(); sefin({})
+    const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', { attempt: 1, fromRun: true })
+    expect(r).toMatchObject({ changed: false, kind: 'C' }); expect(fiscoCalls()).toBe(0); expect(invoice.cancelInvoice).not.toHaveBeenCalled()
+    expect(await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_EFFECT_PENDING })
+  })
+  it('D-F80: C de SUBSTITUIÇÃO em HOMOLOGAÇÃO → o 409 aponta a saída (cancelar a nota e faturar de novo), nunca "mantenha-a"', async () => {
+    seedSuspendedVoice(); setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '105102', environment: 'H' }))
+    const out = await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))
+    expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.FISCAL_NFSE_SUBSTITUTED })
+    expect(String(out.message)).toMatch(/homologação, cancele a nota/); expect(String(out.message)).not.toMatch(/mantenha-a/)
+  })
+  it('L6: NFS-e com o bloco <e101101> embutido → cancelled COM eventCode 101101 (nunca voz C sem código depois da D-F68)', async () => {
+    const withBlock = NFSE_XML.replace('</infNFSe>', '<e101101><xDesc>Cancelamento de NFS-e</xDesc><cMotivo>1</cMotivo><xMotivo>erro na emissao do servico</xMotivo></e101101></infNFSe>')
+    sefin({ nfse: () => ok({ nfseXmlGZipB64: gz(withBlock) }) })
+    const out = await adnAdapter.queryNfse(ctxH, KEY)
+    expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
+  })
+  it('L7: o GET tipado traz DOIS itens desta chave (outro tipo antes do perguntado) → vale o do tipo PERGUNTADO, sem 502', async () => {
+    const both = { ...SEFIN, eventos: [typedItem(arquivo2(generatedEventXml({ code: '305101' })), '305101'), typedItem(arquivo2(generatedEventXml({ code: '101101' })))] }
+    sefin({ typed: code => (code === '101101' ? ok(both) : undefined) })
+    const out = await adnAdapter.queryNfse(ctxH, KEY)
+    expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
   })
 })

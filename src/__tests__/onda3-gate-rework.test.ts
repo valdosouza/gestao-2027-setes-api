@@ -410,7 +410,8 @@ describe('MEDIUM-6 / D-N21 — a consulta ativa vigia A/N (24 h) e retenta C com
     const sql = String(q.mock.calls[0][0]).replace(/\s+/g, ' ')
     expect(sql).toContain("(le.kind IS NULL OR le.kind IN ('S','K'))")
     expect(sql).toContain("le.kind IN ('A','N') AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? HOUR))")
-    expect(sql).toContain("le.kind = 'C' AND le.invoice_event IS NULL AND (t.last_queried_at IS NULL OR t.last_queried_at < DATE_SUB(NOW(), INTERVAL ? MINUTE))")
+    // D-F67/D-F82 (Rodadas 13/14): SUBSTITUIÇÃO (e105102) e DE OFÍCIO (e305101) saem do rodízio — o efeito só nasce de ato humano
+    expect(sql).toMatch(/le\.kind = 'C' AND le\.invoice_event IS NULL .*AND \(le\.authority_code IS NULL OR le\.authority_code NOT IN \('105102', '305101'\)\) AND \(t\.last_queried_at IS NULL OR t\.last_queried_at < DATE_SUB\(NOW\(\), INTERVAL \? MINUTE\)\)/)
     expect(sql).toMatch(/LIMIT \?$/)
     expect(q.mock.calls[0][1]).toEqual([S.inst, 5, 24, 15, 8])
   })
@@ -447,7 +448,8 @@ describe('LOW-1 / LOW-3 / LOW-6 / LOW-9', () => {
     q.mockResolvedValueOnce([[]])
     await real.listPendingServiceInvoices(S.schema, S.inst, 50)
     const sql = String(q.mock.calls[0][0]).replace(/\s+/g, ' ')
-    expect(sql).toContain("ORDER BY le.event DESC LIMIT 1), '-') IN ('A','N','S','K','-')")
+    // D-F67 (Rodada 13): voz C vigente (efeito pendente ou substituição) também não é pendente de transmissão
+    expect(sql).toContain("ORDER BY le.event DESC LIMIT 1), '-') IN ('A','N','S','K','C','-')")
     // gate adversarial 2026-09-30: autorização (A/N) cuja nota foi cancelada LOCALMENTE (homologação, Q-CA5b) sai do rodízio de 24 h
     q.mockResolvedValueOnce([[]])
     await real.listLiveTransmissionsToRefresh(S.schema, S.inst, 5, 8)

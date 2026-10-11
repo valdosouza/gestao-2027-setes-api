@@ -300,5 +300,7 @@ export function parseEventXml(xml: string): ParsedEvent {
     nSeqEvento: firstText(xml, 'nSeqEvento'),
     cMotivo:    cancel?.cMotivo ?? (specific ? firstText(specific, 'cMotivo') : null),
     xMotivo:    cancel?.xMotivo ?? (specific ? firstText(specific, 'xMotivo') : null),
+    // D-F76 (= Q-F83): chave da NFS-e SUBSTITUTA (e105102 — TE105102.chSubstituta); só exibição, nunca regra
+    substituteKey: specific ? firstText(specific, 'chSubstituta') : null,
   }
 }

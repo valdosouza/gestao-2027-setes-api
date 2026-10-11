@@ -155,6 +155,41 @@ router.post('/invoice', requirePrivilegeFor(PRIVILEGE_FATURAR, resolveFromBody),
 // `service-orders`, senão `orders` (orderId inválido cai em `orders`; o DTO recusa depois)
 router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody), controller.cancel)
 
+/**
+ * @swagger
+ * /api/billing/cancel-waiver:
+ *   post:
+ *     summary: Mantém a nota cuja NFS-e foi cancelada por SUBSTITUIÇÃO no fisco (e105102)
+ *     description: >-
+ *       Rodada 13 das APIs fiscais (D-F67/D-F72/D-F73/D-F74). O cancelamento por substituição é feito FORA do
+ *       produto (portal do fisco) e gera uma NFS-e substituta que o ERP não conhece — por isso a voz C fica sem
+ *       efeito automático (D-F64). Este ato registra a decisão humana de NÃO cancelar a nota no ERP (motivo e
+ *       autoria em tb_invoice_cancel_waiver): a pendência some da seção "No fisco", do rodízio e do lote. A
+ *       alternativa é cancelar a nota (POST /api/billing/cancel ou /api/billing/fiscal/cancel). Só vale para a
+ *       voz C vigente com código 105102, nota viva e sem efeito aplicado. Idempotente por (nota, chave):
+ *       repetir devolve alreadyWaived=true. Privilégio CANCELAR (7) na interface do ramo.
+ *     tags: [billing]
+ *     security: [{ BearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [orderId, reason]
+ *             properties:
+ *               orderId: { type: integer }
+ *               reason:  { type: string, minLength: 1, maxLength: 255 }
+ *     responses:
+ *       200: { description: "{ ok, data: { orderId, accessKey, createdAt, alreadyWaived } }" }
+ *       400: { description: Payload inválido / motivo ausente (VALIDATION_FAILED · INVOICE_REASON_REQUIRED) }
+ *       401: { description: Sem JWT }
+ *       403: { description: Sem privilégio CANCELAR no ramo (PRIVILEGE_REQUIRED) }
+ *       404: { description: Nota não encontrada (INVOICE_NOT_FOUND) }
+ *       409: { description: INVOICE_CANCEL_WAIVER_NOT_APPLICABLE (não é substituição, nota já cancelada ou efeito já aplicado) · RESOURCE_BUSY }
+ */
+router.post('/cancel-waiver', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody), controller.cancelWaiver)
+
 // ---------------------------------------------------------------------------
 // FISCO — Onda 3 NFS-e (composição @shared/invoice-transmission, D-N3/D-N7/D-N9/D-E14)
 // ---------------------------------------------------------------------------
@@ -190,7 +225,7 @@ router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody),
  *       400: { description: Payload inválido }
  *       403: { description: Sem privilégio TRANSMITIR (PRIVILEGE_REQUIRED) }
  *       404: { description: Nota não encontrada / não emitida por este estabelecimento }
- *       409: { description: FISCAL_ISSUER_MISSING · FISCAL_CERT_MISSING/EXPIRED · FISCAL_TRANSMISSION_IN_PROGRESS · FISCAL_ALREADY_AUTHORIZED · FISCAL_CANCEL_IN_FLIGHT · INVOICE_NOT_TRANSMITTABLE · FISCAL_AUTHORITY_AUTH_FAILED (F gravado) }
+ *       409: { description: FISCAL_ISSUER_MISSING · FISCAL_CERT_MISSING/EXPIRED · FISCAL_TRANSMISSION_IN_PROGRESS · FISCAL_ALREADY_AUTHORIZED · FISCAL_CANCEL_IN_FLIGHT · FISCAL_EFFECT_PENDING · FISCAL_NFSE_SUBSTITUTED (D-F67 — cancelada por substituição no fisco; nunca se transmite de novo) · INVOICE_NOT_TRANSMITTABLE · FISCAL_AUTHORITY_AUTH_FAILED (F gravado) }
  *       422: { description: "INVOICE_SERVICE_BRANCH_MISSING · SERVICE_RULE_NATIONAL_CODE_REQUIRED · FISCAL_EMITTER_INCOMPLETE · FISCAL_RECIPIENT_INCOMPLETE · FISCAL_DPS_REJECTED (R gravado, E0xxx em fields[])" }
  *       502: { description: FISCAL_AUTHORITY_UNKNOWN_RESPONSE (ambíguo — nada gravado) }
  *       503: { description: FISCAL_AUTHORITY_UNAVAILABLE (ambíguo — tentativa em voo) }
@@ -329,7 +364,7 @@ router.post('/fiscal/:orderId/refresh', requirePrivilegeFor(PRIVILEGE_TRANSMITIR
  *     parameters:
  *       - { in: path, name: orderId, required: true, schema: { type: integer } }
  *     responses:
- *       200: { description: "{ ok, data: { invoiceId, state: none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight, transmissions[], events[], pendingEffects, xmlAvailable, danfseAvailable } }" }
+ *       200: { description: "{ ok, data: { invoiceId, state: none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight, transmissions[], events[], pendingEffects, xmlAvailable, danfseAvailable, substitution: null|{ substituteAccessKey, waived } (D-F67/D-F76 — NFS-e cancelada por SUBSTITUIÇÃO), cancelWaiver: null|{ accessKey, reason, userId, createdAt } } }" }
  */
 router.get('/fiscal/:orderId', requireInterfaceFor(resolveFromParam), fiscal.view)                 // Q-N32
 

@@ -10,14 +10,15 @@ import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { runIsolated } from '@shared/db/savepoint'
 import { isDeadlock, isLockWaitTimeout } from '@shared/db/contention'
 import { lockInstitutionCounters } from '@shared/db/counters'
-import { lockInvoice, buildCancelPlan, cancelInvoice } from '@shared/invoice'
-import { AuthorityHttpError, NfseQuery, parseNfseXml } from '@shared/tax-authority'
+import { lockInvoice, buildCancelPlan, cancelInvoice, findCurrentCancelWaiver, CancelWaiver } from '@shared/invoice'
+import { AuthorityHttpError, NfseQuery, parseNfseXml, parseEventXml } from '@shared/tax-authority'
 import {
   TransmissionRow, TransmissionEventRow, TransmissionEventKind, TransmissionSource, TransmissionEnvironment,
   latestTransmission, currentTransmissionsOf, getTransmission, findTransmissionByDpsId, insertTransmission, setDpsId, fillAuthorityData,
   insertTransmissionEvent, setTransmissionEventEffect, hasTransmissionEvent, findTransmissionEventByKind,
   touchQueriedAt, listServiceTransmissions, listLiveTransmissionsToRefresh, nextDpsNumber, setDpsNumber,
-  isLiveTransmission, isAuthorized, countPendingEffects, currentOf,
+  isLiveTransmission, isAuthorized, countPendingEffects, currentOf, setCancelEventCode,
+  CANCEL_EVENT_CODES, ISSUER_CANCEL_CODE, SUBSTITUTION_CANCEL_CODE, EX_OFFICIO_CANCEL_CODE, HUMAN_EFFECT_CANCEL_CODES,
 } from './transmission.repository'
 import {
   readServiceInvoice, lockDpsNumber, buildDpsBase, buildSignedDps, buildSignedCancel, buildEmitter,
@@ -135,6 +136,17 @@ function liveTransmissionError(tx: TransmissionRow): HttpError {
     undefined, ErrorCodes.FISCAL_TRANSMISSION_IN_PROGRESS)
 }
 
+/** D-F67: a NFS-e vigente foi cancelada por SUBSTITUIÇÃO no fisco — só o humano decide (cancelar ou manter a nota). */
+function substitutedError(tx: TransmissionRow): HttpError {
+  const nfse = tx.nfseNumber ? `NFS-e ${tx.nfseNumber}` : 'NFS-e'
+  const way = tx.environment === 'H'
+    ? 'em homologação, cancele a nota (cancelável localmente) e fature de novo'   // D-F80: H não se mantém
+    : 'cancele a nota ou mantenha-a'
+  return new HttpError(409,
+    `${nfse} (chave ${tx.accessKey ?? '?'}) cancelada por SUBSTITUIÇÃO no fisco (e105102) — existe uma NFS-e substituta; ${way}`,
+    [{ field: 'fiscal', message: 'NFS-e substituída' }], ErrorCodes.FISCAL_NFSE_SUBSTITUTED)
+}
+
 const changedDuringTransmit = () =>
   new HttpError(409, 'Nota mudou durante a transmissão (evento ou ramo alterados) — tente de novo', undefined, ErrorCodes.RESOURCE_BUSY)
 
@@ -186,8 +198,14 @@ export async function transmitServiceInvoice(
     // M2 do socrático (Q-N33): voz C do fisco com efeito LOCAL pendente — reenviar o MESMO Id de DPS não
     // tem desfecho bom (o fisco ecoa a NFS-e cancelada → chave repetida; timeout → órfã). Resolve-se a
     // pendência (aplicar o efeito / cancelar manualmente) antes de nova apresentação.
-    if (latest?.lastKind === 'C' && (await countPendingEffects(conn, s, institutionId, invoiceId)) > 0) {
-      throw new HttpError(409, `NFS-e cancelada no fisco (tentativa ${latest.attempt}) com o cancelamento local ainda pendente — resolva a pendência antes de transmitir de novo`,
+    // D-F67 (= Q-F74 (a), re-gate R11-01): voz C VIGENTE com a nota viva é SEMPRE 409 — efeito pendente, ou
+    // SUBSTITUIÇÃO (e105102, mantida ou não): existe uma NFS-e substituta; uma nova apresentação duplicaria o serviço.
+    if (latest?.lastKind === 'C') {
+      if (latest.lastCode === SUBSTITUTION_EVENT_CODE) throw substitutedError(latest)
+      // D-F80 (= Q-F87 (a)): em HOMOLOGAÇÃO a saída é cancelar a nota (sem valor jurídico — Q-CA5b): a vida nova transmite em P
+      // com DPS novo (o Id do DPS é da VIDA, não do ambiente — uma 2ª tentativa na mesma vida reusaria o Id da de H)
+      const way = latest.environment === 'H' ? ' — em homologação, cancele a nota (cancelável localmente) e fature de novo' : ''
+      throw new HttpError(409, `NFS-e cancelada no fisco (tentativa ${latest.attempt}) com o cancelamento local ainda pendente — resolva a pendência antes de transmitir de novo${way}`,
         [{ field: 'fiscal', message: 'Efeito pendente' }], ErrorCodes.FISCAL_EFFECT_PENDING)
     }
     const opened = await openServiceIssuer(s, institutionId, { conn, forUpdate: true })
@@ -416,38 +434,103 @@ async function lockInvoiceIfAlive(conn: PoolConnection, s: string, institutionId
  */
 /** D-F64 (= Q-F71, Valdo 2026-10-10): cancelamento POR SUBSTITUIÇÃO (e105102) feito fora do produto — existe uma NFS-e
  *  SUBSTITUTA que o ERP não conhece; cancelar a nota/títulos daqui desfaria um serviço que continua faturado. */
-export const SUBSTITUTION_EVENT_CODE = '105102'
+export const SUBSTITUTION_EVENT_CODE = SUBSTITUTION_CANCEL_CODE
 export const SUBSTITUTION_EFFECT_SUSPENDED = 'Efeito suspenso: NFS-e SUBSTITUÍDA no fisco (e105102) — a substituta não está no ERP; '
   + 'confira e cancele a nota manualmente se for o caso'
+/** D-F82 (= Q-F89): cancelamento DE OFÍCIO (e305101) — sem substituta; o efeito local (cancelar a nota) é do humano. */
+export const EX_OFFICIO_EFFECT_SUSPENDED = 'Efeito suspenso: NFS-e cancelada DE OFÍCIO pelo fisco (e305101) — confira e cancele a nota manualmente'
 
 async function recordCancelVoice(
   conn: PoolConnection, s: string, institutionId: number, userId: number | null, invoiceId: number, attempt: number,
   source: TransmissionSource, dh: string | null, motive: string | null, eventCode: string | null = null
 ): Promise<{ event: number; invoiceEvent: number | null; refused: string | null; inserted: boolean }> {
+  // D-F71 (= Q-F78): o tipo do evento é FATO na voz (`authority_code`); código fora do domínio do XSD não se grava
+  const code = eventCode && CANCEL_EVENT_CODES.has(eventCode) ? eventCode : null
   const existing = await findTransmissionEventByKind(conn, s, institutionId, invoiceId, attempt, 'C', true)
   if (existing && existing.invoiceEvent != null) return { event: existing.event, invoiceEvent: existing.invoiceEvent, refused: null, inserted: false }
-  // re-gate R11-03b: a marca de substituição é PEGAJOSA — uma voz já suspensa continua suspensa mesmo que uma re-consulta leia
-  // outro código (resposta contraditória do fisco nunca aplica o efeito sozinha)
-  const substitution = eventCode === SUBSTITUTION_EVENT_CODE || /e105102/.test(existing?.message ?? '')
-  const voiceText = `Cancelada no fisco${substitution ? ' por SUBSTITUIÇÃO (e105102)' : ''}${motive ? ': ' + motive : ''}`
-  const event = existing ? existing.event
-    : await insertTransmissionEvent(conn, s, institutionId, invoiceId, attempt, userId, {
-        kind: 'C', source, dh, message: voiceText.slice(0, 255),
-      })
-  if (substitution) {
-    // D-F64: a VOZ fica (o fisco disse); o EFEITO local não é automático — pendência visível, só por ação humana (reaplicar)
-    // re-gate R11-02: a nota da suspensão leva o motivo do fisco junto (o UPDATE troca a mensagem da voz)
+  // D-F77 (= Q-F84 (a)): a voz P é o NOSSO e101101, provado pela resposta ao pedido — leitura posterior que diga OUTRO tipo é
+  // contradição do fisco (502, nada gravado), nunca promoção: a "marca mais restritiva" abriria o "manter a nota" (D-F67)
+  if (existing && existing.source === 'P' && code && code !== (existing.authorityCode ?? ISSUER_CANCEL_CODE)) {
+    logger.error('Contrato da Sefin divergente: outro tipo de cancelamento para a NFS-e que o PRODUTO cancelou', { institutionId, invoiceId, attempt, code })
+    throw new HttpError(502, `Fisco devolveu o cancelamento e${code} para a NFS-e que o produto cancelou com e${existing.authorityCode ?? ISSUER_CANCEL_CODE} — nada gravado`,
+      undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
+  }
+  // re-gate R11-03b + D-F75 (= Q-F82): a marca é o CÓDIGO e é PEGAJOSA — escrito uma vez, só sobe para 105102, nunca volta
+  // (resposta contraditória do fisco nunca aplica o efeito sozinha)
+  let event: number
+  let stored: string | null
+  if (existing) {
+    event = existing.event
+    const promote = !!code && code !== existing.authorityCode && (existing.authorityCode == null || code === SUBSTITUTION_EVENT_CODE)
+    if (promote) await setCancelEventCode(conn, s, institutionId, invoiceId, attempt, event, code!)
+    stored = promote ? code : existing.authorityCode
+  } else {
+    stored = code
+    const label = code === SUBSTITUTION_EVENT_CODE ? ' por SUBSTITUIÇÃO (e105102)' : code === EX_OFFICIO_CANCEL_CODE ? ' DE OFÍCIO (e305101)' : ''
+    event = await insertTransmissionEvent(conn, s, institutionId, invoiceId, attempt, userId, {
+      kind: 'C', authorityCode: code, source, dh, message: `Cancelada no fisco${label}${motive ? ': ' + motive : ''}`.slice(0, 255),
+    })
+  }
+  // D-F64/D-F82: SUBSTITUIÇÃO e DE OFÍCIO — a VOZ fica (o fisco disse); o EFEITO local não é automático: pendência visível,
+  // só por ato humano. Re-gate R11-02: a nota da suspensão leva o motivo do fisco junto (o UPDATE troca a mensagem da voz)
+  const suspended = stored === SUBSTITUTION_EVENT_CODE ? SUBSTITUTION_EFFECT_SUSPENDED
+    : stored === EX_OFFICIO_CANCEL_CODE ? EX_OFFICIO_EFFECT_SUSPENDED : null
+  if (suspended) {
     await setTransmissionEventEffect(conn, s, institutionId, invoiceId, attempt, event, null,
-      `${SUBSTITUTION_EFFECT_SUSPENDED}${motive ? ` | motivo do fisco: ${motive}` : ''}`.slice(0, 255))
-    return { event, invoiceEvent: null, refused: SUBSTITUTION_EFFECT_SUSPENDED, inserted: !existing }
+      `${suspended}${motive ? ` | motivo do fisco: ${motive}` : ''}`.slice(0, 255))
+    return { event, invoiceEvent: null, refused: suspended, inserted: !existing }
   }
   const eff = await applyEffectIsolated(conn, s, institutionId, userId ?? 0, invoiceId, attempt, event, motive)
   return { event, invoiceEvent: eff.invoiceEvent, refused: eff.refused, inserted: !existing }
 }
 
+/**
+ * D-F77 (= Q-F84 (a)): efeito LOCAL pendente de uma voz C que é a resposta ao NOSSO pedido (P) — retenta sem perguntar ao
+ * fisco (o fato do fisco já está provado). Carimba `last_queried_at` para a vez no rodízio.
+ */
+async function retryLocalCancelEffect(
+  s: string, institutionId: number, userId: number | null, invoiceId: number, tx0: TransmissionRow
+): Promise<RefreshResult> {
+  return withInvoiceTx('efeito pendente da voz C (sem o fisco)', institutionId, invoiceId, async (conn): Promise<RefreshResult> => {
+    await lockInvoiceIfAlive(conn, s, institutionId, invoiceId)
+    const tx = await getTransmission(conn, s, institutionId, invoiceId, tx0.attempt, true)
+    const voice = tx ? await findTransmissionEventByKind(conn, s, institutionId, invoiceId, tx.attempt, 'C', true) : null
+    const same = { invoiceId, attempt: tx0.attempt, changed: false, kind: tx0.lastKind, accessKey: tx0.accessKey, invoiceEvent: voice?.invoiceEvent ?? null, effectRefused: null }
+    if (!tx || !voice || voice.invoiceEvent != null) return same
+    await touchQueriedAt(conn, s, institutionId, invoiceId, tx.attempt)
+    const eff = await applyEffectIsolated(conn, s, institutionId, userId ?? 0, invoiceId, tx.attempt, voice.event, null)
+    return { invoiceId, attempt: tx.attempt, changed: eff.invoiceEvent != null, kind: 'C', accessKey: tx.accessKey, invoiceEvent: eff.invoiceEvent, effectRefused: eff.refused }
+  })
+}
+
+/**
+ * D-F78 (= Q-F85 (a)): XML do evento de cancelamento que não foi arquivado na 1ª leitura (disco/CNPJ falharam) — relê o fisco e
+ * grava SÓ o arquivo, se a resposta for o cancelamento DESTE código (ou a voz não tiver código). Nada de voz: a C é final.
+ * Falha aqui só avisa (a consulta seguinte tenta de novo) — nunca impede o resto da consulta.
+ */
+async function archiveCancelEventIfMissing(s: string, institutionId: number, invoiceId: number, tx: TransmissionRow): Promise<void> {
+  if (!tx.accessKey) return
+  try {
+    const cnpj = await emitterCnpj(institutionId)
+    const zone = await institutionZoneFor(s, institutionId)
+    const hints = [tx.dhProc, tx.createdAt]
+    if (findFiscalXml(cnpj, cancelEventFileName(tx.accessKey), hints, tx.environment, zone)) return
+    const opened = await openServiceIssuer(s, institutionId)
+    const q = await serviceAdapter().queryNfse(authorityContextFor(s, institutionId, opened, tx.environment), tx.accessKey)
+    const xml = q.status === 'cancelled' ? q.cancelled?.eventXml : null
+    if (!xml || (tx.lastCode && q.cancelled?.eventCode !== tx.lastCode)) {
+      logger.warn('Consulta de C: o fisco não devolveu o evento deste cancelamento para arquivar', { institutionId, invoiceId, attempt: tx.attempt, code: tx.lastCode, got: q.cancelled?.eventCode ?? q.status })
+      return
+    }
+    saveFiscalXml(cnpj, cancelEventFileName(tx.accessKey), xml, tx.dhProc ? new Date(`${tx.dhProc.replace(' ', 'T')}Z`) : new Date(), tx.environment, zone)
+  } catch (err) {
+    logger.warn('XML do evento de cancelamento não arquivado na consulta', { institutionId, invoiceId, attempt: tx.attempt, err: errMsg(err) })
+  }
+}
+
 export async function refreshServiceTransmission(
   schemaName: string, institutionId: number, userId: number | null, invoiceId: number,
-  source: Exclude<TransmissionSource, 'P'> = 'Q', opts: { query?: NfseQuery; attempt?: number } = {}
+  source: Exclude<TransmissionSource, 'P'> = 'Q', opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean } = {}
 ): Promise<RefreshResult> {
   const s = assertSchema(schemaName)
   // R3-1: quem sabe qual tentativa quer olhar (reserva interrompida, rodízio da consulta ativa) diz — senão a
@@ -458,8 +541,20 @@ export async function refreshServiceTransmission(
   const unchanged = (tx: TransmissionRow): RefreshResult =>
     ({ invoiceId, attempt: tx.attempt, changed: false, kind: tx.lastKind, accessKey: tx.accessKey, invoiceEvent: null, effectRefused: null })
   if (!tx0.dpsId) return unchanged(tx0)                                  // reserva sem Id: envio ainda montando
-  // C já é o fim da história — salvo efeito local pendente (retenta)
-  if (tx0.lastKind === 'C' && (await countPendingEffects(pool, s, institutionId, invoiceId)) === 0) return unchanged(tx0)
+  // C já é o fim da história — salvo efeito local pendente (retenta).
+  if (tx0.lastKind === 'C') {
+    const human = !!tx0.lastCode && HUMAN_EFFECT_CANCEL_CODES.has(tx0.lastCode)
+    const pending = !human && (await countPendingEffects(pool, s, institutionId, invoiceId)) > 0
+    // D-F78 (= Q-F85 (a)): a consulta relê o fisco SÓ para arquivar o XML do evento que faltou (Q-N38 — e, na substituição, a
+    // chave da substituta, D-F76); a voz nunca muda por aqui. A C por consulta com efeito pendente relê adiante (grava junto)
+    // (só a consulta HUMANA — o rodízio nunca relê o fisco por um arquivo)
+    if (!opts.query && !opts.fromRun && (human || !pending || tx0.lastSource === 'P')) await archiveCancelEventIfMissing(s, institutionId, invoiceId, tx0)
+    // D-F67/D-F82 (re-gate R11-01): SUBSTITUIÇÃO e DE OFÍCIO não se retentam — o efeito só nasce de ato humano
+    if (human || !pending) return unchanged(tx0)
+    // D-F77 (= Q-F84 (a)): a voz P é o NOSSO e101101 (provado pela resposta ao pedido) — retentar o efeito LOCAL não precisa do
+    // fisco, e não perguntar fecha a porta para uma leitura contraditória promover a voz e abrir o "manter a nota"
+    if (tx0.lastSource === 'P') return retryLocalCancelEffect(s, institutionId, userId, invoiceId, tx0)
+  }
 
   // o fisco — fora da transação, no ambiente CONGELADO da tentativa
   let query = opts.query ?? null
@@ -693,7 +788,7 @@ export async function cancelServiceInvoiceAtAuthority(
   const out = await withInvoiceTx('voz C do fisco + cancelamento local', institutionId, invoiceId, async conn => {
     await lockInvoiceIfAlive(conn, s, institutionId, invoiceId)
     const cur = (await getTransmission(conn, s, institutionId, invoiceId, tx.attempt, true))!
-    return recordCancelVoice(conn, s, institutionId, userId, invoiceId, cur.attempt, 'P', dhC, signed.xMotivo)
+    return recordCancelVoice(conn, s, institutionId, userId, invoiceId, cur.attempt, 'P', dhC, signed.xMotivo, ISSUER_CANCEL_CODE)
   })
   logger.info('NFS-e cancelada no fisco', { institutionId, invoiceId, attempt: tx.attempt, accessKey: tx.accessKey, invoiceEvent: out.invoiceEvent, refused: out.refused })
   if (out.invoiceEvent == null) {
@@ -748,7 +843,7 @@ async function runRefresh(
     if (Date.now() >= deadline) { report.stoppedEarly = true; break }
     try {
       report.checked += 1
-      const r = await refreshServiceTransmission(schemaName, institutionId, userId, tx.invoiceId, 'Q', { attempt: tx.attempt })
+      const r = await refreshServiceTransmission(schemaName, institutionId, userId, tx.invoiceId, 'Q', { attempt: tx.attempt, fromRun: true })
       if (r.changed) report.changed += 1
     } catch (err) {
       report.errors.push({ invoiceId: tx.invoiceId, code: err instanceof HttpError ? err.code ?? null : null, message: errMsg(err) })
@@ -777,6 +872,21 @@ export interface ServiceFiscalView {
   pendingEffects:  number
   xmlAvailable:    boolean
   danfseAvailable: boolean
+  /** D-F67/D-F76: a NFS-e vigente foi cancelada por SUBSTITUIÇÃO (e105102) — chave da substituta pelo XML do evento (só exibição). */
+  substitution:    { substituteAccessKey: string | null; waived: boolean } | null
+  /** D-F67/D-F73: a decisão humana "manter a nota" (motivo e autoria) para a chave vigente. */
+  cancelWaiver:    CancelWaiver | null
+}
+
+/** D-F76 (= Q-F83): `chSubstituta` do XML do evento e105102 arquivado — sem coluna; ilegível/ausente = null. */
+function substituteKeyOf(cnpj: string, tx: TransmissionRow, zone: string): string | null {
+  try {
+    const file = tx.accessKey ? findFiscalXml(cnpj, cancelEventFileName(tx.accessKey), [tx.dhProc, tx.createdAt], tx.environment, zone) : null
+    if (!file) return null
+    const key = parseEventXml(fs.readFileSync(file, 'utf8')).substituteKey ?? null
+    // R13-04 do gate adversarial: a própria chave não é a substituta
+    return key && /^[0-9A-Z]{50}$/.test(key) && key !== tx.accessKey ? key : null
+  } catch { return null }
 }
 
 export function fiscalStateOf(tx: TransmissionRow | null): ServiceFiscalState {
@@ -820,7 +930,11 @@ export async function getServiceFiscalView(schemaName: string, institutionId: nu
   const s = assertSchema(schemaName)
   const { transmissions, events } = await listServiceTransmissions(s, institutionId, invoiceId)
   const latest = currentOf(transmissions)                 // D-N26: quem detém a chave, senão a última
-  const pendingEffects = events.filter(e => e.kind === 'C' && e.invoiceEvent == null).length
+  // D-F81 (= Q-F88 (a)): a dispensa é HISTÓRIA — só se apresenta como decisão vigente enquanto a nota está viva
+  const cancelWaiver = latest?.accessKey ? await findCurrentCancelWaiver(pool, s, institutionId, invoiceId, latest.accessKey) : null
+  const substituted = latest?.lastKind === 'C' && latest.lastCode === SUBSTITUTION_EVENT_CODE
+  // D-F79 (= Q-F86 (a)): UM predicado de pendência (SQL de `countPendingEffects`) para tela, transmissão e rodízio — nunca cópia
+  const pendingEffects = await countPendingEffects(pool, s, institutionId, invoiceId)
   let xmlAvailable = false
   const withKey = [...transmissions].reverse().find(t => t.accessKey) ?? null
   if (withKey?.accessKey) {
@@ -832,11 +946,18 @@ export async function getServiceFiscalView(schemaName: string, institutionId: nu
   const zone = await institutionZoneFor(s, institutionId)
   const txKeys = ['dhProc', 'createdAt', 'lastQueriedAt', 'lastDh', 'lastEventAt'] as const
   const evKeys = ['dh', 'createdAt'] as const
+  let substitution: ServiceFiscalView['substitution'] = null
+  if (substituted && latest) {
+    let cnpj: string | null = null
+    try { cnpj = await emitterCnpj(institutionId) } catch { cnpj = null }
+    substitution = { substituteAccessKey: cnpj ? substituteKeyOf(cnpj, latest, zone) : null, waived: !!cancelWaiver }
+  }
   return {
     invoiceId, state: fiscalStateOf(latest),
     transmissions: transmissions.map(t => withZoneWall(t, txKeys, zone)),
     events: events.map(e => withZoneWall(e, evKeys, zone)),
     pendingEffects, xmlAvailable, danfseAvailable: xmlAvailable,
+    substitution, cancelWaiver: cancelWaiver ? withZoneWall(cancelWaiver, ['createdAt'] as const, zone) : null,
   }
 }
 
