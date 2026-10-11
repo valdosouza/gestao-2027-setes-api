@@ -890,10 +890,10 @@ describe('RODADA 17 — D-F91/D-F93', () => {
   it('D-F91: a consulta pedida pela TELA com resposta ambígua → 502 e UM alarme com origem "consulta", institution e nota (nunca a chave)', async () => {
     useRealAdn(); withAuthorizedTx()
     sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), substItem()) : undefined) })
-    const out = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
+    const out = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', { origin: 'consulta' }))   // D-F95: a tela diz a origem
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(ambiguousLogs()).toHaveLength(1)
-    expect(ambiguousLogs()[0][1]).toMatchObject({ origin: 'consulta', institutionId: S.inst, invoiceId: INVOICE })
+    expect(ambiguousLogs()[0][1]).toMatchObject({ origin: 'consulta', institutionId: S.inst, invoiceId: INVOICE, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(KEY)
   })
   it('D-F91: o rodízio registra UMA vez (origem "rodizio", com tentativa e última voz) — o invólucro da consulta não duplica', async () => {

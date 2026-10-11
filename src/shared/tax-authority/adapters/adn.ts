@@ -5,7 +5,7 @@ import {
   AuthorityContext, EventRegisterResult, MunicipalTerms, NfseQuery, TaxAuthorityAdapter, TransmitResult,
 } from '../types'
 import { authorityJson, AuthorityHttpError } from '../https-json'
-import { parseEventXml, parseNfseXml, EVENT_CANCEL, CANCEL_EVENT_CODES } from '../dps-builder'
+import { parseEventXml, parseNfseXml, firstText, EVENT_CANCEL, CANCEL_EVENT_CODES } from '../dps-builder'
 
 /**
  * Adaptador da SEFIN NACIONAL (ADN / Sistema Nacional NFS-e) — API do Emissor
@@ -125,16 +125,16 @@ function isGeneratedEventFor(ev: { eventId: string | null; dhProc: string | null
   const key = String(ev.accessKey ?? '').replace(/\D/g, '')
   return generated && key === accessKey && !!(ev.dhProc || ev.dhEvento)
 }
-/** Texto aparado do 1º elemento `<tag>` do XML (sem atributos) — só para a assinatura do evento. */
-const tagText = (xml: string, tag: string): string | null => xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1]?.trim() ?? null
 /**
  * D-F89: o que distingue dois eventos do mesmo tipo — iguais nisso = repetição da mesma voz; diferentes = contradição.
  * D-F93 (= Q-F99 (a), Valdo 2026-10-11): somados `nDFSe`, o autor (`CNPJAutor`/`CPFAutor`), `ambGer` e `tpAmb` — os campos que o
  * fisco preenche no evento; divergência FORA dos 8 da D-F89 decidia, pela ordem da lista, qual XML ia para o arquivo (R16-01).
+ * D-F96 (= Q-F102 (a), Valdo 2026-10-11): lidos pelo MESMO leitor do parse (`firstText` — atributos e escapes iguais aos do resto do
+ * adaptador); o leitor próprio deixava atributo/CDATA divergentes passarem como repetição (R17-01).
  */
 const eventSignature = (e: ReturnType<typeof parseEventXml>, xml: string): string =>
   JSON.stringify([e.eventCode, e.eventId, e.dhProc, e.dhEvento, e.nSeqEvento, e.cMotivo, e.xMotivo, e.substituteKey ?? null,
-    tagText(xml, 'nDFSe'), tagText(xml, 'CNPJAutor') ?? tagText(xml, 'CPFAutor'), tagText(xml, 'ambGer'), tagText(xml, 'tpAmb')])
+    firstText(xml, 'nDFSe'), firstText(xml, 'CNPJAutor') ?? firstText(xml, 'CPFAutor'), firstText(xml, 'ambGer'), firstText(xml, 'tpAmb')])
 /** Chave de acesso da NFS-e = EXATAMENTE 50 dígitos (TSChaveAcesso); qualquer outra coisa não é chave. */
 const asAccessKey = (v: unknown): string | null => {
   const s = str(v)?.replace(/\D/g, '') ?? ''
@@ -238,7 +238,9 @@ export const adnAdapter: TaxAuthorityAdapter = {
     const xmlField = collectGzipXmlFields(data)[0]
     const nfseXml = xmlField ? decodeXmlField(xmlField) : null
     if (!nfseXml) throw unknownResponse('consultar', status, text)
-    const parsed = parseNfseXml(nfseXml)
+    // R18-07 do gate da Rodada 18: XML que o leitor não consegue ler (entidade inválida, etc.) é ILEGÍVEL — 502 ambíguo, nunca 500 cru
+    let parsed: ReturnType<typeof parseNfseXml>
+    try { parsed = parseNfseXml(nfseXml) } catch { throw unknownResponse('consultar: NFS-e ilegível', status, text) }
     // R2-2 (c): a NFS-e devolvida tem que ser a da chave PEDIDA — Id de outra chave = resposta trocada
     const xmlKey = asAccessKey(parsed.accessKey)
     if (xmlKey && xmlKey !== accessKey) throw unknownResponse('consultar: NFS-e de OUTRA chave', status, text)
@@ -265,8 +267,17 @@ export const adnAdapter: TaxAuthorityAdapter = {
       // pedido ecoado (sem Id/dhProc) não é voz sobre esta
       // D-F88 (= Q-F94, Valdo 2026-10-11): conta TODO evento GERADO desta chave, de qualquer tipo — um tipo fora do domínio de
       // cancelamento (e105105 indeferido, e101103…) no GET tipado também é contradição (o GET por tipo + sequência só devolve o tipo)
-      const generated = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).filter(({ ev: e }) =>
-        !!e.eventCode && isGeneratedEventFor(e, accessKey))
+      // R18-07 do gate da Rodada 18: evento que o leitor não consegue ler (entidade inválida em qualquer campo, inclusive os da
+      // assinatura da D-F93) é resposta ILEGÍVEL → ambíguo (502), nunca exceção crua (500 na tela; no rodízio, nem alarme nem carimbo)
+      let read: { generated: { xml: string; ev: ReturnType<typeof parseEventXml> }[]; signatures: Set<string> }
+      try {
+        const g = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).filter(({ ev: e }) => !!e.eventCode && isGeneratedEventFor(e, accessKey))
+        read = { generated: g, signatures: new Set(g.filter(({ ev: e }) => CANCEL_EVENT_CODES.has(e.eventCode!)).map(({ ev: e, xml }) => eventSignature(e, xml))) }
+      } catch {
+        logger.error('Contrato da Sefin divergente: evento ilegível no GET tipado', { code, environment: ctx.environment, items: xmls.length })
+        return { ...base, status: 'unknown' }
+      }
+      const generated = read.generated
       const candidates = generated.filter(({ ev: e }) => CANCEL_EVENT_CODES.has(e.eventCode!))
       // D-F84 (= Q-F90, Valdo 2026-10-10 — supera a escolha do L7): o GET tipado que traz TIPOS DIFERENTES desta chave é resposta
       // contraditória → AMBÍGUO (502): nenhuma marca, nenhum efeito (como a D-F63) — nem o tipo perguntado (a marca menos restritiva)
@@ -277,11 +288,13 @@ export const adnAdapter: TaxAuthorityAdapter = {
       }
       // D-F89 (= Q-F95, Valdo 2026-10-11): o MESMO tipo repetido só vale com o MESMO conteúdo — outra substituta, outro motivo, outro
       // instante ou outro Id no mesmo GET tipado também é contradição (o que se exibe/aplica não pode depender da ordem da lista)
-      if (new Set(candidates.map(({ ev: e, xml }) => eventSignature(e, xml))).size > 1) {
+      if (read.signatures.size > 1) {
         logger.error('Contrato da Sefin divergente: eventos do mesmo tipo com conteúdo diferente no mesmo GET tipado', { code, items: candidates.length, environment: ctx.environment })
         return { ...base, status: 'unknown' }
       }
-      const found = candidates[0]
+      // D-F96 (= Q-F102 (c)): repetição (assinaturas iguais) — o XML arquivado é escolhido de forma DETERMINÍSTICA (o menor na ordem
+      // do texto), nunca pela ordem da lista do fisco
+      const found = [...candidates].sort((a, b) => (a.xml < b.xml ? -1 : a.xml > b.xml ? 1 : 0))[0]
       // D-F63 (= Q-F70, Valdo 2026-10-10): no GET TIPADO (chave + tipo + sequência) um 200 diz "esse evento EXISTE" — o que
       // não se confere como cancelamento gerado desta chave (ilegível, outra chave, eco, outro tipo) é resposta trocada/ilegível:
       // ambíguo, NUNCA "autorizada" (antes gravava N falso num K em voo — gates DF61-01/02, M3). A R2-2 (d) "segue autorizada"

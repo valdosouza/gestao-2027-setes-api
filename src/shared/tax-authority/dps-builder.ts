@@ -252,7 +252,8 @@ export function buildCancelEventXml(input: CancelEventInput): string {
 // Leitura dos XML do fisco (sem prefixo de namespace — vedado pelo manual)
 // ---------------------------------------------------------------------------
 
-function firstText(xml: string, name: string): string | null {
+/** Texto do 1º elemento `<name>` (com ou sem atributos), aparado e des-escapado — o leitor ÚNICO do XML do fisco (D-F96). */
+export function firstText(xml: string, name: string): string | null {
   const m = xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`))
   return m ? unescapeXml(m[1].trim()) : null
 }

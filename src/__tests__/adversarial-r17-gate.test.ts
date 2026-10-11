@@ -496,60 +496,64 @@ const orderIndependent = async (a: string, b: string) => {
 // ACHADOS — falham no código atual (prova do bug); passam depois da correção
 // ===========================================================================
 
+/** D-F95 (Rodada 18): a consulta pedida pela TELA diz a origem — o invólucro não a deduz mais pela ausência de flags. */
+const SCREEN = { origin: 'consulta' as const }
+
 describe('ACHADO R17-01 (LOW) — D-F93: `tagText` é MAIS ESTRITO que o leitor do evento (`firstText` do parseEventXml aceita atributos, CDATA e entidades): com atributo ou CDATA nos 4 campos novos os dois lados leem null → divergência real passa como "repetição" e o XML ARQUIVADO volta a depender da ordem da lista (a R16-01 reabre por outra forma); com CDATA/entidade × texto do MESMO valor, repetição legítima vira ambígua', () => {
   const base = generatedEventXml({ code: '101101' })
-  it.failing('[LOW R17-01] nDFSe com ATRIBUTO (`<nDFSe versao="1">1</nDFSe>` × `…>2</nDFSe>`, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML nas duas ordens', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-01] nDFSe com ATRIBUTO (`<nDFSe versao="1">1</nDFSe>` × `…>2</nDFSe>`, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML nas duas ordens', async () => {
     const a = base.replace('<nDFSe>1</nDFSe>', '<nDFSe versao="1">1</nDFSe>')
     const b = base.replace('<nDFSe>1</nDFSe>', '<nDFSe versao="1">2</nDFSe>')
     expect((await orderIndependent(a, b)).ok).toBe(true)          // hoje: cancelled nas duas, com o XML do 1º item de cada lista
   })
-  it.failing('[LOW R17-01] CNPJAutor em CDATA (`<![CDATA[A]]>` × `<![CDATA[B]]>`, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-01] CNPJAutor em CDATA (`<![CDATA[A]]>` × `<![CDATA[B]]>`, mesmo Id) → ambíguo nas duas ordens OU o mesmo XML', async () => {
     const a = base.replace(`<CNPJAutor>${CNPJ}</CNPJAutor>`, `<CNPJAutor><![CDATA[${CNPJ}]]></CNPJAutor>`)
     const b = base.replace(`<CNPJAutor>${CNPJ}</CNPJAutor>`, '<CNPJAutor><![CDATA[98765432000188]]></CNPJAutor>')
     expect((await orderIndependent(a, b)).ok).toBe(true)
   })
-  it('contexto [prova do R17-01]: hoje as duas formas dão "cancelled" nas DUAS ordens, cada uma arquivando o XML do 1º item da sua lista', async () => {
+  it('[D-F96] as duas formas (atributo, CDATA divergentes) → AMBÍGUO nas DUAS ordens (o leitor do parse lê o valor)', async () => {
     const forms: [string, string][] = [
       [base.replace('<nDFSe>1</nDFSe>', '<nDFSe versao="1">1</nDFSe>'), base.replace('<nDFSe>1</nDFSe>', '<nDFSe versao="1">2</nDFSe>')],
       [base.replace(`<CNPJAutor>${CNPJ}</CNPJAutor>`, `<CNPJAutor><![CDATA[${CNPJ}]]></CNPJAutor>`), base.replace(`<CNPJAutor>${CNPJ}</CNPJAutor>`, '<CNPJAutor><![CDATA[98765432000188]]></CNPJAutor>')],
     ]
     for (const [a, b] of forms) {
       const r = await orderIndependent(a, b)
-      expect([r.ab.status, r.ba.status]).toEqual(['cancelled', 'cancelled'])
-      expect(r.ab.cancelled?.eventXml).toBe(a); expect(r.ba.cancelled?.eventXml).toBe(b)
+      expect([r.ab.status, r.ba.status]).toEqual(['unknown', 'unknown'])
     }
   })
-  it('contexto [liveness, fail-closed]: o MESMO valor serializado de outro jeito (CDATA × texto; entidade numérica × literal) conta como conteúdo diferente → ambíguo (nunca efeito errado)', async () => {
+  it('[D-F96] liveness: CDATA × texto segue contando como conteúdo diferente (ambíguo, fail-closed); entidade numérica × literal nunca deixa o arquivo depender da ordem', async () => {
     const cdata = base.replace('<nDFSe>1</nDFSe>', '<nDFSe><![CDATA[1]]></nDFSe>')
     const entity = base.replace('<ambGer>2</ambGer>', '<ambGer>&#50;</ambGer>')
-    for (const v of [cdata, entity]) {
-      mockHttp.mockReset(); sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(base)), typedItem(arquivo2(v))) : undefined) })
-      expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
-    }
+    mockHttp.mockReset(); sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(base)), typedItem(arquivo2(cdata))) : undefined) })
+    expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
+    // entidade × literal: ou é a MESMA voz (o parse des-escapa) ou é ambígua — nunca um XML arquivado que dependa da ordem
+    expect((await orderIndependent(base, entity)).ok).toBe(true)
   })
-  it('contexto [resíduo da Q-F99 (a)]: divergência em `verAplic` do infEvento (também preenchido pelo fisco) fica FORA da assinatura → passa como repetição e o XML arquivado depende da ordem', async () => {
+  it('[D-F96 (c)] divergência em `verAplic` (fora da assinatura) passa como repetição — e o XML arquivado é o MESMO nas duas ordens (escolha determinística)', async () => {
     const v2 = base.replace('<verAplic>SEFIN</verAplic>', '<verAplic>SEFIN-2</verAplic>')
     const r = await orderIndependent(base, v2)
     expect(r.ab.status).toBe('cancelled'); expect(r.ba.status).toBe('cancelled')
-    expect(r.ok).toBe(false)
+    expect(r.ok).toBe(true)
   })
 })
 
 describe('ACHADO R17-02 (LOW) — D-F91: o alarme leva `err: errMsg(err)`; a mensagem do 502 "NFS-e de OUTRO DPS" (resposta trocada) traz o Id do DPS ALHEIO, que embute o CPF/CNPJ do prestador de OUTRA nota (tpInsc 1 = CPF) — a consulta da tela e a reconferência passaram a jogar isso no log de ERRO (o rodízio já jogava desde a D-F87)', () => {
   const foreign = () => ({ accessKey: KEY, status: 'authorized' as const, nfseXml: nfseXmlFor(KEY, FOREIGN_DPS_ID), dhProc: '2026-09-21T10:15:30-03:00' })
-  it('contexto: a consulta da tela com a NFS-e de OUTRO DPS → 502 e UM alarme "consulta" cujo `err` contém o Id do DPS alheio (com o CPF do terceiro)', async () => {
+  it('[D-F94] a consulta da tela com a NFS-e de OUTRO DPS → 502 e UM alarme "consulta" com o CÓDIGO e um rótulo SEM DÍGITOS (nada do Id alheio)', async () => {
     withAuthorizedTx()
     adapter.queryNfse.mockResolvedValue(foreign())
-    const out = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
+    const out = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(origins()).toEqual(['consulta'])
-    expect(String(ambiguousLogs()[0][1].err)).toContain(FOREIGN_DPS_ID)
+    expect(ambiguousLogs()[0][1]).toMatchObject({ code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(ambiguousLogs()[0][1].err).toBeUndefined()
+    expect(String(ambiguousLogs()[0][1].reason)).not.toMatch(/\d/)
     expect(repo.insertTransmissionEvent).not.toHaveBeenCalled()
   })
-  it.failing('[LOW R17-02] o alarme do ambíguo nunca carrega documento (CPF/CNPJ) de TERCEIRO', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-02] o alarme do ambíguo nunca carrega documento (CPF/CNPJ) de TERCEIRO', async () => {
     withAuthorizedTx()
     adapter.queryNfse.mockResolvedValue(foreign())
-    await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
+    await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))
     expect(ambiguousLogs()).toHaveLength(1)
     expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(THIRD_CPF)
   })
@@ -557,28 +561,28 @@ describe('ACHADO R17-02 (LOW) — D-F91: o alarme leva `err: errMsg(err)`; a men
 
 describe('ACHADO R17-03 (LOW) — D-F91: o invólucro trata "sem `query` e sem `fromRun`" como "consulta da TELA", mas o TRANSMITIR também chama o refresh assim (passo 0b, reserva interrompida → `reconcileInterrupted`): o ambíguo da transmissão vai ao alarme rotulado "consulta"; e o GET /dps ambíguo do MESMO passo (fora do refresh) não vai ao alarme', () => {
   const interrupted = () => inFlightNow({ ageMinutes: IN_FLIGHT_MINUTES + 5 })
-  it('contexto: transmitir com a reserva interrompida; o GET /dps acha a chave e a leitura da NFS-e é ambígua → 502 (nada reservado, nada enviado) e UM alarme… rotulado "consulta"', async () => {
+  it('[D-F95] transmitir com a reserva interrompida; o GET /dps acha a chave e a leitura da NFS-e é ambígua → 502 (nada reservado, nada enviado) e UM alarme "transmissao"', async () => {
     setTx(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'unknown', nfseXml: NFSE_XML, dhProc: null })
     const out = await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(adapter.transmit).not.toHaveBeenCalled(); expect(repo.insertTransmission).not.toHaveBeenCalled()
-    expect(origins()).toEqual(['consulta'])
+    expect(origins()).toEqual(['transmissao'])
   })
-  it.failing('[LOW R17-03] o ambíguo que nasce no TRANSMITIR nunca é rotulado como a consulta pedida pela TELA (D-F91: "só para a consulta da TELA")', async () => {
+  it('[CORRIGIDO — Rodada 18] [LOW R17-03] o ambíguo que nasce no TRANSMITIR nunca é rotulado como a consulta pedida pela TELA (D-F91: "só para a consulta da TELA")', async () => {
     setTx(interrupted())
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue({ accessKey: KEY, status: 'unknown', nfseXml: NFSE_XML, dhProc: null })
     await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))
     expect(origins()).not.toContain('consulta')
   })
-  it('contexto: no MESMO passo 0b, o GET /dps AMBÍGUO (antes do refresh) sobe 502 SEM alarme nenhum — a mesma nota alarma ou não conforme ONDE a ambiguidade nasceu', async () => {
+  it('[D-F95] no MESMO passo 0b, o GET /dps AMBÍGUO (antes do refresh) sobe 502 e alarma "transmissao" — a nota alarma onde quer que a ambiguidade nasça', async () => {
     setTx(interrupted())
     adapter.queryDpsAccessKey.mockRejectedValue(unknownBoom())
     const out = await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))
     expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
-    expect(ambiguousLogs()).toHaveLength(0)
+    expect(origins()).toEqual(['transmissao'])
   })
 })
 
@@ -589,7 +593,7 @@ describe('ACHADO R17-03 (LOW) — D-F91: o invólucro trata "sem `query` e sem `
 describe('RESISTIU — D-F91: o invólucro do `refreshServiceTransmission` não muda valor nem exceção', () => {
   it('resistiu: caminho feliz — a consulta da tela devolve o MESMO resultado (autorizada, sem mudança) e não alarma', async () => {
     useRealAdn(); withAuthorizedTx(); sefin({})
-    const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q')
+    const r = await refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN)
     expect(r).toEqual({ invoiceId: INVOICE, attempt: 1, changed: false, kind: 'A', accessKey: KEY, invoiceEvent: null, effectRefused: null })
     expect(ambiguousLogs()).toHaveLength(0)
   })
@@ -597,12 +601,12 @@ describe('RESISTIU — D-F91: o invólucro do `refreshServiceTransmission` não 
     withAuthorizedTx()
     const boom = unknownBoom()
     adapter.queryNfse.mockRejectedValueOnce(boom)
-    expect(await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))).toBe(boom)
+    expect(await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))).toBe(boom)
     expect(origins()).toEqual(['consulta'])
     for (const e of [unavailable(), dpsRejected(), new Error('ECONNRESET do banco'), 'lançamento cru'] as unknown[]) {
       ;(logger.error as jest.Mock).mockClear()
       adapter.queryNfse.mockRejectedValueOnce(e)
-      expect(await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))).toBe(e)
+      expect(await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))).toBe(e)
       expect(ambiguousLogs()).toHaveLength(0)
     }
   })
@@ -619,7 +623,7 @@ describe('RESISTIU — D-F91: o invólucro do `refreshServiceTransmission` não 
     expect(ambiguousLogs()).toHaveLength(0)
     logAmbiguousFiscal('rodizio', at, new AuthorityHttpError(502, 'ambíguo', ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, 200, '{}'))
     expect(ambiguousLogs()).toHaveLength(1)
-    expect(Object.keys(ambiguousLogs()[0][1]).sort()).toEqual(['attempt', 'err', 'institutionId', 'invoiceId', 'lastKind', 'origin'])
+    expect(Object.keys(ambiguousLogs()[0][1]).sort()).toEqual(['attempt', 'code', 'institutionId', 'invoiceId', 'lastKind', 'origin', 'reason'])   // D-F94
   })
 })
 
@@ -686,7 +690,7 @@ describe('RESISTIU — D-F91: sem duplicata (rodízio × invólucro × reconfer�
     for (const typed of variants) {
       ;(logger.error as jest.Mock).mockClear(); withAuthorizedTx()
       mockHttp.mockReset(); sefin({ typed })
-      expect(await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))).toMatchObject({ statusCode: 502 })
+      expect(await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))).toMatchObject({ statusCode: 502 })
       expect(origins()).toEqual(['consulta'])
       expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(KEY)
     }

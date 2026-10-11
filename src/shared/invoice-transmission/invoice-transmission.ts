@@ -182,7 +182,9 @@ export async function transmitServiceInvoice(
   // abaixo); não achou = F "sem resposta" e a nota segue para nova tentativa.
   const latest0 = await latestTransmission(pool, s, institutionId, invoiceId)
   if (latest0 && isInterruptedInFlight(latest0)) {
-    await reconcileInterrupted(s, institutionId, userId, latest0, opened0)
+    // D-F95 (= Q-F101 (b)): o ambíguo do passo 0b (GET /dps ou a consulta pela chave) vai ao alarme com a origem "transmissao"
+    try { await reconcileInterrupted(s, institutionId, userId, latest0, opened0) }
+    catch (err) { logAmbiguousFiscal('transmissao', { institutionId, invoiceId, attempt: latest0.attempt }, err); throw err }
   }
 
   // (d) TRANSAÇÃO 1 — reserva: institution PRIMEIRO (cunha nDPS), depois a nota,
@@ -544,24 +546,30 @@ async function archiveCancelEventIfMissing(s: string, institutionId: number, inv
  * da F3, que AGREGA por nota (primeira/última vez, contagem); só a composição sabe QUAL nota: o log leva institution, nota, tentativa
  * (quando conhecida) e a ORIGEM (rodízio, consulta pela tela, reconferência antes do cancelamento local). Nunca a chave de acesso.
  */
+/** D-F95 (= Q-F101 (b)): a origem é dita EXPLICITAMENTE por quem chama — nunca deduzida pela ausência de flags. */
+export type AmbiguousOrigin = 'rodizio' | 'consulta' | 'reconferencia' | 'transmissao'
 export function logAmbiguousFiscal(
-  origin: 'rodizio' | 'consulta' | 'reconferencia',
+  origin: AmbiguousOrigin,
   at: { institutionId: number; invoiceId: number; attempt?: number | null; lastKind?: string | null }, err: unknown
 ): void {
   if (!(err instanceof HttpError) || err.code !== ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE) return
   logger.error('Fisco ambíguo persistente: a nota não pôde ser concluída no fisco',
-    { origin, institutionId: at.institutionId, invoiceId: at.invoiceId, attempt: at.attempt ?? null, lastKind: at.lastKind ?? null, err: errMsg(err) })
+    // D-F94 (= Q-F100 (b), Valdo 2026-10-11): só o CÓDIGO + um rótulo SEM DÍGITOS — a mensagem inteira podia levar o Id de DPS de OUTRA
+    // nota (que embute o CPF/CNPJ de outro prestador) ao alarme (R17-02)
+    { origin, institutionId: at.institutionId, invoiceId: at.invoiceId, attempt: at.attempt ?? null, lastKind: at.lastKind ?? null,
+      code: err.code, reason: errMsg(err).replace(/\d+/g, '#').slice(0, 160) })
 }
 
 export async function refreshServiceTransmission(
   schemaName: string, institutionId: number, userId: number | null, invoiceId: number,
-  source: Exclude<TransmissionSource, 'P'> = 'Q', opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean } = {}
+  source: Exclude<TransmissionSource, 'P'> = 'Q', opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean; origin?: 'consulta' } = {}
 ): Promise<RefreshResult> {
   try {
     return await refreshServiceTransmissionInner(schemaName, institutionId, userId, invoiceId, source, opts)
   } catch (err) {
-    // D-F91: a consulta pedida pela TELA; o rodízio (`fromRun`) e a reconferência (`query` pronta) registram por si, com mais contexto
-    if (!opts.query && !opts.fromRun) logAmbiguousFiscal('consulta', { institutionId, invoiceId, attempt: opts.attempt ?? null }, err)
+    // D-F91/D-F95: registra quem DISSE a origem (consulta da tela); o rodízio e a reconferência/transmissão registram por si, com mais
+    // contexto — sem origem dita, nada (nunca deduzida pela ausência de flags — R17-03)
+    if (opts.origin) logAmbiguousFiscal(opts.origin, { institutionId, invoiceId, attempt: opts.attempt ?? null }, err)
     throw err
   }
 }

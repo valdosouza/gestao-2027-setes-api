@@ -108,7 +108,8 @@ async function runTransmitBatch(institution: InstitutionPayload, body: TransmitB
 }
 
 export async function refreshInvoice(institution: InstitutionPayload, orderId: number): Promise<RefreshResult> {
-  return refreshServiceTransmission(institution.schemaName, institution.institutionId, institution.userId, orderId, 'Q')
+  // D-F95: a consulta pedida pela TELA diz a origem (o ambíguo vai ao alarme como "consulta")
+  return refreshServiceTransmission(institution.schemaName, institution.institutionId, institution.userId, orderId, 'Q', { origin: 'consulta' })
 }
 
 export async function refreshOpen(institution: InstitutionPayload, body: FiscalRefreshBody): Promise<RefreshRunReport> {
