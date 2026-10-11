@@ -3,7 +3,7 @@ import { ErrorCodes } from '@shared/errors/error-codes'
 import {
   assertServiceClassification, findClassificationAt, deriveCst, Queryable,
   findClassificationForRegistration, classificationForDisplay, listClassificationsLookup, NFSE_IBSCBS_SIMPLES_OBLIGATION_START,
-  pickForRegistration,
+  pickForRegistration, classificationAcceptedToday, classificationAcceptance, assertIbscbsCatalogSchema,
 } from '@shared/ibscbs-classification'
 
 /**
@@ -11,14 +11,14 @@ import {
  * classificação do serviço conferida no catálogo central na DATA, para a NFS-e (modelo SE).
  */
 
-interface Validity { code: string; cst: string; name: string; from: string; until: string | null; regular: 'S' | 'N'; models: string[] }
+interface Validity { code: string; cst: string; name: string; from: string; until: string | null; regular: 'S' | 'N'; models: string[]; absent?: string }
 
 function fakeCatalog(opts: { validity: Validity[]; places: Record<string, string[]>; nbs: string[] }): Queryable {
   return {
     query: async (sql: string, params: unknown[] = []) => {
       const row = (hit: Validity, model: string) => ({
         code: hit.code, cst: hit.cst, name: hit.name, validFrom: hit.from, validUntil: hit.until,
-        requiresRegular: hit.regular, applicable: hit.models.includes(model) ? 1 : 0,
+        requiresRegular: hit.regular, applicable: hit.models.includes(model) ? 1 : 0, absentSince: hit.absent ?? null,
       })
       // CADASTRO / EXIBIÇÃO (rowsOfCode): todas as linhas do código, com a presença do modelo
       if (sql.includes('tb_tax_ibscbs_classification_validity v') && /WHERE v\.code = \? AND v\.deleted = 'N'\s+ORDER BY v\.valid_from\s*$/.test(sql)) {
@@ -27,16 +27,18 @@ function fakeCatalog(opts: { validity: Validity[]; places: Record<string, string
       }
       // lista de apoio (listClassificationsLookup): candidatas da janela, COM a presença (a peça escolhe)
       if (sql.includes('LIMIT 400')) {
+        if (!sql.includes('absent_since_version IS NULL')) throw new Error('lista sem o filtro da linha superada (D-IB36)')
         const [model, date, , , endW] = params as string[]
         return [opts.validity
-          .filter(v => (v.from <= date && (v.until === null || v.until >= date)) || (v.from > date && v.from <= endW))
+          .filter(v => !v.absent && ((v.from <= date && (v.until === null || v.until >= date)) || (v.from > date && v.from <= endW)))
           .sort((a, b) => a.code.localeCompare(b.code) || a.from.localeCompare(b.from))
           .map(v => row(v, model))]
       }
       if (sql.includes('tb_tax_ibscbs_classification_validity v') && sql.includes('LIMIT 1')) {
+        if (!sql.includes('absent_since_version IS NULL')) throw new Error('data do fato sem o filtro da linha superada (D-IB36)')
         const [model, code, date] = params as string[]
         const hit = opts.validity
-          .filter(v => v.code === code && v.from <= date && (v.until === null || v.until >= date))
+          .filter(v => v.code === code && !v.absent && v.from <= date && (v.until === null || v.until >= date))
           .sort((a, b) => (a.from < b.from ? 1 : -1))[0]
         return [hit ? [{
           code: hit.code, cst: hit.cst, name: hit.name, validFrom: hit.from, validUntil: hit.until,
@@ -71,6 +73,12 @@ const catalog = () => fakeCatalog({
     // lista e salvar têm de concordar (regra única pickForRegistration)
     { code: '000011', cst: '000', name: 'Órfã sem presença', from: '2026-01-01', until: null, regular: 'N', models: [] },
     { code: '000011', cst: '000', name: 'Corrigida', from: '2026-12-01', until: null, regular: 'N', models: ['SE'] },
+    // D-IB36: 000012 corrigido de 2026-09-01 para 2026-03-01 — a linha antiga sumiu da fonte (superada)
+    { code: '000012', cst: '000', name: 'Correta', from: '2026-03-01', until: null, regular: 'N', models: ['SE'] },
+    { code: '000012', cst: '000', name: 'Órfã superada', from: '2026-09-01', until: null, regular: 'N', models: ['SE'], absent: 'IT v1.80' },
+    // exibição fiel à D-IB36: linha NÃO superada vencida + superada aberta — mostra a não superada
+    { code: '000013', cst: '000', name: 'Vencida (não superada)', from: '2025-01-01', until: '2026-06-30', regular: 'N', models: ['SE'] },
+    { code: '000013', cst: '000', name: 'Superada aberta', from: '2026-09-01', until: null, regular: 'N', models: ['SE'], absent: 'IT v1.80' },
   ],
   places: { '100301': ['SE', '55'], '010101': ['55'] },
   nbs: ['115022000'],
@@ -174,7 +182,7 @@ describe('@shared/ibscbs-classification — janela do cadastro (D-IB29)', () => 
 
   it('lista de apoio: um código por linha, vigência em validFrom (o texto é da tela — i18n); sem os que exigem regular', async () => {
     const rows = await listClassificationsLookup('', '2026-10-10', 'SE', catalog())
-    expect(rows.map(r => r.code)).toEqual(['000001', '000009', '000011'])
+    expect(rows.map(r => r.code)).toEqual(['000001', '000009', '000011', '000012'])
     expect(rows[0]).toMatchObject({ description: '000 · 000001 — Tributação integral', validFrom: '2026-01-01' })
     expect(rows[1]).toMatchObject({ description: '000 · 000009 — Começa em 2027', validFrom: '2027-01-01' })
   })
@@ -189,7 +197,7 @@ describe('@shared/ibscbs-classification — janela do cadastro (D-IB29)', () => 
 
   it('pickForRegistration: vigente com presença → futura com presença → vigente sem presença; nada na janela = null', () => {
     const r = (validFrom: string, applicable: boolean, validUntil: string | null = null) =>
-      ({ code: 'x', cst: '000', name: validFrom, validFrom, validUntil, requiresRegularTaxation: false, applicable })
+      ({ code: 'x', cst: '000', name: validFrom, validFrom, validUntil, requiresRegularTaxation: false, applicable, superseded: false })
     expect(pickForRegistration([r('2026-01-01', true), r('2026-06-01', true)], '2026-10-10')?.validFrom).toBe('2026-06-01')
     expect(pickForRegistration([r('2026-01-01', false), r('2026-12-01', true)], '2026-10-10')?.validFrom).toBe('2026-12-01')
     expect(pickForRegistration([r('2026-01-01', false)], '2026-10-10')?.applicable).toBe(false)
@@ -208,5 +216,58 @@ describe('assertServiceClassification — checks por componente (D-IB30)', () =>
       { ibscbs: { classificationCode: '000006', placeIndicatorCode: '010101' } }, '2026-10-10', 'SE',
       { classification: false, placeIndicator: true }))
     expect(e.fields?.map(f => f.field)).toEqual(['ibscbs.placeIndicatorCode'])
+  })
+})
+
+// D-IB36 (Rodada 4, Valdo 2026-10-10): linha que sumiu da fonte é IGNORADA em toda resolução
+describe('@shared/ibscbs-classification — linha superada (D-IB36)', () => {
+  it('data do fato, cadastro, lista e exibição ignoram a linha superada (a correta, mais antiga, vale)', async () => {
+    expect(await findClassificationAt(catalog(), '000012', 'SE', '2026-10-10')).toMatchObject({ validFrom: '2026-03-01', name: 'Correta' })
+    expect(await findClassificationForRegistration(catalog(), '000012', 'SE', '2026-10-10')).toMatchObject({ validFrom: '2026-03-01' })
+    const rows = await listClassificationsLookup('', '2026-10-10', 'SE', catalog())
+    expect(rows.find(r => r.code === '000012')).toMatchObject({ validFrom: '2026-03-01', description: '000 · 000012 — Correta' })
+    expect(await classificationForDisplay(catalog(), '000012', '2026-10-10')).toMatchObject({ name: 'Correta' })
+  })
+
+  it('pickForRegistration nunca escolhe a superada, nem como último recurso', () => {
+    const r = (validFrom: string, superseded: boolean) =>
+      ({ code: 'x', cst: '000', name: validFrom, validFrom, validUntil: null, requiresRegularTaxation: false, applicable: true, superseded })
+    expect(pickForRegistration([r('2026-01-01', false), r('2026-09-01', true)], '2026-10-10')?.validFrom).toBe('2026-01-01')
+    expect(pickForRegistration([r('2026-09-01', true)], '2026-10-10')).toBeNull()
+  })
+})
+
+// D-IB37: o GET diz se a classificação GRAVADA é aceita hoje (o selo da tela)
+describe('classificationAcceptedToday (D-IB37)', () => {
+  it('aceita: linha com presença, sem regular, e cIndOp aceito; qualquer falha = false', async () => {
+    expect(await classificationAcceptedToday(catalog(), '000001', '100301', '2026-10-10')).toBe(true)
+    expect(await classificationAcceptedToday(catalog(), '000006', '100301', '2026-10-10')).toBe(false)   // sem presença (A-IB1)
+    expect(await classificationAcceptedToday(catalog(), '550020', '100301', '2026-10-10')).toBe(false)   // exige regular
+    expect(await classificationAcceptedToday(catalog(), '200052', '100301', '2026-10-10')).toBe(false)   // venceu em 2026-10-01
+    expect(await classificationAcceptedToday(catalog(), '000001', '010101', '2026-10-10')).toBe(false)   // cIndOp só NF-e
+    expect(await classificationAcceptedToday(catalog(), '000009', '100301', '2026-10-10')).toBe(true)    // futura na janela (D-IB29)
+  })
+})
+
+// Delta socrático da Rodada 4: exibição só cai na superada se não houver outra; selo por componente;
+// o boot confere a coluna do script 63.
+describe('@shared/ibscbs-classification — correções do gate da Rodada 4', () => {
+  it('exibição: a linha superada só aparece se NÃO houver outra (mesmo vencida, a não superada ganha)', async () => {
+    expect(await classificationForDisplay(catalog(), '000013', '2026-10-10')).toMatchObject({ name: 'Vencida (não superada)' })
+    expect(await classificationForDisplay(catalog(), '000013', null)).toMatchObject({ name: 'Vencida (não superada)' })
+  })
+
+  it('aceite por componente: diz qual código do par deixou de ser aceito', async () => {
+    expect(await classificationAcceptance(catalog(), '000001', '010101', '2026-10-10')).toEqual({ classification: true, placeIndicator: false })
+    expect(await classificationAcceptance(catalog(), '000006', '100301', '2026-10-10')).toEqual({ classification: false, placeIndicator: true })
+  })
+
+  it('boot: sem a coluna do script 63 a API não sobe e diz qual script aplicar; outro erro sobe como está', async () => {
+    const ok = { query: async () => [[]] }
+    await expect(assertIbscbsCatalogSchema(ok)).resolves.toBe('ok')
+    const missing = { query: async () => { throw Object.assign(new Error("Unknown column 'absent_since_version'"), { errno: 1054 }) } }
+    await expect(assertIbscbsCatalogSchema(missing)).rejects.toThrow(/sql\/63_ibscbs_validity_absent_since\.sql/)
+    const other = { query: async () => { throw Object.assign(new Error('denied'), { errno: 1142 }) } }
+    await expect(assertIbscbsCatalogSchema(other)).rejects.toMatchObject({ errno: 1142 })
   })
 })

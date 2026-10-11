@@ -10,6 +10,9 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  * Regras de escrita:
  *  - linha de VIGÊNCIA nunca é apagada (nota antiga aponta código antigo); atributo
  *    corrigido sem dIniVig novo = UPDATE da mesma linha (source_* registram a origem);
+ *  - D-IB36: linha que SOME da fonte ganha o fato `absent_since_version` (a versão do IT em que
+ *    deixou de vir) — a peça de classificação a ignora; voltou na fonte = o fato é limpo
+ *    (relatório: validity.deactivated/revived + chaves);
  *  - APLICABILIDADE é presença: só os modelos em `models` são gerenciados (a carga da IB-1
  *    gerencia só 'SE'; 55/65 entram como DADO na F4) — some do arquivo → deleted='S';
  *    volta → revive;
@@ -187,7 +190,8 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
 
     // --- História (vigência) -------------------------------------------------
     const [vRows] = await conn.query<any[]>(
-      `SELECT code, valid_from, valid_until, name, description, requires_regular_taxation, source_updated_at
+      `SELECT code, valid_from, valid_until, name, description, requires_regular_taxation, source_updated_at,
+              absent_since_version
          FROM ${C}.tb_tax_ibscbs_classification_validity`)
     const vHave = new Map<string, any>(vRows.map(r => [`${r.code}|${isoDate(r.valid_from)}`, r]))
     for (const c of input.it.classifications) {
@@ -202,15 +206,31 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
           [c.code, c.validFrom, c.validUntil, c.name, c.description, regular, input.itVersion, c.updatedAt])
         report.validity.inserted++
       } else if (isoDate(row.valid_until) !== c.validUntil || row.name !== c.name || row.description !== c.description
-                 || row.requires_regular_taxation !== regular || isoDate(row.source_updated_at) !== c.updatedAt) {
+                 || row.requires_regular_taxation !== regular || isoDate(row.source_updated_at) !== c.updatedAt
+                 || row.absent_since_version != null) {
         await conn.query(
           `UPDATE ${C}.tb_tax_ibscbs_classification_validity
               SET valid_until = ?, name = ?, description = ?, requires_regular_taxation = ?,
-                  source_version = ?, source_updated_at = ?, deleted = 'N', updated_at = NOW()
+                  source_version = ?, source_updated_at = ?, absent_since_version = NULL, deleted = 'N', updated_at = NOW()
             WHERE code = ? AND valid_from = ?`,
           [c.validUntil, c.name, c.description, regular, input.itVersion, c.updatedAt, c.code, c.validFrom])
-        report.validity.updated++
+        if (row.absent_since_version != null) report.validity.revived++
+        else report.validity.updated++
       } else report.validity.unchanged++
+    }
+    // D-IB36: o que estava presente e NÃO veio nesta versão da fonte ganha o fato (nunca é apagado)
+    const inSource = new Set(input.it.classifications.map(c => `${c.code}|${c.validFrom}`))
+    for (const row of vRows) {
+      const key = `${row.code}|${isoDate(row.valid_from)}`
+      if (!inSource.has(key) && row.absent_since_version == null) {
+        await conn.query(
+          `UPDATE ${C}.tb_tax_ibscbs_classification_validity
+              SET absent_since_version = ?, updated_at = NOW()
+            WHERE code = ? AND valid_from = ?`,
+          [input.itVersion, row.code, isoDate(row.valid_from)])
+        report.validity.deactivated++
+        report.validity.deactivatedKeys.push(key)
+      }
     }
 
     // --- Aplicabilidade por modelo (presença) --------------------------------

@@ -22,7 +22,11 @@ import { escapeLike } from '@shared/list'
  *     código ainda não confirmado pela Calculadora não tem presença (A-IB1);
  *   - classificação que EXIGE tributação regular é recusada: o builder não emite gTribRegular
  *     (parecer do guardião §10.3 (a.ii));
- *   - cIndOp precisa de presença para o modelo (Anexo VII).
+ *   - cIndOp precisa de presença para o modelo (Anexo VII);
+ *   - D-IB36: linha SUPERADA (ausente da fonte desde uma versão — `absent_since_version`) é
+ *     ignorada em toda resolução; a exibição de um código gravado só a mostra se não houver outra;
+ *   - D-IB37: `classificationAcceptedToday` diz se a classificação gravada é aceita HOJE pela
+ *     regra do cadastro (o GET devolve e a tela mostra um selo quando não é).
  * Não calcula nada (o fisco calcula — §1.2) e não conhece ERP: recebe códigos e uma data.
  */
 
@@ -49,6 +53,8 @@ export interface ClassificationAt {
   requiresRegularTaxation: boolean
   /** Presença para o modelo pedido na linha. */
   applicable:              boolean
+  /** D-IB36: a linha sumiu da fonte (ausente desde uma versão do IT) — nunca é escolhida. */
+  superseded:              boolean
 }
 
 const dateStr = (v: any): string | null =>
@@ -56,7 +62,7 @@ const dateStr = (v: any): string | null =>
 
 const CLASSIFICATION_SELECT =
   `SELECT v.code, c.tb_tax_ibscbs_id AS cst, v.name, v.valid_from AS validFrom, v.valid_until AS validUntil,
-          v.requires_regular_taxation AS requiresRegular,
+          v.requires_regular_taxation AS requiresRegular, v.absent_since_version AS absentSince,
           (a.code IS NOT NULL) AS applicable
      FROM setes_central.tb_tax_ibscbs_classification_validity v
      JOIN setes_central.tb_tax_ibscbs_classification c ON c.code = v.code AND c.deleted = 'N'
@@ -68,6 +74,7 @@ const toClassification = (r: any): ClassificationAt => ({
   validFrom: dateStr(r.validFrom) ?? '', validUntil: dateStr(r.validUntil),
   requiresRegularTaxation: r.requiresRegular === 'S',
   applicable: Number(r.applicable) === 1,
+  superseded: r.absentSince != null,
 })
 
 /** DATA DO FATO: linha vigente do cClassTrib na data + presença para o modelo. null = inexistente/fora de vigência. */
@@ -76,7 +83,7 @@ export async function findClassificationAt(
 ): Promise<ClassificationAt | null> {
   const [rows] = await q.query(
     `${CLASSIFICATION_SELECT}
-      WHERE v.code = ? AND v.deleted = 'N'
+      WHERE v.code = ? AND v.deleted = 'N' AND v.absent_since_version IS NULL
         AND v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?)
       ORDER BY v.valid_from DESC
       LIMIT 1`,
@@ -96,6 +103,7 @@ export const registrationWindowEnd = (today: string): string | null =>
  */
 export function pickForRegistration(rows: readonly ClassificationAt[], today: string): ClassificationAt | null {
   const end = registrationWindowEnd(today)
+  rows = rows.filter(r => !r.superseded)   // D-IB36: linha que sumiu da fonte nunca é escolhida
   const current = rows.filter(r => r.validFrom <= today && (r.validUntil === null || r.validUntil >= today))
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom))
   const future = end === null ? [] : rows.filter(r => r.validFrom > today && r.validFrom <= end)
@@ -125,12 +133,55 @@ export async function findClassificationForRegistration(
 export async function classificationForDisplay(
   q: Queryable, code: string, today: string | null, model: FiscalModel = MODEL_NFSE,
 ): Promise<{ name: string; validFrom: string; validUntil: string | null } | null> {
-  const rows = await rowsOfCode(q, code, model)
-  const latest = [...rows].sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0]
-  const shown = today === null ? latest : pickForRegistration(rows, today)
-    ?? rows.filter(r => r.validFrom > today).sort((a, b) => a.validFrom.localeCompare(b.validFrom))[0]
-    ?? latest
+  const all = await rowsOfCode(q, code, model)
+  const live = all.filter(r => !r.superseded)
+  // D-IB36: a linha superada só aparece se NÃO houver outra (reservas olham primeiro as não superadas)
+  const latestOf = (rows: ClassificationAt[]) => [...rows].sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0]
+  const nextOf = (rows: ClassificationAt[], d: string) =>
+    rows.filter(r => r.validFrom > d).sort((a, b) => a.validFrom.localeCompare(b.validFrom))[0]
+  const shown = today === null
+    ? latestOf(live) ?? latestOf(all)
+    : pickForRegistration(all, today) ?? nextOf(live, today) ?? latestOf(live) ?? latestOf(all)
   return shown ? { name: shown.name, validFrom: shown.validFrom, validUntil: shown.validUntil } : null
+}
+
+/** D-IB37: a classificação GRAVADA é aceita hoje pela regra do cadastro? — POR COMPONENTE (o selo da
+ *  tela aponta o código certo: gate socrático da Rodada 4). É sinal de CADASTRO, não decide o faturamento
+ *  (a IB-2 resolve pela data do fato e a nota congelada nunca reconsulta o catálogo). */
+export async function classificationAcceptance(
+  q: Queryable, classificationCode: string, placeIndicatorCode: string, today: string,
+  model: FiscalModel = MODEL_NFSE,
+): Promise<{ classification: boolean; placeIndicator: boolean }> {
+  const cls = await findClassificationForRegistration(q, classificationCode, model, today)
+  const place = await findPlaceIndicator(q, placeIndicatorCode, model)
+  return {
+    classification: !!cls && cls.applicable && !cls.requiresRegularTaxation,
+    placeIndicator: !!place && place.applicable,
+  }
+}
+
+/** D-IB37: os DOIS códigos aceitos hoje (o par inteiro). */
+export async function classificationAcceptedToday(
+  q: Queryable, classificationCode: string, placeIndicatorCode: string, today: string,
+  model: FiscalModel = MODEL_NFSE,
+): Promise<boolean> {
+  const a = await classificationAcceptance(q, classificationCode, placeIndicatorCode, today, model)
+  return a.classification && a.placeIndicator
+}
+
+/** Boot (gate socrático da Rodada 4 — molde D-IB26/D-F45): o que a peça presume do catálogo central
+ *  EXISTE. Sem o script sql/63 a coluna `absent_since_version` falta e o cadastro de serviços daria
+ *  500 com o boot limpo — agora a API não sobe e diz qual script aplicar. */
+export async function assertIbscbsCatalogSchema(q: Queryable = pool): Promise<string> {
+  try {
+    await q.query(`SELECT absent_since_version FROM setes_central.tb_tax_ibscbs_classification_validity LIMIT 0`)
+  } catch (err: any) {
+    if (err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR') {
+      throw new Error('Catálogo IBS/CBS sem a coluna absent_since_version — aplique o script sql/63_ibscbs_validity_absent_since.sql em setes_central ANTES do setes-api (D-IB36)')
+    }
+    throw err
+  }
+  return 'ok'
 }
 
 export async function findPlaceIndicator(
@@ -234,7 +285,7 @@ export async function listClassificationsLookup(
   const end = registrationWindowEnd(date) ?? date   // depois da obrigação a janela futura é vazia
   const [rows] = await q.query(
     `${CLASSIFICATION_SELECT}
-      WHERE v.deleted = 'N'
+      WHERE v.deleted = 'N' AND v.absent_since_version IS NULL
         AND ((v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?))
              OR (v.valid_from > ? AND v.valid_from <= ?))
         AND (? IS NULL OR v.code LIKE ? OR v.name LIKE ?)

@@ -46,7 +46,7 @@ const baseTables = () => ({
   tb_tax_ibscbs_classification_validity: [
     { code: '000001', valid_from: '2026-01-01', valid_until: null, name: 'n1', description: 'd1', requires_regular_taxation: 'N', source_updated_at: '2026-01-01' },
     { code: '000006', valid_from: '2026-01-01', valid_until: null, name: 'n6', description: 'd6', requires_regular_taxation: 'N', source_updated_at: '2026-01-01' },
-  ],
+  ] as Row[],
   tb_tax_ibscbs_classification_applicability: [
     { code: '000001', valid_from: '2026-01-01', model: 'SE', deleted: 'N' },
   ] as Row[],
@@ -236,6 +236,37 @@ describe('applyCatalog — D-IB28', () => {
     })
     expect(r.applied).toBe(true)
     expect(r.impact).toEqual([])
+  })
+})
+
+// D-IB36 (Rodada 4, Valdo 2026-10-10): linha de vigência que SOME da fonte ganha o fato "ausente desde a
+// versão X" (nunca é apagada); volta na fonte = o fato é limpo.
+describe('applyCatalog — fato "ausente da fonte" na história (D-IB36)', () => {
+  it('linha que não veio nesta versão é marcada com a versão; a que voltou é limpa', async () => {
+    const t = baseTables()
+    // 000001 tinha uma linha antiga (dIniVig corrigida pelo IT) e 000006 estava marcada como ausente desde a v1.60
+    t.tb_tax_ibscbs_classification_validity = [
+      ...t.tb_tax_ibscbs_classification_validity.map(r => (r.code === '000006' ? { ...r, absent_since_version: 'IT v1.60' } : r)),
+      { code: '000001', valid_from: '2025-06-01', valid_until: null, name: 'antiga', description: 'd', requires_regular_taxation: 'N', source_updated_at: '2025-06-01' },
+    ]
+    const { conn, writes } = fakeConn(t)
+    const r = await applyCatalog(conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
+    expect(r.validity).toMatchObject({ deactivated: 1, revived: 1, deactivatedKeys: ['000001|2025-06-01'] })
+    const marked = writes.find(w => /SET absent_since_version = \?/.test(w.sql))
+    expect(marked?.params).toEqual(['IT v1.70', '000001', '2025-06-01'])
+    expect(writes.some(w => /absent_since_version = NULL/.test(w.sql) && w.params.includes('000006'))).toBe(true)
+    // nada é apagado
+    expect(writes.some(w => /^DELETE/.test(w.sql) || /tb_tax_ibscbs_classification_validity\s+SET deleted = 'S'/.test(w.sql))).toBe(false)
+  })
+
+  it('linha já marcada que segue ausente não é regravada', async () => {
+    const t = baseTables()
+    t.tb_tax_ibscbs_classification_validity.push(
+      { code: '000001', valid_from: '2025-06-01', valid_until: null, name: 'antiga', description: 'd', requires_regular_taxation: 'N', source_updated_at: '2025-06-01', absent_since_version: 'IT v1.60' })
+    const { conn, writes } = fakeConn(t)
+    const r = await applyCatalog(conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
+    expect(r.validity.deactivated).toBe(0)
+    expect(writes.some(w => /SET absent_since_version = \?/.test(w.sql))).toBe(false)
   })
 })
 

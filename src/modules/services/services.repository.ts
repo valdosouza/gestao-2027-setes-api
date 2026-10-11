@@ -4,7 +4,9 @@ import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { todayFor } from '@shared/time-zone'
-import { assertServiceClassification, classificationForDisplay, deriveCst } from '@shared/ibscbs-classification'
+import {
+  assertServiceClassification, classificationAcceptance, classificationForDisplay, deriveCst,
+} from '@shared/ibscbs-classification'
 import {
   ServiceListRow, ServiceFull, ServiceInput, ServicePriceRow,
   ServiceLookupRow, ServiceIbscbsRow,
@@ -139,12 +141,20 @@ export async function getService(
   const shown = ibsClassificationCode
     ? await classificationForDisplay(pool, ibsClassificationCode, today)
     : null
+  // D-IB37 por componente (sem data = não avaliado)
+  const accepted = ibsClassificationCode && today
+    ? await classificationAcceptance(pool, ibsClassificationCode, ibsPlaceIndicatorCode, today)
+    : null
   const ibscbs: ServiceIbscbsRow | null = ibsClassificationCode ? {
     classificationCode:        ibsClassificationCode,
     cst:                       deriveCst(ibsClassificationCode),
     classificationName:        shown?.name ?? null,
     validFrom:                 shown?.validFrom ?? null,
     validUntil:                shown?.validUntil ?? null,
+    // D-IB37: aceita HOJE pela regra do cadastro? — o par e cada código (o selo aponta o campo)
+    acceptedToday:               accepted ? accepted.classification && accepted.placeIndicator : null,
+    classificationAcceptedToday: accepted ? accepted.classification : null,
+    placeIndicatorAcceptedToday: accepted ? accepted.placeIndicator : null,
     placeIndicatorCode:        ibsPlaceIndicatorCode,
     placeIndicatorDescription: ibsPlaceIndicatorDescription ?? null,
   } : null

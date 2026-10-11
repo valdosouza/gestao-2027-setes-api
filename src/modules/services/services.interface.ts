@@ -55,6 +55,11 @@ export interface ServiceIbscbsRow {
   /** Vigência da linha exibida (D-IB29 — a tela mostra "vale a partir de"/"válida até"). */
   validFrom:                 string | null
   validUntil:                string | null
+  /** D-IB37: a classificação gravada é aceita HOJE na NFS-e (regra do cadastro)? null = não avaliado.
+   *  Sinal de CADASTRO — não decide o faturamento. Por componente para o selo apontar o campo. */
+  acceptedToday:               boolean | null
+  classificationAcceptedToday: boolean | null
+  placeIndicatorAcceptedToday: boolean | null
   placeIndicatorCode:        string
   placeIndicatorDescription: string | null
 }
