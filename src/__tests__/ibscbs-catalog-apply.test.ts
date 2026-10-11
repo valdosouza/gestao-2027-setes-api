@@ -888,17 +888,17 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
   })
 
   // gate adversarial do delta R9 (LOWs + casos não testados): fixa a semântica ATUAL até a Rodada 10 decidir (Q-IB54/Q-IB56)
-  it('D-IB51 hoje: só a 1ª volta (volta e perde de novo no horizonte — a 2ª perda não aparece, Q-IB54); linha não conferida não é volta (Q-IB56)', async () => {
+  it('D-IB54: volta e perde de novo no horizonte → lostAgainFrom; linha não conferida não é volta (sem a conferência pendente na fonte, nada a mais)', async () => {
     const again = await runR9('2026-10-10', null, [
       { code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-05', validUntil: '2027-01-06' },
       { code: '000006', validFrom: '2026-01-01' },
     ], [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-05', valid_until: '2027-01-06' }])
-    expect(again.impactAhead.map(x => [x.lossDate, x.acceptedAgainFrom])).toEqual([['2027-01-01', '2027-01-05']])
+    expect(again.impactAhead.map(x => [x.lossDate, x.acceptedAgainFrom, x.lostAgainFrom])).toEqual([['2027-01-01', '2027-01-05', '2027-01-07']])
     const unconfirmed = await runR9('2026-10-10', null, [
       { code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-05', applicable: 0 },
       { code: '000006', validFrom: '2026-01-01' },
     ], [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-05', valid_until: null }])
-    expect(unconfirmed.impactAhead.map(x => [x.lossDate, x.reason, 'acceptedAgainFrom' in x])).toEqual([['2027-01-01', 'no-line', false]])
+    expect(unconfirmed.impactAhead.map(x => [x.lossDate, x.reason, 'acceptedAgainFrom' in x, 'pendingReturnFrom' in x])).toEqual([['2027-01-01', 'no-line', false, false]])
   })
 
   it('D-IB53: o ATO não compara o cadastro (nenhuma pergunta à peça)', async () => {
@@ -907,6 +907,87 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
     t.__piece = (sql: string, params: unknown[]) => { asked++; return pieceOf([])(sql, params) }
     await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), apply: true, date: '2026-10-10' })
     expect(asked).toBe(0)
+  })
+
+  // D-IB56 (Rodada 10): a sucessora está na FONTE mas a Calculadora ainda não conferiu (A-IB1) → pendingReturnFrom
+  it('D-IB56: sucessora na fonte sem conferência da Calculadora → pendingReturnFrom; sem presença no SE ou exigindo tributação regular, não', async () => {
+    const run = async (successor: Partial<{ models: any[]; requiresRegularTaxation: boolean }>) => {
+      const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+      t.__piece = pieceOf([{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' },
+        { code: '000001', validFrom: '2027-01-05', applicable: 0 }, { code: '000006', validFrom: '2026-01-01' }])
+      t.__ahead = [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-05', valid_until: null }]
+      t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+      t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+      const it = catalog()
+      it.classifications.push({ code: '000001', cst: '000', name: 'suc', description: 'd', validFrom: '2027-01-05', validUntil: null,
+        requiresRegularTaxation: false, updatedAt: '2026-10-01', models: ['SE'], ...successor })
+      const r = await applyCatalog(fakeConn(t).conn, { ...base, it, unconfirmed: [{ code: '000001', validFrom: '2027-01-05' }], date: '2026-10-10' })
+      return r.impactAhead.map(x => [x.lossDate, x.pendingReturnFrom])
+    }
+    expect(await run({})).toEqual([['2027-01-01', '2027-01-05']])
+    expect(await run({ models: ['55'] })).toEqual([['2027-01-01', undefined]])
+    expect(await run({ requiresRegularTaxation: true })).toEqual([['2027-01-01', undefined]])
+  })
+
+  // gate socrático do delta R10 (S10-3/S10-7): pendente no próprio dia da perda (o caso mais comum da A-IB1); com volta aceita, sem pendente
+  it('D-IB56: sucessora não conferida que começa NO dia da perda → pendingReturnFrom = lossDate; com volta aceita, nenhum pendente', async () => {
+    const run = async (piece: Row[], ahead: Row[], pendingFrom: string, extra: ItCatalog['classifications'] = []) => {
+      const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+      t.__piece = pieceOf(piece)
+      t.__ahead = ahead
+      t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+      t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+      const it = catalog()
+      it.classifications.push({ code: '000001', cst: '000', name: 'suc', description: 'd', validFrom: pendingFrom, validUntil: null,
+        requiresRegularTaxation: false, updatedAt: '2026-10-01', models: ['SE'] }, ...extra)
+      const r = await applyCatalog(fakeConn(t).conn, { ...base, it, unconfirmed: [{ code: '000001', validFrom: pendingFrom }], date: '2026-10-10' })
+      return r.impactAhead.map(x => [x.lossDate, x.reason, x.acceptedAgainFrom, x.pendingReturnFrom])
+    }
+    expect(await run(
+      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-01', applicable: 0 },
+        { code: '000006', validFrom: '2026-01-01' }],
+      [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-01', valid_until: null }],
+      '2027-01-01')).toEqual([['2027-01-01', 'not-applicable', undefined, '2027-01-01']])
+    // perda 01/01, pendente 03/01, volta ACEITA 06/01 → só a volta (D-IB56 é "sem volta aceita")
+    expect(await run(
+      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-03', validUntil: '2027-01-05', applicable: 0 },
+        { code: '000001', validFrom: '2027-01-06' }, { code: '000006', validFrom: '2026-01-01' }],
+      [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-03', valid_until: '2027-01-05' },
+        { code: '000001', valid_from: '2027-01-06', valid_until: null }],
+      '2027-01-03')).toEqual([['2027-01-01', 'no-line', '2027-01-06', undefined]])
+  })
+
+  // gate adversarial do delta R10 (casos não testados): bordas da D-IB54 e da D-IB56
+  it('D-IB54: 2ª perda NO último dia do horizonte entra, um dia depois não; a 3ª perda não aparece', async () => {
+    const run = async (lines: Array<[string, string | null]>) => {
+      const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+      t.__piece = pieceOf([...lines.map(([f, u]) => ({ code: '000001', validFrom: f, validUntil: u })), { code: '000006', validFrom: '2026-01-01' }])
+      t.__ahead = lines.map(([f, u]) => ({ code: '000001', valid_from: f, valid_until: u }))
+      t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+      t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+      return (await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })).impactAhead
+        .map(x => [x.lossDate, x.acceptedAgainFrom, x.lostAgainFrom])
+    }
+    // horizonte 2027-01-08: a volta vai até 07/01 → perde de novo em 08/01 (dentro); até 08/01 → perderia em 09/01 (fora)
+    expect(await run([['2026-01-01', '2026-12-31'], ['2027-01-05', '2027-01-07']])).toEqual([['2027-01-01', '2027-01-05', '2027-01-08']])
+    expect(await run([['2026-01-01', '2026-12-31'], ['2027-01-05', '2027-01-08']])).toEqual([['2027-01-01', '2027-01-05', undefined]])
+    // volta, perde, volta de novo: a 3ª transição não aparece
+    expect(await run([['2026-01-01', '2026-12-31'], ['2027-01-02', '2027-01-03'], ['2027-01-06', null]]))
+      .toEqual([['2027-01-01', '2027-01-02', '2027-01-04']])
+  })
+
+  it('D-IB56: sucessora BLOQUEADA pela Calculadora (D-IB28 (a)) não vira pendente — só a não conferida', async () => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.__piece = pieceOf([{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-05', applicable: 0 },
+      { code: '000006', validFrom: '2026-01-01' }])
+    t.__ahead = [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-05', valid_until: null }]
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+    const it = catalog()
+    it.classifications.push({ code: '000001', cst: '000', name: 'suc', description: 'd', validFrom: '2027-01-05', validUntil: null,
+      requiresRegularTaxation: false, updatedAt: '2026-10-01', models: ['SE'] })
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it, blocked: [{ code: '000001', validFrom: '2027-01-05', model: 'SE' }], date: '2026-10-10' })
+    expect(r.impactAhead.map(x => [x.lossDate, 'pendingReturnFrom' in x])).toEqual([['2027-01-01', false]])
   })
 })
 

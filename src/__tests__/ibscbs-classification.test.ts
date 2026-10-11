@@ -353,3 +353,62 @@ describe('@shared/ibscbs-classification — veredito e lotes (D-IB47)', () => {
   })
 })
 
+// D-IB57 (Rodada 10): o cadastro prefere a linha ACEITA (presença e sem tributação regular) antes da só aplicável
+describe('pickForRegistration — D-IB57 a linha aceita antes da só aplicável', () => {
+  const l = (over: Record<string, unknown>) => ({ code: '000001', cst: '000', name: 'n', validFrom: '2026-01-01', validUntil: null,
+    requiresRegularTaxation: false, applicable: true, superseded: false, ...over }) as any
+  it('vigente que exige tributação regular × futura aceita na janela → a futura (o cadastro aceita)', () => {
+    const picked = pickForRegistration([l({ requiresRegularTaxation: true }), l({ validFrom: '2026-12-01' })], '2026-10-10')
+    expect(picked?.validFrom).toBe('2026-12-01')
+  })
+  it('vigente aceita mais antiga × vigente mais nova que exige tributação regular → a aceita', () => {
+    const picked = pickForRegistration([l({}), l({ validFrom: '2026-06-01', requiresRegularTaxation: true })], '2026-10-10')
+    expect(picked?.validFrom).toBe('2026-01-01')
+  })
+  it('nenhuma aceita: a vigente com presença (o 422 diz "exige tributação regular")', () => {
+    const picked = pickForRegistration([l({ requiresRegularTaxation: true }), l({ validFrom: '2026-12-01', applicable: false })], '2026-10-10')
+    expect([picked?.validFrom, picked?.requiresRegularTaxation]).toEqual(['2026-01-01', true])
+  })
+})
+
+// gate socrático do delta R10 (S10-7): a D-IB57 pelas TRÊS portas do cadastro — lista de apoio, 422 do salvar e selo — e a
+// divergência com a data do fato fixada (o faturamento desse caso é da IB-2 — Q-IB58)
+describe('D-IB57 pelas portas do cadastro', () => {
+  const q = () => fakeCatalog({
+    validity: [
+      { code: '550030', cst: '550', name: 'Vigente exige regular', from: '2026-01-01', until: null, regular: 'S', models: ['SE'] },
+      { code: '550030', cst: '550', name: 'Futura aceita', from: '2026-12-01', until: null, regular: 'N', models: ['SE'] },
+    ],
+    places: { '100301': ['SE'] }, nbs: [],
+  })
+  it('lista oferece a futura aceita; o salvar aceita; o selo diz "aceita"; a data do fato de hoje recusa', async () => {
+    const list = await listClassificationsLookup('', '2026-10-10', 'SE', q())
+    expect(list.map(r => [r.code, r.validFrom])).toEqual([['550030', '2026-12-01']])
+    await expect(assertServiceClassification(q(), { ibscbs: { classificationCode: '550030', placeIndicatorCode: '100301' } }, '2026-10-10'))
+      .resolves.toBeUndefined()
+    expect(await classificationAcceptance(q(), '550030', '100301', '2026-10-10')).toEqual({ classification: true, placeIndicator: true })
+    expect(await classificationAcceptedAt(q(), '550030', 'SE', '2026-10-10')).toBe(false)   // Q-IB58: o que a IB-2 faz com ele
+  })
+})
+
+// gate adversarial do delta R10: garantia nova da D-IB57 — com filtro por NOME, a lista só mostra código que o salvar aceita
+describe('D-IB57 — lista × salvar com filtro por nome', () => {
+  const q = () => fakeCatalog({
+    validity: [
+      { code: '550031', cst: '550', name: 'Antiga aceita', from: '2026-01-01', until: null, regular: 'N', models: ['SE'] },
+      { code: '550031', cst: '550', name: 'Nova exige regular', from: '2026-06-01', until: null, regular: 'S', models: ['SE'] },
+    ],
+    places: { '100301': ['SE'] }, nbs: [],
+  })
+  // o fake não aplica o LIKE do nome (a lista inteira da janela volta) — o filtro por nome foi provado ao vivo pelo gate adversarial R10
+  it('o que a lista oferece, o salvar aceita (toda linha da lista passa no salvar)', async () => {
+    for (const filter of ['Antiga', 'Nova', '']) {
+      const list = await listClassificationsLookup(filter, '2026-10-10', 'SE', q())
+      for (const row of list) {
+        await expect(assertServiceClassification(q(), { ibscbs: { classificationCode: row.code, placeIndicatorCode: '100301' } }, '2026-10-10'))
+          .resolves.toBeUndefined()
+      }
+    }
+  })
+})
+

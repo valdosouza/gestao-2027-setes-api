@@ -40,12 +40,14 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  *    DIFERENÇA do veredito ANTES × DEPOIS da gravação para todo código que a carga pode tocar (gate socrático do
  *    delta R7: inferir pelo TIPO da mudança perdia a linha nova sobreposta que já vale na data, sem presença);
  *    a linha do impacto traz o motivo (`reason`) e marca quando o cadastro ainda aceita o código
- *    (`registrationStillAccepts` — linha futura na janela ou outra linha vigente com presença: pickForRegistration).
+ *    (`registrationStillAccepts` — linha futura na janela ou outra linha vigente ACEITA (D-IB57): pickForRegistration).
  *    D-IB45: `impactAhead` (informativo, FORA do limite) lista os serviços cujo código aceito depois da carga deixa
  *    de ser aceito até o HORIZONTE (D-IB49: o maior entre o fim da janela do cadastro e a data + AHEAD_DAYS dias —
  *    `impactAheadUntil`), com a data e o motivo da perda; D-IB50: parte também do código aceito só pelo CADASTRO (linha
  *    futura na janela — o que o selo mostra), que perde depois de passar a valer (`acceptedFrom`); D-IB51: a linha traz o
- *    dia em que o código VOLTA a ser aceito dentro do horizonte (`acceptedAgainFrom` — buraco temporário). D-IB53: o impacto
+ *    dia em que o código VOLTA a ser aceito dentro do horizonte (`acceptedAgainFrom` — buraco temporário); D-IB54: e a 1ª perda
+ *    depois da volta (`lostAgainFrom`); D-IB56: sem volta aceita, a data da linha da FONTE que voltaria se a Calculadora a
+ *    conferisse (`pendingReturnFrom` — A-IB1: espere a próxima carga em vez de reclassificar). D-IB53: o impacto
  *    compara também o veredito do CADASTRO antes × depois para o que a data do fato já recusava (o selo muda de "aceita" para
  *    "não aceita") — linha com `registrationOnly: true`;
  *    (só LEITURA nos clientes — D-IB32). A leitura dos clientes acontece DEPOIS do rollback
@@ -131,8 +133,15 @@ export interface ImpactRow {
   lossDate?: string
   /** D-IB50: só em `impactAhead`, código aceito só pelo cadastro na data da carga — o dia em que passa a valer na data do fato. */
   acceptedFrom?: string
-  /** D-IB51: só em `impactAhead` — o dia em que o código VOLTA a ser aceito dentro do horizonte (buraco temporário); ausente = não volta dentro do horizonte. Só a 1ª volta — uma 2ª perda depois dela não aparece (Q-IB54). */
+  /** D-IB51: só em `impactAhead` — o dia em que o código VOLTA a ser aceito dentro do horizonte (buraco temporário); ausente = não volta dentro do horizonte. */
   acceptedAgainFrom?: string
+  /** D-IB54: só em `impactAhead` — a 1ª perda DEPOIS da volta, dentro do horizonte (a volta não garante o aceite até o fim). */
+  lostAgainFrom?: string
+  /** D-IB56: só em `impactAhead` e só SEM volta aceita — a linha da fonte que faria o código voltar se a Calculadora a conferisse
+   *  (A-IB1), começando na perda ou depois dela, dentro do horizonte; não diz até quando a linha vale nem pega a que começa ANTES
+   *  da perda (conferir no IT); ausente = nenhuma pendente. Só a 1ª volta e a 1ª perda depois dela aparecem (D-IB54) — uma 3ª
+   *  perda não. */
+  pendingReturnFrom?: string
   /** D-IB53: só em `impact` — a data do fato já recusava antes da carga; quem deixou de aceitar foi o CADASTRO (o selo muda). */
   registrationOnly?: true
 }
@@ -182,8 +191,8 @@ export interface ApplyReport {
   impact:                ImpactRow[]
   /** D-IB45/D-IB49/D-IB50: aviso PROSPECTIVO (fora do limite) — serviços cujo código, aceito na data da carga pela data do
    *  fato ou só pelo cadastro, deixa de ser aceito até o horizonte (`impactAheadUntil`), com a data e o motivo da perda; só
-   *  no ensaio. Só a 1ª perda e a 1ª volta (D-IB51; a 2ª perda depois da volta — Q-IB54). Não traz recusa HERDADA de carga
-   *  anterior (D-IB52 — pré-voo do faturamento na IB-2). */
+   *  no ensaio. A 1ª perda, a 1ª volta (D-IB51), a 1ª perda depois da volta (D-IB54) e a volta pendente de conferência
+   *  (D-IB56). Não traz recusa HERDADA de carga anterior (D-IB52 — pré-voo do faturamento na IB-2). */
   impactAhead:           ImpactRow[]
   /** D-IB49: até quando o aviso olhou (o maior entre o fim da janela do cadastro e a data + AHEAD_DAYS); null fora do ensaio. */
   impactAheadUntil:      string | null
@@ -432,7 +441,11 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
         report.shrink.map(shrinkLine))
     }
     // --- D-IB28 (b): o que fica SEM aplicabilidade (consulta CENTRAL, no estado pós-carga) ------
-    const lost = before ? await lostAfterLoad(conn, report, input.date!, before, beforeRegistration) : null
+    // D-IB56: linhas da fonte que voltariam a aceitar o código se a Calculadora as conferisse (presença no SE, sem tributação regular)
+    const pendingReturns = input.it.classifications
+      .filter(c => unconfirmed.has(`${c.code}|${c.validFrom}`) && c.models.includes('SE') && !c.requiresRegularTaxation)
+      .map(c => ({ code: c.code, validFrom: c.validFrom }))
+    const lost = before ? await lostAfterLoad(conn, report, input.date!, before, beforeRegistration, pendingReturns) : null
     if (input.apply) {
       await conn.commit()
       report.applied = true
@@ -475,7 +488,10 @@ interface LostCodes {
   registrationOnly: Set<string>
   /** D-IB45: código aceito × 1º dia em que deixa de ser aceito (dentro do horizonte) + motivo (+ D-IB50 desde quando vale;
    *  + D-IB51 quando volta). */
-  ahead:           Array<{ code: string; lossDate: string; reason: ClassificationRefusal; acceptedFrom?: string; acceptedAgainFrom?: string }>
+  ahead:           Array<{
+    code: string; lossDate: string; reason: ClassificationRefusal
+    acceptedFrom?: string; acceptedAgainFrom?: string; lostAgainFrom?: string; pendingReturnFrom?: string
+  }>
 }
 
 const addDays = (d: string, n: number): string => {
@@ -504,6 +520,7 @@ const LAST_CALENDAR_DAY_MINUS_AHEAD = addDays(LAST_CALENDAR_DAY, -AHEAD_DAYS)
  *  perda DEPOIS de passar a valer (`acceptedFrom`). Estado pós-carga, na transação da carga. */
 async function lossesAhead(
   conn: Conn, date: string, afterToday: Map<string, ClassificationVerdict>,
+  pendingReturns: ReadonlyArray<{ code: string; validFrom: string }>,
 ): Promise<{ ahead: LostCodes['ahead']; aheadUntil: string }> {
   const end = aheadHorizon(date)
   const [rows] = await conn.query<any[]>(
@@ -545,9 +562,19 @@ async function lossesAhead(
       const v = verdicts.get(d)!.get(code)!
       if (v.accepted) { if (!accepted) { accepted = true; acceptedFrom = d } continue }
       if (accepted) {
-        // D-IB51: volta a ser aceito dentro do horizonte? (os vereditos das datas seguintes já foram calculados)
-        const again = sorted.slice(i + 1).find(x => verdicts.get(x)!.get(code)!.accepted)
-        out.push({ code, lossDate: d, reason: v.reason!, ...(acceptedFrom ? { acceptedFrom } : {}), ...(again ? { acceptedAgainFrom: again } : {}) })
+        // D-IB51: volta a ser aceito dentro do horizonte? D-IB54: e perde de novo depois? (vereditos já calculados)
+        const rest = sorted.slice(i + 1)
+        const again = rest.find(x => verdicts.get(x)!.get(code)!.accepted)
+        const lostAgain = again === undefined ? undefined
+          : rest.slice(rest.indexOf(again) + 1).find(x => !verdicts.get(x)!.get(code)!.accepted)
+        // D-IB56: SEM volta aceita, a linha da fonte não conferida pela Calculadora que voltaria (da perda ao horizonte)
+        const pending = again !== undefined ? undefined
+          : pendingReturns.filter(p => p.code === code && p.validFrom >= d && p.validFrom <= end).map(p => p.validFrom).sort()[0]
+        out.push({
+          code, lossDate: d, reason: v.reason!,
+          ...(acceptedFrom ? { acceptedFrom } : {}), ...(again ? { acceptedAgainFrom: again } : {}),
+          ...(lostAgain ? { lostAgainFrom: lostAgain } : {}), ...(pending ? { pendingReturnFrom: pending } : {}),
+        })
         break
       }
     }
@@ -563,6 +590,7 @@ async function lossesAhead(
 async function lostAfterLoad(
   conn: Conn, report: ApplyReport, date: string, before: Map<string, ClassificationVerdict>,
   beforeRegistration: Map<string, ClassificationVerdict>,
+  pendingReturns: ReadonlyArray<{ code: string; validFrom: string }>,
 ): Promise<LostCodes> {
   const codesOf = (keys: string[]) => [...new Set(keys.filter(k => k.endsWith('|SE')).map(k => k.split('|')[0]))]
   const candidatesPlace = codesOf(report.placeApplicability.deactivatedKeys)
@@ -595,7 +623,7 @@ async function lostAfterLoad(
       registrationOnly.add(code)
     }
   }
-  const { ahead, aheadUntil } = await lossesAhead(conn, date, after)
+  const { ahead, aheadUntil } = await lossesAhead(conn, date, after, pendingReturns)
   report.impactAheadUntil = aheadUntil
   return { classifications, registration, registrationOnly, placeIndicators, nbs: report.nbs.deactivatedKeys, ahead }
 }
@@ -633,7 +661,9 @@ async function reportImpact(conn: Conn, report: ApplyReport, lost: LostCodes): P
         code => {
           const a = ahead.get(code)!
           return { lossDate: a.lossDate, reason: a.reason, ...(a.acceptedFrom ? { acceptedFrom: a.acceptedFrom } : {}),
-            ...(a.acceptedAgainFrom ? { acceptedAgainFrom: a.acceptedAgainFrom } : {}) }
+            ...(a.acceptedAgainFrom ? { acceptedAgainFrom: a.acceptedAgainFrom } : {}),
+            ...(a.lostAgainFrom ? { lostAgainFrom: a.lostAgainFrom } : {}),
+            ...(a.pendingReturnFrom ? { pendingReturnFrom: a.pendingReturnFrom } : {}) }
         })
     } catch (err: any) {
       report.impactProblems.push(`${schema}: ${err?.code ?? err?.message ?? err}`)

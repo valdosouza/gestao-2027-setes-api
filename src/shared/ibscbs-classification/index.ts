@@ -16,8 +16,9 @@ import { escapeLike } from '@shared/list'
  *   - CADASTRO (D-IB29 — `pickForRegistration`, a regra ÚNICA de lista, salvar e exibição):
  *     entre as linhas vigentes HOJE e, antes da obrigação da NFS-e do Simples
  *     (NFSE_IBSCBS_SIMPLES_OBLIGATION_START), as que começam até ela, vale a que tem PRESENÇA
- *     no modelo (vigente mais nova; senão futura mais próxima); sem presença em nenhuma, a
- *     vigente mais nova (para o 422 dizer "não aceito") — lista e salvar nunca discordam;
+ *     no modelo (vigente mais nova; senão futura mais próxima) — D-IB57: antes, a ACEITA (presença e sem
+ *     tributação regular — `verdictOf`); sem presença em nenhuma, a vigente mais nova (para o 422 dizer
+ *     "não aceito") — lista e salvar nunca discordam;
  *   - só é aceita no documento se a linha tem PRESENÇA para o modelo (SE = NFS-e);
  *     código ainda não confirmado pela Calculadora não tem presença (A-IB1);
  *   - classificação que EXIGE tributação regular é recusada: o builder não emite gTribRegular
@@ -166,9 +167,11 @@ export const registrationWindowEnd = (today: string): string | null =>
 
 /**
  * CADASTRO (D-IB29) — a regra ÚNICA de qual linha de um código vale para lista, salvar e exibição.
- * Candidatas: as vigentes hoje e, antes da obrigação, as que começam até ela. Preferência: vigente
- * COM presença (mais nova) → futura COM presença (mais próxima) → vigente sem presença (mais nova)
- * → futura sem presença. null = nenhuma candidata (inexistente, vencida ou começa depois da obrigação).
+ * Candidatas: as vigentes hoje e, antes da obrigação, as que começam até ela. Preferência (D-IB57 — a
+ * ACEITA antes da só aplicável): vigente ACEITA (mais nova) → futura ACEITA (mais próxima) → vigente COM
+ * presença (mais nova — exige tributação regular: o 422 diz por quê) → futura COM presença → vigente sem
+ * presença (mais nova) → futura sem presença. null = nenhuma candidata (inexistente, vencida ou começa
+ * depois da obrigação).
  */
 export function pickForRegistration(rows: readonly ClassificationAt[], today: string): ClassificationAt | null {
   const end = registrationWindowEnd(today)
@@ -177,7 +180,8 @@ export function pickForRegistration(rows: readonly ClassificationAt[], today: st
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom))
   const future = end === null ? [] : rows.filter(r => r.validFrom > today && r.validFrom <= end)
     .sort((a, b) => a.validFrom.localeCompare(b.validFrom))
-  return current.find(r => r.applicable) ?? future.find(r => r.applicable) ?? current[0] ?? future[0] ?? null
+  return current.find(accepts) ?? future.find(accepts)
+    ?? current.find(r => r.applicable) ?? future.find(r => r.applicable) ?? current[0] ?? future[0] ?? null
 }
 
 async function rowsOfCode(q: Queryable, code: string, model: FiscalModel): Promise<ClassificationAt[]> {
