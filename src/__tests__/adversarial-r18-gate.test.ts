@@ -540,30 +540,30 @@ function refreshCallSites(roots: string[]): string[] {
 // ===========================================================================
 
 describe('ACHADO R18-01 (LOW) — D-F94: o `reason` é a MENSAGEM inteira com os dígitos trocados — texto EXTERNO interpolado nela (o `infDPS/@Id` da resposta TROCADA, `parsed.dpsId` em invoice-transmission.ts:639) passa menos os dígitos: com o CNPJ ALFANUMÉRICO de um terceiro (inscrições novas desde 07/2026) as LETRAS do documento alheio vão ao alarme', () => {
-  it('contexto: consulta da tela com a NFS-e de OUTRO DPS (terceiro com CNPJ alfanumérico) → 502, UM alarme "consulta", sem dígitos — e com o Id alheio mascarado ("DPS#ABC#DE#") dentro do rótulo', async () => {
+  it('[CORRIGIDO — D-F98] consulta da tela com a NFS-e de OUTRO DPS (terceiro com CNPJ alfanumérico) → 502, UM alarme "consulta" com a causa FECHADA `nfse-de-outro-dps`', async () => {
     withAuthorizedTx()
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
     expect(await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(origins()).toEqual(['consulta'])
     expect(reasonOf()).not.toMatch(/\d/)
-    expect(reasonOf()).toContain(FOREIGN_ALNUM_DPS_ID.replace(/\d+/g, '#'))
+    expect(reasonOf()).toBe('nfse-de-outro-dps')                                   // D-F98 (b): a causa da lista FECHADA, nunca texto
   })
-  it.failing('[LOW R18-01] consulta da tela: o alarme não leva fragmento do identificador de TERCEIRO (nem as letras do CNPJ alfanumérico)', async () => {
+  it('[CORRIGIDO — D-F98] [LOW R18-01] consulta da tela: o alarme não leva fragmento do identificador de TERCEIRO (nem as letras do CNPJ alfanumérico)', async () => {
     withAuthorizedTx()
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
     await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))
     expect(reasonOf()).not.toContain('ABC')
   })
-  it('contexto: passo 0b do transmitir (reserva interrompida → o GET /dps acha a chave → a NFS-e lida é de OUTRO DPS) → 502, nada reservado, UM alarme "transmissao" com o Id alheio mascarado', async () => {
+  it('[CORRIGIDO — D-F98] passo 0b do transmitir (reserva interrompida → o GET /dps acha a chave → a NFS-e lida é de OUTRO DPS) → 502, nada reservado, UM alarme "transmissao" com a causa FECHADA', async () => {
     setTx(inFlightNow({ ageMinutes: IN_FLIGHT_MINUTES + 5 }))
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
     expect(await settle(transmitServiceInvoice(S.schema, S.inst, S.user, INVOICE))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
     expect(adapter.transmit).not.toHaveBeenCalled(); expect(repo.insertTransmission).not.toHaveBeenCalled()
     expect(origins()).toEqual(['transmissao'])
-    expect(reasonOf()).toContain(FOREIGN_ALNUM_DPS_ID.replace(/\d+/g, '#'))
+    expect(reasonOf()).toBe('nfse-de-outro-dps')                                   // D-F98 (b): a causa da lista FECHADA, nunca texto
   })
-  it.failing('[LOW R18-01] passo 0b do transmitir: o alarme "transmissao" idem — nenhum fragmento do Id alheio', async () => {
+  it('[CORRIGIDO — D-F98] [LOW R18-01] passo 0b do transmitir: o alarme "transmissao" idem — nenhum fragmento do Id alheio', async () => {
     setTx(inFlightNow({ ageMinutes: IN_FLIGHT_MINUTES + 5 }))
     adapter.queryDpsAccessKey.mockResolvedValue(KEY)
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_ALNUM_DPS_ID))
@@ -578,18 +578,19 @@ describe('ACHADO R18-02 (LOW, FORA do delta — a mesma classe do R17-02) — a 
     sefin({ post: () => ok({ nfseXmlGZipB64: gz(nfseXmlFor(KEY, FOREIGN_DPS_ID)) }) })
     expect(await settle(adnAdapter.transmit(ctxH, signedDps))).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
   })
-  it.failing('[LOW R18-02] …e NENHUM log carrega o documento do terceiro', async () => {
+  it('[CORRIGIDO — D-F98 (c)] [LOW R18-02] …e NENHUM log carrega o documento do terceiro', async () => {
     sefin({ post: () => ok({ nfseXmlGZipB64: gz(nfseXmlFor(KEY, FOREIGN_DPS_ID)) }) })
     await settle(adnAdapter.transmit(ctxH, signedDps))
     const logged = JSON.stringify([(logger.warn as jest.Mock).mock.calls, (logger.error as jest.Mock).mock.calls, (logger.info as jest.Mock).mock.calls])
     expect(logged).not.toContain(THIRD_CPF)
   })
-  it('contexto: o 502 da CONSULTA (OUTRO DPS) devolve ao app a mensagem com o Id alheio INTEIRO (CPF do terceiro incluso) — o alarme mascara, a resposta HTTP não', async () => {
+  it('[CORRIGIDO — D-F98 (c)] o 502 da CONSULTA (OUTRO DPS) não leva o Id alheio ao app — nem o CPF do terceiro, nem o Id inteiro; o alarme também não', async () => {
     withAuthorizedTx()
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_DPS_ID))
     const out = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q', SCREEN))
     expect(out).toMatchObject({ statusCode: 502 })
-    expect(String(out.message)).toContain(THIRD_CPF)
+    expect(String(out.message)).not.toContain(THIRD_CPF)
+    expect(String(out.message)).not.toContain(FOREIGN_DPS_ID)
     expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(THIRD_CPF)
   })
 })

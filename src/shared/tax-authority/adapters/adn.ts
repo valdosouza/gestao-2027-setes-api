@@ -5,6 +5,7 @@ import {
   AuthorityContext, EventRegisterResult, MunicipalTerms, NfseQuery, TaxAuthorityAdapter, TransmitResult,
 } from '../types'
 import { authorityJson, AuthorityHttpError } from '../https-json'
+import { tagAmbiguous, AmbiguousCause } from '../ambiguous-cause'
 import { parseEventXml, parseNfseXml, firstText, EVENT_CANCEL, CANCEL_EVENT_CODES } from '../dps-builder'
 
 /**
@@ -92,11 +93,13 @@ function isDpsNotGenerated(text: string | null | undefined, environment: 'H' | '
   return items.some(e => e && typeof e === 'object' && String(e.codigo ?? e.Codigo ?? '').trim().toUpperCase() === DPS_NOT_GENERATED_CODE)
 }
 
-function unknownResponse(label: string, status: number, text: string): AuthorityHttpError {
+/** D-F98 (= Q-F104 (b)): todo ambíguo do adaptador nasce com a CAUSA da lista fechada — é ela que vai ao alarme; o `label` (só texto
+ *  NOSSO, nunca valor da resposta — D-F98 (c)) fica no warn do adaptador. */
+function unknownResponse(cause: AmbiguousCause, label: string, status: number, text: string): AuthorityHttpError {
   // LOW-6 do gate: nunca a amostra do corpo (pode carregar dado fiscal/segredo) — só tamanho e status
   logger.warn('Fisco respondeu 2xx sem envelope legível', { label, status, bytes: Buffer.byteLength(text, 'utf8') })
-  return new AuthorityHttpError(502, `Fisco respondeu ${status} sem envelope legível (${label}) — reconcilie pela consulta antes de reenviar`,
-    ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, status, text)
+  return tagAmbiguous(new AuthorityHttpError(502, `Fisco respondeu ${status} sem envelope legível (${label}) — reconcilie pela consulta antes de reenviar`,
+    ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, status, text), cause)
 }
 
 async function call<T = any>(ctx: AuthorityContext, method: 'GET' | 'POST', path: string, body?: unknown, label = path, rejectField = 'dps') {
@@ -185,21 +188,21 @@ async function cancelEventXmls(ctx: AuthorityContext, key: string, code: string)
       if (isSefinNoEventEnvelope(err.body, ctx.environment)) return null
       // M5 dos gates: contrato do fisco DIVERGENTE do cravado — log de ERRO próprio (o alarme por padrão de log é da F3)
       logger.error('Contrato da Sefin divergente: 404 de evento fora do envelope cravado', { code, environment: ctx.environment, bytes: Buffer.byteLength(err.body ?? '', 'utf8') })
-      throw unknownResponse(`eventos ${code}: 404 fora do envelope da Sefin`, 404, err.body)
+      throw unknownResponse('evento-fora-do-contrato', `eventos ${code}: 404 fora do envelope da Sefin`, 404, err.body)
     }
     // D-F65 (= Q-F72 (a), Valdo 2026-10-10): 401/403 numa rota de EVENTO depois do 200 do GET /nfse da MESMA nota (mesmo
     // certificado) é falha DESTA nota, não do emissor — 502 ambíguo: o rodízio carimba e segue (antes parava a passada para sempre)
     if (err instanceof AuthorityHttpError && (err.authorityStatus === 401 || err.authorityStatus === 403)) {
       logger.error('Fisco recusou a rota de EVENTO depois de aceitar o GET da NFS-e (mesmo certificado)', { code, environment: ctx.environment, status: err.authorityStatus })
-      throw new AuthorityHttpError(502, `Fisco recusou (${err.authorityStatus}) a consulta do evento ${code} desta NFS-e — situação ambígua; a próxima consulta pergunta de novo`,
-        ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, err.authorityStatus, err.body)
+      throw tagAmbiguous(new AuthorityHttpError(502, `Fisco recusou (${err.authorityStatus}) a consulta do evento ${code} desta NFS-e — situação ambígua; a próxima consulta pergunta de novo`,
+        ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, err.authorityStatus, err.body), 'evento-recusado')
     }
     throw err
   }
   const items = Array.isArray(res.data?.eventos) ? res.data.eventos : null
-  if (!items) throw unknownResponse(`eventos ${code}: 2xx sem a lista de eventos`, res.status, res.text)
+  if (!items) throw unknownResponse('evento-fora-do-contrato', `eventos ${code}: 2xx sem a lista de eventos`, res.status, res.text)
   // D-F63: 200 com lista VAZIA não é forma cravada (sem evento a Sefin responde 404) — ambíguo
-  if (!items.length) throw unknownResponse(`eventos ${code}: 2xx com a lista vazia`, res.status, res.text)
+  if (!items.length) throw unknownResponse('evento-fora-do-contrato', `eventos ${code}: 2xx com a lista vazia`, res.status, res.text)
   return items
     .map((it: any) => decodeEventFile(it?.arquivoXml) ?? collectGzipXmlFields(it).map(decodeXmlField).find((x): x is string => !!x) ?? null)
     .filter((x: string | null): x is string => !!x)
@@ -212,20 +215,25 @@ export const adnAdapter: TaxAuthorityAdapter = {
     const { status, data, text } = await call<any>(ctx, 'POST', '/nfse', { dpsXmlGZipB64: gzipB64(signedDpsXml) }, 'transmitir')
     const xmlField = collectGzipXmlFields(data)[0]
     const nfseXml = xmlField ? decodeXmlField(xmlField) : null
-    if (!nfseXml) throw unknownResponse('transmitir', status, text)
-    const parsed = parseNfseXml(nfseXml)
+    if (!nfseXml) throw unknownResponse('envelope-ilegivel', 'transmitir', status, text)
+    // gate R19 (S5 — mesma classe do R18-07): XML que o leitor não lê → ambíguo (502), nunca exceção crua (500, sem alarme)
+    let parsed: ReturnType<typeof parseNfseXml>
+    try { parsed = parseNfseXml(nfseXml) } catch { throw unknownResponse('nfse-ilegivel', 'transmitir: NFS-e ilegível', status, text) }
     // ACHADO 5 do gate adversarial: "chave" só é chave com 50 dígitos — fora disso o A
     // nasceria com uma chave que o cancelamento (buildEventId) não aceita → 502, nada gravado.
     // R2-2 (a)(b): a resposta tem que ser AO QUE PEDIMOS — a NFS-e embute o DPS: o Id dele é o
     // que enviamos; e a chave do JSON, quando vem, é a mesma do XML. Resposta trocada
     // (proxy/cache/manutenção) NUNCA vira A da nota errada.
     const jsonKey = asAccessKey(data?.chaveAcesso), xmlKey = asAccessKey(parsed.accessKey)
-    if (jsonKey && xmlKey && jsonKey !== xmlKey) throw unknownResponse('transmitir: chave do JSON ≠ chave da NFS-e', status, text)
+    if (jsonKey && xmlKey && jsonKey !== xmlKey) throw unknownResponse('nfse-chave-divergente', 'transmitir: chave do JSON ≠ chave da NFS-e', status, text)
     const accessKey = xmlKey ?? jsonKey
-    if (!accessKey) throw unknownResponse('transmitir: NFS-e sem chave de acesso (50 dígitos)', status, text)
+    if (!accessKey) throw unknownResponse('nfse-sem-chave', 'transmitir: NFS-e sem chave de acesso (50 dígitos)', status, text)
     const sentDpsId = sentDpsIdOf(signedDpsXml)
     if (!parsed.dpsId || parsed.dpsId !== sentDpsId) {
-      throw unknownResponse(`transmitir: NFS-e de OUTRO DPS (veio ${parsed.dpsId ?? 'sem Id'}, enviado ${sentDpsId ?? 'sem Id'})`, status, text)
+      // D-F98 (c) (= Q-F104, Valdo 2026-10-11): o Id que VEIO é de TERCEIRO (embute o CPF/CNPJ dele) — nunca na mensagem nem no log
+      throw parsed.dpsId
+        ? unknownResponse('nfse-de-outro-dps', 'transmitir: NFS-e de OUTRO DPS (Id divergente do enviado)', status, text)
+        : unknownResponse('nfse-sem-identidade', 'transmitir: NFS-e sem o Id do DPS', status, text)
     }
     return {
       accessKey, nfseNumber: parsed.nNFSe, dhProc: parsed.dhProc ?? str(data?.dataHoraProcessamento), nfseXml, raw: data,
@@ -237,16 +245,16 @@ export const adnAdapter: TaxAuthorityAdapter = {
     const { status, data, text } = await call<any>(ctx, 'GET', `/nfse/${key}`, undefined, 'consultar')
     const xmlField = collectGzipXmlFields(data)[0]
     const nfseXml = xmlField ? decodeXmlField(xmlField) : null
-    if (!nfseXml) throw unknownResponse('consultar', status, text)
+    if (!nfseXml) throw unknownResponse('envelope-ilegivel', 'consultar', status, text)
     // R18-07 do gate da Rodada 18: XML que o leitor não consegue ler (entidade inválida, etc.) é ILEGÍVEL — 502 ambíguo, nunca 500 cru
     let parsed: ReturnType<typeof parseNfseXml>
-    try { parsed = parseNfseXml(nfseXml) } catch { throw unknownResponse('consultar: NFS-e ilegível', status, text) }
+    try { parsed = parseNfseXml(nfseXml) } catch { throw unknownResponse('nfse-ilegivel', 'consultar: NFS-e ilegível', status, text) }
     // R2-2 (c): a NFS-e devolvida tem que ser a da chave PEDIDA — Id de outra chave = resposta trocada
     const xmlKey = asAccessKey(parsed.accessKey)
-    if (xmlKey && xmlKey !== accessKey) throw unknownResponse('consultar: NFS-e de OUTRA chave', status, text)
+    if (xmlKey && xmlKey !== accessKey) throw unknownResponse('nfse-chave-divergente', 'consultar: NFS-e de OUTRA chave', status, text)
     // R3-6: documento SEM identidade (nem Id do infNFSe nem Id do infDPS) não pode ser conferido contra a
     // pergunta — é ilegível (502), nunca voz; um <e101101> dentro dele viraria C irreversível
-    if (!xmlKey && !parsed.dpsId) throw unknownResponse('consultar: NFS-e sem identidade (sem Id do infNFSe nem do infDPS)', status, text)
+    if (!xmlKey && !parsed.dpsId) throw unknownResponse('nfse-sem-identidade', 'consultar: NFS-e sem identidade (sem Id do infNFSe nem do infDPS)', status, text)
     const base: NfseQuery = { accessKey, status: 'authorized', nfseXml, dhProc: parsed.dhProc }
     // L6 do gate da Rodada 13: o bloco embutido é por construção um <e101101> (cancelBlock) — o código vai junto (D-F71)
     if (parsed.cancelled) return { ...base, status: 'cancelled', cancelled: { dhEvento: parsed.cancelled.dhEvento, motive: parsed.cancelled.xMotivo, eventCode: EVENT_CANCEL } }
@@ -262,7 +270,7 @@ export const adnAdapter: TaxAuthorityAdapter = {
     for (const code of CANCEL_EVENT_CODES) {
       const xmls = await cancelEventXmls(ctx, key, code)
       if (xmls === null) continue                                   // a Sefin disse: não há esse evento
-      if (!xmls.length) return { ...base, status: 'unknown' }       // listou e nada se lê: ilegível nunca vira "autorizada"
+      if (!xmls.length) return { ...base, status: 'unknown', unknownCause: 'evento-ilegivel' }       // listou e nada se lê: ilegível nunca vira "autorizada"
       // R2-2 (d): só evento GERADO (Id EVT + dhProc) e DESTA chave cancela — evento de outra NFS-e (resposta trocada) ou
       // pedido ecoado (sem Id/dhProc) não é voz sobre esta
       // D-F88 (= Q-F94, Valdo 2026-10-11): conta TODO evento GERADO desta chave, de qualquer tipo — um tipo fora do domínio de
@@ -275,7 +283,7 @@ export const adnAdapter: TaxAuthorityAdapter = {
         read = { generated: g, signatures: new Set(g.filter(({ ev: e }) => CANCEL_EVENT_CODES.has(e.eventCode!)).map(({ ev: e, xml }) => eventSignature(e, xml))) }
       } catch {
         logger.error('Contrato da Sefin divergente: evento ilegível no GET tipado', { code, environment: ctx.environment, items: xmls.length })
-        return { ...base, status: 'unknown' }
+        return { ...base, status: 'unknown', unknownCause: 'evento-ilegivel' }
       }
       const generated = read.generated
       const candidates = generated.filter(({ ev: e }) => CANCEL_EVENT_CODES.has(e.eventCode!))
@@ -284,13 +292,13 @@ export const adnAdapter: TaxAuthorityAdapter = {
       // nem a substituição (abriria o "manter a nota" sobre uma resposta que se contradiz)
       if (new Set(generated.map(({ ev: e }) => e.eventCode)).size > 1) {
         logger.error('Contrato da Sefin divergente: tipos diferentes de evento no mesmo GET tipado', { code, codes: generated.map(({ ev: e }) => e.eventCode), environment: ctx.environment })
-        return { ...base, status: 'unknown' }
+        return { ...base, status: 'unknown', unknownCause: 'evento-contraditorio' }
       }
       // D-F89 (= Q-F95, Valdo 2026-10-11): o MESMO tipo repetido só vale com o MESMO conteúdo — outra substituta, outro motivo, outro
       // instante ou outro Id no mesmo GET tipado também é contradição (o que se exibe/aplica não pode depender da ordem da lista)
       if (read.signatures.size > 1) {
         logger.error('Contrato da Sefin divergente: eventos do mesmo tipo com conteúdo diferente no mesmo GET tipado', { code, items: candidates.length, environment: ctx.environment })
-        return { ...base, status: 'unknown' }
+        return { ...base, status: 'unknown', unknownCause: 'evento-contraditorio' }
       }
       // D-F96 (= Q-F102 (c)): repetição (assinaturas iguais) — o XML arquivado é escolhido de forma DETERMINÍSTICA (o menor na ordem
       // do texto), nunca pela ordem da lista do fisco
@@ -301,13 +309,13 @@ export const adnAdapter: TaxAuthorityAdapter = {
       // era da LISTA `GET /eventos`, que a Sefin não tem
       if (!found) {
         logger.error('Contrato da Sefin divergente: 200 de evento que não se confere como cancelamento desta chave', { code, environment: ctx.environment, items: xmls.length })
-        return { ...base, status: 'unknown' }
+        return { ...base, status: 'unknown', unknownCause: 'evento-nao-conferido' }
       }
       // D-F69 (= Q-F76 (a), Valdo 2026-10-10): tipo PERGUNTADO × código do XML divergentes = resposta contraditória → ambíguo,
       // SALVO quando o XML diz SUBSTITUIÇÃO (fica a marca mais restritiva — D-F64: sem efeito local automático)
       if (found.ev.eventCode !== code && found.ev.eventCode !== '105102') {
         logger.error('Contrato da Sefin divergente: evento de tipo diferente do perguntado', { code, eventCode: found.ev.eventCode, environment: ctx.environment })
-        return { ...base, status: 'unknown' }
+        return { ...base, status: 'unknown', unknownCause: 'evento-contraditorio' }
       }
       const cancel = found.ev
       return { ...base, status: 'cancelled', cancelled: { dhEvento: cancel.dhProc ?? cancel.dhEvento, motive: cancel.xMotivo, eventXml: found.xml, eventCode: cancel.eventCode } }
@@ -319,14 +327,18 @@ export const adnAdapter: TaxAuthorityAdapter = {
     try {
       const { status, data, text } = await call<any>(ctx, 'GET', `/dps/${encodeURIComponent(dpsId)}`, undefined, 'dps')
       const key = asAccessKey(data?.chaveAcesso) ?? asAccessKey(data?.chave) ?? (text.match(/\b\d{50}\b/)?.[0] ?? null)
-      if (!key) throw unknownResponse('dps', status, text)
+      if (!key) throw unknownResponse('dps-fora-do-contrato', 'dps', status, text)
+      // R19-03 do gate da Rodada 19: a chave tem de ser do EMITENTE do Id perguntado — chave 50 = cMun(7) + ambGer(1) + tpInsc(1) +
+      // inscrição(14) + …; Id do DPS = "DPS" + cMun(7) + tpInsc(1) + inscrição(14) + … (mesma regra do `sameIssuerKey` da D-F85;
+      // conferido nas 3 chaves reais de produção em 2026-10-11). Chave de OUTRO emitente (resposta trocada) nunca vira URL nem voz.
+      if (key.slice(8, 23) !== String(dpsId).slice(10, 25)) throw unknownResponse('dps-fora-do-contrato', 'dps: chave de OUTRO emitente', status, text)
       return key
     } catch (err) {
       // Q-ADV1a (Valdo 2026-09-30): 404 só é "DPS sem NFS-e" (conclusivo → F) quando é a RESPOSTA do fisco
       // (corpo JSON estruturado); 404 vazio/HTML (gateway, proxy, rota) é ilegível → 502, a tentativa fica em voo
       if (err instanceof AuthorityHttpError && err.authorityStatus === 404) {
         if (isDpsNotGenerated(err.body, ctx.environment)) return null
-        throw unknownResponse('dps: 404 sem resposta estruturada do fisco', 404, err.body)
+        throw unknownResponse('dps-fora-do-contrato', 'dps: 404 sem resposta estruturada do fisco', 404, err.body)
       }
       throw err
     }
@@ -345,9 +357,11 @@ export const adnAdapter: TaxAuthorityAdapter = {
     // (e101101) e DESTA chave — o eco do nosso próprio pedido (pedRegEvento tem e101101 + dhEvento,
     // mas nem Id EVT nem dhProc), evento de outra NFS-e ou de outro tipo NÃO são resposta ao pedido.
     const xml = collectGzipXmlFields(data).map(decodeXmlField).find(x => !!x) ?? null
-    const ev = xml ? parseEventXml(xml) : null
+    // gate R19 (S5): evento que o leitor não lê → ambíguo (502), nunca exceção crua
+    let ev: ReturnType<typeof parseEventXml> | null
+    try { ev = xml ? parseEventXml(xml) : null } catch { throw unknownResponse('evento-ilegivel', 'evento: resposta ilegível', status, text) }
     if (!ev || ev.eventCode !== EVENT_CANCEL || !isGeneratedEventFor(ev, accessKey)) {
-      throw unknownResponse('evento: resposta sem o evento gerado para esta chave', status, text)
+      throw unknownResponse('evento-sem-retorno', 'evento: resposta sem o evento gerado para esta chave', status, text)
     }
     return { dhEvento: ev.dhProc ?? ev.dhEvento!, protocol: ev.eventId ?? null, eventXml: xml, raw: data }
   },

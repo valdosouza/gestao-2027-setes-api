@@ -11,7 +11,7 @@ import { runIsolated } from '@shared/db/savepoint'
 import { isDeadlock, isLockWaitTimeout } from '@shared/db/contention'
 import { lockInstitutionCounters } from '@shared/db/counters'
 import { lockInvoice, buildCancelPlan, cancelInvoice, findCurrentCancelWaiver, CancelWaiver } from '@shared/invoice'
-import { AuthorityHttpError, NfseQuery, parseNfseXml, parseEventXml } from '@shared/tax-authority'
+import { AuthorityHttpError, NfseQuery, parseNfseXml, parseEventXml, tagAmbiguous, ambiguousCauseOf } from '@shared/tax-authority'
 import {
   TransmissionRow, TransmissionEventRow, TransmissionEventKind, TransmissionSource, TransmissionEnvironment,
   latestTransmission, currentTransmissionsOf, getTransmission, findTransmissionByDpsId, insertTransmission, setDpsId, fillAuthorityData,
@@ -87,7 +87,8 @@ async function withInvoiceTx<T>(
       await conn.commit()
       return out
     } catch (err) {
-      await conn.rollback()
+      // R19-04 do gate da Rodada 19 (mesmo idioma do `withTransaction` do núcleo): o erro do rollback nunca substitui o original
+      try { await conn.rollback() } catch { /* conexão pode ter caído — o release resolve */ }
       throw err
     } finally {
       conn.release()
@@ -465,8 +466,8 @@ async function recordCancelVoice(
   // contradição do fisco (502, nada gravado), nunca promoção: a "marca mais restritiva" abriria o "manter a nota" (D-F67)
   if (existing && existing.source === 'P' && code && code !== (existing.authorityCode ?? ISSUER_CANCEL_CODE)) {
     logger.error('Contrato da Sefin divergente: outro tipo de cancelamento para a NFS-e que o PRODUTO cancelou', { institutionId, invoiceId, attempt, code })
-    throw new HttpError(502, `Fisco devolveu o cancelamento e${code} para a NFS-e que o produto cancelou com e${existing.authorityCode ?? ISSUER_CANCEL_CODE} — nada gravado`,
-      undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
+    throw tagAmbiguous(new HttpError(502, `Fisco devolveu o cancelamento e${code} para a NFS-e que o produto cancelou com e${existing.authorityCode ?? ISSUER_CANCEL_CODE} — nada gravado`,
+      undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), 'evento-contraditorio')
   }
   // re-gate R11-03b + D-F75 (= Q-F82): a marca é o CÓDIGO e é PEGAJOSA — escrito uma vez, só sobe para 105102, nunca volta
   // (resposta contraditória do fisco nunca aplica o efeito sozinha)
@@ -554,10 +555,10 @@ export function logAmbiguousFiscal(
 ): void {
   if (!(err instanceof HttpError) || err.code !== ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE) return
   logger.error('Fisco ambíguo persistente: a nota não pôde ser concluída no fisco',
-    // D-F94 (= Q-F100 (b), Valdo 2026-10-11): só o CÓDIGO + um rótulo SEM DÍGITOS — a mensagem inteira podia levar o Id de DPS de OUTRA
-    // nota (que embute o CPF/CNPJ de outro prestador) ao alarme (R17-02)
+    // D-F94 (= Q-F100 (b)) → D-F98 (= Q-F104 (b), Valdo 2026-10-11): só o CÓDIGO + a CAUSA da lista FECHADA (`ambiguousCauseOf`) —
+    // nunca texto da mensagem/resposta: a máscara de dígitos da D-F94 deixava passar as LETRAS de um CNPJ alfanumérico (R18-01)
     { origin, institutionId: at.institutionId, invoiceId: at.invoiceId, attempt: at.attempt ?? null, lastKind: at.lastKind ?? null,
-      code: err.code, reason: errMsg(err).replace(/\d+/g, '#').slice(0, 160) })
+      code: err.code, reason: ambiguousCauseOf(err) })
 }
 
 export async function refreshServiceTransmission(
@@ -636,8 +637,9 @@ async function refreshServiceTransmissionInner(
   // R2-2 (c): a NFS-e devolvida embute o DPS — tem que ser o DESTA tentativa; resposta trocada
   // (proxy/cache) nunca grava chave alheia na nota (nada gravado, nem "nós olhamos")
   if (parsed.dpsId && target.dpsId && parsed.dpsId !== target.dpsId) {
-    throw new HttpError(502, `Fisco devolveu a NFS-e de OUTRO DPS (${parsed.dpsId}) para a consulta de ${target.dpsId} — nada gravado`,
-      undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
+    // D-F98 (c) (= Q-F104, Valdo 2026-10-11): o Id que veio é de TERCEIRO (embute o CPF/CNPJ dele) — nunca na mensagem (que vai ao app)
+    throw tagAmbiguous(new HttpError(502, 'Fisco devolveu a NFS-e de OUTRO DPS para a consulta desta tentativa (Id divergente) — nada gravado',
+      undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), 'nfse-de-outro-dps')
   }
   const dhA = toDbDateTime(nfse.dhProc ?? parsed.dhProc)
 
@@ -658,8 +660,8 @@ async function refreshServiceTransmissionInner(
       }
     }
     if (nfse.status === 'unknown') {
-      throw new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e — nada gravado; verifique o adaptador',
-        undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE)
+      throw tagAmbiguous(new HttpError(502, 'Fisco respondeu sem situação legível para a NFS-e — nada gravado; verifique o adaptador',
+        undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), nfse.unknownCause ?? 'situacao-ilegivel')   // gate R19 (S3)
     }
     // write-once do fisco (mesmo sem evento novo)
     await fillAuthorityData(conn, s, institutionId, invoiceId, tx.attempt, { accessKey: nfse.accessKey, nfseNumber: parsed.nNFSe, dhProc: dhA })

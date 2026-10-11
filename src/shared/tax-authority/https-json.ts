@@ -2,6 +2,7 @@ import https from 'https'
 import { URL } from 'url'
 import { FieldError, HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
+import { tagAmbiguous } from './ambiguous-cause'
 import logger from '@shared/logger/logger'
 
 /**
@@ -211,8 +212,8 @@ export async function authorityJson<T = any>(call: HttpsCall, label: string, opt
   // REGRA do documento: ambíguo (502), jamais "DPS rejeitado"/voz R (o 501 já cai no ramo 5xx acima — indisponível, também nunca R)
   if (res.status === 405 || res.status === 406 || res.status === 415) {
     logger.error('Contrato do fisco divergente: rota/método/formato não atendido', { label, status: res.status, url: call.url })
-    throw new AuthorityHttpError(502, `Fisco não atende esta rota/método (${res.status}, ${label}) — contrato do adaptador desatualizado`,
-      ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, res.status, res.text)
+    throw tagAmbiguous(new AuthorityHttpError(502, `Fisco não atende esta rota/método (${res.status}, ${label}) — contrato do adaptador desatualizado`,
+      ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, res.status, res.text), 'rota-nao-atendida')   // D-F98
   }
   if (res.status === 404) {
     throw new AuthorityHttpError(404, `Fisco não encontrou o recurso: ${msg || label}`,

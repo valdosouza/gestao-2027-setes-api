@@ -9,6 +9,8 @@
  * Manual do Contribuinte v1.2 em Infra-IA/setes-api/integracoes/nfse-adn/.
  */
 
+import type { AmbiguousCause } from './ambiguous-cause'
+
 /** H = produção restrita (tpAmb 2) · P = produção (tpAmb 1) — D-N6/D-N12. */
 export type AuthorityEnvironment = 'H' | 'P'
 
@@ -179,6 +181,8 @@ export interface NfseQuery {
   /** eventXml (Q-N38): o XML do evento GERADO pelo fisco, para o arquivo fiscal do contribuinte. */
   /** eventCode (D-F64): 101101 · 105102 (substituição) · 105104 · 305101 — o efeito local depende dele */
   cancelled?: { dhEvento: string | null; motive: string | null; eventXml?: string | null; eventCode?: string | null }
+  /** Gate R19 (S3): POR QUE a situação ficou ilegível (só com `status: 'unknown'`) — a composição marca o ambíguo com ela (D-F98). */
+  unknownCause?: AmbiguousCause
 }
 
 export interface EventRegisterResult {

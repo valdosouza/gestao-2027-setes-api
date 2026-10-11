@@ -130,7 +130,9 @@ const PAIR = selfSigned(`SETES TESTE:${CNPJ}`, YEAR)
 
 const S = { schema: 'setes_setes', inst: 1, user: 7 }
 const INVOICE = 6300
-const KEY = '4106902212345678000199000000000012320260921000012345'.slice(0, 50)
+// Gate R19 (R19-03): a chave de teste segue o layout REAL (conferido nas 3 chaves de produção em 2026-10-11) — cMun(7) + ambGer(1) +
+// tpInsc(1) + inscrição(14) + nNFSe(13) + AAMM(4) + código(9) + DV(1); a antiga não tinha o tpInsc e o GET /dps agora confere o emitente
+const KEY = '4106902' + '2' + '2' + '12345678000199' + '0000000000123' + '2609' + '000012345' + '1'
 const OTHER_KEY = KEY.slice(0, 40) + '9999999999'
 const DPS_ID = 'DPS410690221234567800019900001000000000000042'
 const OTHER_DPS_ID = DPS_ID.slice(0, -1) + '3'
