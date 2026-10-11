@@ -43,7 +43,9 @@ export class AuthorityHttpError extends HttpError {
     statusCode: number, message: string, code: string,
     /** Status HTTP que o fisco respondeu (0 = não chegou a responder). */
     public readonly authorityStatus: number,
-    /** Corpo cru da resposta (texto) — para log/voz do fisco; nunca contém segredo nosso. */
+    /** Corpo cru da resposta (texto) — para log/voz do fisco; nunca contém segredo nosso. CONHECIMENTO NEGATIVO (D-F100 = Q-F106 (a)):
+     *  NÃO é lugar de "guardar a evidência" da resposta TROCADA — nela o corpo é do TERCEIRO e o adaptador o entrega VAZIO; nunca gravar
+     *  `body` inteiro em log, disco ou banco (o alarme leva institution, nota, causa e instante — basta). */
     public readonly body: string,
     fields?: FieldError[],
   ) {

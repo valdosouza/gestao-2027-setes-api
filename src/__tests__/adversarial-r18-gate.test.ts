@@ -584,6 +584,13 @@ describe('ACHADO R18-02 (LOW, FORA do delta — a mesma classe do R17-02) — a 
     const logged = JSON.stringify([(logger.warn as jest.Mock).mock.calls, (logger.error as jest.Mock).mock.calls, (logger.info as jest.Mock).mock.calls])
     expect(logged).not.toContain(THIRD_CPF)
   })
+  it('[gate R20 — S1 / D-F100] a resposta TROCADA não viaja no erro: o `body` do 502 vem VAZIO (o corpo é do terceiro, em gzip+base64 — a busca por texto não o enxerga)', async () => {
+    sefin({ post: () => ok({ nfseXmlGZipB64: gz(nfseXmlFor(KEY, FOREIGN_DPS_ID)) }) })
+    const out: any = await settle(adnAdapter.transmit(ctxH, signedDps))
+    expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(out.body).toBe('')
+    expect(JSON.stringify(out)).not.toContain('GZipB64')
+  })
   it('[CORRIGIDO — D-F98 (c)] o 502 da CONSULTA (OUTRO DPS) não leva o Id alheio ao app — nem o CPF do terceiro, nem o Id inteiro; o alarme também não', async () => {
     withAuthorizedTx()
     adapter.queryNfse.mockResolvedValue(foreignVoice(FOREIGN_DPS_ID))

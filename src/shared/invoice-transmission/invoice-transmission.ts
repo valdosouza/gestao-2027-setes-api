@@ -549,6 +549,8 @@ async function archiveCancelEventIfMissing(s: string, institutionId: number, inv
  */
 /** D-F95 (= Q-F101 (b)): a origem é dita EXPLICITAMENTE por quem chama — nunca deduzida pela ausência de flags. */
 export type AmbiguousOrigin = 'rodizio' | 'consulta' | 'reconferencia' | 'transmissao'
+// CONHECIMENTO NEGATIVO (D-F100 = Q-F106 (a), Valdo 2026-10-11): não "enriquecer" este alarme com texto, hash ou corpo da resposta —
+// a causa da lista FECHADA (D-F98) + institution, nota, tentativa, origem e instante bastam para o chamado à Sefin.
 export function logAmbiguousFiscal(
   origin: AmbiguousOrigin,
   at: { institutionId: number; invoiceId: number; attempt?: number | null; lastKind?: string | null }, err: unknown
@@ -638,6 +640,9 @@ async function refreshServiceTransmissionInner(
   // (proxy/cache) nunca grava chave alheia na nota (nada gravado, nem "nós olhamos")
   if (parsed.dpsId && target.dpsId && parsed.dpsId !== target.dpsId) {
     // D-F98 (c) (= Q-F104, Valdo 2026-10-11): o Id que veio é de TERCEIRO (embute o CPF/CNPJ dele) — nunca na mensagem (que vai ao app)
+    // CONHECIMENTO NEGATIVO (D-F100 = Q-F106 (a), Valdo 2026-10-11): NADA da resposta alheia é guardado — nem hash do Id (CPF se
+    // quebra por força bruta), nem o corpo cru; o alarme (institution, nota, causa, instante) basta para o chamado à Sefin e o caso se
+    // reproduz consultando de novo. Reabrir só se a resposta trocada acontecer de verdade.
     throw tagAmbiguous(new HttpError(502, 'Fisco devolveu a NFS-e de OUTRO DPS para a consulta desta tentativa (Id divergente) — nada gravado',
       undefined, ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE), 'nfse-de-outro-dps')
   }

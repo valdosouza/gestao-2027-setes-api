@@ -95,11 +95,13 @@ function isDpsNotGenerated(text: string | null | undefined, environment: 'H' | '
 
 /** D-F98 (= Q-F104 (b)): todo ambíguo do adaptador nasce com a CAUSA da lista fechada — é ela que vai ao alarme; o `label` (só texto
  *  NOSSO, nunca valor da resposta — D-F98 (c)) fica no warn do adaptador. */
-function unknownResponse(cause: AmbiguousCause, label: string, status: number, text: string): AuthorityHttpError {
+function unknownResponse(cause: AmbiguousCause, label: string, status: number, text: string, opts: { foreign?: boolean } = {}): AuthorityHttpError {
   // LOW-6 do gate: nunca a amostra do corpo (pode carregar dado fiscal/segredo) — só tamanho e status
   logger.warn('Fisco respondeu 2xx sem envelope legível', { label, status, bytes: Buffer.byteLength(text, 'utf8') })
+  // D-F100 (= Q-F106 (a)) + gate R20 (S1): resposta TROCADA (`foreign` — de outro DPS/chave/emitente) não viaja no erro: o corpo é do
+  // TERCEIRO (CPF/CNPJ, Id, valores — em gzip+base64, que a busca por texto não enxerga); o warn acima já registra só o tamanho
   return tagAmbiguous(new AuthorityHttpError(502, `Fisco respondeu ${status} sem envelope legível (${label}) — reconcilie pela consulta antes de reenviar`,
-    ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, status, text), cause)
+    ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE, status, opts.foreign ? '' : text), cause)
 }
 
 async function call<T = any>(ctx: AuthorityContext, method: 'GET' | 'POST', path: string, body?: unknown, label = path, rejectField = 'dps') {
@@ -225,15 +227,18 @@ export const adnAdapter: TaxAuthorityAdapter = {
     // que enviamos; e a chave do JSON, quando vem, é a mesma do XML. Resposta trocada
     // (proxy/cache/manutenção) NUNCA vira A da nota errada.
     const jsonKey = asAccessKey(data?.chaveAcesso), xmlKey = asAccessKey(parsed.accessKey)
-    if (jsonKey && xmlKey && jsonKey !== xmlKey) throw unknownResponse('nfse-chave-divergente', 'transmitir: chave do JSON ≠ chave da NFS-e', status, text)
+    if (jsonKey && xmlKey && jsonKey !== xmlKey) throw unknownResponse('nfse-chave-divergente', 'transmitir: chave do JSON ≠ chave da NFS-e', status, text, { foreign: true })
     const accessKey = xmlKey ?? jsonKey
     if (!accessKey) throw unknownResponse('nfse-sem-chave', 'transmitir: NFS-e sem chave de acesso (50 dígitos)', status, text)
     const sentDpsId = sentDpsIdOf(signedDpsXml)
     if (!parsed.dpsId || parsed.dpsId !== sentDpsId) {
       // D-F98 (c) (= Q-F104, Valdo 2026-10-11): o Id que VEIO é de TERCEIRO (embute o CPF/CNPJ dele) — nunca na mensagem nem no log
+      // CONHECIMENTO NEGATIVO (D-F100 = Q-F106 (a), Valdo 2026-10-11): NADA da resposta alheia é guardado — nem hash do Id (CPF se
+      // quebra por força bruta), nem o corpo cru; o alarme (institution, nota, causa, instante) basta para o chamado à Sefin e o caso se
+      // reproduz consultando de novo. Reabrir só se a resposta trocada acontecer de verdade.
       throw parsed.dpsId
-        ? unknownResponse('nfse-de-outro-dps', 'transmitir: NFS-e de OUTRO DPS (Id divergente do enviado)', status, text)
-        : unknownResponse('nfse-sem-identidade', 'transmitir: NFS-e sem o Id do DPS', status, text)
+        ? unknownResponse('nfse-de-outro-dps', 'transmitir: NFS-e de OUTRO DPS (Id divergente do enviado)', status, text, { foreign: true })
+        : unknownResponse('nfse-sem-identidade', 'transmitir: NFS-e sem o Id do DPS', status, text, { foreign: true })
     }
     return {
       accessKey, nfseNumber: parsed.nNFSe, dhProc: parsed.dhProc ?? str(data?.dataHoraProcessamento), nfseXml, raw: data,
@@ -251,10 +256,10 @@ export const adnAdapter: TaxAuthorityAdapter = {
     try { parsed = parseNfseXml(nfseXml) } catch { throw unknownResponse('nfse-ilegivel', 'consultar: NFS-e ilegível', status, text) }
     // R2-2 (c): a NFS-e devolvida tem que ser a da chave PEDIDA — Id de outra chave = resposta trocada
     const xmlKey = asAccessKey(parsed.accessKey)
-    if (xmlKey && xmlKey !== accessKey) throw unknownResponse('nfse-chave-divergente', 'consultar: NFS-e de OUTRA chave', status, text)
+    if (xmlKey && xmlKey !== accessKey) throw unknownResponse('nfse-chave-divergente', 'consultar: NFS-e de OUTRA chave', status, text, { foreign: true })
     // R3-6: documento SEM identidade (nem Id do infNFSe nem Id do infDPS) não pode ser conferido contra a
     // pergunta — é ilegível (502), nunca voz; um <e101101> dentro dele viraria C irreversível
-    if (!xmlKey && !parsed.dpsId) throw unknownResponse('nfse-sem-identidade', 'consultar: NFS-e sem identidade (sem Id do infNFSe nem do infDPS)', status, text)
+    if (!xmlKey && !parsed.dpsId) throw unknownResponse('nfse-sem-identidade', 'consultar: NFS-e sem identidade (sem Id do infNFSe nem do infDPS)', status, text, { foreign: true })
     const base: NfseQuery = { accessKey, status: 'authorized', nfseXml, dhProc: parsed.dhProc }
     // L6 do gate da Rodada 13: o bloco embutido é por construção um <e101101> (cancelBlock) — o código vai junto (D-F71)
     if (parsed.cancelled) return { ...base, status: 'cancelled', cancelled: { dhEvento: parsed.cancelled.dhEvento, motive: parsed.cancelled.xMotivo, eventCode: EVENT_CANCEL } }
@@ -331,7 +336,7 @@ export const adnAdapter: TaxAuthorityAdapter = {
       // R19-03 do gate da Rodada 19: a chave tem de ser do EMITENTE do Id perguntado — chave 50 = cMun(7) + ambGer(1) + tpInsc(1) +
       // inscrição(14) + …; Id do DPS = "DPS" + cMun(7) + tpInsc(1) + inscrição(14) + … (mesma regra do `sameIssuerKey` da D-F85;
       // conferido nas 3 chaves reais de produção em 2026-10-11). Chave de OUTRO emitente (resposta trocada) nunca vira URL nem voz.
-      if (key.slice(8, 23) !== String(dpsId).slice(10, 25)) throw unknownResponse('dps-fora-do-contrato', 'dps: chave de OUTRO emitente', status, text)
+      if (key.slice(8, 23) !== String(dpsId).slice(10, 25)) throw unknownResponse('dps-fora-do-contrato', 'dps: chave de OUTRO emitente', status, text, { foreign: true })
       return key
     } catch (err) {
       // Q-ADV1a (Valdo 2026-09-30): 404 só é "DPS sem NFS-e" (conclusivo → F) quando é a RESPOSTA do fisco
