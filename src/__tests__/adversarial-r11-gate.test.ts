@@ -840,3 +840,90 @@ describe('RODADA 14 — D-F77/D-F78/D-F82 + L6/L7', () => {
     expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
   })
 })
+
+// ===========================================================================
+// RODADA 16 (Valdo 2026-10-11, "siga as recomendações" — gates da Rodada 15): D-F86 (o laço para no primeiro tipo — fixado),
+// D-F87 (a passada registra o ambíguo persistente COM a nota), D-F88 (todo evento gerado desta chave conta), D-F89 (mesmo tipo com
+// conteúdo divergente = ambíguo)
+// ===========================================================================
+describe('RODADA 16 — D-F86/D-F87/D-F88/D-F89', () => {
+  const askedTypes = () => mockHttp.mock.calls.map((c: any[]) => String(c[0].url).match(/\/eventos\/(\d+)\/1$/)?.[1]).filter(Boolean)
+  it('D-F86 (CONHECIMENTO NEGATIVO): rota 101101 limpa + um e105102 na rota dele → "cancelled 101101" e a rota 105102 NEM é perguntada (cancelamento é único por NFS-e — D-F61)', async () => {
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' })))) : code === '105102' ? typedOk(substItem()) : undefined) })
+    const out = await adnAdapter.queryNfse(ctxH, KEY)
+    expect(out).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
+    expect(askedTypes()).toEqual(['101101'])
+  })
+  it('D-F87: a passada com resposta AMBÍGUA persistente registra "Fisco ambíguo persistente" COM institution, nota e tentativa; nada gravado', async () => {
+    useRealAdn(); withAuthorizedTx()
+    ;(repo.listLiveTransmissionsToRefresh as jest.Mock).mockResolvedValue([{ invoiceId: INVOICE, attempt: 1 }])
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), substItem()) : undefined) })
+    const r = await refreshOpenServiceTransmissions(S.schema, S.inst, S.user)
+    expect(r.errors[0]).toMatchObject({ invoiceId: INVOICE, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    const logged = (logger.error as jest.Mock).mock.calls.find((c: any[]) => /Fisco ambíguo persistente/.test(String(c[0])))
+    expect(logged?.[1]).toMatchObject({ institutionId: S.inst, invoiceId: INVOICE, attempt: 1 })
+    expect(kinds()).toEqual([]); expect(invoice.cancelInvoice).not.toHaveBeenCalled()
+  })
+  it('D-F88: um evento gerado desta chave de tipo FORA do domínio de cancelamento (e105105 indeferido) junto do e105104 → AMBÍGUO; sozinho → ambíguo também (D-F63)', async () => {
+    sefin({ typed: code => (code === '105104' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '105105' })), '105105'), typedItem(arquivo2(generatedEventXml({ code: '105104' })), '105104')) : undefined) })
+    expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
+    mockHttp.mockReset()
+    sefin({ typed: code => (code === '105104' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '105105' })), '105105')) : undefined) })
+    expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
+  })
+  it('D-F89: dois e101101 desta chave IDÊNTICOS valem (repetição); com MOTIVOS diferentes → AMBÍGUO', async () => {
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), typedItem(arquivo2(generatedEventXml({ code: '101101' })))) : undefined) })
+    expect(await adnAdapter.queryNfse(ctxH, KEY)).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '101101' } })
+    mockHttp.mockReset()
+    const other = generatedEventXml({ code: '101101' }).replace('cliente desistiu do serviço', 'erro de valor na emissao')
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), typedItem(arquivo2(other))) : undefined) })
+    expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
+  })
+})
+
+// ===========================================================================
+// RODADA 17 (Valdo 2026-10-11, "siga as recomendações" — gates da Rodada 16): D-F91 (o alarme do ambíguo também na consulta da TELA e
+// na RECONFERÊNCIA), D-F93 (assinatura do evento com nDFSe/autor/ambGer/tpAmb)
+// ===========================================================================
+describe('RODADA 17 — D-F91/D-F93', () => {
+  const ambiguousLogs = () => (logger.error as jest.Mock).mock.calls.filter((c: any[]) => /Fisco ambíguo persistente/.test(String(c[0])))
+  it('D-F91: a consulta pedida pela TELA com resposta ambígua → 502 e UM alarme com origem "consulta", institution e nota (nunca a chave)', async () => {
+    useRealAdn(); withAuthorizedTx()
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), substItem()) : undefined) })
+    const out = await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
+    expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    expect(ambiguousLogs()).toHaveLength(1)
+    expect(ambiguousLogs()[0][1]).toMatchObject({ origin: 'consulta', institutionId: S.inst, invoiceId: INVOICE })
+    expect(JSON.stringify(ambiguousLogs()[0][1])).not.toContain(KEY)
+  })
+  it('D-F91: o rodízio registra UMA vez (origem "rodizio", com tentativa e última voz) — o invólucro da consulta não duplica', async () => {
+    useRealAdn(); withAuthorizedTx()
+    ;(repo.listLiveTransmissionsToRefresh as jest.Mock).mockResolvedValue([{ invoiceId: INVOICE, attempt: 1, lastKind: 'A' }])
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), substItem()) : undefined) })
+    await refreshOpenServiceTransmissions(S.schema, S.inst, S.user)
+    expect(ambiguousLogs()).toHaveLength(1)
+    expect(ambiguousLogs()[0][1]).toMatchObject({ origin: 'rodizio', invoiceId: INVOICE, attempt: 1, lastKind: 'A' })
+  })
+  it('D-F93: dois e101101 do MESMO Id que divergem em nDFSe (fora dos 8 campos da D-F89) → AMBÍGUO (o XML arquivado não depende da ordem)', async () => {
+    const base = generatedEventXml({ code: '101101' })
+    const other = base.replace('<nDFSe>1</nDFSe>', '<nDFSe>2</nDFSe>')
+    expect(other).not.toBe(base)
+    sefin({ typed: code => (code === '101101' ? typedOk(typedItem(arquivo2(base)), typedItem(arquivo2(other))) : undefined) })
+    expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
+  })
+})
+describe('RODADA 17 — D-F91 na reconferência (setes-api)', () => {
+  it('D-F91: reconferência antes do cancelamento local com resposta ambígua → 502 fail-closed e UM alarme com origem "reconferencia" e a tentativa', async () => {
+    const { reconfirmBeforeLocalCancel } = jest.requireActual('../shared/invoice-transmission/invoice-transmission')
+    useRealAdn()
+    const f = tx({ attempt: 1, environment: 'P', accessKey: null, nfseNumber: null, dhProc: null, lastKind: 'F', lastSource: 'Q', lastEvent: 2 })
+    ;(repo.listServiceTransmissions as jest.Mock).mockResolvedValue({ transmissions: [f], events: [] })
+    setTx(f)
+    sefin({ dps: () => ok({ chaveAcesso: KEY }), typed: (code: string) => (code === '101101' ? typedOk(typedItem(arquivo2(generatedEventXml({ code: '101101' }))), substItem()) : undefined) })
+    const out = await settle(reconfirmBeforeLocalCancel(S.schema, S.inst, S.user, INVOICE))
+    expect(out).toMatchObject({ statusCode: 502, code: ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE })
+    const logs = (logger.error as jest.Mock).mock.calls.filter((c: any[]) => /Fisco ambíguo persistente/.test(String(c[0])))
+    expect(logs).toHaveLength(1)
+    expect(logs[0][1]).toMatchObject({ origin: 'reconferencia', institutionId: S.inst, invoiceId: INVOICE, attempt: 1 })
+  })
+})

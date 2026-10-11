@@ -327,6 +327,17 @@ export async function reconfirmBeforeLocalCancel(
     && t.environment !== 'H')
   const tx = candidates[candidates.length - 1]
   if (!tx) return
+  try {
+    await reconfirmCandidate(s, institutionId, userId, invoiceId, tx, transmissions)
+  } catch (err) {
+    logAmbiguousFiscal('reconferencia', { institutionId, invoiceId, attempt: tx.attempt }, err)   // D-F91
+    throw err
+  }
+}
+
+async function reconfirmCandidate(
+  s: string, institutionId: number, userId: number | null, invoiceId: number, tx: TransmissionRow, transmissions: TransmissionRow[]
+): Promise<void> {
   const opened = await openServiceIssuer(s, institutionId)
   const ctx = authorityContextFor(s, institutionId, opened, tx.environment)
   const adapter = serviceAdapter()
@@ -528,9 +539,36 @@ async function archiveCancelEventIfMissing(s: string, institutionId: number, inv
   }
 }
 
+/**
+ * D-F87/D-F91 (= Q-F93 (a)/Q-F97 (a), Valdo 2026-10-11): resposta AMBÍGUA do fisco é fail-closed (nada grava) — a saída é o ALARME
+ * da F3, que AGREGA por nota (primeira/última vez, contagem); só a composição sabe QUAL nota: o log leva institution, nota, tentativa
+ * (quando conhecida) e a ORIGEM (rodízio, consulta pela tela, reconferência antes do cancelamento local). Nunca a chave de acesso.
+ */
+export function logAmbiguousFiscal(
+  origin: 'rodizio' | 'consulta' | 'reconferencia',
+  at: { institutionId: number; invoiceId: number; attempt?: number | null; lastKind?: string | null }, err: unknown
+): void {
+  if (!(err instanceof HttpError) || err.code !== ErrorCodes.FISCAL_AUTHORITY_UNKNOWN_RESPONSE) return
+  logger.error('Fisco ambíguo persistente: a nota não pôde ser concluída no fisco',
+    { origin, institutionId: at.institutionId, invoiceId: at.invoiceId, attempt: at.attempt ?? null, lastKind: at.lastKind ?? null, err: errMsg(err) })
+}
+
 export async function refreshServiceTransmission(
   schemaName: string, institutionId: number, userId: number | null, invoiceId: number,
   source: Exclude<TransmissionSource, 'P'> = 'Q', opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean } = {}
+): Promise<RefreshResult> {
+  try {
+    return await refreshServiceTransmissionInner(schemaName, institutionId, userId, invoiceId, source, opts)
+  } catch (err) {
+    // D-F91: a consulta pedida pela TELA; o rodízio (`fromRun`) e a reconferência (`query` pronta) registram por si, com mais contexto
+    if (!opts.query && !opts.fromRun) logAmbiguousFiscal('consulta', { institutionId, invoiceId, attempt: opts.attempt ?? null }, err)
+    throw err
+  }
+}
+
+async function refreshServiceTransmissionInner(
+  schemaName: string, institutionId: number, userId: number | null, invoiceId: number,
+  source: Exclude<TransmissionSource, 'P'>, opts: { query?: NfseQuery; attempt?: number; fromRun?: boolean }
 ): Promise<RefreshResult> {
   const s = assertSchema(schemaName)
   // R3-1: quem sabe qual tentativa quer olhar (reserva interrompida, rodízio da consulta ativa) diz — senão a
@@ -850,6 +888,7 @@ async function runRefresh(
       if (stopsTheRun(err)) { report.stoppedEarly = true; break }
       // falha PERSISTENTE também conta como "tentamos olhar" — senão monopoliza o rodízio
       if (isPersistentRefreshFailure(err)) {
+        logAmbiguousFiscal('rodizio', { institutionId, invoiceId: tx.invoiceId, attempt: tx.attempt, lastKind: tx.lastKind ?? null }, err)   // D-F87
         try { await touchQueriedAt(pool, schemaName, institutionId, tx.invoiceId, tx.attempt) }
         catch (touchErr) { logger.warn('Consulta ativa: não marcou last_queried_at', { institutionId, invoiceId: tx.invoiceId, err: errMsg(touchErr) }) }
       }

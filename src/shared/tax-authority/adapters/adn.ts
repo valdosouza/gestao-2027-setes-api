@@ -74,10 +74,15 @@ function decodeXmlField(b64: string): string | null {
  * vazio) é ambíguo → 502, a tentativa fica em voo.
  */
 export const DPS_NOT_GENERATED_CODE = 'E2404'
-function isDpsNotGenerated(text: string | null | undefined): boolean {
+function isDpsNotGenerated(text: string | null | undefined, environment: 'H' | 'P'): boolean {
   let j: any
   try { j = JSON.parse(String(text ?? '')) } catch { return false }
   if (!j || typeof j !== 'object') return false
+  // R16-03 do gate da Rodada 16 (a regra do L8 aplicada ao E2404): com a D-F90 o E2404 virou a PROVA que libera o cancelamento
+  // local — envelope que diz o OUTRO ambiente (1 = P, 2 = H) é ambíguo. ⚠️ A forma REAL do E2404 (sonda 2026-09-30, Q-ADV2f) traz
+  // `"tipoAmbiente":0` — 0/ausente/qualquer outro valor NÃO afirma ambiente e segue aceito (recusá-lo quebraria a produção)
+  const amb = !Array.isArray(j) ? Number(j.tipoAmbiente) : NaN
+  if ((amb === 1 || amb === 2) && amb !== (environment === 'P' ? 1 : 2)) return false
   const items: any[] = [
     ...(Array.isArray(j) ? j : [j]),
     ...(j.erro && typeof j.erro === 'object' ? [j.erro] : []),
@@ -120,6 +125,16 @@ function isGeneratedEventFor(ev: { eventId: string | null; dhProc: string | null
   const key = String(ev.accessKey ?? '').replace(/\D/g, '')
   return generated && key === accessKey && !!(ev.dhProc || ev.dhEvento)
 }
+/** Texto aparado do 1º elemento `<tag>` do XML (sem atributos) — só para a assinatura do evento. */
+const tagText = (xml: string, tag: string): string | null => xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1]?.trim() ?? null
+/**
+ * D-F89: o que distingue dois eventos do mesmo tipo — iguais nisso = repetição da mesma voz; diferentes = contradição.
+ * D-F93 (= Q-F99 (a), Valdo 2026-10-11): somados `nDFSe`, o autor (`CNPJAutor`/`CPFAutor`), `ambGer` e `tpAmb` — os campos que o
+ * fisco preenche no evento; divergência FORA dos 8 da D-F89 decidia, pela ordem da lista, qual XML ia para o arquivo (R16-01).
+ */
+const eventSignature = (e: ReturnType<typeof parseEventXml>, xml: string): string =>
+  JSON.stringify([e.eventCode, e.eventId, e.dhProc, e.dhEvento, e.nSeqEvento, e.cMotivo, e.xMotivo, e.substituteKey ?? null,
+    tagText(xml, 'nDFSe'), tagText(xml, 'CNPJAutor') ?? tagText(xml, 'CPFAutor'), tagText(xml, 'ambGer'), tagText(xml, 'tpAmb')])
 /** Chave de acesso da NFS-e = EXATAMENTE 50 dígitos (TSChaveAcesso); qualquer outra coisa não é chave. */
 const asAccessKey = (v: unknown): string | null => {
   const s = str(v)?.replace(/\D/g, '') ?? ''
@@ -237,19 +252,33 @@ export const adnAdapter: TaxAuthorityAdapter = {
     // cStat (100/102/103/107) NÃO expressa cancelamento: a situação vem dos EVENTOS da chave.
     // D-F61 (= Q-F68 (a), Valdo 2026-10-10): pelo contrato REAL da Sefin (cravado ao vivo em H — `GET /nfse/{chave}/eventos`
     // dava 405 e TODA consulta de autorizada falhava): um código de cancelamento por vez, por tipo + sequência.
+    // CONHECIMENTO NEGATIVO (D-F86 = Q-F92 (a), Valdo 2026-10-11): o laço PARA no primeiro tipo achado e NÃO pergunta as rotas
+    // restantes — premissa da D-F61: o fisco registra UM cancelamento por NFS-e (cancelada não se cancela de novo). Contradição
+    // ENTRE rotas não é procurada de propósito (até 3 GETs a mais por nota cancelada, contra uma impossibilidade fiscal); reabrir
+    // só se a prova ao vivo do C por consulta (M4) mostrar dois cancelamentos para a mesma chave. Contradição DENTRO de uma rota
+    // é ambígua (D-F84/D-F88/D-F89). Teste que fixa: "D-F86" no adversarial-r11-gate.
     for (const code of CANCEL_EVENT_CODES) {
       const xmls = await cancelEventXmls(ctx, key, code)
       if (xmls === null) continue                                   // a Sefin disse: não há esse evento
       if (!xmls.length) return { ...base, status: 'unknown' }       // listou e nada se lê: ilegível nunca vira "autorizada"
       // R2-2 (d): só evento GERADO (Id EVT + dhProc) e DESTA chave cancela — evento de outra NFS-e (resposta trocada) ou
       // pedido ecoado (sem Id/dhProc) não é voz sobre esta
-      const candidates = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).filter(({ ev: e }) =>
-        !!e.eventCode && CANCEL_EVENT_CODES.has(e.eventCode) && isGeneratedEventFor(e, accessKey))
-      // D-F84 (= Q-F90, Valdo 2026-10-10 — supera a escolha do L7): o GET tipado que traz TIPOS DIFERENTES de cancelamento desta
-      // chave é resposta contraditória → AMBÍGUO (502): nenhuma marca, nenhum efeito (como a D-F63) — nem o tipo perguntado (a marca
-      // menos restritiva) nem a substituição (abriria o "manter a nota" sobre uma resposta que se contradiz)
-      if (new Set(candidates.map(({ ev: e }) => e.eventCode)).size > 1) {
-        logger.error('Contrato da Sefin divergente: tipos diferentes de cancelamento no mesmo GET tipado', { code, codes: candidates.map(({ ev: e }) => e.eventCode), environment: ctx.environment })
+      // D-F88 (= Q-F94, Valdo 2026-10-11): conta TODO evento GERADO desta chave, de qualquer tipo — um tipo fora do domínio de
+      // cancelamento (e105105 indeferido, e101103…) no GET tipado também é contradição (o GET por tipo + sequência só devolve o tipo)
+      const generated = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).filter(({ ev: e }) =>
+        !!e.eventCode && isGeneratedEventFor(e, accessKey))
+      const candidates = generated.filter(({ ev: e }) => CANCEL_EVENT_CODES.has(e.eventCode!))
+      // D-F84 (= Q-F90, Valdo 2026-10-10 — supera a escolha do L7): o GET tipado que traz TIPOS DIFERENTES desta chave é resposta
+      // contraditória → AMBÍGUO (502): nenhuma marca, nenhum efeito (como a D-F63) — nem o tipo perguntado (a marca menos restritiva)
+      // nem a substituição (abriria o "manter a nota" sobre uma resposta que se contradiz)
+      if (new Set(generated.map(({ ev: e }) => e.eventCode)).size > 1) {
+        logger.error('Contrato da Sefin divergente: tipos diferentes de evento no mesmo GET tipado', { code, codes: generated.map(({ ev: e }) => e.eventCode), environment: ctx.environment })
+        return { ...base, status: 'unknown' }
+      }
+      // D-F89 (= Q-F95, Valdo 2026-10-11): o MESMO tipo repetido só vale com o MESMO conteúdo — outra substituta, outro motivo, outro
+      // instante ou outro Id no mesmo GET tipado também é contradição (o que se exibe/aplica não pode depender da ordem da lista)
+      if (new Set(candidates.map(({ ev: e, xml }) => eventSignature(e, xml))).size > 1) {
+        logger.error('Contrato da Sefin divergente: eventos do mesmo tipo com conteúdo diferente no mesmo GET tipado', { code, items: candidates.length, environment: ctx.environment })
         return { ...base, status: 'unknown' }
       }
       const found = candidates[0]
@@ -283,7 +312,7 @@ export const adnAdapter: TaxAuthorityAdapter = {
       // Q-ADV1a (Valdo 2026-09-30): 404 só é "DPS sem NFS-e" (conclusivo → F) quando é a RESPOSTA do fisco
       // (corpo JSON estruturado); 404 vazio/HTML (gateway, proxy, rota) é ilegível → 502, a tentativa fica em voo
       if (err instanceof AuthorityHttpError && err.authorityStatus === 404) {
-        if (isDpsNotGenerated(err.body)) return null
+        if (isDpsNotGenerated(err.body, ctx.environment)) return null
         throw unknownResponse('dps: 404 sem resposta estruturada do fisco', 404, err.body)
       }
       throw err

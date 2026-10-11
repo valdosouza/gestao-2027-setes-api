@@ -329,7 +329,7 @@ const echoItem = (code: string) => typedItem(arquivo2(
   `<pedRegEvento xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01"><infPedReg Id="PRE${KEY}${code}"><tpAmb>2</tpAmb><verAplic>SETES-1.0</verAplic>` +
   `<dhEvento>2026-09-28T09:59:00-03:00</dhEvento><CNPJAutor>${CNPJ}</CNPJAutor><chNFSe>${KEY}</chNFSe><e${code}><xDesc>x</xDesc><cMotivo>1</cMotivo><xMotivo>eco</xMotivo></e${code}></infPedReg></pedRegEvento>`), code)
 const unreadableItem = (code: string) => ({ ...typedItem('', code), arquivoXml: '%%% não é base64 %%%' })
-const divergentLogged = () => (logger.error as jest.Mock).mock.calls.some((c: any[]) => /tipos diferentes de cancelamento/.test(String(c[0])))
+const divergentLogged = () => (logger.error as jest.Mock).mock.calls.some((c: any[]) => /tipos diferentes de (cancelamento|evento)/.test(String(c[0])))   // D-F88: o log diz "de evento"
 const typedAsked = () => mockHttp.mock.calls.map((c: any[]) => String(c[0].url).match(/\/eventos\/(\d+)\/1$/)?.[1]).filter(Boolean)
 
 /** A Sefin falsa com `/dps/{id}` (a reconferência pergunta a chave pelo Id do DPS). */
@@ -357,12 +357,12 @@ beforeEach(() => {
 
 describe('ACHADO R15-01 (LOW) — D-F84 só conta tipos DO DOMÍNIO de cancelamento: um evento GERADO desta chave de tipo FORA do domínio (e105105 "cancelamento INDEFERIDO por análise fiscal") no mesmo GET tipado de /eventos/105104/1 é descartado em silêncio pelo filtro `CANCEL_EVENT_CODES` ANTES do conjunto de tipos — a resposta "deferido + indeferido" vira cancelled 105104 e a composição aplica o C local AUTOMÁTICO (105104 não é ato humano)', () => {
   const deferredAndRefused = (code: string) => (code === '105104' ? typedOk(item('105105'), item('105104')) : undefined)
-  it.failing('[LOW R15-01] adaptador: /eventos/105104/1 → 200 com [e105105, e105104] gerados desta chave (tipos diferentes) → unknown (502), nunca "cancelled"', async () => {
+  it('[CORRIGIDO — D-F88] [LOW R15-01] adaptador: /eventos/105104/1 → 200 com [e105105, e105104] gerados desta chave (tipos diferentes) → unknown (502), nunca "cancelled"', async () => {
     fisco({ typed: deferredAndRefused })
     const out = await settle(adnAdapter.queryNfse(ctxH, KEY))
     expect(out?.status === 'cancelled').toBe(false)              // hoje: cancelled 105104
   })
-  it.failing('[LOW R15-01] composição: a mesma resposta numa autorizada → o C local NÃO nasce sozinho', async () => {
+  it('[CORRIGIDO — D-F88] [LOW R15-01] composição: a mesma resposta numa autorizada → o C local NÃO nasce sozinho', async () => {
     useRealAdn(); setTx(tx({ lastKind: 'A' }))
     fisco({ typed: deferredAndRefused })
     await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
@@ -410,9 +410,9 @@ describe('RESISTIU — D-F84 no adaptador ADN do setes-api', () => {
     fisco({ typed: code => (code === '101101' ? typedOk(item('105104'), item('105104')) : undefined) })
     expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
   })
-  it('resistiu: e101103 (solicitação de análise — fora do domínio) junto do e105104 em /eventos/105104/1 → cancelled 105104 (filtrado; ver R15-01 para o par antagônico)', async () => {
+  it('[D-F88] e101103 (solicitação de análise — fora do domínio) junto do e105104 em /eventos/105104/1 → AMBÍGUO (unknown): todo evento gerado desta chave conta', async () => {
     fisco({ typed: code => (code === '105104' ? typedOk(item('101103'), item('105104')) : undefined) })
-    expect(await adnAdapter.queryNfse(ctxH, KEY)).toMatchObject({ status: 'cancelled', cancelled: { eventCode: '105104' } })
+    expect((await adnAdapter.queryNfse(ctxH, KEY)).status).toBe('unknown')
   })
 })
 
@@ -526,16 +526,15 @@ describe('RESISTIU — D-F85: `chSubstituta` × emitente embutido na chave (só 
 // CONTEXTO DA QUESTÃO Q-F92-adv-2 (decisão do Valdo — não é bug sem a decisão)
 // ===========================================================================
 
-describe('CONTEXTO Q-F92-adv-2 — D-F84 "mesmo tipo repetido vale": dois e105102 desta chave com `chSubstituta` DIFERENTES no mesmo GET tipado', () => {
-  it('contexto [Q-F92-adv-2]: [e105102 → substituta A, e105102 → substituta B] → cancelled 105102 com o XML do PRIMEIRO (a substituta exibida depende da ORDEM da lista)', async () => {
+describe('D-F89 (= Q-F95 = Q-F92-adv-2, Valdo 2026-10-11) — "mesmo tipo repetido vale" só com o MESMO conteúdo: dois e105102 desta chave com `chSubstituta` DIFERENTES no mesmo GET tipado', () => {
+  it('[D-F89] [e105102 → substituta A, e105102 → substituta B] em QUALQUER ordem → AMBÍGUO (unknown) — o que se exibe não depende da ordem da lista', async () => {
     const SUBST_B = at2(SUBST_KEY)
     fisco({ typed: code => (code === '105102' ? typedOk(item('105102', { inner: `<chSubstituta>${SUBST_KEY}</chSubstituta>` }), item('105102', { inner: `<chSubstituta>${SUBST_B}</chSubstituta>` })) : undefined) })
     const ab = await adnAdapter.queryNfse(ctxH, KEY)
     mockHttp.mockReset()
     fisco({ typed: code => (code === '105102' ? typedOk(item('105102', { inner: `<chSubstituta>${SUBST_B}</chSubstituta>` }), item('105102', { inner: `<chSubstituta>${SUBST_KEY}</chSubstituta>` })) : undefined) })
     const ba = await adnAdapter.queryNfse(ctxH, KEY)
-    expect([ab.status, ba.status]).toEqual(['cancelled', 'cancelled'])
-    expect(ab.cancelled?.eventXml).toContain(SUBST_KEY); expect(ba.cancelled?.eventXml).toContain(SUBST_B)
+    expect([ab.status, ba.status]).toEqual(['unknown', 'unknown'])
   })
 })
 function at2(k: string): string { return `${k.slice(0, 40)}${'7'.repeat(10)}` }

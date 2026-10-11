@@ -202,7 +202,11 @@ export interface TaxAuthorityAdapter {
   readonly authority: TaxAuthority
   transmit(ctx: AuthorityContext, signedDpsXml: string): Promise<TransmitResult>
   queryNfse(ctx: AuthorityContext, accessKey: string): Promise<NfseQuery>
-  /** GET /dps/{id} → chave de acesso; 404 = ainda não existe NFS-e para esse DPS (null). */
+  /**
+   * GET /dps/{id} → chave de acesso; `null` SÓ quando o fisco responde EXPLICITAMENTE E2404 ("nenhuma NFS-e para este Id de DPS"
+   * — Q-ADV2e). Qualquer outro 404 (sem o corpo do fisco, gateway) é AMBÍGUO e lança. D-F90: o `null` virou PROVA da D-F29
+   * (`nfse_not_generated_at`) — um adaptador que devolva `null` sem o E2404 forjaria a prova do cancelamento local.
+   */
   queryDpsAccessKey(ctx: AuthorityContext, dpsId: string): Promise<string | null>
   registerEvent(ctx: AuthorityContext, accessKey: string, signedEventXml: string): Promise<EventRegisterResult>
   municipalTerms(ctx: AuthorityContext, cMun: string): Promise<MunicipalTerms>
