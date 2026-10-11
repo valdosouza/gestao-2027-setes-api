@@ -618,7 +618,7 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
 
   // R7-S1 (provado pelo gate socrático): a linha nova SOBREPOSTA que já vale na data, sem presença, tira o código de
   // "aceito" sem ser nenhum "tipo" de mudança — só a diferença do veredito antes × depois pega
-  it('R7-S1: linha nova sobreposta que já vale na data, sem presença, entra no impacto (o selo ainda diz "aceita")', async () => {
+  it('R7-S1: linha nova sobreposta que já vale na data, sem presença, entra no impacto (D-IB59: o selo também deixa de aceitar)', async () => {
     const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
     const it = catalog()
     it.classifications.push({ code: '000001', cst: '000', name: 'nova', description: 'd', validFrom: '2026-10-05', validUntil: null,
@@ -631,7 +631,7 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
     const r = await applyCatalog(fakeConn(t).conn, { ...base, it, unconfirmed: [{ code: '000001', validFrom: '2026-10-05' }], date: '2026-10-10' })
     expect([r.validityEnded, r.validityRegularOn, r.applicability.deactivatedKeys]).toEqual([[], [], []])   // nenhum "tipo" pegaria
     expect(r.impact).toEqual([{ schema: 'setes_a', institutionActive: true, kind: 'cClassTrib', code: '000001', services: 1, serviceIds: [70],
-      registrationStillAccepts: true, reason: 'not-applicable' }])
+      registrationStillAccepts: false, reason: 'not-applicable' }])
   })
 
   // gate adversarial do delta R7 (ADV-R7-01, variantes provadas no harness): linha REVIVIDA ou ESTENDIDA que passa a ser a
@@ -657,7 +657,7 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
       t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
       t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
       const r = await applyCatalog(fakeConn(t).conn, { ...base, it: withLine(), date: '2026-10-11' })
-      expect(r.impact.map(x => [x.code, x.reason, x.registrationStillAccepts])).toEqual([['000001', 'not-applicable', true]])
+      expect(r.impact.map(x => [x.code, x.reason, x.registrationStillAccepts])).toEqual([['000001', 'not-applicable', false]])   // D-IB59
     }
   })
 
@@ -861,12 +861,12 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
     expect(r.impactAhead).toEqual([])
   })
 
-  it('D-IB53: SOBREPOSIÇÃO — a carga tira a presença da linha antiga que o cadastro usava (antes e depois da obrigação)', async () => {
+  it('D-IB59: SOBREPOSIÇÃO de vigentes — o cadastro nunca aceitou pela antiga, então tirar a presença dela não é perda (antes e depois da obrigação)', async () => {
     for (const [date, from] of [['2026-10-10', '2026-10-01'], ['2027-01-05', '2027-01-02']] as const) {
       const before = [{ code: '000001', validFrom: '2026-01-01' }, { code: '000001', validFrom: from, applicable: 0 },
         { code: '000006', validFrom: '2026-01-01' }]   // fato: a mais nova (sem presença) recusa; cadastro: a antiga aceita
       const r = await runR9(date, before, [{ ...before[0], applicable: 0 }, before[1], before[2]])
-      expect(r.impact.map(x => [x.code, x.reason, x.registrationOnly, x.registrationStillAccepts])).toEqual([['000001', 'not-applicable', true, false]])
+      expect(r.impact).toEqual([])   // antes da D-IB59 saía registrationOnly — o selo dizia "aceita" pela antiga
     }
   })
 

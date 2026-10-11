@@ -30,9 +30,13 @@ function fakeCatalog(opts: { validity: Validity[]; places: Record<string, string
       // lista de apoio (listClassificationsLookup): candidatas da janela, COM a presença (a peça escolhe)
       if (sql.includes('LIMIT 400')) {
         if (!sql.includes('absent_since_version IS NULL')) throw new Error('lista sem o filtro da linha superada (D-IB36)')
-        const [model, date, , , endW] = params as string[]
+        const [model, date, , , endW, like] = params as string[]
+        const matches = (v: Validity) => like == null || [v.code, v.name].some(x => x.toLowerCase().includes(like.replace(/%/g, '').toLowerCase()))
+        const byCode = /v\.code IN \(SELECT f\.code/.test(sql)
+        const codes = new Set(opts.validity.filter(v => !v.absent && matches(v)).map(v => v.code))
         return [opts.validity
           .filter(v => !v.absent && ((v.from <= date && (v.until === null || v.until >= date)) || (v.from > date && v.from <= endW)))
+          .filter(v => byCode ? codes.has(v.code) : matches(v))
           .sort((a, b) => a.code.localeCompare(b.code) || a.from.localeCompare(b.from))
           .map(v => row(v, model))]
       }
@@ -338,13 +342,14 @@ describe('@shared/ibscbs-classification — veredito e lotes (D-IB47)', () => {
     expect([n, v.size]).toEqual([3, 1001])
   })
 
-  it('cadastro em lote: pickForRegistration por código (linha futura na janela aceita; vigente com presença ganha da sem)', async () => {
+  it('cadastro em lote: pickForRegistration por código (linha futura na janela aceita; D-IB59: entre as vigentes só a mais nova conta)', async () => {
     const q = { query: async (sql: string) => {
       expect(sql).not.toContain('v.valid_from <= ?')
       return [[row('000001', '2026-01-01'), row('000001', '2026-10-05', { applicable: 0 }), row('000006', '2026-11-01'), row('000007', '2026-01-01', { applicable: 0 })]]
     } }
     const v = await classificationRegistrationVerdicts(q as any, ['000001', '000006', '000007'], 'SE', '2026-10-10')
-    expect([v.get('000001')?.accepted, v.get('000006')?.accepted, v.get('000007')?.reason]).toEqual([true, true, 'not-applicable'])
+    // 000001: a vigente mais nova (2026-10-05) não tem presença — a antiga com presença não conta mais (D-IB59)
+    expect([v.get('000001')?.reason, v.get('000006')?.accepted, v.get('000007')?.reason]).toEqual(['not-applicable', true, 'not-applicable'])
   })
 
   it('classificationAcceptedAt = veredito da data do fato', async () => {
@@ -361,9 +366,13 @@ describe('pickForRegistration — D-IB57 a linha aceita antes da só aplicável'
     const picked = pickForRegistration([l({ requiresRegularTaxation: true }), l({ validFrom: '2026-12-01' })], '2026-10-10')
     expect(picked?.validFrom).toBe('2026-12-01')
   })
-  it('vigente aceita mais antiga × vigente mais nova que exige tributação regular → a aceita', () => {
+  it('D-IB59: vigente aceita mais antiga × vigente mais nova que exige tributação regular → a MAIS NOVA (a da data do fato) — recusa', () => {
     const picked = pickForRegistration([l({}), l({ validFrom: '2026-06-01', requiresRegularTaxation: true })], '2026-10-10')
-    expect(picked?.validFrom).toBe('2026-01-01')
+    expect([picked?.validFrom, picked?.requiresRegularTaxation]).toEqual(['2026-06-01', true])
+  })
+  it('D-IB59: vigente mais nova SEM presença × vigente antiga aceita × futura aceita → a futura (a antiga nunca conta)', () => {
+    const picked = pickForRegistration([l({}), l({ validFrom: '2026-06-01', applicable: false }), l({ validFrom: '2026-12-01' })], '2026-10-10')
+    expect(picked?.validFrom).toBe('2026-12-01')
   })
   it('nenhuma aceita: a vigente com presença (o 422 diz "exige tributação regular")', () => {
     const picked = pickForRegistration([l({ requiresRegularTaxation: true }), l({ validFrom: '2026-12-01', applicable: false })], '2026-10-10')
@@ -400,8 +409,10 @@ describe('D-IB57 — lista × salvar com filtro por nome', () => {
     ],
     places: { '100301': ['SE'] }, nbs: [],
   })
-  // o fake não aplica o LIKE do nome (a lista inteira da janela volta) — o filtro por nome foi provado ao vivo pelo gate adversarial R10
-  it('o que a lista oferece, o salvar aceita (toda linha da lista passa no salvar)', async () => {
+  // o fake emula o filtro por nome (por código na forma nova; por linha na antiga) — provado também ao vivo (piece-forge)
+  it('o que a lista oferece, o salvar aceita (toda linha da lista passa no salvar); D-IB59: a sobreposição não é oferecida — nem filtrando pelo nome da linha antiga', async () => {
+    expect(await listClassificationsLookup('', '2026-10-10', 'SE', q())).toEqual([])   // a vigente mais nova exige tributação regular
+    expect(await listClassificationsLookup('Antiga', '2026-10-10', 'SE', q())).toEqual([])   // o filtro escolhe o código, não a linha
     for (const filter of ['Antiga', 'Nova', '']) {
       const list = await listClassificationsLookup(filter, '2026-10-10', 'SE', q())
       for (const row of list) {

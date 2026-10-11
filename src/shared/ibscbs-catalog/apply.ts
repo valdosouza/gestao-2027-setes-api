@@ -40,7 +40,7 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  *    DIFERENÇA do veredito ANTES × DEPOIS da gravação para todo código que a carga pode tocar (gate socrático do
  *    delta R7: inferir pelo TIPO da mudança perdia a linha nova sobreposta que já vale na data, sem presença);
  *    a linha do impacto traz o motivo (`reason`) e marca quando o cadastro ainda aceita o código
- *    (`registrationStillAccepts` — linha futura na janela ou outra linha vigente ACEITA (D-IB57): pickForRegistration).
+ *    (`registrationStillAccepts` — linha futura ACEITA na janela: pickForRegistration; D-IB59: entre as vigentes só a mais nova conta).
  *    D-IB45: `impactAhead` (informativo, FORA do limite) lista os serviços cujo código aceito depois da carga deixa
  *    de ser aceito até o HORIZONTE (D-IB49: o maior entre o fim da janela do cadastro e a data + AHEAD_DAYS dias —
  *    `impactAheadUntil`), com a data e o motivo da perda; D-IB50: parte também do código aceito só pelo CADASTRO (linha
@@ -122,7 +122,7 @@ export interface ImpactRow {
   services: number
   /** Até 50 ids dos serviços afetados (o resto só na contagem). */
   serviceIds: number[]
-  /** D-IB47: só cClassTrib — o cadastro ainda aceita o código (linha futura na janela ou outra linha vigente com
+  /** D-IB47: só cClassTrib — o cadastro ainda aceita o código (linha futura ACEITA na janela — D-IB57; D-IB59: uma vigente mais antiga nunca conta; antes: outra linha vigente com
    *  presença — pickForRegistration; o selo da aba diz "aceita"), mas a data do fato (faturamento) já não. */
   registrationStillAccepts?: boolean
   /** D-IB47: só cClassTrib — por que deixa de ser aceito: no impacto, na data da carga (com `registrationOnly`, pela regra do
@@ -585,7 +585,8 @@ async function lossesAhead(
 /** O que esta carga deixa de aceitar. cClassTrib: veredito da peça na data do fato ANTES × DEPOIS (D-IB47 — inclui a
  *  correção de dIniVig para o futuro, a vigência encerrada, a tributação regular ligada e a linha nova sobreposta sem
  *  presença); D-IB53: para o que o fato já recusava, o veredito do CADASTRO antes × depois (linha futura da janela ou a linha
- *  antiga da SOBREPOSIÇÃO que esta carga tira — `registrationOnly`); cIndOp não tem vigência — qualquer aplicabilidade viva;
+ *  vigente mais nova que esta carga tira — `registrationOnly`; D-IB59: a vigente mais antiga de uma sobreposição nunca conta);
+ *  cIndOp não tem vigência — qualquer aplicabilidade viva;
  *  NBS — presença perdida. Só tabelas CENTRAIS, na transação da carga (estado pós-carga, antes do rollback). */
 async function lostAfterLoad(
   conn: Conn, report: ApplyReport, date: string, before: Map<string, ClassificationVerdict>,

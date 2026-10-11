@@ -16,9 +16,10 @@ import { escapeLike } from '@shared/list'
  *   - CADASTRO (D-IB29 — `pickForRegistration`, a regra ÚNICA de lista, salvar e exibição):
  *     entre as linhas vigentes HOJE e, antes da obrigação da NFS-e do Simples
  *     (NFSE_IBSCBS_SIMPLES_OBLIGATION_START), as que começam até ela, vale a que tem PRESENÇA
- *     no modelo (vigente mais nova; senão futura mais próxima) — D-IB57: antes, a ACEITA (presença e sem
- *     tributação regular — `verdictOf`); sem presença em nenhuma, a vigente mais nova (para o 422 dizer
- *     "não aceito") — lista e salvar nunca discordam;
+ *     no modelo — D-IB59: entre as VIGENTES só conta a MAIS NOVA (a mesma da data do fato); D-IB57: na janela
+ *     futura, a ACEITA (presença e sem tributação regular — `verdictOf`) antes da só aplicável; sem nenhuma
+ *     aceita, a vigente mais nova (para o 422 dizer por quê) — lista e salvar nunca discordam, e o selo diz o
+ *     mesmo que o faturamento para as vigentes;
  *   - só é aceita no documento se a linha tem PRESENÇA para o modelo (SE = NFS-e);
  *     código ainda não confirmado pela Calculadora não tem presença (A-IB1);
  *   - classificação que EXIGE tributação regular é recusada: o builder não emite gTribRegular
@@ -167,11 +168,11 @@ export const registrationWindowEnd = (today: string): string | null =>
 
 /**
  * CADASTRO (D-IB29) — a regra ÚNICA de qual linha de um código vale para lista, salvar e exibição.
- * Candidatas: as vigentes hoje e, antes da obrigação, as que começam até ela. Preferência (D-IB57 — a
- * ACEITA antes da só aplicável): vigente ACEITA (mais nova) → futura ACEITA (mais próxima) → vigente COM
- * presença (mais nova — exige tributação regular: o 422 diz por quê) → futura COM presença → vigente sem
- * presença (mais nova) → futura sem presença. null = nenhuma candidata (inexistente, vencida ou começa
- * depois da obrigação).
+ * Candidatas: a vigente MAIS NOVA hoje (D-IB59 — a mesma linha que a data do fato usa; uma vigente mais antiga
+ * nunca conta) e, antes da obrigação, as que começam até ela. Preferência: a vigente mais nova se ACEITA → futura
+ * ACEITA (mais próxima — D-IB57) → a vigente mais nova se COM presença (exige tributação regular: o 422 diz por
+ * quê) → futura COM presença → a vigente mais nova (sem presença) → futura sem presença. null = nenhuma candidata
+ * (inexistente, vencida ou começa depois da obrigação).
  */
 export function pickForRegistration(rows: readonly ClassificationAt[], today: string): ClassificationAt | null {
   const end = registrationWindowEnd(today)
@@ -180,8 +181,10 @@ export function pickForRegistration(rows: readonly ClassificationAt[], today: st
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom))
   const future = end === null ? [] : rows.filter(r => r.validFrom > today && r.validFrom <= end)
     .sort((a, b) => a.validFrom.localeCompare(b.validFrom))
-  return current.find(accepts) ?? future.find(accepts)
-    ?? current.find(r => r.applicable) ?? future.find(r => r.applicable) ?? current[0] ?? future[0] ?? null
+  // D-IB59: entre as vigentes só a MAIS NOVA conta (a da data do fato — findClassificationAt); a ACEITA antes (D-IB57) só na janela
+  const now = current[0]
+  return (now && accepts(now) ? now : undefined) ?? future.find(accepts)
+    ?? (now?.applicable ? now : undefined) ?? future.find(r => r.applicable) ?? now ?? future[0] ?? null
 }
 
 async function rowsOfCode(q: Queryable, code: string, model: FiscalModel): Promise<ClassificationAt[]> {
@@ -405,7 +408,11 @@ export async function listClassificationsLookup(
       WHERE v.deleted = 'N' AND v.absent_since_version IS NULL
         AND ((v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?))
              OR (v.valid_from > ? AND v.valid_from <= ?))
-        AND (? IS NULL OR v.code LIKE ? OR v.name LIKE ?)
+        -- o filtro escolhe CÓDIGOS (por qualquer linha do código), nunca linhas: a escolha da linha (pickForRegistration)
+        -- precisa ver todas — filtrar pelo nome da linha antiga de uma sobreposição oferecia o que o salvar recusa (D-IB59)
+        AND v.code IN (SELECT f.code FROM setes_central.tb_tax_ibscbs_classification_validity f
+                        WHERE f.deleted = 'N' AND f.absent_since_version IS NULL
+                          AND (? IS NULL OR f.code LIKE ? OR f.name LIKE ?))
       ORDER BY v.code, v.valid_from
       LIMIT 400`,
     [model, date, date, date, end, like, like, like])
