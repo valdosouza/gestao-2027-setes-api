@@ -243,10 +243,16 @@ export const adnAdapter: TaxAuthorityAdapter = {
       if (!xmls.length) return { ...base, status: 'unknown' }       // listou e nada se lê: ilegível nunca vira "autorizada"
       // R2-2 (d): só evento GERADO (Id EVT + dhProc) e DESTA chave cancela — evento de outra NFS-e (resposta trocada) ou
       // pedido ecoado (sem Id/dhProc) não é voz sobre esta
-      // L7 do gate da Rodada 13: entre os itens que se conferem, o do TIPO PERGUNTADO primeiro (outro tipo antes dele não vira 502)
       const candidates = xmls.map(x => ({ xml: x, ev: parseEventXml(x) })).filter(({ ev: e }) =>
         !!e.eventCode && CANCEL_EVENT_CODES.has(e.eventCode) && isGeneratedEventFor(e, accessKey))
-      const found = candidates.find(({ ev: e }) => e.eventCode === code) ?? candidates[0]
+      // D-F84 (= Q-F90, Valdo 2026-10-10 — supera a escolha do L7): o GET tipado que traz TIPOS DIFERENTES de cancelamento desta
+      // chave é resposta contraditória → AMBÍGUO (502): nenhuma marca, nenhum efeito (como a D-F63) — nem o tipo perguntado (a marca
+      // menos restritiva) nem a substituição (abriria o "manter a nota" sobre uma resposta que se contradiz)
+      if (new Set(candidates.map(({ ev: e }) => e.eventCode)).size > 1) {
+        logger.error('Contrato da Sefin divergente: tipos diferentes de cancelamento no mesmo GET tipado', { code, codes: candidates.map(({ ev: e }) => e.eventCode), environment: ctx.environment })
+        return { ...base, status: 'unknown' }
+      }
+      const found = candidates[0]
       // D-F63 (= Q-F70, Valdo 2026-10-10): no GET TIPADO (chave + tipo + sequência) um 200 diz "esse evento EXISTE" — o que
       // não se confere como cancelamento gerado desta chave (ilegível, outra chave, eco, outro tipo) é resposta trocada/ilegível:
       // ambíguo, NUNCA "autorizada" (antes gravava N falso num K em voo — gates DF61-01/02, M3). A R2-2 (d) "segue autorizada"

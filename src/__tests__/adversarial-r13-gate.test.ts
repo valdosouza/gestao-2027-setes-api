@@ -383,20 +383,23 @@ describe('ACHADO R13-03 (LOW) — D-F69 escolhe o PRIMEIRO XML que se confere, n
     const b = typedItem(arquivo2(generatedEventXml({ code: '105102' })), '105102')
     return first === '101101' ? typedOk(a, b) : typedOk(b, a)
   }
-  it.failing('[LOW R13-03] /eventos/101101/1 → 200 com [e101101, e105102] desta chave → nunca "cancelled" sem a marca 105102 (unknown/502 ou eventCode 105102)', async () => {
+  it('[CORRIGIDO — D-F84] [LOW R13-03] /eventos/101101/1 → 200 com [e101101, e105102] desta chave → nunca "cancelled" sem a marca 105102 (unknown/502 ou eventCode 105102)', async () => {
     sefin({ typed: code => (code === '101101' ? both('101101') : undefined) })
     const out = await settle(adnAdapter.queryNfse(ctxH, KEY))
-    expect(out?.status === 'cancelled' && out?.cancelled?.eventCode !== '105102').toBe(false)   // hoje: cancelled 101101
+    expect(out?.status === 'cancelled' && out?.cancelled?.eventCode !== '105102').toBe(false)   // no gate: cancelled 101101; D-F84: unknown
   })
-  it.failing('[LOW R13-03] composição: a mesma resposta contraditória numa autorizada → o C local NÃO nasce sozinho', async () => {
+  it('[CORRIGIDO — D-F84] [LOW R13-03] composição: a mesma resposta contraditória numa autorizada → o C local NÃO nasce sozinho', async () => {
     useRealAdn(); setTx(tx({ lastKind: 'A' }))
     sefin({ typed: code => (code === '101101' ? both('101101') : undefined) })
     await settle(refreshServiceTransmission(S.schema, S.inst, S.user, INVOICE, 'Q'))
-    expect(invoice.cancelInvoice).not.toHaveBeenCalled()       // hoje: cancelInvoice chamado (efeito automático)
+    expect(invoice.cancelInvoice).not.toHaveBeenCalled()       // no gate: cancelInvoice chamado; D-F84: 502, nada gravado
   })
-  // (no setes-api, no instante do gate, a MESMA lista na ordem inversa [e105102, e101101] dava 105102 — o resultado dependia da
-  //  ORDEM; a nfse-api ganhou o "L7" às 21:33 — o tipo PERGUNTADO primeiro — que tira a dependência de ordem mas escolhe o
-  //  MENOS restritivo. Sem teste de contexto aqui para não fixar nenhuma das duas formas.)
+  // D-F84 (= Q-F90, Valdo 2026-10-10 — supera o L7): tipos diferentes no mesmo GET tipado = AMBÍGUO em QUALQUER ordem
+  it('D-F84: a ordem inversa [e105102, e101101] na rota 101101 também é AMBÍGUA (unknown) — o resultado não depende da ordem', async () => {
+    sefin({ typed: code => (code === '101101' ? both('105102') : undefined) })
+    const out = await settle(adnAdapter.queryNfse(ctxH, KEY))
+    expect(out?.status).toBe('unknown')
+  })
 })
 
 describe('ACHADO R13-04 (LOW) — D-F76: a "chave da substituta" só confere o formato — `chSubstituta` IGUAL à própria chave substituída é exibida como a substituta (a tela diria "substituída por ela mesma")', () => {
@@ -404,6 +407,14 @@ describe('ACHADO R13-04 (LOW) — D-F76: a "chave da substituta" só confere o f
     await seedSubstitutedView(substEventXml(KEY))
     const v = await getServiceFiscalView(S.schema, S.inst, INVOICE)
     expect(v.substitution?.substituteAccessKey).toBeNull()      // hoje: a própria KEY
+  })
+  it('D-F85 (= Q-F91): chSubstituta de OUTRO emitente (tpInsc + inscrição nas posições 9–23 diferentes) → null; do mesmo emitente → exibida', async () => {
+    const otherIssuer = `${SUBST_KEY.slice(0, 8)}2${'98765432000188'}${SUBST_KEY.slice(23)}`
+    expect(otherIssuer).toHaveLength(50)
+    await seedSubstitutedView(substEventXml(otherIssuer))
+    expect((await getServiceFiscalView(S.schema, S.inst, INVOICE)).substitution?.substituteAccessKey).toBeNull()
+    await seedSubstitutedView(substEventXml(SUBST_KEY))
+    expect((await getServiceFiscalView(S.schema, S.inst, INVOICE)).substitution?.substituteAccessKey).toBe(SUBST_KEY)
   })
 })
 
