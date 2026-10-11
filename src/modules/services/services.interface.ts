@@ -43,6 +43,8 @@ export interface ServiceFull extends ServiceListRow {
   /** NBS do serviço (natureza — cNBS do DPS; fase IBS/CBS D-IB6). */
   nbs:                       string | null
   nbsDescription:            string | null
+  /** D-IB40: a NBS gravada é aceita hoje (presente na lista oficial)? null = sem NBS. Selo na aba. */
+  nbsAcceptedToday:          boolean | null
   /** Classificação IBS/CBS que o serviço presume (D-IB6/D-IB22); null = não classificado. */
   ibscbs:                    ServiceIbscbsRow | null
 }

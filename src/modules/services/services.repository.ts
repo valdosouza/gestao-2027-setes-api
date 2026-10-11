@@ -6,6 +6,7 @@ import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { todayFor } from '@shared/time-zone'
 import {
   assertServiceClassification, classificationAcceptance, classificationForDisplay, deriveCst,
+  nbsAcceptedSql,
 } from '@shared/ibscbs-classification'
 import {
   ServiceListRow, ServiceFull, ServiceInput, ServicePriceRow,
@@ -109,6 +110,10 @@ export async function getService(
                      ' \u00b7 ', FORMAT(r.aliq, 2), '%') END AS serviceTaxRuleLabel,
             sv.nbs                  AS nbs,
             nb.description          AS nbsDescription,
+            -- D-IB40: a NBS gravada segue na lista oficial? — regra da peça (o JOIN abaixo NÃO filtra
+            -- deleted: a descrição da NBS que saiu da lista segue exibida)
+            CASE WHEN sv.nbs IS NULL THEN NULL
+                 WHEN ${nbsAcceptedSql('nb')} THEN 1 ELSE 0 END AS nbsAcceptedToday,
             si.classification_code  AS ibsClassificationCode,
             si.place_indicator_code AS ibsPlaceIndicatorCode,
             pi.description          AS ibsPlaceIndicatorDescription
@@ -134,7 +139,7 @@ export async function getService(
   if (!rows[0]) return null
   const prices = await listServicePrices(id, schemaName, institutionId)
   const {
-    ibsClassificationCode, ibsPlaceIndicatorCode, ibsPlaceIndicatorDescription,
+    ibsClassificationCode, ibsPlaceIndicatorCode, ibsPlaceIndicatorDescription, nbsAcceptedToday,
     ...base
   } = rows[0]
   // D-IB29: a tela mostra "vale a partir de"/"válida até" da linha exibida (sem data = a mais recente).
@@ -158,7 +163,10 @@ export async function getService(
     placeIndicatorCode:        ibsPlaceIndicatorCode,
     placeIndicatorDescription: ibsPlaceIndicatorDescription ?? null,
   } : null
-  return { ...base, prices, ibscbs }
+  return {
+    ...base, prices, ibscbs,
+    nbsAcceptedToday: nbsAcceptedToday == null ? null : Number(nbsAcceptedToday) === 1,
+  }
 }
 
 /** FKs do form validadas DENTRO da transação — 400 com fields[]. */

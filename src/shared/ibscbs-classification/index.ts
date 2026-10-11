@@ -77,7 +77,12 @@ const toClassification = (r: any): ClassificationAt => ({
   superseded: r.absentSince != null,
 })
 
-/** DATA DO FATO: linha vigente do cClassTrib na data + presença para o modelo. null = inexistente/fora de vigência. */
+/**
+ * DATA DO FATO: linha vigente do cClassTrib na data + presença para o modelo. null = inexistente/fora de vigência.
+ * `applicable = false` (linha vigente SEM presença no modelo) NÃO é null: quem fatura (IB-2) segue o caminho da
+ * D-IB34 pela D-IB41 — antes da obrigação a nota sai sem o grupo IBS/CBS; depois, o 422 da D-IB8. Nunca tratar
+ * como "sem classificação" nem consultar a regra do cadastro (`acceptedToday` não decide o faturamento).
+ */
 export async function findClassificationAt(
   q: Queryable, code: string, model: FiscalModel, date: string,
 ): Promise<ClassificationAt | null> {
@@ -198,8 +203,21 @@ export async function findPlaceIndicator(
   return r ? { code: r.code, description: r.description, applicable: Number(r.applicable) === 1 } : null
 }
 
+/**
+ * D-IB40: a regra ÚNICA de "NBS aceita" — presente na lista oficial (`deleted = 'N'` no catálogo
+ * central). O cadastro (nbsExists), a lista de apoio, o selo do GET e a IB-2 leem por aqui; ninguém
+ * repete o predicado. `alias` = o alias de setes_central.tb_nbs na consulta de quem chama — num LEFT
+ * JOIN, o JOIN NÃO filtra `deleted` (a descrição da NBS que saiu da lista segue exibida) e o
+ * predicado decide no SELECT; sem linha no catálogo = não aceita.
+ */
+export function nbsAcceptedSql(alias: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(alias)) throw new Error(`alias inválido para tb_nbs: ${alias}`)
+  return `(${alias}.code IS NOT NULL AND ${alias}.deleted = 'N')`
+}
+
 export async function nbsExists(q: Queryable, code: string): Promise<boolean> {
-  const [rows] = await q.query(`SELECT 1 FROM setes_central.tb_nbs WHERE code = ? AND deleted = 'N'`, [code])
+  const [rows] = await q.query(
+    `SELECT 1 FROM setes_central.tb_nbs nb WHERE nb.code = ? AND ${nbsAcceptedSql('nb')}`, [code])
   return rows.length > 0
 }
 
@@ -225,7 +243,8 @@ export async function assertServiceClassification(
   let code: string | undefined
 
   if (input.nbs != null && !(await nbsExists(q, input.nbs))) {
-    fields.push({ field: 'nbs', message: `NBS ${input.nbs} não existe no catálogo oficial` })
+    // mesma regra do selo (D-IB40): inexistente ou retirada da lista = "não está na lista oficial"
+    fields.push({ field: 'nbs', message: `NBS ${input.nbs} não está na lista oficial` })
     code ??= ErrorCodes.IBSCBS_NBS_NOT_FOUND
   }
 
@@ -333,10 +352,10 @@ export async function listNbsLookup(filter: string, q: Queryable = pool): Promis
   const like = filter ? `%${escapeLike(filter)}%` : null
   const codeLike = digits ? `${digits}%` : null
   const [rows] = await q.query(
-    `SELECT code, CONCAT(code, ' — ', description) AS description
-       FROM setes_central.tb_nbs
-      WHERE deleted = 'N' AND (? IS NULL OR description LIKE ? OR (? IS NOT NULL AND code LIKE ?))
-      ORDER BY code
+    `SELECT nb.code, CONCAT(nb.code, ' — ', nb.description) AS description
+       FROM setes_central.tb_nbs nb
+      WHERE ${nbsAcceptedSql('nb')} AND (? IS NULL OR nb.description LIKE ? OR (? IS NOT NULL AND nb.code LIKE ?))
+      ORDER BY nb.code
       LIMIT 100`,
     [like, like, codeLike, codeLike])
   return rows

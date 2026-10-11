@@ -248,7 +248,7 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   INVOICE_SERVICE_MULTI_CODE: 'Nota de serviço com mais de um código de tributação nacional — um DPS declara UM serviço (D-N2): fature em ordens separadas',
   SERVICE_RULE_NATIONAL_CODE_REQUIRED: 'Regra de ISS sem código de tributação nacional — o subitem tem mais de um desdobro no Anexo B; escolha na regra (D-N11a)',
   SERVICE_TAX_RULE_NATIONAL_CODE_MISMATCH: 'Código de tributação nacional não é desdobro do subitem da regra',
-  IBSCBS_NBS_NOT_FOUND:                   'NBS inexistente no catálogo oficial (setes_central.tb_nbs — carga da rotina do Super)',
+  IBSCBS_NBS_NOT_FOUND:                   'NBS fora da lista oficial — inexistente ou retirada (setes_central.tb_nbs — carga da rotina do Super)',
   IBSCBS_CLASSIFICATION_NOT_FOUND:        'cClassTrib inexistente ou fora de vigência na data (IT 2025.002 — tabela oficial carregada no catálogo central)',
   IBSCBS_CLASSIFICATION_NOT_APPLICABLE:   'cClassTrib não aceito neste documento fiscal (indicador do IT) ou ainda não confirmado pela Calculadora oficial (A-IB1)',
   IBSCBS_CLASSIFICATION_REQUIRES_REGULAR: 'cClassTrib exige o grupo de tributação regular (gTribRegular), que este sistema ainda não emite — escolha outra classificação',

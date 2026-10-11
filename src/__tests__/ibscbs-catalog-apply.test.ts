@@ -2,7 +2,7 @@
 // IB-1 da fase IBS/CBS — gravação do catálogo (applyCatalog) e datas da fonte. Gate socrático
 // da IB-1: desativação, revive e ensaio só tinham sido provados AO VIVO; a NBS extinta nunca
 // saía; a linha de vigência não confirmada era filtrada pelo CÓDIGO inteiro.
-import { applyCatalog, isCalendarDate, ItCatalog } from '@shared/ibscbs-catalog'
+import { applyCatalog, isCalendarDate, ItCatalog, shrinkLine } from '@shared/ibscbs-catalog'
 
 type Row = Record<string, any>
 
@@ -154,7 +154,7 @@ describe('applyCatalog — D-IB28', () => {
   it('(c) ATO que encolhe > 10 % sem --aceita-encolher = recusa (rollback); com o argumento, grava', async () => {
     const recusa = fakeConn(tenNbs())
     await expect(applyCatalog(recusa.conn, { it: catalog(), itVersion: 'IT t', models: ['SE'], apply: true, unconfirmed: [], nbs: eightNbs() }))
-      .rejects.toThrow(/mais de 10 % das linhas vivas[\s\S]*nbs: 2 de 10/)
+      .rejects.toThrow(/mais de 10 % das linhas vivas[\s\S]*NBS da lista oficial \[nbs\]: 2 de 10/)
     expect(recusa.raw.commit).not.toHaveBeenCalled()
     expect(recusa.raw.rollback).toHaveBeenCalled()
 
@@ -267,6 +267,76 @@ describe('applyCatalog — fato "ausente da fonte" na história (D-IB36)', () =>
     const r = await applyCatalog(conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
     expect(r.validity.deactivated).toBe(0)
     expect(writes.some(w => /SET absent_since_version = \?/.test(w.sql))).toBe(false)
+  })
+
+  // D-IB39 (Rodada 5, Valdo 2026-10-10): as marcações entram no limite de encolhimento (bruto)
+  it('marcações > 10 % da história: ensaio avisa, ato recusa sem --aceita-encolher e grava com ele', async () => {
+    const withOld = () => {
+      const t = baseTables()
+      t.tb_tax_ibscbs_classification_validity.push(   // 1 de 3 presentes some = 33 %
+        { code: '000001', valid_from: '2025-06-01', valid_until: null, name: 'antiga', description: 'd', requires_regular_taxation: 'N', source_updated_at: '2025-06-01' })
+      return t
+    }
+    const ensaio = await applyCatalog(fakeConn(withOld()).conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
+    // 000001 segue na fonte com outra vigência = código que segue na fonte (não é código que sumiu)
+    expect(ensaio.shrink).toEqual([{ list: 'validity', aliveBefore: 3, deactivated: 1, codeInSource: 1, codeVanished: 0 }])
+
+    const recusa = fakeConn(withOld())
+    await expect(applyCatalog(recusa.conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: true, unconfirmed: [] }))
+      .rejects.toThrow(/mais de 10 %[\s\S]*história do cClassTrib \(linhas marcadas ausentes da fonte\) \[validity\]: 1 de 3 — 1 de código que segue na fonte \(ex\.: vigência corrigida\), 0 de código que sumiu da fonte/)
+    expect(recusa.raw.commit).not.toHaveBeenCalled()
+
+    const aceita = fakeConn(withOld())
+    const r = await applyCatalog(aceita.conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: true, unconfirmed: [], allowShrink: true })
+    expect(r.applied).toBe(true)
+  })
+
+  // gate socrático do delta R5: a base do limite é o que estava PRESENTE na fonte — a linha já marcada
+  // ausente (carga anterior) não entra na base nem conta de novo; código que sumiu aparece como tal
+  it('linha já marcada ausente: fora da base (aliveBefore 2) e sem nova marcação — shrink vazio', async () => {
+    const t = baseTables()
+    t.tb_tax_ibscbs_classification_validity.push(
+      { code: '000001', valid_from: '2025-06-01', valid_until: null, name: 'antiga', description: 'd', requires_regular_taxation: 'N', source_updated_at: '2025-06-01', absent_since_version: 'IT v1.60' })
+    const r = await applyCatalog(fakeConn(t).conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
+    expect(r.validity.aliveBefore).toBe(2)
+    expect(r.validity.deactivated).toBe(0)
+    expect(r.shrink).toEqual([])
+  })
+
+  it('código que sumiu da fonte aparece como "sumiu", não como código que segue na fonte', async () => {
+    const t = baseTables()
+    t.tb_tax_ibscbs_classification_validity.push(
+      { code: '999999', valid_from: '2025-06-01', valid_until: null, name: 'sumiu', description: 'd', requires_regular_taxation: 'N', source_updated_at: '2025-06-01' })
+    const r = await applyCatalog(fakeConn(t).conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
+    expect(r.shrink).toEqual([{ list: 'validity', aliveBefore: 3, deactivated: 1, codeInSource: 0, codeVanished: 1 }])
+    expect(shrinkLine(r.shrink[0])).toMatch(/0 de código que segue na fonte.*1 de código que sumiu da fonte/)
+  })
+
+  // gate adversarial do delta R5 (caso não testado): fronteira exata do limite na história, no ATO
+  it('fronteira da história: 18 de 180 (10 % exatos) grava; 19 de 180 recusa sem --aceita-encolher', async () => {
+    const build = (dropped: number) => {
+      const t = baseTables()
+      const extras = Array.from({ length: 178 }, (_, i) => String(900000 + i))
+      for (const code of extras) {
+        t.tb_tax_ibscbs_classification_validity.push({ code, valid_from: '2026-01-01', valid_until: null, name: 'x', description: 'x', requires_regular_taxation: 'N', source_updated_at: '2026-01-01' })
+        t.tb_tax_ibscbs_classification.push({ code, cst: '000' })
+      }
+      const it = catalog()
+      it.classifications.push(...extras.slice(dropped).map(code => ({
+        code, cst: '000', name: 'x', description: 'x', validFrom: '2026-01-01', validUntil: null,
+        requiresRegularTaxation: false, updatedAt: '2026-01-01', models: [] as any[] })))
+      return { conn: fakeConn(t), it }
+    }
+    const ok = build(18)
+    const r = await applyCatalog(ok.conn.conn, { it: ok.it, itVersion: 'IT t', models: ['SE'], apply: true, unconfirmed: [] })
+    expect(r.validity).toMatchObject({ aliveBefore: 180, deactivated: 18 })
+    expect(r.shrink).toEqual([])
+    expect(ok.conn.raw.commit).toHaveBeenCalledTimes(1)
+
+    const no = build(19)
+    await expect(applyCatalog(no.conn.conn, { it: no.it, itVersion: 'IT t', models: ['SE'], apply: true, unconfirmed: [] }))
+      .rejects.toThrow(/\[validity\]: 19 de 180 — 0 de código que segue na fonte \(ex\.: vigência corrigida\), 19 de código que sumiu da fonte/)
+    expect(no.conn.raw.commit).not.toHaveBeenCalled()
   })
 })
 

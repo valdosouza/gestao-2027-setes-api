@@ -188,7 +188,7 @@ router.get('/ibscbs-place-indicators', controller.ibscbsPlaceIndicatorsLookup)
  *         required: true
  *         schema: { type: integer }
  *     responses:
- *       200: { description: "{ ok, data: ServiceFull (prices[], nbs, nbsDescription, ibscbs: { classificationCode, cst, classificationName, validFrom, validUntil, acceptedToday, classificationAcceptedToday, placeIndicatorAcceptedToday, placeIndicatorCode, placeIndicatorDescription } | null — vigência da linha exibida, D-IB29; aceite HOJE pela regra do cadastro, o par e cada código, null = não avaliado, D-IB37) }" }
+ *       200: { description: "{ ok, data: ServiceFull (prices[], nbs, nbsDescription, nbsAcceptedToday (D-IB40), ibscbs: { classificationCode, cst, classificationName, validFrom, validUntil, acceptedToday, classificationAcceptedToday, placeIndicatorAcceptedToday, placeIndicatorCode, placeIndicatorDescription } | null — vigência da linha exibida, D-IB29; aceite HOJE pela regra do cadastro, o par e cada código, null = não avaliado, D-IB37) }" }
  *       404: { description: Não encontrado (inclui id que é MERCADORIA — kind fora do módulo) }
  */
 router.get('/:id', controller.getOne)

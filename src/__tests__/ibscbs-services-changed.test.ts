@@ -4,7 +4,7 @@
 // bloqueia uma edição de preço (quem barra a vencida é o faturamento — D-IB8, IB-2).
 import pool from '../shared/db/connection'
 import * as svcRepo from '../modules/services/services.repository'
-import { assertServiceClassification } from '../shared/ibscbs-classification'
+import { assertServiceClassification, nbsAcceptedSql } from '../shared/ibscbs-classification'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
@@ -67,6 +67,15 @@ describe('D-IB30 — o salvar reconfere só o que mudou', () => {
     }, '2026-10-10', undefined, { classification: true, placeIndicator: true })
   })
 
+  // gate adversarial do delta R5 (caso não testado): limpar a NBS e reenviar a MESMA = mudou → reconfere
+  it('PUT que devolve a NBS a um serviço que estava sem NBS reconfere a NBS (limpar e reenviar não contorna)', async () => {
+    const c = conn({ nbs: null, c: '000001', p: '100301' })
+    await svcRepo.updateService(7, body(), 'setes_setes', 1, 1)
+    expect(mockAssert).toHaveBeenCalledTimes(1)
+    // par inalterado: não vai ao assert (ibscbs undefined) e o checks do par nem é montado
+    expect(mockAssert).toHaveBeenCalledWith(c, { nbs: '115022000', ibscbs: undefined }, '2026-10-10', undefined, undefined)
+  })
+
   it('POST (serviço novo) confere tudo o que veio', async () => {
     const c: any = {
       beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
@@ -82,5 +91,36 @@ describe('D-IB30 — o salvar reconfere só o que mudou', () => {
     expect(mockAssert).toHaveBeenCalledWith(c, {
       nbs: '115022000', ibscbs: { classificationCode: '000001', placeIndicatorCode: '100301' },
     }, '2026-10-10', undefined, undefined)
+  })
+})
+
+// D-IB40 (Rodada 5, Valdo 2026-10-10): o GET diz se a NBS gravada segue na lista oficial (selo na aba)
+describe('D-IB40 — nbsAcceptedToday no GET', () => {
+  const mockQuery = (pool as any).query as jest.Mock
+  const row = (over: Record<string, unknown>) => ({
+    id: 7, identifier: '7', description: 'Mensalidade', categoryId: 1, active: 'S',
+    nbs: '115022000', nbsDescription: 'Desenvolvimento', ibsClassificationCode: null, ...over,
+  })
+  it('NBS fora da lista oficial = false (a descrição segue exibida); presente = true; sem NBS = null', async () => {
+    for (const [flag, expected] of [[0, false], [1, true], [null, null]] as const) {
+      mockQuery.mockReset()
+      mockQuery.mockResolvedValueOnce([[row({ nbsAcceptedToday: flag, ...(flag === null ? { nbs: null } : {}) })]])
+      mockQuery.mockResolvedValueOnce([[]])   // grade de preços
+      const s = await svcRepo.getService(7, 'setes_setes', 1, '2026-10-10')
+      expect(s?.nbsAcceptedToday).toBe(expected)
+      if (flag === 0) expect(s?.nbsDescription).toBe('Desenvolvimento')
+    }
+  })
+
+  // gate socrático do delta R5: o SQL do GET é o que decide — o teste acima só lê a coluna pronta
+  it('SQL: o JOIN com tb_nbs NÃO filtra deleted (descrição da NBS que saiu segue) e o selo usa a regra da peça', async () => {
+    mockQuery.mockReset()
+    mockQuery.mockResolvedValueOnce([[row({ nbsAcceptedToday: 0 })]])
+    mockQuery.mockResolvedValueOnce([[]])
+    await svcRepo.getService(7, 'setes_setes', 1, '2026-10-10')
+    const sql = String(mockQuery.mock.calls[0][0])
+    const join = sql.match(/LEFT JOIN setes_central\.tb_nbs nb ON ([\s\S]*?)\n\s*LEFT JOIN/)
+    expect(join?.[1].trim()).toBe('nb.code = sv.nbs')
+    expect(sql).toContain(`WHEN ${nbsAcceptedSql('nb')} THEN 1 ELSE 0 END AS nbsAcceptedToday`)
   })
 })

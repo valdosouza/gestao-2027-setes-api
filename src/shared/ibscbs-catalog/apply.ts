@@ -24,7 +24,8 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  *  - D-IB28 (a): linha com ATRIBUTO divergente na Calculadora (`blocked`) perde a
  *    aplicabilidade só naquele modelo;
  *  - D-IB28 (c): perda > 10 % das linhas VIVAS de qualquer lista (aplicabilidade de cClassTrib,
- *    de cIndOp, NBS) = carga RECUSADA, salvo `allowShrink` (argumento --aceita-encolher do ato);
+ *    de cIndOp, NBS e — D-IB39 — as marcações "ausente da fonte" da história) = carga RECUSADA, salvo
+ *    `allowShrink` (argumento --aceita-encolher do ato);
  *    no ensaio a recusa vira aviso no relatório;
  *  - D-IB28 (b): o relatório do ENSAIO lista, por schema de cliente, os serviços que usam cClassTrib
  *    ou cIndOp que fica SEM nenhuma aplicabilidade na NFS-e, ou NBS que perde a presença, nesta
@@ -48,7 +49,30 @@ const zero = (): Counts => ({ inserted: 0, updated: 0, unchanged: 0, deactivated
 /** D-IB28 (c): fração máxima de linhas vivas que uma carga pode desativar sem --aceita-encolher. */
 export const SHRINK_LIMIT = 0.10
 
-export interface ShrinkRow { list: 'applicability' | 'placeApplicability' | 'nbs'; aliveBefore: number; deactivated: number }
+export interface ShrinkRow {
+  list: 'applicability' | 'placeApplicability' | 'nbs' | 'validity'
+  aliveBefore: number
+  deactivated: number
+  /** Só na história (validity): linha marcada cujo código SEGUE na fonte com outra linha (ex.: vigência corrigida) ×
+   *  linha de código que SUMIU da fonte (suspeita de IT antigo/errado). */
+  codeInSource?: number
+  codeVanished?: number
+}
+
+/** Rótulo da lista na mensagem de recusa — quem lê é o operador, não o código. */
+const SHRINK_LABEL: Record<ShrinkRow['list'], string> = {
+  applicability:      'presença do cClassTrib por modelo',
+  placeApplicability: 'presença do cIndOp por modelo',
+  nbs:                'NBS da lista oficial',
+  validity:           'história do cClassTrib (linhas marcadas ausentes da fonte)',
+}
+
+export function shrinkLine(r: ShrinkRow): string {
+  const split = r.list === 'validity' && r.codeInSource != null
+    ? ` — ${r.codeInSource} de código que segue na fonte (ex.: vigência corrigida), ${r.codeVanished} de código que sumiu da fonte`
+    : ''
+  return `${SHRINK_LABEL[r.list]} [${r.list}]: ${r.deactivated} de ${r.aliveBefore}${split}`
+}
 
 /** D-IB28 (b): serviços de um cliente que usam código/NBS que perde a presença nesta carga. */
 export interface ImpactRow {
@@ -194,6 +218,8 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
               absent_since_version
          FROM ${C}.tb_tax_ibscbs_classification_validity`)
     const vHave = new Map<string, any>(vRows.map(r => [`${r.code}|${isoDate(r.valid_from)}`, r]))
+    // D-IB39: base do limite de encolhimento da história = linhas PRESENTES na fonte antes da carga
+    report.validity.aliveBefore = vRows.filter(r => r.absent_since_version == null).length
     for (const c of input.it.classifications) {
       const row = vHave.get(`${c.code}|${c.validFrom}`)
       const regular = c.requiresRegularTaxation ? 'S' : 'N'
@@ -294,16 +320,23 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
     }
 
     // --- D-IB28 (c): encolhimento — decidido ANTES de qualquer leitura de cliente --------
-    for (const list of ['applicability', 'placeApplicability', 'nbs'] as const) {
+    // D-IB39: as marcações 'ausente da fonte' (validity) também contam — IT antigo carregado por engano
+    const codesInSource = new Set(input.it.classifications.map(c => c.code))
+    for (const list of ['applicability', 'placeApplicability', 'nbs', 'validity'] as const) {
       const c = report[list]
       if (c.aliveBefore > 0 && c.deactivated / c.aliveBefore > SHRINK_LIMIT) {
-        report.shrink.push({ list, aliveBefore: c.aliveBefore, deactivated: c.deactivated })
+        const row: ShrinkRow = { list, aliveBefore: c.aliveBefore, deactivated: c.deactivated }
+        if (list === 'validity') {
+          const codeInSource = c.deactivatedKeys.filter(k => codesInSource.has(k.split('|')[0])).length
+          Object.assign(row, { codeInSource, codeVanished: c.deactivated - codeInSource })
+        }
+        report.shrink.push(row)
       }
     }
     if (input.apply && report.shrink.length && !input.allowShrink) {
       throw new CatalogSourceError(
         `A carga desativaria mais de ${SHRINK_LIMIT * 100} % das linhas vivas — recusada (nada gravado); se for intencional, rode o ensaio e o ato com --aceita-encolher`,
-        report.shrink.map(r => `${r.list}: ${r.deactivated} de ${r.aliveBefore}`))
+        report.shrink.map(shrinkLine))
     }
     // --- D-IB28 (b): o que fica SEM aplicabilidade (consulta CENTRAL, no estado pós-carga) ------
     const lost = input.reportImpact && !input.apply ? await lostAfterLoad(conn, report, input.date) : null

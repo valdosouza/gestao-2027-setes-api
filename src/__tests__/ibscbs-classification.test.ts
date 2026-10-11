@@ -4,6 +4,7 @@ import {
   assertServiceClassification, findClassificationAt, deriveCst, Queryable,
   findClassificationForRegistration, classificationForDisplay, listClassificationsLookup, NFSE_IBSCBS_SIMPLES_OBLIGATION_START,
   pickForRegistration, classificationAcceptedToday, classificationAcceptance, assertIbscbsCatalogSchema,
+  nbsAcceptedSql, nbsExists,
 } from '@shared/ibscbs-classification'
 
 /**
@@ -269,5 +270,32 @@ describe('@shared/ibscbs-classification — correções do gate da Rodada 4', ()
     await expect(assertIbscbsCatalogSchema(missing)).rejects.toThrow(/sql\/63_ibscbs_validity_absent_since\.sql/)
     const other = { query: async () => { throw Object.assign(new Error('denied'), { errno: 1142 }) } }
     await expect(assertIbscbsCatalogSchema(other)).rejects.toMatchObject({ errno: 1142 })
+  })
+})
+
+// Delta socrático da Rodada 5: "NBS aceita" tem UM dono — a peça; cadastro e GET leem por ela.
+describe('@shared/ibscbs-classification — regra única da NBS aceita (D-IB40)', () => {
+  it('predicado: presença no catálogo + deleted = N, no alias de quem consulta; alias fora do formato é recusado', () => {
+    expect(nbsAcceptedSql('nb')).toBe("(nb.code IS NOT NULL AND nb.deleted = 'N')")
+    expect(() => nbsAcceptedSql("nb; DROP TABLE x")).toThrow(/alias inválido/)
+  })
+
+  it('nbsExists usa o MESMO predicado: NBS que saiu da lista (deleted = S) não é aceita', async () => {
+    const catalogNbs = [{ code: '115021000', deleted: 'N' }, { code: '199999999', deleted: 'S' }]
+    const q = { query: async (sql: string, params: unknown[]) => {
+      expect(sql).toContain(nbsAcceptedSql('nb'))
+      return [catalogNbs.filter(r => r.code === params[0] && r.deleted === 'N')]
+    } }
+    expect(await nbsExists(q as any, '115021000')).toBe(true)
+    expect(await nbsExists(q as any, '199999999')).toBe(false)
+    expect(await nbsExists(q as any, '000000000')).toBe(false)
+  })
+
+  // gate adversarial do delta R5 (LOW 2): o 422 diz o mesmo que o selo — "não está na lista oficial"
+  it('422 da NBS fora da lista fala a língua do selo (vale para inexistente e para retirada)', async () => {
+    const q = { query: async () => [[]] }
+    const e = await assertServiceClassification(q as any, { nbs: '199999999' }, '2026-10-10').catch(x => x)
+    expect(e.code).toBe(ErrorCodes.IBSCBS_NBS_NOT_FOUND)
+    expect(e.fields).toEqual([{ field: 'nbs', message: 'NBS 199999999 não está na lista oficial' }])
   })
 })
