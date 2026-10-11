@@ -44,7 +44,10 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  *    D-IB45: `impactAhead` (informativo, FORA do limite) lista os serviços cujo código aceito depois da carga deixa
  *    de ser aceito até o HORIZONTE (D-IB49: o maior entre o fim da janela do cadastro e a data + AHEAD_DAYS dias —
  *    `impactAheadUntil`), com a data e o motivo da perda; D-IB50: parte também do código aceito só pelo CADASTRO (linha
- *    futura na janela — o que o selo mostra), que perde depois de passar a valer (`acceptedFrom`);
+ *    futura na janela — o que o selo mostra), que perde depois de passar a valer (`acceptedFrom`); D-IB51: a linha traz o
+ *    dia em que o código VOLTA a ser aceito dentro do horizonte (`acceptedAgainFrom` — buraco temporário). D-IB53: o impacto
+ *    compara também o veredito do CADASTRO antes × depois para o que a data do fato já recusava (o selo muda de "aceita" para
+ *    "não aceita") — linha com `registrationOnly: true`;
  *    (só LEITURA nos clientes — D-IB32). A leitura dos clientes acontece DEPOIS do rollback
  *    do ensaio (nenhuma trava do catálogo segura N schemas) e NÃO roda no ato (o plano já bateu
  *    com o ensaio). Limite conhecido: um PUT que leu o catálogo antes do commit pode gravar um
@@ -120,13 +123,18 @@ export interface ImpactRow {
   /** D-IB47: só cClassTrib — o cadastro ainda aceita o código (linha futura na janela ou outra linha vigente com
    *  presença — pickForRegistration; o selo da aba diz "aceita"), mas a data do fato (faturamento) já não. */
   registrationStillAccepts?: boolean
-  /** D-IB47: só cClassTrib — por que deixa de ser aceito (na data da carga; no aviso, na data da perda). */
+  /** D-IB47: só cClassTrib — por que deixa de ser aceito: no impacto, na data da carga (com `registrationOnly`, pela regra do
+   *  CADASTRO — D-IB53); no aviso, na data da perda. */
   reason?: ClassificationRefusal
   /** D-IB45: só em `impactAhead` — o 1º dia em que o código, aceito na data da carga (pela data do fato ou só pelo cadastro —
    *  D-IB50), deixa de ser aceito na NFS-e dentro do horizonte (D-IB49). */
   lossDate?: string
   /** D-IB50: só em `impactAhead`, código aceito só pelo cadastro na data da carga — o dia em que passa a valer na data do fato. */
   acceptedFrom?: string
+  /** D-IB51: só em `impactAhead` — o dia em que o código VOLTA a ser aceito dentro do horizonte (buraco temporário); ausente = não volta dentro do horizonte. Só a 1ª volta — uma 2ª perda depois dela não aparece (Q-IB54). */
+  acceptedAgainFrom?: string
+  /** D-IB53: só em `impact` — a data do fato já recusava antes da carga; quem deixou de aceitar foi o CADASTRO (o selo muda). */
+  registrationOnly?: true
 }
 
 const IMPACT_IDS_MAX = 50
@@ -174,7 +182,8 @@ export interface ApplyReport {
   impact:                ImpactRow[]
   /** D-IB45/D-IB49/D-IB50: aviso PROSPECTIVO (fora do limite) — serviços cujo código, aceito na data da carga pela data do
    *  fato ou só pelo cadastro, deixa de ser aceito até o horizonte (`impactAheadUntil`), com a data e o motivo da perda; só
-   *  no ensaio. Só a 1ª perda (Q-IB51). Não traz recusa HERDADA de carga anterior (Q-IB52). */
+   *  no ensaio. Só a 1ª perda e a 1ª volta (D-IB51; a 2ª perda depois da volta — Q-IB54). Não traz recusa HERDADA de carga
+   *  anterior (D-IB52 — pré-voo do faturamento na IB-2). */
   impactAhead:           ImpactRow[]
   /** D-IB49: até quando o aviso olhou (o maior entre o fim da janela do cadastro e a data + AHEAD_DAYS); null fora do ensaio. */
   impactAheadUntil:      string | null
@@ -237,11 +246,15 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
     // D-IB47 (gate socrático do delta R7): o veredito ANTES de qualquer gravação, para todo código que a carga pode
     // tocar (o catálogo inteiro ∪ a fonte) — o impacto é a diferença antes × depois, nunca inferido pelo tipo da mudança
     let before: Map<string, ClassificationVerdict> | null = null
+    let beforeRegistration = new Map<string, ClassificationVerdict>()
     if (input.reportImpact && !input.apply) {
       if (!input.date) throw new Error('reportImpact exige a data da carga (date) — o veredito é na data do fato')
       const [idCodes] = await conn.query<any[]>(`SELECT code FROM ${C}.tb_tax_ibscbs_classification`)
       const touched = [...new Set([...idCodes.map(r => String(r.code)), ...input.it.classifications.map(c => c.code)])].sort()
       before = await classificationVerdictsAt(conn, touched, MODEL_NFSE, input.date)
+      // D-IB53: para o que a data do fato já recusa, o veredito do CADASTRO antes (o que o selo mostra)
+      const refused = touched.filter(c => !before!.get(c)!.accepted)
+      beforeRegistration = await classificationRegistrationVerdicts(conn, refused, MODEL_NFSE, input.date)
     }
 
     // --- CST ----------------------------------------------------------------
@@ -419,7 +432,7 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
         report.shrink.map(shrinkLine))
     }
     // --- D-IB28 (b): o que fica SEM aplicabilidade (consulta CENTRAL, no estado pós-carga) ------
-    const lost = before ? await lostAfterLoad(conn, report, input.date!, before) : null
+    const lost = before ? await lostAfterLoad(conn, report, input.date!, before, beforeRegistration) : null
     if (input.apply) {
       await conn.commit()
       report.applied = true
@@ -451,14 +464,18 @@ async function endedSplit(conn: Conn, endedKeys: string[], date: string): Promis
 const SCHEMA_RE = /^[a-z0-9_]+$/
 
 interface LostCodes {
-  /** cClassTrib aceito ANTES e não aceito DEPOIS da carga, na data do fato, com o motivo. */
+  /** cClassTrib aceito ANTES e não aceito DEPOIS da carga — na data do fato (D-IB47) ou, para o que o fato já recusava, pela
+   *  regra do CADASTRO (D-IB53) — com o motivo. */
   classifications: Map<string, ClassificationRefusal>
   /** D-IB47: o cadastro ainda aceita o código perdido? */
   registration:    Map<string, boolean>
   placeIndicators: string[]
   nbs:             string[]
-  /** D-IB45: código aceito × 1º dia em que deixa de ser aceito (dentro do horizonte) + motivo (+ D-IB50 desde quando vale). */
-  ahead:           Array<{ code: string; lossDate: string; reason: ClassificationRefusal; acceptedFrom?: string }>
+  /** D-IB53: códigos do impacto que só o CADASTRO deixou de aceitar (a data do fato já recusava antes). */
+  registrationOnly: Set<string>
+  /** D-IB45: código aceito × 1º dia em que deixa de ser aceito (dentro do horizonte) + motivo (+ D-IB50 desde quando vale;
+   *  + D-IB51 quando volta). */
+  ahead:           Array<{ code: string; lossDate: string; reason: ClassificationRefusal; acceptedFrom?: string; acceptedAgainFrom?: string }>
 }
 
 const addDays = (d: string, n: number): string => {
@@ -522,10 +539,17 @@ async function lossesAhead(
   for (const [code, set] of [...dates].sort(([a], [b]) => a.localeCompare(b))) {
     let accepted = start.get(code) === 'fact'
     let acceptedFrom: string | undefined
-    for (const d of [...set].sort()) {
+    const sorted = [...set].sort()
+    for (let i = 0; i < sorted.length; i++) {
+      const d = sorted[i]
       const v = verdicts.get(d)!.get(code)!
       if (v.accepted) { if (!accepted) { accepted = true; acceptedFrom = d } continue }
-      if (accepted) { out.push({ code, lossDate: d, reason: v.reason!, ...(acceptedFrom ? { acceptedFrom } : {}) }); break }
+      if (accepted) {
+        // D-IB51: volta a ser aceito dentro do horizonte? (os vereditos das datas seguintes já foram calculados)
+        const again = sorted.slice(i + 1).find(x => verdicts.get(x)!.get(code)!.accepted)
+        out.push({ code, lossDate: d, reason: v.reason!, ...(acceptedFrom ? { acceptedFrom } : {}), ...(again ? { acceptedAgainFrom: again } : {}) })
+        break
+      }
     }
   }
   return { ahead: out, aheadUntil: end }
@@ -533,10 +557,12 @@ async function lossesAhead(
 
 /** O que esta carga deixa de aceitar. cClassTrib: veredito da peça na data do fato ANTES × DEPOIS (D-IB47 — inclui a
  *  correção de dIniVig para o futuro, a vigência encerrada, a tributação regular ligada e a linha nova sobreposta sem
- *  presença); cIndOp não tem vigência — qualquer aplicabilidade viva; NBS — presença perdida. Só tabelas CENTRAIS, na
- *  transação da carga (estado pós-carga, antes do rollback). */
+ *  presença); D-IB53: para o que o fato já recusava, o veredito do CADASTRO antes × depois (linha futura da janela ou a linha
+ *  antiga da SOBREPOSIÇÃO que esta carga tira — `registrationOnly`); cIndOp não tem vigência — qualquer aplicabilidade viva;
+ *  NBS — presença perdida. Só tabelas CENTRAIS, na transação da carga (estado pós-carga, antes do rollback). */
 async function lostAfterLoad(
   conn: Conn, report: ApplyReport, date: string, before: Map<string, ClassificationVerdict>,
+  beforeRegistration: Map<string, ClassificationVerdict>,
 ): Promise<LostCodes> {
   const codesOf = (keys: string[]) => [...new Set(keys.filter(k => k.endsWith('|SE')).map(k => k.split('|')[0]))]
   const candidatesPlace = codesOf(report.placeApplicability.deactivatedKeys)
@@ -557,9 +583,21 @@ async function lostAfterLoad(
   }
   const reg = await classificationRegistrationVerdicts(conn, [...classifications.keys()], MODEL_NFSE, date)
   const registration = new Map([...classifications.keys()].map(c => [c, reg.get(c)?.accepted ?? false]))
+  // D-IB53: a data do fato já recusava; o CADASTRO aceitava antes e deixa de aceitar depois (o selo muda) — também é impacto
+  const wasRegistered = [...beforeRegistration].filter(([, v]) => v.accepted).map(([c]) => c)
+  const registrationAfter = await classificationRegistrationVerdicts(conn, wasRegistered, MODEL_NFSE, date)
+  const registrationOnly = new Set<string>()
+  for (const code of wasRegistered) {
+    const now = registrationAfter.get(code)!
+    if (!now.accepted) {
+      classifications.set(code, now.reason!)
+      registration.set(code, false)
+      registrationOnly.add(code)
+    }
+  }
   const { ahead, aheadUntil } = await lossesAhead(conn, date, after)
   report.impactAheadUntil = aheadUntil
-  return { classifications, registration, placeIndicators, nbs: report.nbs.deactivatedKeys, ahead }
+  return { classifications, registration, registrationOnly, placeIndicators, nbs: report.nbs.deactivatedKeys, ahead }
 }
 
 /** Serviços VIVOS de cada cliente que usam o que ficou sem aplicabilidade/presença (D-IB28 (b)).
@@ -587,13 +625,15 @@ async function reportImpact(conn: Conn, report: ApplyReport, lost: LostCodes): P
         }
       }
       await count('cClassTrib', 'tb_service_ibscbs', 'classification_code', [...lost.classifications.keys()], report.impact,
-        code => ({ registrationStillAccepts: lost.registration.get(code), reason: lost.classifications.get(code) }))
+        code => ({ registrationStillAccepts: lost.registration.get(code), reason: lost.classifications.get(code),
+          ...(lost.registrationOnly.has(code) ? { registrationOnly: true as const } : {}) }))
       await count('cIndOp', 'tb_service_ibscbs', 'place_indicator_code', lost.placeIndicators)
       await count('NBS', 'tb_service', 'nbs', lost.nbs)
       await count('cClassTrib', 'tb_service_ibscbs', 'classification_code', [...ahead.keys()], report.impactAhead,
         code => {
           const a = ahead.get(code)!
-          return { lossDate: a.lossDate, reason: a.reason, ...(a.acceptedFrom ? { acceptedFrom: a.acceptedFrom } : {}) }
+          return { lossDate: a.lossDate, reason: a.reason, ...(a.acceptedFrom ? { acceptedFrom: a.acceptedFrom } : {}),
+            ...(a.acceptedAgainFrom ? { acceptedAgainFrom: a.acceptedAgainFrom } : {}) }
         })
     } catch (err: any) {
       report.impactProblems.push(`${schema}: ${err?.code ?? err?.message ?? err}`)

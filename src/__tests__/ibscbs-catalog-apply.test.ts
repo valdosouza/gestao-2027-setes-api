@@ -775,18 +775,138 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
       if (!/v\.valid_from <= \?/.test(sql)) registrationAsked++
       return pieceOf(rows)(sql, params)
     }
-    t.__ahead = [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }]
     t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
     t['setes_a.tb_service_ibscbs'] = client({ '000001': '61', '000006': '62' })
-    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
-    expect(registrationAsked).toBe(0)   // o único código do aviso (000001) é aceito hoje
+    // mede só o que o AVISO acrescenta (o impacto da D-IB53 também consulta o cadastro): base = carga sem linhas no aviso
+    const asked = async (ahead: Row[]) => {
+      registrationAsked = 0
+      t.__ahead = ahead
+      const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
+      return [registrationAsked, r] as const
+    }
+    const [baseline] = await asked([])
+    const [k1, r] = await asked([{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }])
+    expect(k1).toBe(baseline)   // o único código do aviso (000001) é aceito hoje → nenhuma consulta do cadastro a mais
     expect(r.impactAhead.map(x => x.code)).toEqual(['000001'])
-
-    registrationAsked = 0
-    t.__ahead = [{ code: '000006', valid_from: '2026-11-01', valid_until: null }]
-    const r2 = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
-    expect(registrationAsked).toBe(1)   // 000006 não é aceito hoje → uma consulta em lote do cadastro
+    const [k2, r2] = await asked([{ code: '000006', valid_from: '2026-11-01', valid_until: null }])
+    expect(k2).toBe(baseline + 1)   // 000006 não é aceito hoje → uma consulta em lote do cadastro
     expect(r2.impactAhead).toEqual([])   // passa a valer em 01/11 e não perde dentro do horizonte
+  })
+
+  // D-IB51 (Rodada 9): o aviso diz quando o código VOLTA a ser aceito dentro do horizonte (buraco temporário)
+  it('D-IB51: buraco temporário — perda em 01/01/2027 e volta em 05/01 (sucessora já publicada); sem volta, sem o campo', async () => {
+    const run = async (ahead: Row[], piece: Row[]) => {
+      const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+      t.__ahead = ahead
+      t.__piece = pieceOf(piece)
+      t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+      t['setes_a.tb_service_ibscbs'] = client({ '000001': '61' })
+      return (await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })).impactAhead
+    }
+    const gap = await run(
+      [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-05', valid_until: null }],
+      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-05' }])
+    expect(gap.map(x => [x.lossDate, x.reason, x.acceptedAgainFrom])).toEqual([['2027-01-01', 'no-line', '2027-01-05']])
+    const definitive = await run([{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }],
+      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }])
+    expect(definitive).toHaveLength(1)
+    expect('acceptedAgainFrom' in definitive[0]).toBe(false)
+  })
+
+  // D-IB53 (Rodada 9; caso do gate adversarial R8 — adv8-d1…d3): a data do fato já recusava; a carga tira a aceitação do CADASTRO
+  it('D-IB53: linha futura do cadastro some, perde a presença ou passa a exigir tributação regular → impacto com registrationOnly', async () => {
+    const beforeRows = [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-10-09' },
+      { code: '000001', validFrom: '2026-11-01', validUntil: '2026-12-31' }, { code: '000006', validFrom: '2026-01-01' }]
+    for (const [future, reason] of [
+      [{ absentSince: 'IT v1.80' }, 'no-line'],
+      [{ applicable: 0 }, 'not-applicable'],
+      [{ requiresRegular: 'S' }, 'requires-regular'],
+    ] as const) {
+      const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+      t.__pieceBefore = pieceOf(beforeRows)
+      t.__piece = pieceOf([beforeRows[0], { ...beforeRows[1], ...future }, beforeRows[2]])
+      t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+      t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+      const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
+      expect(r.impact).toEqual([{ schema: 'setes_a', institutionActive: true, kind: 'cClassTrib', code: '000001', services: 1, serviceIds: [67],
+        registrationStillAccepts: false, reason, registrationOnly: true }])
+      expect(r.shrink).toEqual([])   // fora do limite
+    }
+    // controle: a linha futura do cadastro segue de pé → nada no impacto (e o aviso a acompanha — D-IB50)
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.__pieceBefore = pieceOf(beforeRows)
+    t.__piece = pieceOf(beforeRows)
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+    expect((await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })).impact).toEqual([])
+  })
+
+  // gate socrático do delta R9 (S9-4): lacunas de teste da D-IB51/D-IB53
+  const runR9 = async (date: string, before: Row[] | null, after: Row[], ahead: Row[] = []) => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    if (before) t.__pieceBefore = pieceOf(before)
+    t.__piece = pieceOf(after)
+    t.__ahead = ahead
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+    return applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date })
+  }
+
+  it('D-IB53: registrationOnly não entra no aviso mesmo com linhas do código na consulta do aviso', async () => {
+    const before = [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-10-09' },
+      { code: '000001', validFrom: '2026-11-01', validUntil: '2026-12-31' }, { code: '000006', validFrom: '2026-01-01' }]
+    const r = await runR9('2026-10-10', before, [before[0], { ...before[1], applicable: 0 }, before[2]],
+      [{ code: '000001', valid_from: '2026-11-01', valid_until: '2026-12-31' }])
+    expect(r.impact.map(x => [x.code, x.registrationOnly])).toEqual([['000001', true]])
+    expect(r.impactAhead).toEqual([])
+  })
+
+  it('D-IB53: SOBREPOSIÇÃO — a carga tira a presença da linha antiga que o cadastro usava (antes e depois da obrigação)', async () => {
+    for (const [date, from] of [['2026-10-10', '2026-10-01'], ['2027-01-05', '2027-01-02']] as const) {
+      const before = [{ code: '000001', validFrom: '2026-01-01' }, { code: '000001', validFrom: from, applicable: 0 },
+        { code: '000006', validFrom: '2026-01-01' }]   // fato: a mais nova (sem presença) recusa; cadastro: a antiga aceita
+      const r = await runR9(date, before, [{ ...before[0], applicable: 0 }, before[1], before[2]])
+      expect(r.impact.map(x => [x.code, x.reason, x.registrationOnly, x.registrationStillAccepts])).toEqual([['000001', 'not-applicable', true, false]])
+    }
+  })
+
+  it('D-IB51: volta junto com acceptedFrom (aviso que parte do cadastro); volta NO horizonte entra, um dia depois não', async () => {
+    const reg = await runR9('2026-10-10', null, [
+      { code: '000001', validFrom: '2026-01-01', applicable: 0 },
+      { code: '000001', validFrom: '2026-11-01', validUntil: '2026-12-15' },
+      { code: '000001', validFrom: '2026-12-20' },
+      { code: '000006', validFrom: '2026-01-01' },
+    ], [{ code: '000001', valid_from: '2026-11-01', valid_until: '2026-12-15' }, { code: '000001', valid_from: '2026-12-20', valid_until: null }])
+    expect(reg.impactAhead.map(x => [x.acceptedFrom, x.lossDate, x.reason, x.acceptedAgainFrom]))
+      .toEqual([['2026-11-01', '2026-12-16', 'not-applicable', '2026-12-20']])
+    for (const [again, expected] of [['2027-01-08', '2027-01-08'], ['2027-01-09', undefined]] as const) {
+      const r = await runR9('2026-10-10', null, [
+        { code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: again }, { code: '000006', validFrom: '2026-01-01' },
+      ], [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: again, valid_until: null }])
+      expect(r.impactAhead.map(x => [x.lossDate, x.acceptedAgainFrom])).toEqual([['2027-01-01', expected]])
+    }
+  })
+
+  // gate adversarial do delta R9 (LOWs + casos não testados): fixa a semântica ATUAL até a Rodada 10 decidir (Q-IB54/Q-IB56)
+  it('D-IB51 hoje: só a 1ª volta (volta e perde de novo no horizonte — a 2ª perda não aparece, Q-IB54); linha não conferida não é volta (Q-IB56)', async () => {
+    const again = await runR9('2026-10-10', null, [
+      { code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-05', validUntil: '2027-01-06' },
+      { code: '000006', validFrom: '2026-01-01' },
+    ], [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-05', valid_until: '2027-01-06' }])
+    expect(again.impactAhead.map(x => [x.lossDate, x.acceptedAgainFrom])).toEqual([['2027-01-01', '2027-01-05']])
+    const unconfirmed = await runR9('2026-10-10', null, [
+      { code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000001', validFrom: '2027-01-05', applicable: 0 },
+      { code: '000006', validFrom: '2026-01-01' },
+    ], [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }, { code: '000001', valid_from: '2027-01-05', valid_until: null }])
+    expect(unconfirmed.impactAhead.map(x => [x.lossDate, x.reason, 'acceptedAgainFrom' in x])).toEqual([['2027-01-01', 'no-line', false]])
+  })
+
+  it('D-IB53: o ATO não compara o cadastro (nenhuma pergunta à peça)', async () => {
+    let asked = 0
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.__piece = (sql: string, params: unknown[]) => { asked++; return pieceOf([])(sql, params) }
+    await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), apply: true, date: '2026-10-10' })
+    expect(asked).toBe(0)
   })
 })
 
