@@ -5,6 +5,10 @@
  *
  * S enviado · A autorizada · R rejeitada · C cancelada · K cancelamento em voo ·
  * F falha explícita · N pedido de cancelamento NÃO consta no fisco (D-N17).
+ *
+ * CONHECIMENTO NEGATIVO (D-F102/D-F103, Valdo 2026-10-11 — texto completo em `fiscal-api/src/voice/kinds.ts`): S não tem produtor nem
+ * saída (quem criar produtor de S abre os DOIS portões da D-F51 na mesma entrega); `kind` não tem CHECK de domínio (nunca gravar voz
+ * por fora do código). Esta composição morre na F2a.
  */
 export type TransmissionEventKind = 'S' | 'A' | 'R' | 'C' | 'K' | 'F' | 'N'
 

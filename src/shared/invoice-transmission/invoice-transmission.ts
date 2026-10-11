@@ -120,6 +120,10 @@ function inFlightAgeMinutes(tx: TransmissionRow): number {
 }
 
 /** Reservada e sem voz há mais de IN_FLIGHT_MINUTES: o envio foi interrompido (crash/timeout do POST). */
+// CONHECIMENTO NEGATIVO (D-F102 = Q-F108 (a), Valdo 2026-10-11): só a tentativa SEM voz tem esta saída; a voz S ("enviado") não tem
+// produtor hoje — quem criar um dá a S esta mesma saída (idade da voz S + E2404 → F) na mesma entrega (ver `kinds.ts` do núcleo).
+// R21-03: são DOIS portões — este predicado E a reconferência sob a trava (`recordInterruptedFailure` / `reconcileInterrupted`), que
+// recusa tentativa com voz; abrir só este faz a S cair a cada passada no ramo "perdeu a corrida" (sem carimbo) e monopolizar o rodízio.
 export function isInterruptedInFlight(tx: TransmissionRow | null): boolean {
   return !!tx && isLiveTransmission(tx) && tx.lastKind === null && inFlightAgeMinutes(tx) >= IN_FLIGHT_MINUTES
 }
