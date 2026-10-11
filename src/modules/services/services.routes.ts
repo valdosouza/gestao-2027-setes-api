@@ -142,8 +142,8 @@ router.get('/nbs', controller.nbsLookup)
  * @swagger
  * /api/services/ibscbs-classifications:
  *   get:
- *     summary: Lookup dos cClassTrib vigentes HOJE (data do estabelecimento) e aceitos na NFS-e
- *     description: Exclui os que exigem tributação regular (gTribRegular ainda não emitido) e os ainda não confirmados pela Calculadora oficial (A-IB1). LIMIT 100.
+ *     summary: Lookup dos cClassTrib que o cadastro aceita HOJE (data do estabelecimento) e aceitos na NFS-e
+ *     description: "Vigentes hoje ou com início futuro até a obrigação da NFS-e, 01/01/2027 (D-IB29 — a futura vem com (vale a partir de …) e validFrom); um código por linha. Exclui os que exigem tributação regular (gTribRegular ainda não emitido) e os ainda não confirmados pela Calculadora oficial (A-IB1). LIMIT 100."
  *     tags: [services]
  *     security: [{ BearerAuth: [] }]
  *     parameters:
@@ -151,7 +151,7 @@ router.get('/nbs', controller.nbsLookup)
  *         name: filter
  *         schema: { type: string }
  *     responses:
- *       200: { description: "{ ok, data: [{ code, description }] }" }
+ *       200: { description: "{ ok, data: [{ code, description, validFrom, validUntil }] }" }
  *       401: { description: Sem JWT }
  *       500: { description: Erro interno }
  */
@@ -188,7 +188,7 @@ router.get('/ibscbs-place-indicators', controller.ibscbsPlaceIndicatorsLookup)
  *         required: true
  *         schema: { type: integer }
  *     responses:
- *       200: { description: "{ ok, data: ServiceFull (prices[], nbs, nbsDescription, ibscbs: { classificationCode, cst, classificationName, placeIndicatorCode, placeIndicatorDescription } | null) }" }
+ *       200: { description: "{ ok, data: ServiceFull (prices[], nbs, nbsDescription, ibscbs: { classificationCode, cst, classificationName, validFrom, validUntil, placeIndicatorCode, placeIndicatorDescription } | null — vigência da linha exibida, D-IB29) }" }
  *       404: { description: Não encontrado (inclui id que é MERCADORIA — kind fora do módulo) }
  */
 router.get('/:id', controller.getOne)

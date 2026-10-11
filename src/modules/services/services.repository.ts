@@ -4,7 +4,7 @@ import { HttpError } from '@shared/errors/http-error'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { todayFor } from '@shared/time-zone'
-import { assertServiceClassification, deriveCst } from '@shared/ibscbs-classification'
+import { assertServiceClassification, classificationForDisplay, deriveCst } from '@shared/ibscbs-classification'
 import {
   ServiceListRow, ServiceFull, ServiceInput, ServicePriceRow,
   ServiceLookupRow, ServiceIbscbsRow,
@@ -83,8 +83,9 @@ async function listServicePrices(
   return rows
 }
 
-/** `today` (data do estabelecimento): o NOME do cClassTrib vem da linha vigente nela; sem
- *  linha vigente (expirada/futura), a mais recente — o GET nunca esconde o que está gravado. */
+/** `today` (data do estabelecimento): nome e vigência do cClassTrib vêm da linha que o CADASTRO
+ *  aceita (D-IB29 — a mesma regra da lista e do salvar); sem ela, a futura mais próxima ou a mais
+ *  recente — o GET nunca esconde o que está gravado. */
 export async function getService(
   id: number, schemaName: string, institutionId: number, today: string | null = null
 ): Promise<ServiceFull | null> {
@@ -107,11 +108,6 @@ export async function getService(
             sv.nbs                  AS nbs,
             nb.description          AS nbsDescription,
             si.classification_code  AS ibsClassificationCode,
-            (SELECT v.name FROM setes_central.tb_tax_ibscbs_classification_validity v
-              WHERE v.code = si.classification_code AND v.deleted = 'N'
-              ORDER BY (v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?)) DESC,
-                       v.valid_from DESC
-              LIMIT 1) AS ibsClassificationName,
             si.place_indicator_code AS ibsPlaceIndicatorCode,
             pi.description          AS ibsPlaceIndicatorDescription
      FROM \`${schemaName}\`.tb_product p
@@ -131,18 +127,24 @@ export async function getService(
        ON f.id = p.tb_financial_plans_id AND f.tb_institution_id = p.tb_institution_id
      WHERE p.id = ? AND p.tb_institution_id = ? AND p.deleted = 'N'
        AND p.kind = 'S'`,
-    [today, today, id, institutionId]
+    [id, institutionId]
   )
   if (!rows[0]) return null
   const prices = await listServicePrices(id, schemaName, institutionId)
   const {
-    ibsClassificationCode, ibsClassificationName, ibsPlaceIndicatorCode, ibsPlaceIndicatorDescription,
+    ibsClassificationCode, ibsPlaceIndicatorCode, ibsPlaceIndicatorDescription,
     ...base
   } = rows[0]
+  // D-IB29: a tela mostra "vale a partir de"/"válida até" da linha exibida (sem data = a mais recente).
+  const shown = ibsClassificationCode
+    ? await classificationForDisplay(pool, ibsClassificationCode, today)
+    : null
   const ibscbs: ServiceIbscbsRow | null = ibsClassificationCode ? {
     classificationCode:        ibsClassificationCode,
     cst:                       deriveCst(ibsClassificationCode),
-    classificationName:        ibsClassificationName ?? null,
+    classificationName:        shown?.name ?? null,
+    validFrom:                 shown?.validFrom ?? null,
+    validUntil:                shown?.validUntil ?? null,
     placeIndicatorCode:        ibsPlaceIndicatorCode,
     placeIndicatorDescription: ibsPlaceIndicatorDescription ?? null,
   } : null
@@ -152,7 +154,7 @@ export async function getService(
 /** FKs do form validadas DENTRO da transação — 400 com fields[]. */
 async function assertRefs(
   conn: PoolConnection, input: ServiceInput,
-  schemaName: string, institutionId: number
+  schemaName: string, institutionId: number, serviceId: number | null = null
 ): Promise<void> {
   const check = async (
     table: string, id: number, field: string, label: string
@@ -182,10 +184,51 @@ async function assertRefs(
   }
   // Fase IBS/CBS (D-IB6): NBS e classificação conferidas no catálogo central pela peça,
   // na data de HOJE do estabelecimento (PADROES §10 — conexão da transação). 422 com fields[].
-  if (input.nbs != null || input.ibscbs != null) {
+  // D-IB30: só o que MUDOU em relação ao gravado (precedente D-G34) — a classificação inalterada
+  // que venceu não bloqueia uma edição de preço; quem barra a vencida é o faturamento (D-IB8).
+  const changed = await changedClassification(conn, input, schemaName, institutionId, serviceId)
+  if (changed.nbs != null || changed.ibscbs != null) {
     const today = await todayFor(schemaName, institutionId, conn)
-    await assertServiceClassification(conn, { nbs: input.nbs, ibscbs: input.ibscbs }, today)
+    await assertServiceClassification(conn, { nbs: changed.nbs, ibscbs: changed.ibscbs }, today, undefined, changed.checks)
   }
+}
+
+interface ChangedClassification {
+  nbs?:    string | null
+  ibscbs?: { classificationCode: string; placeIndicatorCode: string } | null
+  /** Qual código do par mudou (ausente = serviço novo: confere os dois). */
+  checks?: { classification: boolean; placeIndicator: boolean }
+}
+
+/** D-IB30: a parte de NBS/classificação do payload que DIFERE do gravado (lida na transação —
+ *  o serviço já está travado pelo FOR UPDATE do tb_product no PUT). Serviço novo = tudo. */
+async function changedClassification(
+  conn: PoolConnection, input: ServiceInput,
+  schemaName: string, institutionId: number, serviceId: number | null
+): Promise<ChangedClassification> {
+  if (serviceId === null) return { nbs: input.nbs, ibscbs: input.ibscbs }
+  const out: ChangedClassification = {}
+  if (input.nbs != null) {
+    const [rows] = await conn.query<any[]>(
+      `SELECT nbs FROM \`${schemaName}\`.tb_service WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+      [serviceId, institutionId])
+    if (rows[0]?.nbs !== input.nbs) out.nbs = input.nbs
+  }
+  if (input.ibscbs != null) {
+    const [rows] = await conn.query<any[]>(
+      `SELECT classification_code AS c, place_indicator_code AS p FROM \`${schemaName}\`.tb_service_ibscbs
+        WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+      [serviceId, institutionId])
+    const stored = rows[0]
+    // por COMPONENTE: trocar só o cIndOp não reconfere o cClassTrib inalterado (gate adversarial do delta)
+    const classification = !stored || stored.c !== input.ibscbs.classificationCode
+    const placeIndicator = !stored || stored.p !== input.ibscbs.placeIndicatorCode
+    if (classification || placeIndicator) {
+      out.ibscbs = input.ibscbs
+      out.checks = { classification, placeIndicator }
+    }
+  }
+  return out
 }
 
 /** Fase IBS/CBS (D-IB6/D-IB22): NBS em tb_service e a peça 1:1 tb_service_ibscbs, na MESMA
@@ -345,7 +388,7 @@ export async function updateService(
       await conn.rollback()
       return false
     }
-    await assertRefs(conn, input, schemaName, institutionId)
+    await assertRefs(conn, input, schemaName, institutionId, id)
     const identifier = (input.identifier ?? '').trim() || String(id)
 
     await conn.query(

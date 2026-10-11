@@ -1,6 +1,6 @@
 import { createHash } from 'crypto'
 import { ItCatalog, NbsRecord, PlaceIndicatorRecord } from './parse'
-import { UnconfirmedRow } from './reconcile'
+import { BlockedRow, CalculatorPair, UnconfirmedRow } from './reconcile'
 
 /**
  * PLANO da carga do catálogo IBS/CBS (gate socrático da IB-1 — "o ato tem plano"): o hash do
@@ -21,6 +21,12 @@ export interface PlanInput {
   unconfirmed:  UnconfirmedRow[]
   calculator:   ReadonlyMap<string, readonly string[]>
   nbs:          NbsRecord[]
+  /** D-IB28 (a): códigos aceitos na NFS-e pela lista, por data; pares consultados; linhas bloqueadas. */
+  calculatorNfse?: ReadonlyMap<string, readonly string[]>
+  pairs?:          ReadonlyMap<string, CalculatorPair>
+  blocked?:        BlockedRow[]
+  /** D-IB28 (c): --aceita-encolher faz parte do que o ensaio mostrou. */
+  allowShrink?:    boolean
 }
 
 const sha256 = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex')
@@ -34,6 +40,10 @@ export function catalogPlan(p: PlanInput): string {
     unconfirmed: p.unconfirmed,
     calculator: [...p.calculator.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([d, l]) => [d, [...l].sort()]),
     nbs: [...p.nbs].sort((x, y) => x.code.localeCompare(y.code)).map(n => [n.code, n.description]),
+    calculatorNfse: p.calculatorNfse && [...p.calculatorNfse.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([d, l]) => [d, [...l].sort()]),
+    pairs: p.pairs && [...p.pairs.entries()].sort(([x], [y]) => x.localeCompare(y)),
+    blocked: p.blocked,
+    allowShrink: p.allowShrink || undefined,
   })).slice(0, 16)
 }
 

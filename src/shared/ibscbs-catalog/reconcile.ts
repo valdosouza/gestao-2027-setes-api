@@ -25,6 +25,12 @@ export interface UnconfirmedRow {
   conferredAt: string
 }
 
+/** Linha que PERDE a aplicabilidade num modelo por divergência de atributo (D-IB28 (a)). */
+export interface BlockedRow extends UnconfirmedRow {
+  model:  'SE'
+  reason: string
+}
+
 export interface ReconcileResult {
   date:          string
   itValid:       number
@@ -33,6 +39,62 @@ export interface ReconcileResult {
   dates:         string[]
   /** Linhas de vigência sem confirmação da Calculadora — carregadas SEM aplicabilidade. */
   unconfirmed:   UnconfirmedRow[]
+  /** Linhas confirmadas cujo ATRIBUTO diverge — sem aplicabilidade só no modelo (D-IB28 (a)). */
+  blocked:       BlockedRow[]
+  /** Divergências só INFORMATIVAS (o IT não aceita no documento e a Calculadora aceita — o IT governa). */
+  divergences:   string[]
+}
+
+/** Tipo do documento da NFS-e na lista da Calculadora (`tiposDfeClassificacao[].tipo`). */
+export const CALCULATOR_NFSE_TYPE = 91
+/** Sigla da NFS-e no endpoint por par da Calculadora. */
+export const CALCULATOR_NFSE_SIGLA = 'NFS-e'
+
+/** Item da lista da Calculadora numa data: código + aceitação na NFS-e (D-IB28 (a)). */
+export interface CalculatorEntry { code: string; nfse: boolean }
+
+/** Atributos do par NFS-e × cClassTrib na data (endpoint por par). */
+export interface CalculatorPair { valid: boolean; requiresRegular: boolean }
+
+export const pairKey = (date: string, code: string): string => `${date}|${code}`
+
+/** Lista da Calculadora com os documentos de cada código — estrutura mudada = erro ALTO. */
+export function parseCalculatorList(json: unknown, date: string): CalculatorEntry[] {
+  const codes = parseCalculatorCodes(json, date)
+  const problems: string[] = []
+  const out = (json as any[]).map((x, i) => {
+    const tipos = x?.tiposDfeClassificacao
+    if (!Array.isArray(tipos) || tipos.some((t: any) => typeof t?.tipo !== 'number')) {
+      problems.push(`item ${i + 1} (${codes[i]}): tiposDfeClassificacao ausente ou sem "tipo" numérico`)
+      return { code: codes[i], nfse: false }
+    }
+    return { code: codes[i], nfse: tipos.some((t: any) => t.tipo === CALCULATOR_NFSE_TYPE) }
+  })
+  if (problems.length) throw new CatalogSourceError(`Calculadora (${date}): estrutura da lista de cClassTrib mudou`, problems)
+  return out
+}
+
+/** Resposta do par NFS-e × cClassTrib — os dois booleanos que o código consome. */
+export function parseCalculatorPair(json: unknown, code: string, date: string): CalculatorPair {
+  const x = json as any
+  if (typeof x?.validoParaSiglaDfeInformado !== 'boolean' || typeof x?.exigeGrupoTributacaoRegular !== 'boolean') {
+    throw new CatalogSourceError(`Calculadora (${date}): resposta do par ${CALCULATOR_NFSE_SIGLA} × ${code} mudou de estrutura`,
+      [JSON.stringify(x).slice(0, 200)])
+  }
+  return { valid: x.validoParaSiglaDfeInformado, requiresRegular: x.exigeGrupoTributacaoRegular }
+}
+
+/** Linhas que pedem a consulta por PAR: aceitas na NFS-e pelo IT E pela lista da Calculadora na data delas. */
+export function rowsNeedingPair(
+  catalog: ItCatalog, entries: ReadonlyMap<string, readonly CalculatorEntry[]>, loadDate: string,
+): Array<{ date: string; code: string }> {
+  const out = new Map<string, { date: string; code: string }>()
+  for (const row of catalog.classifications) {
+    if (!row.models.includes('SE')) continue
+    const at = conferenceDateOf(row, loadDate)
+    if (entries.get(at)?.find(e => e.code === row.code)?.nfse) out.set(pairKey(at, row.code), { date: at, code: row.code })
+  }
+  return [...out.values()].sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code))
 }
 
 /** Lista de cClassTrib da Calculadora numa data: array de objetos com `codigo` de 6 dígitos
@@ -65,11 +127,19 @@ export function conferenceDates(catalog: ItCatalog, loadDate: string): string[] 
 /**
  * `calculator`: códigos da Calculadora POR DATA consultada (ou só a lista da data da carga —
  * as demais datas ficam sem lista e as linhas delas, não confirmadas).
+ * `attributes` (D-IB28 (a) — OBRIGATÓRIO: nenhum chamador pula a conferência): a lista com os documentos de cada
+ * código e os PARES NFS-e × cClassTrib. Linha confirmada que o IT aceita na NFS-e perde a
+ * aplicabilidade na NFS-e quando a Calculadora não a aceita (lista ou par), quando o par
+ * não foi consultado (fail-closed) ou quando a tributação regular diverge do IT.
  */
 export function reconcileWithCalculator(
   catalog: ItCatalog,
   calculator: ReadonlyMap<string, Iterable<string>> | Iterable<string>,
   date: string,
+  attributes: {
+    entries: ReadonlyMap<string, readonly CalculatorEntry[]>
+    pairs:   ReadonlyMap<string, CalculatorPair>
+  },
 ): ReconcileResult {
   const byDate = new Map<string, Set<string>>()
   if (calculator instanceof Map) {
@@ -89,11 +159,17 @@ export function reconcileWithCalculator(
       empty.map(d => `data ${d}`))
   }
   const it = itCodesValidAt(catalog, date)
-  const onlyCalc = [...calc].filter(c => !it.has(c)).sort()
+  // A-IB1 em TODA data consultada (gate adversarial do delta): código na Calculadora fora do IT
+  // naquela data = IT desatualizado → carga recusada inteira
+  const onlyCalc: string[] = []
+  for (const [d, codes] of [...byDate].sort(([x], [y]) => x.localeCompare(y))) {
+    const itAt = d === date ? it : itCodesValidAt(catalog, d)
+    for (const c of [...codes].sort()) if (!itAt.has(c)) onlyCalc.push(`cClassTrib ${c} (${d})`)
+  }
   if (onlyCalc.length) {
     throw new CatalogSourceError(
-      `A Calculadora tem cClassTrib vigentes em ${date} que a tabela do IT não tem — o IT informado está desatualizado; carga recusada`,
-      onlyCalc.map(c => `cClassTrib ${c}`))
+      `A Calculadora tem cClassTrib vigentes que a tabela do IT não tem na mesma data — o IT informado está desatualizado; carga recusada`,
+      onlyCalc)
   }
   const unconfirmed: UnconfirmedRow[] = []
   for (const row of catalog.classifications) {
@@ -101,9 +177,34 @@ export function reconcileWithCalculator(
     if (!byDate.get(at)?.has(row.code)) unconfirmed.push({ code: row.code, validFrom: row.validFrom, conferredAt: at })
   }
   unconfirmed.sort((a, b) => a.code.localeCompare(b.code) || a.validFrom.localeCompare(b.validFrom))
+
+  const blocked: BlockedRow[] = []
+  const divergences: string[] = []
+  {
+    const isUnconfirmed = new Set(unconfirmed.map(u => `${u.code}|${u.validFrom}`))
+    for (const row of catalog.classifications) {
+      if (isUnconfirmed.has(`${row.code}|${row.validFrom}`)) continue
+      const at = conferenceDateOf(row, date)
+      const entry = attributes.entries.get(at)?.find(e => e.code === row.code)
+      const itSE = row.models.includes('SE')
+      const base = { code: row.code, validFrom: row.validFrom, conferredAt: at, model: 'SE' as const }
+      if (!itSE) {
+        if (entry?.nfse) divergences.push(`cClassTrib ${row.code} (${row.validFrom}): o IT não aceita na NFS-e e a Calculadora aceita — vale o IT`)
+        continue
+      }
+      if (!entry?.nfse) { blocked.push({ ...base, reason: 'a lista da Calculadora não aceita na NFS-e' }); continue }
+      const pair = attributes.pairs.get(pairKey(at, row.code))
+      if (!pair) blocked.push({ ...base, reason: 'par NFS-e × cClassTrib não consultado na Calculadora' })
+      else if (!pair.valid) blocked.push({ ...base, reason: 'o par NFS-e × cClassTrib não é válido na Calculadora' })
+      else if (pair.requiresRegular !== row.requiresRegularTaxation) {
+        blocked.push({ ...base, reason: `tributação regular diverge (IT ${row.requiresRegularTaxation ? 'exige' : 'não exige'} × Calculadora ${pair.requiresRegular ? 'exige' : 'não exige'})` })
+      }
+    }
+    blocked.sort((a, b) => a.code.localeCompare(b.code) || a.validFrom.localeCompare(b.validFrom))
+  }
   return {
     date, itValid: it.size, calculator: calc.size,
     dates: [date, ...[...byDate.keys()].filter(d => d !== date).sort()],
-    unconfirmed,
+    unconfirmed, blocked, divergences,
   }
 }

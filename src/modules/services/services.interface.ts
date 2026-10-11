@@ -52,6 +52,9 @@ export interface ServiceIbscbsRow {
   /** CST derivado (= prefixo do cClassTrib — E0959; nunca guardado). */
   cst:                       string
   classificationName:        string | null
+  /** Vigência da linha exibida (D-IB29 — a tela mostra "vale a partir de"/"válida até"). */
+  validFrom:                 string | null
+  validUntil:                string | null
   placeIndicatorCode:        string
   placeIndicatorDescription: string | null
 }

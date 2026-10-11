@@ -3,6 +3,7 @@ import { readXlsx, excelSerialToIsoDate, columnIndex, XlsxError } from '@shared/
 import {
   parseItCatalog, parsePlaceIndicators, parseNbsList, reconcileWithCalculator,
   CatalogSourceError, itCodesValidAt, conferenceDates, conferenceDateOf, parseCalculatorCodes,
+  parseCalculatorList, parseCalculatorPair, rowsNeedingPair, pairKey,
 } from '@shared/ibscbs-catalog'
 
 /**
@@ -201,6 +202,9 @@ describe('parseNbsList — dados abertos da Calculadora', () => {
   })
 })
 
+/** Testes de PRESENÇA (A-IB1/A-IB2): sem lista com documentos nem pares — o foco é unconfirmed/recusas. */
+const NO_ATTR = { entries: new Map(), pairs: new Map() }
+
 describe('reconcileWithCalculator — D-IB23 + A-IB1', () => {
   const cat = () => parseItCatalog(itXlsx([
     ['000', 'x', '000001', 'n', 'd', 0, D2026, null, D2026, 1, 1, 1],
@@ -208,12 +212,19 @@ describe('reconcileWithCalculator — D-IB23 + A-IB1', () => {
   ]))
 
   it('código só na Calculadora = IT desatualizado → carga recusada inteira', () => {
-    expect(() => reconcileWithCalculator(cat(), ['000001', '000006', '000099'], '2027-01-01'))
+    expect(() => reconcileWithCalculator(cat(), ['000001', '000006', '000099'], '2027-01-01', NO_ATTR))
       .toThrow(/IT informado está desatualizado[\s\S]*000099/)
   })
 
+  // gate adversarial do delta da Rodada 3: a A-IB1 vale em TODA data consultada, não só na da carga
+  it('código só na Calculadora em OUTRA data de conferência também recusa a carga', () => {
+    expect(() => reconcileWithCalculator(cat(),
+      new Map([['2027-01-01', ['000001', '000006']], ['2027-06-01', ['000001', '999998']]]), '2027-01-01', NO_ATTR))
+      .toThrow(/desatualizado[\s\S]*cClassTrib 999998 \(2027-06-01\)/)
+  })
+
   it('código só no IT = ainda não confirmado pela Calculadora → carregado SEM aplicabilidade', () => {
-    const r = reconcileWithCalculator(cat(), ['000001'], '2027-01-01')
+    const r = reconcileWithCalculator(cat(), ['000001'], '2027-01-01', NO_ATTR)
     expect(r.unconfirmed).toEqual([{ code: '000006', validFrom: '2026-01-01', conferredAt: '2027-01-01' }])
     expect(r.itValid).toBe(2)
   })
@@ -221,11 +232,11 @@ describe('reconcileWithCalculator — D-IB23 + A-IB1', () => {
   // Gate socrático da IB-1: Calculadora (API "VERSÃO BETA") respondendo 200 com [] deixava
   // TODO código "não confirmado" e o --vai apagava a aplicabilidade do catálogo inteiro.
   it('lista VAZIA da Calculadora na data da carga = carga recusada (nunca apaga a aplicabilidade)', () => {
-    expect(() => reconcileWithCalculator(cat(), [], '2027-01-01')).toThrow(/VAZIA[\s\S]*recusada/)
-    expect(() => reconcileWithCalculator(cat(), new Map([['2027-02-01', ['000001']]]), '2027-01-01'))
+    expect(() => reconcileWithCalculator(cat(), [], '2027-01-01', NO_ATTR)).toThrow(/VAZIA[\s\S]*recusada/)
+    expect(() => reconcileWithCalculator(cat(), new Map([['2027-02-01', ['000001']]]), '2027-01-01', NO_ATTR))
       .toThrow(/sem lista de cClassTrib na data da carga/)
     // re-score socrático: [] numa data de conferência SECUNDÁRIA também recusa
-    expect(() => reconcileWithCalculator(cat(), new Map([['2026-10-10', ['000001', '000006']], ['2027-01-01', []]]), '2026-10-10'))
+    expect(() => reconcileWithCalculator(cat(), new Map([['2026-10-10', ['000001', '000006']], ['2027-01-01', []]]), '2026-10-10', NO_ATTR))
       .toThrow(/VAZIA[\s\S]*data 2027-01-01/)
   })
 
@@ -238,11 +249,11 @@ describe('reconcileWithCalculator — D-IB23 + A-IB1', () => {
     ]))
     expect(conferenceDates(future(), '2026-10-10')).toEqual(['2026-10-10', '2027-01-01'])
 
-    const without = reconcileWithCalculator(future(), ['000001'], '2026-10-10')
+    const without = reconcileWithCalculator(future(), ['000001'], '2026-10-10', NO_ATTR)
     expect(without.unconfirmed).toEqual([{ code: '000007', validFrom: '2027-01-01', conferredAt: '2027-01-01' }])
 
     const withList = reconcileWithCalculator(future(),
-      new Map([['2026-10-10', ['000001']], ['2027-01-01', ['000001', '000007']]]), '2026-10-10')
+      new Map([['2026-10-10', ['000001']], ['2027-01-01', ['000001', '000007']]]), '2026-10-10', NO_ATTR)
     expect(withList.unconfirmed).toEqual([])
     expect(withList.dates).toEqual(['2026-10-10', '2027-01-01'])
   })
@@ -257,5 +268,67 @@ describe('reconcileWithCalculator — D-IB23 + A-IB1', () => {
     expect(parseCalculatorCodes([{ codigo: '000001' }, { codigo: '200052' }], '2026-10-10')).toEqual(['000001', '200052'])
     expect(() => parseCalculatorCodes([{ code: '000001' }], '2026-10-10')).toThrow(/estrutura da lista de cClassTrib mudou/)
     expect(() => parseCalculatorCodes({ itens: [] }, '2026-10-10')).toThrow(/não é um array/)
+  })
+})
+
+// D-IB28 (a) (Rodada 3, Valdo 2026-10-10): além da presença, a carga confere na Calculadora os DOIS
+// atributos que o código consome — aceitação na NFS-e (lista tipo 91 + par) e tributação regular (par).
+describe('reconcileWithCalculator — atributos IT × Calculadora (D-IB28 a)', () => {
+  // IT: 000001 aceito na NFS-e sem regular · 200052 aceito na NFS-e e EXIGE regular · 200053 NÃO aceito na NFS-e
+  const cat = () => parseItCatalog(itXlsx([
+    ['000', 'x', '000001', 'n', 'd', 0, D2026, null, D2026, 1, 1, 1],
+    ['200', 'x', '200052', 'n', 'd', 1, D2026, null, D2026, 1, 0, 1],
+    ['200', 'x', '200053', 'n', 'd', 0, D2026, null, D2026, 1, 0, 0],
+  ]))
+  const D = '2026-10-10'
+  const list = (nfse: Record<string, boolean>) => new Map([[D, Object.entries(nfse).map(([code, v]) => ({ code, nfse: v }))]])
+  const codesOf = (m: Map<string, Array<{ code: string }>>) => new Map([...m].map(([d, l]) => [d, l.map(e => e.code)]))
+  const pairs = (p: Record<string, { valid: boolean; requiresRegular: boolean }>) =>
+    new Map(Object.entries(p).map(([code, v]) => [pairKey(D, code), v]))
+
+  it('tudo coerente: nenhuma linha bloqueada; IT que não aceita e Calculadora que aceita = só informativo', () => {
+    const entries = list({ '000001': true, '200052': true, '200053': true })
+    const r = reconcileWithCalculator(cat(), codesOf(entries), D, {
+      entries, pairs: pairs({ '000001': { valid: true, requiresRegular: false }, '200052': { valid: true, requiresRegular: true } }),
+    })
+    expect(r.blocked).toEqual([])
+    expect(r.divergences).toEqual([expect.stringMatching(/200053.*vale o IT/)])
+  })
+
+  it('divergência de ATRIBUTO = a linha perde a aplicabilidade na NFS-e (fail-closed), com o motivo', () => {
+    const entries = list({ '000001': false, '200052': true, '200053': false })
+    const r = reconcileWithCalculator(cat(), codesOf(entries), D, {
+      entries, pairs: pairs({ '200052': { valid: true, requiresRegular: false } }),
+    })
+    expect(r.blocked.map(b => [b.code, b.model, b.reason])).toEqual([
+      ['000001', 'SE', 'a lista da Calculadora não aceita na NFS-e'],
+      ['200052', 'SE', expect.stringMatching(/tributação regular diverge \(IT exige × Calculadora não exige\)/)],
+    ])
+  })
+
+  it('par não consultado ou inválido = sem aplicabilidade na NFS-e (nunca presume)', () => {
+    const entries = list({ '000001': true, '200052': true, '200053': false })
+    const r = reconcileWithCalculator(cat(), codesOf(entries), D, {
+      entries, pairs: pairs({ '200052': { valid: false, requiresRegular: true } }),
+    })
+    expect(r.blocked.map(b => [b.code, b.reason])).toEqual([
+      ['000001', 'par NFS-e × cClassTrib não consultado na Calculadora'],
+      ['200052', 'o par NFS-e × cClassTrib não é válido na Calculadora'],
+    ])
+  })
+
+  it('rowsNeedingPair: só as linhas aceitas na NFS-e pelo IT E pela lista, na data de conferência delas', () => {
+    expect(rowsNeedingPair(cat(), list({ '000001': true, '200052': false, '200053': true }), D))
+      .toEqual([{ date: D, code: '000001' }])
+  })
+
+  it('parseCalculatorList / parseCalculatorPair: estrutura mudada = erro ALTO', () => {
+    expect(parseCalculatorList([{ codigo: '000001', tiposDfeClassificacao: [{ tipo: 55 }, { tipo: 91 }] },
+      { codigo: '200053', tiposDfeClassificacao: [{ tipo: 55 }] }], D))
+      .toEqual([{ code: '000001', nfse: true }, { code: '200053', nfse: false }])
+    expect(() => parseCalculatorList([{ codigo: '000001' }], D)).toThrow(/tiposDfeClassificacao ausente/)
+    expect(parseCalculatorPair({ validoParaSiglaDfeInformado: true, exigeGrupoTributacaoRegular: false }, '000001', D))
+      .toEqual({ valid: true, requiresRegular: false })
+    expect(() => parseCalculatorPair({ valido: true }, '000001', D)).toThrow(/mudou de estrutura/)
   })
 })
