@@ -24,11 +24,13 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  *  - D-IB28 (a): linha com ATRIBUTO divergente na Calculadora (`blocked`) perde a
  *    aplicabilidade só naquele modelo;
  *  - D-IB28 (c): perda > 10 % das linhas VIVAS de qualquer lista (aplicabilidade de cClassTrib,
- *    de cIndOp, NBS e — D-IB39 — as marcações "ausente da fonte" da história) = carga RECUSADA, salvo
- *    `allowShrink` (argumento --aceita-encolher do ato);
+ *    de cIndOp, NBS e — D-IB39 — as marcações "ausente da fonte" da história; D-IB44 — somadas às
+ *    linhas VIGENTES na data da carga cuja vigência a fonte encerrou antes dela) = carga RECUSADA,
+ *    salvo `allowShrink` (argumento --aceita-encolher do ato);
  *    no ensaio a recusa vira aviso no relatório;
  *  - D-IB28 (b): o relatório do ENSAIO lista, por schema de cliente, os serviços que usam cClassTrib
- *    ou cIndOp que fica SEM nenhuma aplicabilidade na NFS-e, ou NBS que perde a presença, nesta
+ *    ou cIndOp que fica SEM nenhuma aplicabilidade na NFS-e (D-IB44: inclusive cClassTrib cuja linha
+ *    vigente teve a vigência encerrada nesta carga), ou NBS que perde a presença, nesta
  *    carga (só LEITURA nos clientes — D-IB32). A leitura dos clientes acontece DEPOIS do rollback
  *    do ensaio (nenhuma trava do catálogo segura N schemas) e NÃO roda no ato (o plano já bateu
  *    com o ensaio). Limite conhecido: um PUT que leu o catálogo antes do commit pode gravar um
@@ -52,11 +54,20 @@ export const SHRINK_LIMIT = 0.10
 export interface ShrinkRow {
   list: 'applicability' | 'placeApplicability' | 'nbs' | 'validity'
   aliveBefore: number
+  /** Linhas que a carga tira: desativadas (presença) — na história (D-IB39/D-IB44), as ausentes da fonte MAIS as
+   *  com a vigência encerrada antes da data (≠ `relatorio.validity.deactivated`, que conta só as ausentes). */
   deactivated: number
   /** Só na história (validity): linha marcada cujo código SEGUE na fonte com outra linha (ex.: vigência corrigida) ×
    *  linha de código que SUMIU da fonte (suspeita de IT antigo/errado). */
   codeInSource?: number
   codeVanished?: number
+  /** Só na história (D-IB44): linhas vigentes na data da carga cuja vigência a fonte encerrou antes dela. */
+  endedBeforeDate?: number
+  /** Desdobramento das encerradas (só quando há): o código tem OUTRA linha vigente na data (substituição — ex.: fim de
+   *  ano com sucessora) × não tem (o código deixa de valer — suspeita de IT errado). Data = a da carga. */
+  endedWithSuccessor?: number
+  endedNoSuccessor?:   number
+  beforeDate?:         string
 }
 
 /** Rótulo da lista na mensagem de recusa — quem lê é o operador, não o código. */
@@ -64,12 +75,16 @@ const SHRINK_LABEL: Record<ShrinkRow['list'], string> = {
   applicability:      'presença do cClassTrib por modelo',
   placeApplicability: 'presença do cIndOp por modelo',
   nbs:                'NBS da lista oficial',
-  validity:           'história do cClassTrib (linhas marcadas ausentes da fonte)',
+  validity:           'história do cClassTrib (linhas ausentes da fonte ou com a vigência encerrada antes da data da carga)',
 }
 
 export function shrinkLine(r: ShrinkRow): string {
+  const ended = r.endedBeforeDate
+    ? `, ${r.endedBeforeDate} com a vigência encerrada antes de ${r.beforeDate} (${r.endedWithSuccessor} de código com outra ` +
+      `linha vigente nessa data, ${r.endedNoSuccessor} de código sem linha vigente nessa data)`
+    : ', 0 com a vigência encerrada antes da data da carga'
   const split = r.list === 'validity' && r.codeInSource != null
-    ? ` — ${r.codeInSource} de código que segue na fonte (ex.: vigência corrigida), ${r.codeVanished} de código que sumiu da fonte`
+    ? ` — ${r.codeInSource} de código que segue na fonte (ex.: vigência corrigida), ${r.codeVanished} de código que sumiu da fonte${ended}`
     : ''
   return `${SHRINK_LABEL[r.list]} [${r.list}]: ${r.deactivated} de ${r.aliveBefore}${split}`
 }
@@ -119,6 +134,9 @@ export interface ApplyReport {
   placeIndicator:        Counts
   placeApplicability:    Counts
   nbs:                   Counts
+  /** D-IB44: linhas da história VIGENTES na data da carga (presentes na fonte) cuja vigência a fonte
+   *  encerrou antes dela — chave código|vigência; sem data, sempre vazio. */
+  validityEnded:         string[]
   /** Listas que encolheram mais que o limite (D-IB28 (c)) — no ensaio, aviso; no ato sem --aceita-encolher, recusa. */
   shrink:                ShrinkRow[]
   impact:                ImpactRow[]
@@ -170,7 +188,7 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
   const report: ApplyReport = {
     applied: false, cst: zero(), classification: zero(), validity: zero(), applicability: zero(),
     placeIndicator: zero(), placeApplicability: zero(), nbs: zero(),
-    shrink: [], impact: [], impactProblems: [],
+    validityEnded: [], shrink: [], impact: [], impactProblems: [],
   }
   await conn.query(`SET SESSION sql_mode = CONCAT_WS(',', @@SESSION.sql_mode, 'STRICT_ALL_TABLES')`)
   await conn.beginTransaction()
@@ -242,6 +260,12 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
           [c.validUntil, c.name, c.description, regular, input.itVersion, c.updatedAt, c.code, c.validFrom])
         if (row.absent_since_version != null) report.validity.revived++
         else report.validity.updated++
+        // D-IB44: vigente na data da carga antes; a fonte encerrou a vigência antes dela
+        if (input.date && row.absent_since_version == null && isoDate(row.valid_from)! <= input.date
+            && (row.valid_until == null || isoDate(row.valid_until)! >= input.date)
+            && c.validUntil != null && c.validUntil < input.date) {
+          report.validityEnded.push(`${c.code}|${c.validFrom}`)
+        }
       } else report.validity.unchanged++
     }
     // D-IB36: o que estava presente e NÃO veio nesta versão da fonte ganha o fato (nunca é apagado)
@@ -322,20 +346,24 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
     // --- D-IB28 (c): encolhimento — decidido ANTES de qualquer leitura de cliente --------
     // D-IB39: as marcações 'ausente da fonte' (validity) também contam — IT antigo carregado por engano
     const codesInSource = new Set(input.it.classifications.map(c => c.code))
+    // D-IB44: na história, somam as linhas vigentes na data cuja vigência a fonte encerrou antes dela
     for (const list of ['applicability', 'placeApplicability', 'nbs', 'validity'] as const) {
       const c = report[list]
-      if (c.aliveBefore > 0 && c.deactivated / c.aliveBefore > SHRINK_LIMIT) {
-        const row: ShrinkRow = { list, aliveBefore: c.aliveBefore, deactivated: c.deactivated }
+      const ended = list === 'validity' ? report.validityEnded.length : 0
+      const lost = c.deactivated + ended
+      if (c.aliveBefore > 0 && lost / c.aliveBefore > SHRINK_LIMIT) {
+        const row: ShrinkRow = { list, aliveBefore: c.aliveBefore, deactivated: lost }
         if (list === 'validity') {
           const codeInSource = c.deactivatedKeys.filter(k => codesInSource.has(k.split('|')[0])).length
-          Object.assign(row, { codeInSource, codeVanished: c.deactivated - codeInSource })
+          Object.assign(row, { codeInSource, codeVanished: c.deactivated - codeInSource, endedBeforeDate: ended })
+          if (ended) Object.assign(row, await endedSplit(conn, report.validityEnded, input.date!))
         }
         report.shrink.push(row)
       }
     }
     if (input.apply && report.shrink.length && !input.allowShrink) {
       throw new CatalogSourceError(
-        `A carga desativaria mais de ${SHRINK_LIMIT * 100} % das linhas vivas — recusada (nada gravado); se for intencional, rode o ensaio e o ato com --aceita-encolher`,
+        `A carga tiraria mais de ${SHRINK_LIMIT * 100} % das linhas vivas de alguma lista (desativadas; na história, ausentes da fonte ou com a vigência encerrada) — recusada (nada gravado); se for intencional, rode o ensaio e o ato com --aceita-encolher`,
         report.shrink.map(shrinkLine))
     }
     // --- D-IB28 (b): o que fica SEM aplicabilidade (consulta CENTRAL, no estado pós-carga) ------
@@ -355,6 +383,19 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
   }
 }
 
+/** D-IB44 (gate socrático do delta R6): das linhas encerradas antes da data, quantas são de código que ainda tem OUTRA
+ *  linha vigente na data (estado pós-carga, mesma transação) — o número que separa substituição de IT errado. */
+async function endedSplit(conn: Conn, endedKeys: string[], date: string): Promise<Pick<ShrinkRow, 'endedWithSuccessor' | 'endedNoSuccessor' | 'beforeDate'>> {
+  const codes = [...new Set(endedKeys.map(k => k.split('|')[0]))]
+  const [rows] = await conn.query<any[]>(
+    `SELECT DISTINCT code FROM ${C}.tb_tax_ibscbs_classification_validity
+      WHERE code IN (?) AND deleted = 'N' AND absent_since_version IS NULL
+        AND valid_from <= ? AND (valid_until IS NULL OR valid_until >= ?)`, [codes, date, date])
+  const alive = new Set(rows.map(r => String(r.code)))
+  const withSuccessor = endedKeys.filter(k => alive.has(k.split('|')[0])).length
+  return { endedWithSuccessor: withSuccessor, endedNoSuccessor: endedKeys.length - withSuccessor, beforeDate: date }
+}
+
 const SCHEMA_RE = /^[a-z0-9_]+$/
 
 interface LostCodes { classifications: string[]; placeIndicators: string[]; nbs: string[] }
@@ -366,7 +407,12 @@ interface LostCodes { classifications: string[]; placeIndicators: string[]; nbs:
  *  Só tabelas CENTRAIS, na transação da carga (estado pós-carga, antes do rollback/commit). */
 async function lostAfterLoad(conn: Conn, report: ApplyReport, date?: string): Promise<LostCodes> {
   const codesOf = (keys: string[]) => [...new Set(keys.filter(k => k.endsWith('|SE')).map(k => k.split('|')[0]))]
-  const candidatesCls = codesOf(report.applicability.deactivatedKeys)
+  // D-IB44: código cuja linha vigente teve a vigência encerrada nesta carga também é candidato — a
+  // consulta abaixo (pela linha VIGENTE na data com aplicabilidade SE) decide se ainda é aceito
+  const candidatesCls = [...new Set([
+    ...codesOf(report.applicability.deactivatedKeys),
+    ...(date === undefined ? [] : report.validityEnded.map(k => k.split('|')[0])),
+  ])]
   const candidatesPlace = codesOf(report.placeApplicability.deactivatedKeys)
   const stillAlive = async (table: string, codes: string[]): Promise<Set<string>> => {
     if (!codes.length) return new Set()

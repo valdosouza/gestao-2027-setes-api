@@ -279,11 +279,11 @@ describe('applyCatalog — fato "ausente da fonte" na história (D-IB36)', () =>
     }
     const ensaio = await applyCatalog(fakeConn(withOld()).conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
     // 000001 segue na fonte com outra vigência = código que segue na fonte (não é código que sumiu)
-    expect(ensaio.shrink).toEqual([{ list: 'validity', aliveBefore: 3, deactivated: 1, codeInSource: 1, codeVanished: 0 }])
+    expect(ensaio.shrink).toEqual([{ list: 'validity', aliveBefore: 3, deactivated: 1, codeInSource: 1, codeVanished: 0, endedBeforeDate: 0 }])
 
     const recusa = fakeConn(withOld())
     await expect(applyCatalog(recusa.conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: true, unconfirmed: [] }))
-      .rejects.toThrow(/mais de 10 %[\s\S]*história do cClassTrib \(linhas marcadas ausentes da fonte\) \[validity\]: 1 de 3 — 1 de código que segue na fonte \(ex\.: vigência corrigida\), 0 de código que sumiu da fonte/)
+      .rejects.toThrow(/mais de 10 %[\s\S]*história do cClassTrib \(linhas ausentes da fonte ou com a vigência encerrada antes da data da carga\) \[validity\]: 1 de 3 — 1 de código que segue na fonte \(ex\.: vigência corrigida\), 0 de código que sumiu da fonte/)
     expect(recusa.raw.commit).not.toHaveBeenCalled()
 
     const aceita = fakeConn(withOld())
@@ -308,7 +308,7 @@ describe('applyCatalog — fato "ausente da fonte" na história (D-IB36)', () =>
     t.tb_tax_ibscbs_classification_validity.push(
       { code: '999999', valid_from: '2025-06-01', valid_until: null, name: 'sumiu', description: 'd', requires_regular_taxation: 'N', source_updated_at: '2025-06-01' })
     const r = await applyCatalog(fakeConn(t).conn, { it: catalog(), itVersion: 'IT v1.70', models: ['SE'], apply: false, unconfirmed: [] })
-    expect(r.shrink).toEqual([{ list: 'validity', aliveBefore: 3, deactivated: 1, codeInSource: 0, codeVanished: 1 }])
+    expect(r.shrink).toEqual([{ list: 'validity', aliveBefore: 3, deactivated: 1, codeInSource: 0, codeVanished: 1, endedBeforeDate: 0 }])
     expect(shrinkLine(r.shrink[0])).toMatch(/0 de código que segue na fonte.*1 de código que sumiu da fonte/)
   })
 
@@ -345,5 +345,133 @@ describe('isCalendarDate — datas da fonte e do --date', () => {
     expect(isCalendarDate('2026-10-10')).toBe(true)
     expect(isCalendarDate('2028-02-29')).toBe(true)
     for (const bad of ['2026-02-30', '2026-13-45', '2026-1-1', '2026-01-01 lixo', '']) expect(isCalendarDate(bad)).toBe(false)
+  })
+})
+
+// D-IB44 (Rodada 6, Valdo 2026-10-11 — gate adversarial do delta R5, LOW 1): encerrar a vigência de linhas
+// VIGENTES na data da carga (dFimVig antes dela) conta no limite da história e põe o código no impacto
+describe('applyCatalog — D-IB44 vigência encerrada antes da data da carga', () => {
+  const endedCatalog = (validUntil: string | null) => {
+    const it = catalog()
+    it.classifications[1] = { ...it.classifications[1], validUntil }   // 000006 (vigente desde 2026-01-01)
+    return it
+  }
+  const base = { itVersion: 'IT t', models: ['SE'] as Array<'SE'>, unconfirmed: [] }
+
+  it('linha vigente na data com a vigência encerrada antes dela conta no limite (bruto); o ato recusa sem --aceita-encolher', async () => {
+    const ensaio = await applyCatalog(fakeConn(baseTables()).conn, { ...base, it: endedCatalog('2026-10-09'), apply: false, date: '2026-10-10' })
+    expect(ensaio.validityEnded).toEqual(['000006|2026-01-01'])
+    expect(ensaio.shrink).toEqual([{ list: 'validity', aliveBefore: 2, deactivated: 1, codeInSource: 0, codeVanished: 0, endedBeforeDate: 1,
+      endedWithSuccessor: 0, endedNoSuccessor: 1, beforeDate: '2026-10-10' }])
+
+    const recusa = fakeConn(baseTables())
+    await expect(applyCatalog(recusa.conn, { ...base, it: endedCatalog('2026-10-09'), apply: true, date: '2026-10-10' }))
+      .rejects.toThrow(/\[validity\]: 1 de 2 — 0 de código que segue na fonte \(ex\.: vigência corrigida\), 0 de código que sumiu da fonte, 1 com a vigência encerrada antes de 2026-10-10 \(0 de código com outra linha vigente nessa data, 1 de código sem linha vigente nessa data\)/)
+    expect(recusa.raw.commit).not.toHaveBeenCalled()
+
+    const aceita = fakeConn(baseTables())
+    const r = await applyCatalog(aceita.conn, { ...base, it: endedCatalog('2026-10-09'), apply: true, date: '2026-10-10', allowShrink: true })
+    expect(r.applied).toBe(true)
+  })
+
+  it('não conta: fim no futuro, fim na própria data, linha que já não valia, linha superada, carga sem data', async () => {
+    for (const until of ['2026-12-31', '2026-10-10']) {
+      const r = await applyCatalog(fakeConn(baseTables()).conn, { ...base, it: endedCatalog(until), apply: false, date: '2026-10-10' })
+      expect(r.validityEnded).toEqual([])
+      expect(r.shrink).toEqual([])
+    }
+    const expired = baseTables()
+    expired.tb_tax_ibscbs_classification_validity[1].valid_until = '2026-05-01'   // já não valia na data
+    expect((await applyCatalog(fakeConn(expired).conn, { ...base, it: endedCatalog('2026-04-01'), apply: false, date: '2026-10-10' })).validityEnded).toEqual([])
+    const superseded = baseTables()
+    superseded.tb_tax_ibscbs_classification_validity[1].absent_since_version = 'IT v1.60'   // revive: não é "deixa de valer"
+    expect((await applyCatalog(fakeConn(superseded).conn, { ...base, it: endedCatalog('2026-10-09'), apply: false, date: '2026-10-10' })).validityEnded).toEqual([])
+    expect((await applyCatalog(fakeConn(baseTables()).conn, { ...base, it: endedCatalog('2026-10-09'), apply: false })).validityEnded).toEqual([])
+  })
+
+  it('impacto: o código encerrado sem outra linha vigente na data entra; com outra linha vigente, não', async () => {
+    const tables = (aliveToday: Row[]) => {
+      const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+      t['__alive.tb_tax_ibscbs_classification_validity'] = aliveToday
+      t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+      t['setes_a.tb_service_ibscbs'] = [{ code: '000006', n: 2, ids: '40,41' }]
+      return t
+    }
+    const input = { ...base, it: endedCatalog('2026-10-09'), apply: false, date: '2026-10-10', reportImpact: true }
+    const r = await applyCatalog(fakeConn(tables([])).conn, input)
+    expect(r.impact).toEqual([{ schema: 'setes_a', institutionActive: true, kind: 'cClassTrib', code: '000006', services: 2, serviceIds: [40, 41] }])
+    expect((await applyCatalog(fakeConn(tables([{ code: '000006' }])).conn, input)).impact).toEqual([])
+  })
+
+  // gate socrático do delta R6 (achado 7): fim já marcado no futuro ou na própria data, encurtado para antes dela, conta
+  it('fronteiras: vigência que acabava no futuro ou na própria data, encurtada para antes dela, conta', async () => {
+    for (const before of ['2026-12-31', '2026-10-10']) {
+      const t = baseTables()
+      t.tb_tax_ibscbs_classification_validity[1].valid_until = before
+      const r = await applyCatalog(fakeConn(t).conn, { ...base, it: endedCatalog('2026-10-09'), apply: false, date: '2026-10-10' })
+      expect(r.validityEnded).toEqual(['000006|2026-01-01'])
+    }
+  })
+
+  // achado 2: o desdobramento separa substituição (código com outra linha vigente na data) de código que deixa de valer
+  it('desdobramento: encerrada com sucessora vigente na data × sem', async () => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t['__alive.tb_tax_ibscbs_classification_validity'] = [{ code: '000006' }]
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: endedCatalog('2026-10-09'), apply: false, date: '2026-10-10' })
+    expect(r.shrink[0]).toMatchObject({ endedBeforeDate: 1, endedWithSuccessor: 1, endedNoSuccessor: 0, beforeDate: '2026-10-10' })
+  })
+
+  // achado 1: o impacto lê o estado PÓS-carga (antes do rollback) pela linha VIGENTE na data — o fake confere SQL e parâmetros
+  it('impacto: a consulta central roda ANTES do rollback, pela linha vigente na data, com a data nos dois lados', async () => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    const seen: Array<{ sql: string; params: unknown[] }> = []
+    t['__alive.tb_tax_ibscbs_classification_validity'] = (sql: string, params: unknown[]) => { seen.push({ sql, params }); return [] }
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = [{ code: '000006', n: 1, ids: '40' }]
+    const { conn, raw } = fakeConn(t)
+    const r = await applyCatalog(conn, { ...base, it: endedCatalog('2026-10-09'), apply: false, date: '2026-10-10', reportImpact: true })
+    expect(r.impact).toHaveLength(1)
+    const impactSql = seen.find(x => /JOIN setes_central\.tb_tax_ibscbs_classification_applicability a/.test(x.sql))
+    expect(impactSql?.sql).toContain("a.model = 'SE' AND a.deleted = 'N'")
+    expect(impactSql?.sql).toContain('v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?)')
+    expect(impactSql?.params).toEqual([['000006'], '2026-10-10', '2026-10-10'])
+    const sqls = raw.query.mock.calls.map((c: any[]) => String(c[0]).replace(/\s+/g, ' '))
+    const at = sqls.findIndex((x: string) => /JOIN setes_central\.tb_tax_ibscbs_classification_applicability a/.test(x))
+    expect(raw.query.mock.invocationCallOrder[at]).toBeLessThan(raw.rollback.mock.invocationCallOrder[0])
+  })
+
+  // gate adversarial do delta R6 (casos não testados): as DUAS causas somam no limite, sem dupla contagem
+  it('limite: marcadas ausentes + encerradas somam (9 + 9 = 18 de 180 grava; 9 + 10 = 19 recusa); mesmo código conta as 2 linhas', async () => {
+    const build = (ended: number) => {
+      const t = baseTables()
+      const extras = Array.from({ length: 178 }, (_, i) => String(900000 + i))
+      for (const code of extras) {
+        t.tb_tax_ibscbs_classification_validity.push({ code, valid_from: '2026-01-01', valid_until: null, name: 'x', description: 'x', requires_regular_taxation: 'N', source_updated_at: '2026-01-01' })
+        t.tb_tax_ibscbs_classification.push({ code, cst: '000' })
+      }
+      const it = catalog()
+      // 9 primeiros somem da fonte (marcados); os 'ended' seguintes vêm com dFimVig antes da data
+      it.classifications.push(...extras.slice(9).map((code, i) => ({
+        code, cst: '000', name: 'x', description: 'x', validFrom: '2026-01-01', validUntil: i < ended ? '2026-10-09' : null,
+        requiresRegularTaxation: false, updatedAt: '2026-01-01', models: [] as any[] })))
+      return { c: fakeConn(t), it }
+    }
+    const ok = build(9)
+    const r = await applyCatalog(ok.c.conn, { ...base, it: ok.it, apply: true, date: '2026-10-10' })
+    expect([r.validity.deactivated, r.validityEnded.length, r.shrink]).toEqual([9, 9, []])
+    expect(ok.c.raw.commit).toHaveBeenCalledTimes(1)
+    const no = build(10)
+    await expect(applyCatalog(no.c.conn, { ...base, it: no.it, apply: true, date: '2026-10-10' }))
+      .rejects.toThrow(/\[validity\]: 19 de 180 — 0 de código que segue na fonte \(ex\.: vigência corrigida\), 9 de código que sumiu da fonte, 10 com a vigência encerrada antes de 2026-10-10/)
+    expect(no.c.raw.commit).not.toHaveBeenCalled()
+
+    // mesmo código: a linha antiga some da fonte (marcada) e a outra é encerrada — 2 linhas distintas
+    const same = baseTables()
+    same.tb_tax_ibscbs_classification_validity.push(
+      { code: '000006', valid_from: '2025-01-01', valid_until: null, name: 'antiga', description: 'd', requires_regular_taxation: 'N', source_updated_at: '2025-01-01' })
+    const r2 = await applyCatalog(fakeConn(same).conn, { ...base, it: endedCatalog('2026-10-09'), apply: false, date: '2026-10-10' })
+    expect(r2.validity.deactivatedKeys).toEqual(['000006|2025-01-01'])
+    expect(r2.validityEnded).toEqual(['000006|2026-01-01'])
+    expect(r2.shrink[0]).toMatchObject({ aliveBefore: 3, deactivated: 2, codeInSource: 1, endedBeforeDate: 1, endedNoSuccessor: 1 })
   })
 })

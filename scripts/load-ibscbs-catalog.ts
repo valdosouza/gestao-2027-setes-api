@@ -176,7 +176,11 @@ async function main() {
       modo: report.applied ? 'GRAVADO' : `ENSAIO (rollback) — para gravar ESTE plano: ${cmd}`,
       plano: plan,
       ...(report.shrink.length && !allowShrink
-        ? { AVISO_ENCOLHIMENTO: `o ato com --vai será RECUSADO (> 10 % de linhas vivas desativadas) — confira e, se for intencional, repita o ensaio com --aceita-encolher` }
+        ? { AVISO_ENCOLHIMENTO: `o ato com --vai será RECUSADO (> 10 % das linhas vivas de alguma lista desativadas — na história, ausentes da fonte ou com a vigência encerrada) — confira o desdobramento em relatorio.shrink e, se for intencional, repita o ensaio com --aceita-encolher` }
+        : {}),
+      data: date,
+      ...(date !== todayIn(DEFAULT_TIME_ZONE)
+        ? { AVISO_DATA: `--date ${date} não é hoje: limite de encolhimento e impacto foram avaliados nessa data — use só para reproduzir uma carga, nunca para fugir do limite` }
         : {}),
       conferencia: { ...rec, paresConsultados: pairs.size },
       fontes: { csts: it.csts.length, classificacoes: it.classifications.length, cIndOp: indop.length, nbs: nbs.length },
