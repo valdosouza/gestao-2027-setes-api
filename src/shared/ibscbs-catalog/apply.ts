@@ -42,8 +42,9 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  *    a linha do impacto traz o motivo (`reason`) e marca quando o cadastro ainda aceita o código
  *    (`registrationStillAccepts` — linha futura na janela ou outra linha vigente com presença: pickForRegistration).
  *    D-IB45: `impactAhead` (informativo, FORA do limite) lista os serviços cujo código aceito depois da carga deixa
- *    de ser aceito até o fim da janela do cadastro (a obrigação), com a data e o motivo da perda; depois da obrigação
- *    não há janela (vazio — Q-IB49);
+ *    de ser aceito até o HORIZONTE (D-IB49: o maior entre o fim da janela do cadastro e a data + AHEAD_DAYS dias —
+ *    `impactAheadUntil`), com a data e o motivo da perda; D-IB50: parte também do código aceito só pelo CADASTRO (linha
+ *    futura na janela — o que o selo mostra), que perde depois de passar a valer (`acceptedFrom`);
  *    (só LEITURA nos clientes — D-IB32). A leitura dos clientes acontece DEPOIS do rollback
  *    do ensaio (nenhuma trava do catálogo segura N schemas) e NÃO roda no ato (o plano já bateu
  *    com o ensaio). Limite conhecido: um PUT que leu o catálogo antes do commit pode gravar um
@@ -121,8 +122,11 @@ export interface ImpactRow {
   registrationStillAccepts?: boolean
   /** D-IB47: só cClassTrib — por que deixa de ser aceito (na data da carga; no aviso, na data da perda). */
   reason?: ClassificationRefusal
-  /** D-IB45: só em `impactAhead` — o 1º dia em que o código, aceito na data da carga, deixa de ser aceito na NFS-e. */
+  /** D-IB45: só em `impactAhead` — o 1º dia em que o código, aceito na data da carga (pela data do fato ou só pelo cadastro —
+   *  D-IB50), deixa de ser aceito na NFS-e dentro do horizonte (D-IB49). */
   lossDate?: string
+  /** D-IB50: só em `impactAhead`, código aceito só pelo cadastro na data da carga — o dia em que passa a valer na data do fato. */
+  acceptedFrom?: string
 }
 
 const IMPACT_IDS_MAX = 50
@@ -168,9 +172,12 @@ export interface ApplyReport {
   /** Listas que encolheram mais que o limite (D-IB28 (c)) — no ensaio, aviso; no ato sem --aceita-encolher, recusa. */
   shrink:                ShrinkRow[]
   impact:                ImpactRow[]
-  /** D-IB45: aviso PROSPECTIVO (fora do limite) — serviços cujo código, aceito na data da carga, deixa de ser aceito até
-   *  o fim da janela do cadastro (a obrigação), com a data da perda; só no ensaio com data. */
+  /** D-IB45/D-IB49/D-IB50: aviso PROSPECTIVO (fora do limite) — serviços cujo código, aceito na data da carga pela data do
+   *  fato ou só pelo cadastro, deixa de ser aceito até o horizonte (`impactAheadUntil`), com a data e o motivo da perda; só
+   *  no ensaio. Só a 1ª perda (Q-IB51). Não traz recusa HERDADA de carga anterior (Q-IB52). */
   impactAhead:           ImpactRow[]
+  /** D-IB49: até quando o aviso olhou (o maior entre o fim da janela do cadastro e a data + AHEAD_DAYS); null fora do ensaio. */
+  impactAheadUntil:      string | null
   /** Schema em que o impacto não pôde ser lido (sem permissão, tabela ausente) — nunca silencioso. */
   impactProblems:        string[]
 }
@@ -219,7 +226,7 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
   const report: ApplyReport = {
     applied: false, cst: zero(), classification: zero(), validity: zero(), applicability: zero(),
     placeIndicator: zero(), placeApplicability: zero(), nbs: zero(),
-    validityEnded: [], validityRegularOn: [], validityVigentOnDate: 0, shrink: [], impact: [], impactAhead: [], impactProblems: [],
+    validityEnded: [], validityRegularOn: [], validityVigentOnDate: 0, shrink: [], impact: [], impactAhead: [], impactAheadUntil: null, impactProblems: [],
   }
   await conn.query(`SET SESSION sql_mode = CONCAT_WS(',', @@SESSION.sql_mode, 'STRICT_ALL_TABLES')`)
   await conn.beginTransaction()
@@ -450,29 +457,55 @@ interface LostCodes {
   registration:    Map<string, boolean>
   placeIndicators: string[]
   nbs:             string[]
-  /** D-IB45: código aceito depois da carga × 1º dia em que deixa de ser aceito (dentro da janela) + motivo. */
-  ahead:           Array<{ code: string; lossDate: string; reason: ClassificationRefusal }>
+  /** D-IB45: código aceito × 1º dia em que deixa de ser aceito (dentro do horizonte) + motivo (+ D-IB50 desde quando vale). */
+  ahead:           Array<{ code: string; lossDate: string; reason: ClassificationRefusal; acceptedFrom?: string }>
 }
 
-const nextDay = (d: string): string => {
+const addDays = (d: string, n: number): string => {
   const [y, m, day] = d.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, day + 1)).toISOString().slice(0, 10)
+  return new Date(Date.UTC(y, m - 1, day + n)).toISOString().slice(0, 10)
 }
+const nextDay = (d: string): string => addDays(d, 1)
 
-/** D-IB45: códigos ACEITOS (depois da carga) na data dela que deixam de ser aceitos até o fim da janela do cadastro —
- *  datas candidatas = dia seguinte a cada fim de vigência e o início de cada linha nova dentro da janela; a pergunta é o
- *  veredito da peça, em LOTE por data. Estado pós-carga, na transação da carga. Depois da obrigação não há janela: vazio. */
-async function lossesAhead(conn: Conn, date: string, afterToday: Map<string, ClassificationVerdict>): Promise<LostCodes['ahead']> {
-  const end = registrationWindowEnd(date)
-  if (end === null) return []
+/** D-IB49: dias à frente que o aviso prospectivo olha além da janela do cadastro (depois da obrigação, só eles). */
+export const AHEAD_DAYS = 90
+
+/** D-IB49: horizonte do aviso = o MAIOR entre o fim da janela do cadastro (a obrigação) e a data + AHEAD_DAYS. A janela
+ *  só ganha para cargas até 2026-10-02 (reprodução com --date); desde 2026-10-03 o horizonte real é a data + AHEAD_DAYS. */
+export function aheadHorizon(date: string): string {
+  const window = registrationWindowEnd(date)
+  // gate adversarial do delta R8 (LOW): data perto do fim do calendário não vira '+010000-…' — fica no último dia válido
+  const plus = date > LAST_CALENDAR_DAY_MINUS_AHEAD ? LAST_CALENDAR_DAY : addDays(date, AHEAD_DAYS)
+  return window !== null && window > plus ? window : plus
+}
+const LAST_CALENDAR_DAY = '9999-12-31'
+const LAST_CALENDAR_DAY_MINUS_AHEAD = addDays(LAST_CALENDAR_DAY, -AHEAD_DAYS)
+
+/** D-IB45/D-IB49/D-IB50: códigos ACEITOS na data da carga — pela data do fato OU só pelo cadastro (linha futura na janela)
+ *  — que deixam de ser aceitos até o horizonte; datas candidatas = dia seguinte a cada fim de vigência e o início de cada
+ *  linha nova dentro do horizonte; a pergunta é o veredito da peça, em LOTE por data. O aceito só pelo cadastro conta a
+ *  perda DEPOIS de passar a valer (`acceptedFrom`). Estado pós-carga, na transação da carga. */
+async function lossesAhead(
+  conn: Conn, date: string, afterToday: Map<string, ClassificationVerdict>,
+): Promise<{ ahead: LostCodes['ahead']; aheadUntil: string }> {
+  const end = aheadHorizon(date)
   const [rows] = await conn.query<any[]>(
     `SELECT /* ibscbs-ahead */ code, valid_from, valid_until FROM ${C}.tb_tax_ibscbs_classification_validity
       WHERE deleted = 'N' AND absent_since_version IS NULL
         AND ((valid_until >= ? AND valid_until < ?) OR (valid_from > ? AND valid_from <= ?))`, [date, end, date, end])
+  // de onde o aviso parte: aceito na data do fato, ou (D-IB50) só pelo cadastro — nunca o que ninguém aceita
+  const rowCodes = [...new Set(rows.map(r => String(r.code)))]
+  const notToday = rowCodes.filter(c => !afterToday.get(c)?.accepted)
+  const reg = notToday.length ? await classificationRegistrationVerdicts(conn, notToday, MODEL_NFSE, date) : new Map<string, ClassificationVerdict>()
+  const start = new Map<string, 'fact' | 'registration'>()
+  for (const c of rowCodes) {
+    if (afterToday.get(c)?.accepted) start.set(c, 'fact')
+    else if (reg.get(c)?.accepted) start.set(c, 'registration')
+  }
   const dates = new Map<string, Set<string>>()
   for (const r of rows) {
     const code = String(r.code)
-    if (!afterToday.get(code)?.accepted) continue   // não aceito hoje (ou perdido nesta carga): é impacto, não aviso
+    if (!start.has(code)) continue   // ninguém aceita (ou perdido nesta carga sem linha do cadastro): é impacto, não aviso
     const set = dates.get(code) ?? new Set<string>()
     const until = isoDate(r.valid_until)
     const from = isoDate(r.valid_from)!
@@ -487,12 +520,15 @@ async function lossesAhead(conn: Conn, date: string, afterToday: Map<string, Cla
   for (const d of [...byDate.keys()].sort()) verdicts.set(d, await classificationVerdictsAt(conn, byDate.get(d)!, MODEL_NFSE, d))
   const out: LostCodes['ahead'] = []
   for (const [code, set] of [...dates].sort(([a], [b]) => a.localeCompare(b))) {
+    let accepted = start.get(code) === 'fact'
+    let acceptedFrom: string | undefined
     for (const d of [...set].sort()) {
       const v = verdicts.get(d)!.get(code)!
-      if (!v.accepted) { out.push({ code, lossDate: d, reason: v.reason! }); break }
+      if (v.accepted) { if (!accepted) { accepted = true; acceptedFrom = d } continue }
+      if (accepted) { out.push({ code, lossDate: d, reason: v.reason!, ...(acceptedFrom ? { acceptedFrom } : {}) }); break }
     }
   }
-  return out
+  return { ahead: out, aheadUntil: end }
 }
 
 /** O que esta carga deixa de aceitar. cClassTrib: veredito da peça na data do fato ANTES × DEPOIS (D-IB47 — inclui a
@@ -521,7 +557,8 @@ async function lostAfterLoad(
   }
   const reg = await classificationRegistrationVerdicts(conn, [...classifications.keys()], MODEL_NFSE, date)
   const registration = new Map([...classifications.keys()].map(c => [c, reg.get(c)?.accepted ?? false]))
-  const ahead = await lossesAhead(conn, date, after)
+  const { ahead, aheadUntil } = await lossesAhead(conn, date, after)
+  report.impactAheadUntil = aheadUntil
   return { classifications, registration, placeIndicators, nbs: report.nbs.deactivatedKeys, ahead }
 }
 
@@ -554,7 +591,10 @@ async function reportImpact(conn: Conn, report: ApplyReport, lost: LostCodes): P
       await count('cIndOp', 'tb_service_ibscbs', 'place_indicator_code', lost.placeIndicators)
       await count('NBS', 'tb_service', 'nbs', lost.nbs)
       await count('cClassTrib', 'tb_service_ibscbs', 'classification_code', [...ahead.keys()], report.impactAhead,
-        code => ({ lossDate: ahead.get(code)!.lossDate, reason: ahead.get(code)!.reason }))
+        code => {
+          const a = ahead.get(code)!
+          return { lossDate: a.lossDate, reason: a.reason, ...(a.acceptedFrom ? { acceptedFrom: a.acceptedFrom } : {}) }
+        })
     } catch (err: any) {
       report.impactProblems.push(`${schema}: ${err?.code ?? err?.message ?? err}`)
     }

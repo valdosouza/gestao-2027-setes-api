@@ -2,7 +2,7 @@
 // IB-1 da fase IBS/CBS — gravação do catálogo (applyCatalog) e datas da fonte. Gate socrático
 // da IB-1: desativação, revive e ensaio só tinham sido provados AO VIVO; a NBS extinta nunca
 // saía; a linha de vigência não confirmada era filtrada pelo CÓDIGO inteiro.
-import { applyCatalog, isCalendarDate, ItCatalog, shrinkLine } from '@shared/ibscbs-catalog'
+import { aheadHorizon, applyCatalog, isCalendarDate, ItCatalog, shrinkLine } from '@shared/ibscbs-catalog'
 
 type Row = Record<string, any>
 
@@ -558,7 +558,7 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
     ])
   })
 
-  it('D-IB45: linha nova SEM presença que passa a valer dentro da janela também é perda; depois da obrigação não há janela', async () => {
+  it('D-IB45: linha nova SEM presença que passa a valer dentro da janela também é perda; D-IB49: depois da obrigação, data + 90', async () => {
     const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
     const ahead = [{ code: '000001', valid_from: '2026-12-01', valid_until: null }]
     t.__ahead = ahead
@@ -568,11 +568,18 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
     const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
     expect(r.impactAhead.map(x => [x.code, x.lossDate, x.reason])).toEqual([['000001', '2026-12-01', 'not-applicable']])
 
-    let asked = false
-    t.__ahead = () => { asked = true; return ahead }
+    // D-IB49: depois da obrigação não há janela do cadastro, mas o aviso olha data + 90 (2027-01-05 → 2027-04-05)
+    let params: unknown[] = []
+    t.__ahead = (_s: string, p: unknown[]) => { params = p; return [
+      { code: '000001', valid_from: '2026-01-01', valid_until: '2027-03-31' },    // perde em 01/04 — dentro
+      { code: '000006', valid_from: '2026-01-01', valid_until: '2027-04-05' },    // perde em 06/04 — fora
+    ] }
+    t.__piece = pieceOf([{ code: '000001', validFrom: '2026-01-01', validUntil: '2027-03-31' },
+      { code: '000006', validFrom: '2026-01-01', validUntil: '2027-04-05' }])
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '61', '000006': '62' })
     const after = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2027-01-05' })
-    expect(after.impactAhead).toEqual([])
-    expect(asked).toBe(false)
+    expect(params).toEqual(['2027-01-05', '2027-04-05', '2027-01-05', '2027-04-05'])
+    expect(after.impactAhead.map(x => [x.code, x.lossDate])).toEqual([['000001', '2027-04-01']])
   })
 
   it('D-IB45: o aviso NÃO roda no ato; sem data o ensaio com impacto é recusado (R7-S6)', async () => {
@@ -599,7 +606,9 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
     expect(r.impactAhead).toHaveLength(1)
     expect(seen).toHaveLength(1)
     expect(seen[0].sql).toContain("WHERE deleted = 'N' AND absent_since_version IS NULL AND ((valid_until >= ? AND valid_until < ?) OR (valid_from > ? AND valid_from <= ?))")
-    expect(seen[0].params).toEqual(['2026-10-10', '2027-01-01', '2026-10-10', '2027-01-01'])
+    // D-IB49: horizonte = o maior entre a obrigação (2027-01-01) e a data + 90 dias (2027-01-08)
+    expect(seen[0].params).toEqual(['2026-10-10', '2027-01-08', '2026-10-10', '2027-01-08'])
+    expect(r.impactAheadUntil).toBe('2027-01-08')
     const sqls = raw.query.mock.calls.map((c: any[]) => String(c[0]))
     const ahead = sqls.findIndex((x: string) => x.includes('ibscbs-ahead'))
     const client1 = sqls.findIndex((x: string) => /FROM `setes_a`/.test(x))
@@ -653,7 +662,7 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
   })
 
   // casos não testados do gate adversarial R7: fronteiras do aviso prospectivo
-  it('D-IB45 fronteiras: volta para a linha antiga sem presença; fim em 2027-01-01 sem aviso; carga em 31/12 com fim no mesmo dia', async () => {
+  it('D-IB45/D-IB49 fronteiras: volta para a linha antiga sem presença; fim em 2027-01-01 dentro do horizonte, em 08/01 fora; carga em 31/12', async () => {
     const run = async (date: string, ahead: Row[], piece: Row[]) => {
       const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
       t.__ahead = ahead
@@ -666,12 +675,118 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
     expect(await run('2026-10-10', [{ code: '000001', valid_from: '2026-06-01', valid_until: '2026-11-30' }],
       [{ code: '000001', validFrom: '2026-01-01', applicable: 0 }, { code: '000001', validFrom: '2026-06-01', validUntil: '2026-11-30' }]))
       .toEqual([['2026-12-01', 'not-applicable']])
-    // fim em 01/01/2027: perde em 02/01, fora da janela (vai até a obrigação)
+    // D-IB49: fim em 01/01/2027 perde em 02/01 — dentro do horizonte (data + 90 = 08/01); fim em 08/01 perde em 09/01 — fora
     expect(await run('2026-10-10', [{ code: '000001', valid_from: '2026-01-01', valid_until: '2027-01-01' }],
-      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2027-01-01' }])).toEqual([])
+      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2027-01-01' }])).toEqual([['2027-01-02', 'no-line']])
+    expect(await run('2026-10-10', [{ code: '000001', valid_from: '2026-01-01', valid_until: '2027-01-08' }],
+      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2027-01-08' }])).toEqual([])
     // carga em 31/12 com fim no mesmo dia: perde na obrigação
     expect(await run('2026-12-31', [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }],
       [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }])).toEqual([['2027-01-01', 'no-line']])
+  })
+
+  // D-IB50 (Rodada 8): o aviso parte também do código aceito só pelo CADASTRO (linha futura na janela — o que o selo mostra)
+  it('D-IB50: código aceito só pelo cadastro cuja linha futura acaba antes do horizonte entra no aviso com acceptedFrom; o que ninguém aceita, não', async () => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.__ahead = [
+      { code: '000006', valid_from: '2026-11-01', valid_until: '2026-12-15' },   // a futura do cadastro: vale de 01/11 a 15/12
+      { code: '000009', valid_from: '2026-11-01', valid_until: '2026-12-15' },   // futura SEM presença: ninguém aceita
+    ]
+    ;(t.tb_tax_ibscbs_classification as Row[]).push({ code: '000009', cst: '000' })
+    t.__piece = pieceOf([
+      { code: '000001', validFrom: '2026-01-01' },
+      { code: '000006', validFrom: '2026-01-01', applicable: 0 },                     // hoje: sem presença (o faturamento recusa)
+      { code: '000006', validFrom: '2026-11-01', validUntil: '2026-12-15' },          // o cadastro aceita por esta (selo "aceita")
+      { code: '000009', validFrom: '2026-11-01', validUntil: '2026-12-15', applicable: 0 },
+    ])
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000006': '80', '000009': '81' })
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
+    expect(r.impact).toEqual([])   // nada mudou nesta carga
+    expect(r.impactAhead).toEqual([{ schema: 'setes_a', institutionActive: true, kind: 'cClassTrib', code: '000006', services: 1, serviceIds: [80],
+      lossDate: '2026-12-16', reason: 'not-applicable', acceptedFrom: '2026-11-01' }])
+  })
+
+  // gate socrático do delta R8 (S8-2): o topo do horizonte é INCLUSIVO para a perda e para o início de linha nova
+  it('D-IB49: perda NO dia do horizonte entra; linha nova sem presença que começa NO horizonte entra; um dia depois, não', async () => {
+    const run = async (ahead: Row[], piece: Row[]) => {
+      const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+      t.__ahead = ahead
+      t.__piece = pieceOf(piece)
+      t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+      t['setes_a.tb_service_ibscbs'] = client({ '000001': '61' })
+      return (await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })).impactAhead.map(x => [x.lossDate, x.reason])
+    }
+    // horizonte da carga de 10/10/2026 = 2027-01-08
+    expect(await run([{ code: '000001', valid_from: '2026-01-01', valid_until: '2027-01-07' }],
+      [{ code: '000001', validFrom: '2026-01-01', validUntil: '2027-01-07' }])).toEqual([['2027-01-08', 'no-line']])
+    expect(await run([{ code: '000001', valid_from: '2027-01-08', valid_until: null }],
+      [{ code: '000001', validFrom: '2026-01-01' }, { code: '000001', validFrom: '2027-01-08', applicable: 0 }])).toEqual([['2027-01-08', 'not-applicable']])
+    expect(await run([{ code: '000001', valid_from: '2027-01-09', valid_until: null }],
+      [{ code: '000001', validFrom: '2026-01-01' }, { code: '000001', validFrom: '2027-01-09', applicable: 0 }])).toEqual([])
+  })
+
+  it('aheadHorizon: o maior entre a obrigação e a data + 90 (virada de 02→03→04/10/2026, 29/02/2028, depois da obrigação)', () => {
+    expect(aheadHorizon('2026-10-02')).toBe('2027-01-01')   // data + 90 = 2026-12-31 < obrigação
+    expect(aheadHorizon('2026-10-03')).toBe('2027-01-01')   // empate
+    expect(aheadHorizon('2026-10-04')).toBe('2027-01-02')
+    expect(aheadHorizon('2027-01-05')).toBe('2027-04-05')   // sem janela do cadastro
+    expect(aheadHorizon('2027-12-01')).toBe('2028-02-29')
+    expect(aheadHorizon('2028-02-29')).toBe('2028-05-29')
+    // gate adversarial R8 (LOW): perto do fim do calendário não estoura para o ano 10000
+    expect(aheadHorizon('9999-12-31')).toBe('9999-12-31')
+    expect(aheadHorizon('9999-10-02')).toBe('9999-12-31')
+    expect(aheadHorizon('9999-10-01')).toBe('9999-12-30')
+  })
+
+  it('D-IB49: o horizonte só existe no ensaio — no ato impactAheadUntil fica null; aviso pela data do fato não traz acceptedFrom', async () => {
+    const ato = await applyCatalog(fakeConn(baseTables()).conn, { ...base, it: catalog(), apply: true, date: '2026-10-10' })
+    expect(ato.impactAheadUntil).toBeNull()
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.__piece = pieceOf([{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000006', validFrom: '2026-01-01' }])
+    t.__ahead = [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }]
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '61' })
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
+    expect(r.impactAhead).toHaveLength(1)
+    expect('acceptedFrom' in r.impactAhead[0]).toBe(false)
+  })
+
+  // S8-3: casos da D-IB50 sem teste
+  it('D-IB50: o mesmo serviço no impacto (recusado hoje) e no aviso (aceito pelo cadastro por uma linha futura que também acaba)', async () => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.__pieceBefore = bothAccepted()
+    t.__piece = pieceOf([{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-10-09' },
+      { code: '000001', validFrom: '2026-11-01', validUntil: '2026-12-15' }, { code: '000006', validFrom: '2026-01-01' }])
+    t.__ahead = [{ code: '000001', valid_from: '2026-11-01', valid_until: '2026-12-15' }]
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '67' })
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-11' })
+    expect(r.impact.map(x => [x.code, x.reason, x.registrationStillAccepts])).toEqual([['000001', 'no-line', true]])
+    expect(r.impactAhead.map(x => [x.code, x.acceptedFrom, x.lossDate, x.reason])).toEqual([['000001', '2026-11-01', '2026-12-16', 'no-line']])
+  })
+
+  it('D-IB50: a consulta do cadastro NÃO roda quando todo código do aviso já é aceito hoje; aceito pelo cadastro que não perde não entra', async () => {
+    let registrationAsked = 0
+    const rows = [{ code: '000001', validFrom: '2026-01-01', validUntil: '2026-12-31' }, { code: '000006', validFrom: '2026-01-01', applicable: 0 },
+      { code: '000006', validFrom: '2026-11-01' }]   // 000006: só o cadastro aceita (futura aberta — nunca perde)
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.__piece = (sql: string, params: unknown[]) => {
+      if (!/v\.valid_from <= \?/.test(sql)) registrationAsked++
+      return pieceOf(rows)(sql, params)
+    }
+    t.__ahead = [{ code: '000001', valid_from: '2026-01-01', valid_until: '2026-12-31' }]
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '61', '000006': '62' })
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
+    expect(registrationAsked).toBe(0)   // o único código do aviso (000001) é aceito hoje
+    expect(r.impactAhead.map(x => x.code)).toEqual(['000001'])
+
+    registrationAsked = 0
+    t.__ahead = [{ code: '000006', valid_from: '2026-11-01', valid_until: null }]
+    const r2 = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), date: '2026-10-10' })
+    expect(registrationAsked).toBe(1)   // 000006 não é aceito hoje → uma consulta em lote do cadastro
+    expect(r2.impactAhead).toEqual([])   // passa a valer em 01/11 e não perde dentro do horizonte
   })
 })
 
