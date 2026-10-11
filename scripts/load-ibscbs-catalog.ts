@@ -33,7 +33,7 @@ import {
   parseItCatalog, parsePlaceIndicators, parseNbsList, parseCalculatorList, parseCalculatorPair,
   conferenceDates, rowsNeedingPair, pairKey, isCalendarDate, CALCULATOR_NFSE_SIGLA,
   CalculatorEntry, CalculatorPair, reconcileWithCalculator, applyCatalog,
-  catalogPlan, fileDigest, assertPlanArgs, assertPlanMatches,
+  catalogPlan, fileDigest, assertActDate, assertPlanArgs, assertPlanMatches,
 } from '@shared/ibscbs-catalog'
 
 const CALCULATOR = 'https://consumo.tributos.gov.br/servico/calcular-tributos-consumo/api/calculadora'
@@ -101,6 +101,7 @@ async function main() {
   assertPlanArgs(vai, plano)   // peça @shared/ibscbs-catalog/plan (testada)
   const date = typeof a['--date'] === 'string' ? a['--date'] : todayIn(DEFAULT_TIME_ZONE)
   if (!isCalendarDate(date)) throw new Error('--date deve ser AAAA-MM-DD (data que existe no calendário)')
+  assertActDate(vai, date, todayIn(DEFAULT_TIME_ZONE))   // D-IB48 (peça plan.ts, testada)
 
   const itBytes = fs.readFileSync(a['--it'] as string)
   const indopBytes = fs.readFileSync(a['--indop'] as string)
@@ -173,14 +174,16 @@ async function main() {
     })
     const cmd = `--vai --plano ${plan}${allowShrink ? ' --aceita-encolher' : ''}`
     console.log(JSON.stringify({
-      modo: report.applied ? 'GRAVADO' : `ENSAIO (rollback) — para gravar ESTE plano: ${cmd}`,
+      modo: report.applied ? 'GRAVADO'
+        : date !== todayIn(DEFAULT_TIME_ZONE) ? 'ENSAIO (rollback) — reprodução com --date: este plano NÃO é gravável (o ato só aceita a data de hoje — D-IB48)'
+        : `ENSAIO (rollback) — para gravar ESTE plano: ${cmd}`,
       plano: plan,
       ...(report.shrink.length && !allowShrink
         ? { AVISO_ENCOLHIMENTO: `o ato com --vai será RECUSADO (> 10 % das linhas vivas de alguma lista desativadas — na história, ausentes da fonte ou com a vigência encerrada) — confira o desdobramento em relatorio.shrink e, se for intencional, repita o ensaio com --aceita-encolher` }
         : {}),
       data: date,
       ...(date !== todayIn(DEFAULT_TIME_ZONE)
-        ? { AVISO_DATA: `--date ${date} não é hoje: limite de encolhimento e impacto foram avaliados nessa data — use só para reproduzir uma carga, nunca para fugir do limite` }
+        ? { AVISO_DATA: `--date ${date} não é hoje: limite de encolhimento e impacto foram avaliados nessa data — use só para reproduzir uma carga (o ato com --vai recusa — D-IB48)` }
         : {}),
       conferencia: { ...rec, paresConsultados: pairs.size },
       fontes: { csts: it.csts.length, classificacoes: it.classifications.length, cIndOp: indop.length, nbs: nbs.length },

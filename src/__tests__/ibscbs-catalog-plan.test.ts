@@ -1,7 +1,7 @@
 /// <reference types="jest" />
 // IB-1 da fase IBS/CBS — o ATO da carga tem PLANO (gate socrático): o ensaio mostra o hash do
 // que será gravado e o --vai só grava esse plano. Re-score: a guarda só tinha prova à mão.
-import { catalogPlan, assertPlanArgs, assertPlanMatches, PlanInput } from '@shared/ibscbs-catalog'
+import { assertActDate, catalogPlan, assertPlanArgs, assertPlanMatches, PlanInput } from '@shared/ibscbs-catalog'
 
 const base = (): PlanInput => ({
   date: '2026-10-10', itFile: 'a'.repeat(64), itVersion: 'IT 2025.002 v1.70',
@@ -60,3 +60,13 @@ describe('assertPlanArgs / assertPlanMatches — o ato só grava o plano do ensa
     expect(() => assertPlanMatches(false, undefined, '1192023064a0a70b', '2026-10-10')).not.toThrow()
   })
 })
+
+// D-IB48 (Rodada 7) — o ato só grava com a data de hoje; o ensaio aceita qualquer data
+describe('assertActDate (D-IB48)', () => {
+  it('ato com data diferente de hoje é recusado; com a de hoje, passa; ensaio passa sempre', () => {
+    expect(() => assertActDate(true, '2026-10-10', '2026-10-11')).toThrow(/D-IB48/)
+    expect(() => assertActDate(true, '2026-10-11', '2026-10-11')).not.toThrow()
+    expect(() => assertActDate(false, '2026-10-01', '2026-10-11')).not.toThrow()
+  })
+})
+

@@ -48,6 +48,14 @@ export function catalogPlan(p: PlanInput): string {
 }
 
 /** Antes de qualquer leitura: --vai sem --plano e --plano sem --vai são recusados. */
+/** D-IB48: o ATO (`--vai`) só grava com a data de hoje — `--date` serve para REPRODUZIR uma carga no ensaio.
+ *  Limite conhecido: o ato que começa 23:59 e grava 00:01 leva a data de ontem (o plano é da mesma data). */
+export function assertActDate(vai: boolean, date: string, today: string): void {
+  if (vai && date !== today) {
+    throw new Error(`--vai com --date ${date} recusado: o ato grava só com a data de hoje (${today}) — D-IB48; rode o ensaio sem --date`)
+  }
+}
+
 export function assertPlanArgs(vai: boolean, plano: string | undefined): void {
   if (vai && plano === undefined) {
     throw new Error('--vai exige --plano <hash> — rode o ENSAIO (sem --vai) e confira o relatório antes')

@@ -5,6 +5,7 @@ import {
   findClassificationForRegistration, classificationForDisplay, listClassificationsLookup, NFSE_IBSCBS_SIMPLES_OBLIGATION_START,
   pickForRegistration, classificationAcceptedToday, classificationAcceptance, assertIbscbsCatalogSchema,
   nbsAcceptedSql, nbsExists,
+  verdictOf, classificationVerdictsAt, classificationRegistrationVerdicts, classificationAcceptedAt,
 } from '@shared/ibscbs-classification'
 
 /**
@@ -299,3 +300,56 @@ describe('@shared/ibscbs-classification — regra única da NBS aceita (D-IB40)'
     expect(e.fields).toEqual([{ field: 'nbs', message: 'NBS 199999999 não está na lista oficial' }])
   })
 })
+
+// Gate socrático do delta R7: "aceito" é UM veredito com motivo (R7-S3) e tem porta em LOTE (R7-S5)
+describe('@shared/ibscbs-classification — veredito e lotes (D-IB47)', () => {
+  const line = (over: Record<string, unknown> = {}) => ({ code: '000001', cst: '000', name: 'n', validFrom: '2026-01-01', validUntil: null,
+    requiresRegularTaxation: false, applicable: true, superseded: false, ...over }) as any
+  it('verdictOf: sem linha · sem presença · exige tributação regular · aceito', () => {
+    expect(verdictOf(null)).toMatchObject({ accepted: false, reason: 'no-line' })
+    expect(verdictOf(line({ applicable: false }))).toMatchObject({ accepted: false, reason: 'not-applicable' })
+    expect(verdictOf(line({ requiresRegularTaxation: true }))).toMatchObject({ accepted: false, reason: 'requires-regular' })
+    expect(verdictOf(line())).toMatchObject({ accepted: true, reason: null })
+  })
+
+  const row = (code: string, from: string, over: Record<string, unknown> = {}) => ({ code, cst: '000', name: 'n', validFrom: from, validUntil: null,
+    requiresRegular: 'N', absentSince: null, applicable: 1, ...over })
+
+  it('em lote na data: a linha vigente MAIS NOVA de cada código (como findClassificationAt); código ausente = sem linha', async () => {
+    const calls: unknown[][] = []
+    const q = { query: async (raw: string, params: unknown[]) => {
+      const sql = raw.replace(/\s+/g, ' ')
+      calls.push(params)
+      expect(sql).toContain('v.code IN (?)')
+      expect(sql).toContain('v.absent_since_version IS NULL AND v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?)')
+      expect(sql).toContain('ORDER BY v.code, v.valid_from DESC')
+      return [[row('000001', '2026-10-05', { applicable: 0 }), row('000001', '2026-01-01'), row('000006', '2026-01-01')]]
+    } }
+    const v = await classificationVerdictsAt(q as any, ['000006', '000001', '000099', '000001'], 'SE', '2026-10-10')
+    expect(calls).toEqual([['SE', ['000006', '000001', '000099'], '2026-10-10', '2026-10-10']])
+    expect([v.get('000001')?.reason, v.get('000006')?.accepted, v.get('000099')?.reason]).toEqual(['not-applicable', true, 'no-line'])
+  })
+
+  it('em lote: blocos de 500 códigos', async () => {
+    let n = 0
+    const q = { query: async () => { n++; return [[]] } }
+    const codes = Array.from({ length: 1001 }, (_, i) => String(100000 + i))
+    const v = await classificationVerdictsAt(q as any, codes, 'SE', '2026-10-10')
+    expect([n, v.size]).toEqual([3, 1001])
+  })
+
+  it('cadastro em lote: pickForRegistration por código (linha futura na janela aceita; vigente com presença ganha da sem)', async () => {
+    const q = { query: async (sql: string) => {
+      expect(sql).not.toContain('v.valid_from <= ?')
+      return [[row('000001', '2026-01-01'), row('000001', '2026-10-05', { applicable: 0 }), row('000006', '2026-11-01'), row('000007', '2026-01-01', { applicable: 0 })]]
+    } }
+    const v = await classificationRegistrationVerdicts(q as any, ['000001', '000006', '000007'], 'SE', '2026-10-10')
+    expect([v.get('000001')?.accepted, v.get('000006')?.accepted, v.get('000007')?.reason]).toEqual([true, true, 'not-applicable'])
+  })
+
+  it('classificationAcceptedAt = veredito da data do fato', async () => {
+    const q = { query: async () => [[row('000001', '2026-01-01', { requiresRegular: 'S' })]] }
+    expect(await classificationAcceptedAt(q as any, '000001', 'SE', '2026-10-10')).toBe(false)
+  })
+})
+

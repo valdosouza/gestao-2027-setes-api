@@ -1,4 +1,8 @@
 import type { Connection, PoolConnection } from 'mysql2/promise'
+import {
+  ClassificationRefusal, ClassificationVerdict, MODEL_NFSE, classificationRegistrationVerdicts, classificationVerdictsAt,
+  registrationWindowEnd,
+} from '@shared/ibscbs-classification'
 import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIndicatorRecord } from './parse'
 
 /**
@@ -31,7 +35,16 @@ import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIn
  *  - D-IB28 (b): o relatório do ENSAIO lista, por schema de cliente, os serviços que usam cClassTrib
  *    ou cIndOp que fica SEM nenhuma aplicabilidade na NFS-e (D-IB44: inclusive cClassTrib cuja linha
  *    vigente teve a vigência encerrada nesta carga), ou NBS que perde a presença, nesta
- *    carga (só LEITURA nos clientes — D-IB32). A leitura dos clientes acontece DEPOIS do rollback
+ *    carga. D-IB47: "aceito" é o VEREDITO da PEÇA de classificação na data do fato (`classificationVerdictsAt` —
+ *    linha vigente com presença e sem tributação regular), na conexão da transação; o impacto do cClassTrib é a
+ *    DIFERENÇA do veredito ANTES × DEPOIS da gravação para todo código que a carga pode tocar (gate socrático do
+ *    delta R7: inferir pelo TIPO da mudança perdia a linha nova sobreposta que já vale na data, sem presença);
+ *    a linha do impacto traz o motivo (`reason`) e marca quando o cadastro ainda aceita o código
+ *    (`registrationStillAccepts` — linha futura na janela ou outra linha vigente com presença: pickForRegistration).
+ *    D-IB45: `impactAhead` (informativo, FORA do limite) lista os serviços cujo código aceito depois da carga deixa
+ *    de ser aceito até o fim da janela do cadastro (a obrigação), com a data e o motivo da perda; depois da obrigação
+ *    não há janela (vazio — Q-IB49);
+ *    (só LEITURA nos clientes — D-IB32). A leitura dos clientes acontece DEPOIS do rollback
  *    do ensaio (nenhuma trava do catálogo segura N schemas) e NÃO roda no ato (o plano já bateu
  *    com o ensaio). Limite conhecido: um PUT que leu o catálogo antes do commit pode gravar um
  *    código que acabou de perder a presença — a IB-2 barra no faturamento.
@@ -63,6 +76,9 @@ export interface ShrinkRow {
   codeVanished?: number
   /** Só na história (D-IB44): linhas vigentes na data da carga cuja vigência a fonte encerrou antes dela. */
   endedBeforeDate?: number
+  /** D-IB46: só na história, com data — linhas presentes e VIGENTES na data antes da carga (ao lado da base: a base
+   *  conta também as encerradas e as futuras; reabrir a decisão quando vigentes/presentes < 80 %). */
+  vigentOnDate?: number
   /** Desdobramento das encerradas (só quando há): o código tem OUTRA linha vigente na data (substituição — ex.: fim de
    *  ano com sucessora) × não tem (o código deixa de valer — suspeita de IT errado). Data = a da carga. */
   endedWithSuccessor?: number
@@ -86,7 +102,8 @@ export function shrinkLine(r: ShrinkRow): string {
   const split = r.list === 'validity' && r.codeInSource != null
     ? ` — ${r.codeInSource} de código que segue na fonte (ex.: vigência corrigida), ${r.codeVanished} de código que sumiu da fonte${ended}`
     : ''
-  return `${SHRINK_LABEL[r.list]} [${r.list}]: ${r.deactivated} de ${r.aliveBefore}${split}`
+  const vigent = r.vigentOnDate != null ? `; vigentes na data antes da carga: ${r.vigentOnDate}` : ''
+  return `${SHRINK_LABEL[r.list]} [${r.list}]: ${r.deactivated} de ${r.aliveBefore}${split}${vigent}`
 }
 
 /** D-IB28 (b): serviços de um cliente que usam código/NBS que perde a presença nesta carga. */
@@ -99,6 +116,13 @@ export interface ImpactRow {
   services: number
   /** Até 50 ids dos serviços afetados (o resto só na contagem). */
   serviceIds: number[]
+  /** D-IB47: só cClassTrib — o cadastro ainda aceita o código (linha futura na janela ou outra linha vigente com
+   *  presença — pickForRegistration; o selo da aba diz "aceita"), mas a data do fato (faturamento) já não. */
+  registrationStillAccepts?: boolean
+  /** D-IB47: só cClassTrib — por que deixa de ser aceito (na data da carga; no aviso, na data da perda). */
+  reason?: ClassificationRefusal
+  /** D-IB45: só em `impactAhead` — o 1º dia em que o código, aceito na data da carga, deixa de ser aceito na NFS-e. */
+  lossDate?: string
 }
 
 const IMPACT_IDS_MAX = 50
@@ -119,9 +143,9 @@ export interface ApplyInput {
   blocked?:         Array<{ code: string; validFrom: string; model: 'SE' | '55' | '65' }>
   /** D-IB28 (c): --aceita-encolher. */
   allowShrink?:     boolean
-  /** D-IB28 (b): calcular o impacto nos schemas dos clientes (a rotina do Super sempre pede). */
+  /** D-IB28 (b): calcular o impacto nos schemas dos clientes (a rotina do Super sempre pede) — só no ensaio e EXIGE `date`. */
   reportImpact?:    boolean
-  /** Data da carga: o impacto do cClassTrib olha a linha VIGENTE nela (sem data: qualquer linha viva). */
+  /** Data da carga: limite da história (D-IB44), impacto e aviso (veredito da peça nela). */
   date?:            string
 }
 
@@ -137,9 +161,16 @@ export interface ApplyReport {
   /** D-IB44: linhas da história VIGENTES na data da carga (presentes na fonte) cuja vigência a fonte
    *  encerrou antes dela — chave código|vigência; sem data, sempre vazio. */
   validityEnded:         string[]
+  /** D-IB47: linhas vigentes na data em que a fonte LIGOU a exigência de tributação regular (candidatas ao impacto). */
+  validityRegularOn:     string[]
+  /** D-IB46: linhas presentes e vigentes na data antes da carga (sem data, 0). */
+  validityVigentOnDate:  number
   /** Listas que encolheram mais que o limite (D-IB28 (c)) — no ensaio, aviso; no ato sem --aceita-encolher, recusa. */
   shrink:                ShrinkRow[]
   impact:                ImpactRow[]
+  /** D-IB45: aviso PROSPECTIVO (fora do limite) — serviços cujo código, aceito na data da carga, deixa de ser aceito até
+   *  o fim da janela do cadastro (a obrigação), com a data da perda; só no ensaio com data. */
+  impactAhead:           ImpactRow[]
   /** Schema em que o impacto não pôde ser lido (sem permissão, tabela ausente) — nunca silencioso. */
   impactProblems:        string[]
 }
@@ -188,13 +219,23 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
   const report: ApplyReport = {
     applied: false, cst: zero(), classification: zero(), validity: zero(), applicability: zero(),
     placeIndicator: zero(), placeApplicability: zero(), nbs: zero(),
-    validityEnded: [], shrink: [], impact: [], impactProblems: [],
+    validityEnded: [], validityRegularOn: [], validityVigentOnDate: 0, shrink: [], impact: [], impactAhead: [], impactProblems: [],
   }
   await conn.query(`SET SESSION sql_mode = CONCAT_WS(',', @@SESSION.sql_mode, 'STRICT_ALL_TABLES')`)
   await conn.beginTransaction()
   try {
     // Serializa cargas concorrentes (a 2ª espera a 1ª terminar).
     await conn.query(`SELECT id FROM ${C}.tb_tax_ibscbs FOR UPDATE`)
+
+    // D-IB47 (gate socrático do delta R7): o veredito ANTES de qualquer gravação, para todo código que a carga pode
+    // tocar (o catálogo inteiro ∪ a fonte) — o impacto é a diferença antes × depois, nunca inferido pelo tipo da mudança
+    let before: Map<string, ClassificationVerdict> | null = null
+    if (input.reportImpact && !input.apply) {
+      if (!input.date) throw new Error('reportImpact exige a data da carga (date) — o veredito é na data do fato')
+      const [idCodes] = await conn.query<any[]>(`SELECT code FROM ${C}.tb_tax_ibscbs_classification`)
+      const touched = [...new Set([...idCodes.map(r => String(r.code)), ...input.it.classifications.map(c => c.code)])].sort()
+      before = await classificationVerdictsAt(conn, touched, MODEL_NFSE, input.date)
+    }
 
     // --- CST ----------------------------------------------------------------
     const [cstRows] = await conn.query<any[]>(`SELECT id, description FROM ${C}.tb_tax_ibscbs`)
@@ -238,6 +279,9 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
     const vHave = new Map<string, any>(vRows.map(r => [`${r.code}|${isoDate(r.valid_from)}`, r]))
     // D-IB39: base do limite de encolhimento da história = linhas PRESENTES na fonte antes da carga
     report.validity.aliveBefore = vRows.filter(r => r.absent_since_version == null).length
+    const vigentOn = (r: any, d: string) => r.absent_since_version == null && isoDate(r.valid_from)! <= d
+      && (r.valid_until == null || isoDate(r.valid_until)! >= d)
+    if (input.date) report.validityVigentOnDate = vRows.filter(r => vigentOn(r, input.date!)).length
     for (const c of input.it.classifications) {
       const row = vHave.get(`${c.code}|${c.validFrom}`)
       const regular = c.requiresRegularTaxation ? 'S' : 'N'
@@ -260,11 +304,11 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
           [c.validUntil, c.name, c.description, regular, input.itVersion, c.updatedAt, c.code, c.validFrom])
         if (row.absent_since_version != null) report.validity.revived++
         else report.validity.updated++
-        // D-IB44: vigente na data da carga antes; a fonte encerrou a vigência antes dela
-        if (input.date && row.absent_since_version == null && isoDate(row.valid_from)! <= input.date
-            && (row.valid_until == null || isoDate(row.valid_until)! >= input.date)
-            && c.validUntil != null && c.validUntil < input.date) {
-          report.validityEnded.push(`${c.code}|${c.validFrom}`)
+        if (input.date && vigentOn(row, input.date)) {
+          // D-IB44: vigente na data da carga antes; a fonte encerrou a vigência antes dela
+          if (c.validUntil != null && c.validUntil < input.date) report.validityEnded.push(`${c.code}|${c.validFrom}`)
+          // D-IB47: a fonte LIGOU a exigência de tributação regular numa linha vigente — o documento deixa de aceitar
+          else if (row.requires_regular_taxation !== 'S' && regular === 'S') report.validityRegularOn.push(`${c.code}|${c.validFrom}`)
         }
       } else report.validity.unchanged++
     }
@@ -353,6 +397,7 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
       const lost = c.deactivated + ended
       if (c.aliveBefore > 0 && lost / c.aliveBefore > SHRINK_LIMIT) {
         const row: ShrinkRow = { list, aliveBefore: c.aliveBefore, deactivated: lost }
+        if (list === 'validity' && input.date) row.vigentOnDate = report.validityVigentOnDate
         if (list === 'validity') {
           const codeInSource = c.deactivatedKeys.filter(k => codesInSource.has(k.split('|')[0])).length
           Object.assign(row, { codeInSource, codeVanished: c.deactivated - codeInSource, endedBeforeDate: ended })
@@ -367,7 +412,7 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
         report.shrink.map(shrinkLine))
     }
     // --- D-IB28 (b): o que fica SEM aplicabilidade (consulta CENTRAL, no estado pós-carga) ------
-    const lost = input.reportImpact && !input.apply ? await lostAfterLoad(conn, report, input.date) : null
+    const lost = before ? await lostAfterLoad(conn, report, input.date!, before) : null
     if (input.apply) {
       await conn.commit()
       report.applied = true
@@ -398,21 +443,66 @@ async function endedSplit(conn: Conn, endedKeys: string[], date: string): Promis
 
 const SCHEMA_RE = /^[a-z0-9_]+$/
 
-interface LostCodes { classifications: string[]; placeIndicators: string[]; nbs: string[] }
+interface LostCodes {
+  /** cClassTrib aceito ANTES e não aceito DEPOIS da carga, na data do fato, com o motivo. */
+  classifications: Map<string, ClassificationRefusal>
+  /** D-IB47: o cadastro ainda aceita o código perdido? */
+  registration:    Map<string, boolean>
+  placeIndicators: string[]
+  nbs:             string[]
+  /** D-IB45: código aceito depois da carga × 1º dia em que deixa de ser aceito (dentro da janela) + motivo. */
+  ahead:           Array<{ code: string; lossDate: string; reason: ClassificationRefusal }>
+}
 
-/** Códigos que esta carga deixa SEM aplicabilidade na NFS-e e NBS que perdeu a presença. cClassTrib:
- *  conta como vivo só se uma linha VIGENTE na data da carga tem aplicabilidade SE (gate adversarial do
- *  delta: correção de dIniVig para o FUTURO deixava a linha de hoje sem aplicabilidade e o relatório
- *  dizia "ainda aceito" pela linha futura); cIndOp não tem vigência — qualquer aplicabilidade viva.
- *  Só tabelas CENTRAIS, na transação da carga (estado pós-carga, antes do rollback/commit). */
-async function lostAfterLoad(conn: Conn, report: ApplyReport, date?: string): Promise<LostCodes> {
+const nextDay = (d: string): string => {
+  const [y, m, day] = d.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, day + 1)).toISOString().slice(0, 10)
+}
+
+/** D-IB45: códigos ACEITOS (depois da carga) na data dela que deixam de ser aceitos até o fim da janela do cadastro —
+ *  datas candidatas = dia seguinte a cada fim de vigência e o início de cada linha nova dentro da janela; a pergunta é o
+ *  veredito da peça, em LOTE por data. Estado pós-carga, na transação da carga. Depois da obrigação não há janela: vazio. */
+async function lossesAhead(conn: Conn, date: string, afterToday: Map<string, ClassificationVerdict>): Promise<LostCodes['ahead']> {
+  const end = registrationWindowEnd(date)
+  if (end === null) return []
+  const [rows] = await conn.query<any[]>(
+    `SELECT /* ibscbs-ahead */ code, valid_from, valid_until FROM ${C}.tb_tax_ibscbs_classification_validity
+      WHERE deleted = 'N' AND absent_since_version IS NULL
+        AND ((valid_until >= ? AND valid_until < ?) OR (valid_from > ? AND valid_from <= ?))`, [date, end, date, end])
+  const dates = new Map<string, Set<string>>()
+  for (const r of rows) {
+    const code = String(r.code)
+    if (!afterToday.get(code)?.accepted) continue   // não aceito hoje (ou perdido nesta carga): é impacto, não aviso
+    const set = dates.get(code) ?? new Set<string>()
+    const until = isoDate(r.valid_until)
+    const from = isoDate(r.valid_from)!
+    if (until !== null && until >= date && until < end) set.add(nextDay(until))
+    if (from > date && from <= end) set.add(from)
+    dates.set(code, set)
+  }
+  // um veredito em lote por data candidata
+  const byDate = new Map<string, string[]>()
+  for (const [code, set] of dates) for (const d of set) byDate.set(d, [...(byDate.get(d) ?? []), code])
+  const verdicts = new Map<string, Map<string, ClassificationVerdict>>()
+  for (const d of [...byDate.keys()].sort()) verdicts.set(d, await classificationVerdictsAt(conn, byDate.get(d)!, MODEL_NFSE, d))
+  const out: LostCodes['ahead'] = []
+  for (const [code, set] of [...dates].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const d of [...set].sort()) {
+      const v = verdicts.get(d)!.get(code)!
+      if (!v.accepted) { out.push({ code, lossDate: d, reason: v.reason! }); break }
+    }
+  }
+  return out
+}
+
+/** O que esta carga deixa de aceitar. cClassTrib: veredito da peça na data do fato ANTES × DEPOIS (D-IB47 — inclui a
+ *  correção de dIniVig para o futuro, a vigência encerrada, a tributação regular ligada e a linha nova sobreposta sem
+ *  presença); cIndOp não tem vigência — qualquer aplicabilidade viva; NBS — presença perdida. Só tabelas CENTRAIS, na
+ *  transação da carga (estado pós-carga, antes do rollback). */
+async function lostAfterLoad(
+  conn: Conn, report: ApplyReport, date: string, before: Map<string, ClassificationVerdict>,
+): Promise<LostCodes> {
   const codesOf = (keys: string[]) => [...new Set(keys.filter(k => k.endsWith('|SE')).map(k => k.split('|')[0]))]
-  // D-IB44: código cuja linha vigente teve a vigência encerrada nesta carga também é candidato — a
-  // consulta abaixo (pela linha VIGENTE na data com aplicabilidade SE) decide se ainda é aceito
-  const candidatesCls = [...new Set([
-    ...codesOf(report.applicability.deactivatedKeys),
-    ...(date === undefined ? [] : report.validityEnded.map(k => k.split('|')[0])),
-  ])]
   const candidatesPlace = codesOf(report.placeApplicability.deactivatedKeys)
   const stillAlive = async (table: string, codes: string[]): Promise<Set<string>> => {
     if (!codes.length) return new Set()
@@ -420,26 +510,26 @@ async function lostAfterLoad(conn: Conn, report: ApplyReport, date?: string): Pr
       `SELECT DISTINCT code FROM ${C}.\`${table}\` WHERE model = 'SE' AND deleted = 'N' AND code IN (?)`, [codes])
     return new Set(rows.map(r => String(r.code)))
   }
-  const aliveCls = date === undefined || !candidatesCls.length
-    ? await stillAlive('tb_tax_ibscbs_classification_applicability', candidatesCls)
-    : new Set<string>((await conn.query<any[]>(
-        `SELECT DISTINCT v.code FROM ${C}.tb_tax_ibscbs_classification_validity v
-           JOIN ${C}.tb_tax_ibscbs_classification_applicability a
-             ON a.code = v.code AND a.valid_from = v.valid_from AND a.model = 'SE' AND a.deleted = 'N'
-          WHERE v.deleted = 'N' AND v.code IN (?) AND v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?)`,
-        [candidatesCls, date, date]))[0].map((r: any) => String(r.code)))
   const alivePlace = await stillAlive('tb_ibscbs_place_indicator_applicability', candidatesPlace)
-  return {
-    classifications: candidatesCls.filter(c => !aliveCls.has(c)),
-    placeIndicators: candidatesPlace.filter(c => !alivePlace.has(c)),
-    nbs: report.nbs.deactivatedKeys,
+  const placeIndicators = candidatesPlace.filter(c => !alivePlace.has(c))
+  // D-IB47: a diferença do veredito — aceito antes, não aceito depois (mesma data, mesma peça, mesma transação)
+  const after = await classificationVerdictsAt(conn, [...before.keys()], MODEL_NFSE, date)
+  const classifications = new Map<string, ClassificationRefusal>()
+  for (const [code, v] of before) {
+    const now = after.get(code)!
+    if (v.accepted && !now.accepted) classifications.set(code, now.reason!)
   }
+  const reg = await classificationRegistrationVerdicts(conn, [...classifications.keys()], MODEL_NFSE, date)
+  const registration = new Map([...classifications.keys()].map(c => [c, reg.get(c)?.accepted ?? false]))
+  const ahead = await lossesAhead(conn, date, after)
+  return { classifications, registration, placeIndicators, nbs: report.nbs.deactivatedKeys, ahead }
 }
 
 /** Serviços VIVOS de cada cliente que usam o que ficou sem aplicabilidade/presença (D-IB28 (b)).
  *  Erro de leitura num schema vira problema listado — nunca derruba o ensaio nem passa em silêncio. */
 async function reportImpact(conn: Conn, report: ApplyReport, lost: LostCodes): Promise<void> {
-  if (!lost.classifications.length && !lost.placeIndicators.length && !lost.nbs.length) return
+  if (!lost.classifications.size && !lost.placeIndicators.length && !lost.nbs.length && !lost.ahead.length) return
+  const ahead = new Map(lost.ahead.map(a => [a.code, a]))
   const [inst] = await conn.query<any[]>(
     `SELECT schema_name, active FROM ${C}.tb_institution WHERE deleted = 'N' ORDER BY schema_name`)
   for (const { schema_name: schema, active } of inst) {
@@ -447,7 +537,8 @@ async function reportImpact(conn: Conn, report: ApplyReport, lost: LostCodes): P
     if (!SCHEMA_RE.test(String(schema))) { report.impactProblems.push(`${schema}: nome de schema fora do padrão — ignorado`); continue }
     try {
       const alive = `JOIN \`${schema}\`.tb_product p ON p.id = s.id AND p.tb_institution_id = s.tb_institution_id AND p.deleted = 'N' AND p.kind = 'S'`
-      const count = async (kind: ImpactRow['kind'], table: string, column: string, codes: string[]) => {
+      const count = async (kind: ImpactRow['kind'], table: string, column: string, codes: string[],
+                           target: ImpactRow[] = report.impact, extra: (code: string) => Partial<ImpactRow> = () => ({})) => {
         if (!codes.length) return
         const [rows] = await conn.query<any[]>(
           `SELECT s.${column} AS code, COUNT(*) AS n, GROUP_CONCAT(s.id ORDER BY s.id SEPARATOR ',') AS ids
@@ -455,12 +546,15 @@ async function reportImpact(conn: Conn, report: ApplyReport, lost: LostCodes): P
             WHERE s.deleted = 'N' AND s.${column} IN (?) GROUP BY s.${column}`, [codes])
         for (const r of rows) {
           const serviceIds = String(r.ids ?? '').split(',').filter(Boolean).slice(0, IMPACT_IDS_MAX).map(Number)
-          report.impact.push({ schema, institutionActive, kind, code: r.code, services: Number(r.n), serviceIds })
+          target.push({ schema, institutionActive, kind, code: r.code, services: Number(r.n), serviceIds, ...extra(String(r.code)) })
         }
       }
-      await count('cClassTrib', 'tb_service_ibscbs', 'classification_code', lost.classifications)
+      await count('cClassTrib', 'tb_service_ibscbs', 'classification_code', [...lost.classifications.keys()], report.impact,
+        code => ({ registrationStillAccepts: lost.registration.get(code), reason: lost.classifications.get(code) }))
       await count('cIndOp', 'tb_service_ibscbs', 'place_indicator_code', lost.placeIndicators)
       await count('NBS', 'tb_service', 'nbs', lost.nbs)
+      await count('cClassTrib', 'tb_service_ibscbs', 'classification_code', [...ahead.keys()], report.impactAhead,
+        code => ({ lossDate: ahead.get(code)!.lossDate, reason: ahead.get(code)!.reason }))
     } catch (err: any) {
       report.impactProblems.push(`${schema}: ${err?.code ?? err?.message ?? err}`)
     }

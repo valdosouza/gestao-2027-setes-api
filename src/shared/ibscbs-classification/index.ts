@@ -96,6 +96,70 @@ export async function findClassificationAt(
   return rows[0] ? toClassification(rows[0]) : null
 }
 
+/** Por que o código NÃO é aceito: sem linha (inexistente/fora de vigência) · sem presença no modelo (ou ainda não confirmado
+ *  pela Calculadora — A-IB1) · exige o grupo de tributação regular, que o builder não emite (parecer do guardião §10.3 (a.ii)). */
+export type ClassificationRefusal = 'no-line' | 'not-applicable' | 'requires-regular'
+
+export interface ClassificationVerdict {
+  accepted: boolean
+  /** null quando aceito — o 422 da IB-2 e o aviso da carga do catálogo leem o motivo daqui (nunca re-derivam). */
+  reason:   ClassificationRefusal | null
+  line:     ClassificationAt | null
+}
+
+/** O VEREDITO de uma linha escolhida — UMA definição de "aceito" para a data do fato, o cadastro, o selo, a lista e o 422. */
+export function verdictOf(c: ClassificationAt | null): ClassificationVerdict {
+  if (!c) return { accepted: false, reason: 'no-line', line: null }
+  if (!c.applicable) return { accepted: false, reason: 'not-applicable', line: c }
+  if (c.requiresRegularTaxation) return { accepted: false, reason: 'requires-regular', line: c }
+  return { accepted: true, reason: null, line: c }
+}
+const accepts = (c: ClassificationAt | null): boolean => verdictOf(c).accepted
+
+/** D-IB47: veredito na data do fato (linha vigente nessa data — `findClassificationAt`). */
+export async function classificationVerdictAt(
+  q: Queryable, code: string, model: FiscalModel, date: string,
+): Promise<ClassificationVerdict> {
+  return verdictOf(await findClassificationAt(q, code, model, date))
+}
+
+/**
+ * D-IB47: o código é ACEITO na data do fato? É a pergunta do faturamento (IB-2) e do impacto/aviso prospectivo da
+ * carga do catálogo (na conexão da transação dela — em lote: `classificationVerdictsAt`).
+ */
+export async function classificationAcceptedAt(
+  q: Queryable, code: string, model: FiscalModel, date: string,
+): Promise<boolean> {
+  return (await classificationVerdictAt(q, code, model, date)).accepted
+}
+
+const IN_CHUNK = 500
+
+/** EM LOTE (gate socrático do delta R7 — custo): a MESMA regra de `findClassificationAt` (linha vigente MAIS NOVA na data,
+ *  sem superada) para vários códigos, uma consulta por bloco de IN_CHUNK códigos. Todo código pedido volta no mapa. */
+export async function classificationVerdictsAt(
+  q: Queryable, codes: readonly string[], model: FiscalModel, date: string,
+): Promise<Map<string, ClassificationVerdict>> {
+  const out = new Map<string, ClassificationVerdict>()
+  const unique = [...new Set(codes)]
+  for (let i = 0; i < unique.length; i += IN_CHUNK) {
+    const chunk = unique.slice(i, i + IN_CHUNK)
+    const [rows] = await q.query(
+      `${CLASSIFICATION_SELECT}
+        WHERE v.code IN (?) AND v.deleted = 'N' AND v.absent_since_version IS NULL
+          AND v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?)
+        ORDER BY v.code, v.valid_from DESC`,
+      [model, chunk, date, date])
+    const first = new Map<string, ClassificationAt>()
+    for (const r of rows as any[]) {
+      const c = toClassification(r)
+      if (!first.has(c.code)) first.set(c.code, c)
+    }
+    for (const code of chunk) out.set(code, verdictOf(first.get(code) ?? null))
+  }
+  return out
+}
+
 /** Fim da janela de vigência futura aceita no cadastro (D-IB29): a obrigação; depois dela, nenhuma. */
 export const registrationWindowEnd = (today: string): string | null =>
   today < NFSE_IBSCBS_SIMPLES_OBLIGATION_START ? NFSE_IBSCBS_SIMPLES_OBLIGATION_START : null
@@ -132,6 +196,36 @@ export async function findClassificationForRegistration(
   return pickForRegistration(await rowsOfCode(q, code, model), today)
 }
 
+/** CADASTRO (D-IB37/D-IB47): o código é aceito hoje pela regra do cadastro (janela até a obrigação)? É o selo. */
+export async function classificationAcceptedForRegistration(
+  q: Queryable, code: string, model: FiscalModel, today: string,
+): Promise<boolean> {
+  return accepts(await findClassificationForRegistration(q, code, model, today))
+}
+
+/** CADASTRO em LOTE: `pickForRegistration` por código + o veredito (a carga do catálogo marca `registrationStillAccepts`). */
+export async function classificationRegistrationVerdicts(
+  q: Queryable, codes: readonly string[], model: FiscalModel, today: string,
+): Promise<Map<string, ClassificationVerdict>> {
+  const out = new Map<string, ClassificationVerdict>()
+  const unique = [...new Set(codes)]
+  for (let i = 0; i < unique.length; i += IN_CHUNK) {
+    const chunk = unique.slice(i, i + IN_CHUNK)
+    const [rows] = await q.query(
+      `${CLASSIFICATION_SELECT}
+        WHERE v.code IN (?) AND v.deleted = 'N'
+        ORDER BY v.code, v.valid_from`,
+      [model, chunk])
+    const byCode = new Map<string, ClassificationAt[]>()
+    for (const r of rows as any[]) {
+      const c = toClassification(r)
+      byCode.set(c.code, [...(byCode.get(c.code) ?? []), c])
+    }
+    for (const code of chunk) out.set(code, verdictOf(pickForRegistration(byCode.get(code) ?? [], today)))
+  }
+  return out
+}
+
 /** EXIBIÇÃO no cadastro (nome + vigência): a linha do cadastro (mesma regra); sem candidata, a
  *  futura mais próxima ou a mais recente — o GET nunca esconde o que está gravado. Sem data
  *  (`today` null), a mais recente. */
@@ -157,10 +251,9 @@ export async function classificationAcceptance(
   q: Queryable, classificationCode: string, placeIndicatorCode: string, today: string,
   model: FiscalModel = MODEL_NFSE,
 ): Promise<{ classification: boolean; placeIndicator: boolean }> {
-  const cls = await findClassificationForRegistration(q, classificationCode, model, today)
   const place = await findPlaceIndicator(q, placeIndicatorCode, model)
   return {
-    classification: !!cls && cls.applicable && !cls.requiresRegularTaxation,
+    classification: await classificationAcceptedForRegistration(q, classificationCode, model, today),
     placeIndicator: !!place && place.applicable,
   }
 }
@@ -251,9 +344,10 @@ export async function assertServiceClassification(
   if (input.ibscbs != null) {
     const { classificationCode, placeIndicatorCode } = input.ibscbs
     const cls = checks.classification ? await findClassificationForRegistration(q, classificationCode, model, date) : undefined
-    if (cls === undefined) {
+    const verdict = cls === undefined ? undefined : verdictOf(cls)
+    if (verdict === undefined) {
       // cClassTrib inalterado (D-IB30): não reconfere
-    } else if (!cls) {
+    } else if (verdict.reason === 'no-line') {
       const end = registrationWindowEnd(date)
       fields.push({
         field: 'ibscbs.classificationCode',
@@ -261,10 +355,10 @@ export async function assertServiceClassification(
           + (end ? ` (nem começa até ${end})` : ''),
       })
       code ??= ErrorCodes.IBSCBS_CLASSIFICATION_NOT_FOUND
-    } else if (!cls.applicable) {
+    } else if (verdict.reason === 'not-applicable') {
       fields.push({ field: 'ibscbs.classificationCode', message: `cClassTrib ${classificationCode} não é aceito na NFS-e (ou ainda não foi confirmado pela Calculadora oficial)` })
       code ??= ErrorCodes.IBSCBS_CLASSIFICATION_NOT_APPLICABLE
-    } else if (cls.requiresRegularTaxation) {
+    } else if (verdict.reason === 'requires-regular') {
       fields.push({ field: 'ibscbs.classificationCode', message: `cClassTrib ${classificationCode} exige o grupo de tributação regular, que ainda não é emitido` })
       code ??= ErrorCodes.IBSCBS_CLASSIFICATION_REQUIRES_REGULAR
     }
@@ -319,7 +413,7 @@ export async function listClassificationsLookup(
   const out: CodeLookupRow[] = []
   for (const list of byCode.values()) {
     const picked = pickForRegistration(list, date)
-    if (!picked || !picked.applicable || picked.requiresRegularTaxation) continue
+    if (!picked || !accepts(picked)) continue
     out.push({
       code: picked.code, description: `${picked.cst} · ${picked.code} — ${picked.name}`,
       validFrom: picked.validFrom, validUntil: picked.validUntil,
