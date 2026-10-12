@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
 import { isAdmin } from '@shared/auth/roles'
+import { ErrorCodes } from '@shared/errors/error-codes'
 
 /**
  * Guard de privilégio de AÇÃO na rota (D12 + Q-P5 do cancelamento de nota,
@@ -55,7 +56,7 @@ export async function userHasPrivilege(
 
 function interfaceNotAllowed(res: Response, keys: string[]): void {
   res.status(403).json({
-    error: `Interface ${keys.join(' / ')} não contratada para este estabelecimento`, code: 'INTERFACE_NOT_ALLOWED', fields: [],
+    error: `Interface ${keys.join(' / ')} não contratada para este estabelecimento`, code: ErrorCodes.INTERFACE_NOT_ALLOWED, fields: [],
   })
 }
 

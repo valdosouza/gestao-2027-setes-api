@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express'
 import { verifyFinalToken } from '@shared/auth/product-token'
 import { HttpError } from '@shared/errors/http-error'
+import { ErrorCodes } from '@shared/errors/error-codes'
 import logger from '@shared/logger/logger'
 
 /**
@@ -10,7 +11,7 @@ import logger from '@shared/logger/logger'
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
   try {
     const header = req.headers.authorization
-    if (!header?.startsWith('Bearer ')) throw new HttpError(401, 'Token ausente')
+    if (!header?.startsWith('Bearer ')) throw new HttpError(401, 'Token ausente', undefined, ErrorCodes.UNAUTHORIZED)
 
     const payload = verifyFinalToken(header.slice(7).trim())
 
@@ -18,10 +19,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     logger.info('Auth OK', { institutionId: payload.institutionId, path: req.path })
     next()
   } catch (err) {
+    // envelope do Framework de Mensagens ({ error, code }) — o app recebe UnauthorizedFailure com o código
     if (err instanceof HttpError) {
-      res.status(err.statusCode).json({ error: err.message })
+      res.status(err.statusCode).json({ error: err.message, code: err.code ?? ErrorCodes.UNAUTHORIZED })
     } else {
-      res.status(401).json({ error: 'Token inválido ou expirado' })
+      res.status(401).json({ error: 'Token inválido ou expirado', code: ErrorCodes.UNAUTHORIZED })
     }
   }
 }

@@ -78,6 +78,7 @@ jest.mock('../shared/service-tax-rule', () => ({
 }))
 jest.mock('../shared/auth/require-privilege', () => ({
   __esModule: true, ...jest.requireActual('../shared/auth/require-privilege'), userHasPrivilege: jest.fn().mockResolvedValue(true),
+  institutionHasInterface: jest.fn().mockResolvedValue(true),   // D-F37 (F2a A2): licenca do ramo conferida por item no lote
 }))
 
 const q = (pool as any).query as jest.Mock

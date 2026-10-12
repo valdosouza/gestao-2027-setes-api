@@ -3,6 +3,7 @@ import { createPrivateKey, createPublicKey, KeyObject } from 'crypto'
 import jwt, { JwtHeader } from 'jsonwebtoken'
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
+import { ErrorCodes } from '@shared/errors/error-codes'
 
 /**
  * JWT do PRODUTO em RS256 com `kid` (D-F13 — Valdo 2026-10-03; ligado no setes-api na F2a, etapa A2,
@@ -25,7 +26,7 @@ import { HttpError } from '@shared/errors/http-error'
  *  - `JWT_KID` — o `kid` dela (padrão 'default' — o mesmo nome que a nfse-api dá a `JWT_PUBLIC_KEY_PATH`);
  *  - `JWT_PUBLIC_KEYS` (opcional) — "kid=caminho.pem,…": chaves ANTERIORES ainda aceitas na verificação durante
  *    uma ROTAÇÃO (o token novo sai com o `kid` novo; o velho vale até expirar). O `kid` de assinatura não se repete aqui.
- * Token sem `kid` ou com `kid` desconhecido = 401.
+ * Token sem `kid` ou com `kid` desconhecido, ou sem `exp`, = 401.
  */
 
 export const JWT_ALGORITHM = 'RS256' as const
@@ -110,7 +111,7 @@ export function signSelectionToken(userId: number): string {
   return sign({ userId, scope: SELECTION_SCOPE }, SELECTION_TOKEN_TTL)
 }
 
-const unauthorized = (msg: string) => new HttpError(401, msg, undefined, 'UNAUTHORIZED')
+const unauthorized = (msg: string) => new HttpError(401, msg, undefined, ErrorCodes.UNAUTHORIZED)
 
 /** Verifica assinatura (RS256, `kid` conhecido) e validade. Não confere a FORMA — isso é de quem chama. */
 function verified(token: string): Record<string, unknown> {
@@ -122,6 +123,8 @@ function verified(token: string): Record<string, unknown> {
   try {
     const payload = jwt.verify(token, key, { algorithms: [JWT_ALGORITHM] })
     if (!payload || typeof payload !== 'object') throw unauthorized('Token inválido')
+    // gates da A2 (F2A2-ADV-07): validade OBRIGATÓRIA — token sem `exp` (só quem tem a chave forja) nunca vale para sempre
+    if (!Number.isFinite((payload as any).exp)) throw unauthorized('Token inválido')
     return payload as Record<string, unknown>
   } catch (err: any) {
     if (err instanceof HttpError) throw err

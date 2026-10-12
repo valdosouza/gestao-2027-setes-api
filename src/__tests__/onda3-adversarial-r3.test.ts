@@ -229,6 +229,7 @@ function poolDefaults() {
     if (/setes_central\.tb_city/.test(sql)) { const ib = ibgeByCity.has(Number(params?.[0])) ? ibgeByCity.get(Number(params?.[0])) : '4106902'; return [ib ? [{ ibge: ib }] : []] }
     if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: 30 }]]
     if (/tb_user_has_privilege/.test(sql)) return [[{ 1: 1 }]]
+    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]                 // D-F37 (F2a A2): licenca do ramo conferida por item no lote
     return [[]]
   })
 }

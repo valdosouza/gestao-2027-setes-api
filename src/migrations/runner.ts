@@ -2,7 +2,7 @@ import fs     from 'fs'
 import path   from 'path'
 import pool   from '@shared/db/connection'
 import logger from '@shared/logger/logger'
-import { getAppliedMigrations, recordMigration } from './repository'
+import { getAppliedMigrationRows, recordMigration } from './repository'
 
 const SQL_DIR = path.resolve(__dirname, 'sql')
 
@@ -13,7 +13,7 @@ interface MigrationFile {
 }
 
 function loadMigrationFiles(): MigrationFile[] {
-  return fs
+  const files = fs
     .readdirSync(SQL_DIR)
     .filter(f => f.endsWith('.sql'))
     .sort()
@@ -21,6 +21,33 @@ function loadMigrationFiles(): MigrationFile[] {
       const [version, ...rest] = file.replace('.sql', '').split('_')
       return { version, name: rest.join('_'), file }
     })
+  assertUniqueVersions(files)
+  return files
+}
+
+/**
+ * F2a A2 (gates F2A2-ADV-04, 2026-10-12): o runner decide pela VERSÃO (o número) — duas frentes que escolham o MESMO
+ * número fariam uma delas ser PULADA para sempre, calada (ou o 2º INSERT em `_migrations` derrubaria o boot depois do
+ * DDL). Falha ALTA no boot: dois arquivos com a mesma versão, ou versão aplicada com OUTRO nome que o do arquivo.
+ */
+export function assertUniqueVersions(files: MigrationFile[]): void {
+  const seen = new Map<string, string>()
+  for (const f of files) {
+    const other = seen.get(f.version)
+    if (other) throw new Error(`Migrations com a MESMA versão ${f.version}: ${other} e ${f.file} — renumere uma delas (o runner decide pelo número)`)
+    seen.set(f.version, f.file)
+  }
+}
+
+export function assertAppliedMatchFiles(files: MigrationFile[], applied: { version: string; name: string }[], schemaName: string): void {
+  const byVersion = new Map(files.map(f => [f.version, f]))
+  for (const a of applied) {
+    const f = byVersion.get(a.version)
+    if (f && a.name && f.name !== a.name) {
+      throw new Error(`${schemaName}: a versão ${a.version} foi aplicada como "${a.name}", mas o arquivo é ${f.file} — `
+        + 'duas migrations com o mesmo número; a do arquivo NUNCA rodaria. Renumere o arquivo.')
+    }
+  }
 }
 
 function splitStatements(sql: string): string[] {
@@ -70,7 +97,9 @@ export async function runMigrationsForSchema(schemaName: string): Promise<void> 
     `)
 
     const files   = loadMigrationFiles()
-    const applied = await getAppliedMigrations(conn)
+    const appliedRows = await getAppliedMigrationRows(conn)
+    assertAppliedMatchFiles(files, appliedRows, schemaName)
+    const applied = appliedRows.map(r => r.version)
     const pending = files.filter(f => !applied.includes(f.version))
 
     if (pending.length === 0) {

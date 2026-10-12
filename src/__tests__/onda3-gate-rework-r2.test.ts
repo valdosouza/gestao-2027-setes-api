@@ -112,6 +112,8 @@ beforeEach(() => {
   q.mockImplementation(async (sql: string) => {
     if (/FROM `setes_setes`\.tb_invoice i/.test(sql)) return [[headerRow]]
     if (/tb_city/.test(sql)) return [[{ ibge: '4106902' }]]
+    if (/setes_central.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: 30 }]]   // D-F37 (F2a A2): licenca por item no lote
+    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]                 // D-F37 (F2a A2): licenca do ramo conferida por item no lote
     return [[]]
   })
   conn.query.mockImplementation(async (sql: string) => {

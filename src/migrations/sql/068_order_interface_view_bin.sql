@@ -10,7 +10,8 @@
 -- Só a coluna derivada muda: mesma lista de colunas, mesmos JOINs (segue FUNDÍVEL — expressão na lista do SELECT não impede
 -- a fusão). A `vw_invoice_life` NÃO muda (as colunas vêm de tabela, com a colação da tabela). Rodar com o usuário dono de
 -- sempre (o DEFINER da view é quem a recria; o GRANT de SELECT do usuário da API fiscal sobrevive ao REPLACE). Re-executável.
--- Espelho no canônico: `sql/03_*.sql` (bloco das VIEWs de política).
+-- Espelho no canônico (`sql/03_*.sql`, bloco das VIEWs de política) entra no MESMO passo do merge desta migration na
+-- árvore viva (repositório sql) — com `SET NAMES utf8mb4` antes: numa sessão latin1 o COLLATE utf8mb4_bin dá erro 1253.
 CREATE OR REPLACE VIEW `vw_order_interface` AS
 SELECT o.`tb_institution_id`,
        o.`id`       AS `tb_order_id`,

@@ -146,6 +146,9 @@ export const ErrorCodes = {
   INVOICE_REASON_REQUIRED: 'INVOICE_REASON_REQUIRED',
   INVOICE_CANCEL_BLOCKED: 'INVOICE_CANCEL_BLOCKED',
   PRIVILEGE_REQUIRED:  'PRIVILEGE_REQUIRED',
+  // F2a A2 (D-F37/D-F13): licença do ramo para todos e 401 do token do produto
+  INTERFACE_NOT_ALLOWED: 'INTERFACE_NOT_ALLOWED',
+  UNAUTHORIZED:        'UNAUTHORIZED',
   RESOURCE_BUSY:       'RESOURCE_BUSY',
   TITLE_EXCEEDS_BALANCE: 'TITLE_EXCEEDS_BALANCE',
   SERVICE_ORDER_CUSTOMER_OPEN: 'SERVICE_ORDER_CUSTOMER_OPEN',
@@ -318,6 +321,8 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   INVOICE_REASON_REQUIRED: 'Motivo do cancelamento é obrigatório',
   INVOICE_CANCEL_BLOCKED: 'Cancelamento bloqueado — resolva as pendências listadas antes (baixa, boleto liquidado, cheque que avançou, devolução)',
   PRIVILEGE_REQUIRED:  'Privilégio necessário para esta ação',
+  INTERFACE_NOT_ALLOWED: 'Interface não contratada para este estabelecimento (licença vale para todos, admin incluído)',
+  UNAUTHORIZED:        'Não autenticado — token ausente, inválido ou expirado',
   RESOURCE_BUSY:       'Registro em uso por outra operação — tente novamente',
   TITLE_EXCEEDS_BALANCE: 'Valor da baixa passa do saldo em aberto do título',
   SERVICE_ORDER_CUSTOMER_OPEN: 'Cliente já tem uma ordem de serviço aberta',

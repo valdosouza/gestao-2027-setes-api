@@ -1,6 +1,7 @@
 import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import { HttpError } from '@shared/errors/http-error'
+import { ErrorCodes } from '@shared/errors/error-codes'
 
 /**
  * Peça da NOTA FISCAL (prompt_cancelamento_nota.md — D3/D4/D5/D17 + parecer
@@ -105,7 +106,16 @@ export interface LockedInvoice {
  * nota é o 1º comando (o ponto de serialização dos dois serviços — D-F27/D-F121) e a view é lida em leitura travante
  * COMPARTILHADA (fresca: não depende do retrato do REPEATABLE READ — PADROES §9 regra 2). Antes era um "ORDER BY event
  * DESC LIMIT 1 FOR UPDATE" próprio em `tb_invoice_event`: a definição de "último evento" em duas cópias. Quem grava
- * evento (`insertInvoiceEvent`, MAX+1 FOR UPDATE) já está serializado pela trava da nota.
+ * evento (`insertInvoiceEvent`, MAX+1 FOR UPDATE) já está serializado pela trava da nota — e TEM de estar: a trava S que
+ * esta leitura põe nos eventos faz um escritor que pule a trava da nota cair em deadlock S→X (gate adversarial da A2,
+ * F2A2-ADV-03 — regra, não acaso).
+ *
+ * ⚠️ Conhecimento NEGATIVO (gates da A2, F2A2-ADV-02 — provado no MariaDB 10.4.20): a leitura travante da view só é
+ * "fresca" nas tabelas do JOIN; os `NOT EXISTS` de dentro dela (o "último evento") leem o RETRATO do REPEATABLE READ. Se
+ * a transação abriu o retrato ANTES desta trava (uma leitura não travante, ou um FOR UPDATE com subconsulta) e a nota foi
+ * re-faturada no intervalo (E1, C2 → E3), a view devolve VÁRIAS linhas (vida × último, novos e velhos). Por isso: mais
+ * de uma linha = o chamador violou "a trava da nota é o 1º comando" (D-F121, PADROES §11 regra 12) → 409 RESOURCE_BUSY
+ * (refazer a operação abre um retrato novo DEPOIS da trava) — nunca "pegar a primeira".
  */
 export async function lockInvoice(
   conn: PoolConnection, s: string, institutionId: number, invoiceId: number
@@ -125,6 +135,10 @@ export async function lockInvoice(
       WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 LOCK IN SHARE MODE`,
     [institutionId, invoiceId]
   )
+  if (life.length > 1) {
+    throw new HttpError(409, `A nota ${rows[0].number ?? invoiceId} mudou durante a operação — tente novamente`,
+      undefined, ErrorCodes.RESOURCE_BUSY)
+  }
   const l = life[0]
   return {
     id: Number(rows[0].id), number: rows[0].number ?? null, serie: rows[0].serie ?? null,

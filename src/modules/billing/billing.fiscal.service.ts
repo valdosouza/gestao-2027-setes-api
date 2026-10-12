@@ -2,7 +2,7 @@ import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { InstitutionPayload } from '@shared/types/express'
 import { isAdmin } from '@shared/auth/roles'
-import { userHasPrivilege } from '@shared/auth/require-privilege'
+import { userHasPrivilege, institutionHasInterface } from '@shared/auth/require-privilege'
 import { PRIVILEGE_TRANSMITIR } from '@shared/auth/privileges'
 import { getEntityFiscalFull } from '@shared/entity'
 import { renderDanfse } from '@shared/danfse'
@@ -84,9 +84,13 @@ async function runTransmitBatch(institution: InstitutionPayload, body: TransmitB
       continue
     }
     try {
-      // D-E14: TRANSMITIR na interface do RAMO — conferido por item (a rota só conhece o array)
+      // D-E14: TRANSMITIR na interface do RAMO — conferido por item (a rota só conhece o array). D-F37 (F2a A2, gate
+      // F2A2-ADV-01): a LICENÇA do ramo vem antes, para TODOS — a guarda da rota passa com QUALQUER ramo contratado
+      const key = await resolveOrderInterface(institution.schemaName, institution.institutionId, orderId)
+      if (!(await institutionHasInterface(institution.schemaName, institution.institutionId, key))) {
+        throw new HttpError(403, `Interface ${key} não contratada para este estabelecimento`, undefined, ErrorCodes.INTERFACE_NOT_ALLOWED)
+      }
       if (!isAdmin(institution)) {
-        const key = await resolveOrderInterface(institution.schemaName, institution.institutionId, orderId)
         if (!(await userHasPrivilege(institution.schemaName, institution.userId, key, PRIVILEGE_TRANSMITIR))) {
           throw new HttpError(403, `Sem privilégio TRANSMITIR na interface ${key}`, undefined, ErrorCodes.PRIVILEGE_REQUIRED)
         }

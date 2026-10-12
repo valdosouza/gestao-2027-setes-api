@@ -140,18 +140,24 @@ async function proveSchema(s: string, inst: number): Promise<void> {
   const vig = ret.filter(r => Number(r.newCur) === 1).length
   check(`devolução vigente — ${ret.length} vínculos (vigentes ${vig})`, dr.length === 0, dr.slice(0, 10).join('; '))
 
-  // 5. custo (D-F40)
+  // 5. custo (D-F40) — com ids REAIS (gate socrático da A2: id inexistente dá "Impossible WHERE" e a cerca não prova nada)
+  const [mo] = await pool.query<any[]>(`SELECT MAX(id) AS id FROM \`${s}\`.tb_service_order WHERE tb_institution_id = ? AND terminal = 0`, [inst])
+  const [mi] = await pool.query<any[]>(
+    `SELECT MAX(tb_invoice_id) AS id FROM \`${s}\`.tb_invoice_event WHERE tb_institution_id = ? AND terminal = 0 AND deleted = 'N'`, [inst])
+  const [mr] = await pool.query<any[]>(`SELECT MAX(tb_order_id_ori) AS id FROM \`${s}\`.tb_order_item_return WHERE tb_institution_id = ?`, [inst])
+  const orderId = Number(mo[0]?.id ?? 1), invoiceId = Number(mi[0]?.id ?? 1), oriId = Number(mr[0]?.id ?? 1)
   const plans: Array<[string, string, unknown[]]> = [
-    ['resolveOrderInterface', `SELECT interface_key FROM \`${s}\`.vw_order_interface WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0`, [inst, 1]],
-    ['lockInvoice (vida)', `SELECT life_event, last_event, last_kind FROM \`${s}\`.vw_invoice_life WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0`, [inst, 1]],
+    ['resolveOrderInterface', `SELECT interface_key FROM \`${s}\`.vw_order_interface WHERE tb_institution_id = ? AND tb_order_id = ? AND terminal = 0`, [inst, orderId]],
+    ['lockInvoice (vida)', `SELECT life_event, last_event, last_kind FROM \`${s}\`.vw_invoice_life WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0`, [inst, invoiceId]],
     ['LAST_INVOICE_EVENT_KIND_SQL numa lista',
       `SELECT i.id, ${LAST_INVOICE_EVENT_KIND_SQL(s, 'i')} AS k FROM \`${s}\`.tb_invoice i WHERE i.tb_institution_id = ? AND i.terminal = 0 LIMIT 50`, [inst]],
     ['CURRENT_RETURN_SQL',
-      `SELECT r.id FROM \`${s}\`.tb_order_item_return r WHERE r.tb_institution_id = ? AND r.tb_order_id_ori = ? AND r.deleted = 'N' AND ${CURRENT_RETURN_SQL(s, 'r')}`, [inst, 1]],
+      `SELECT r.id FROM \`${s}\`.tb_order_item_return r WHERE r.tb_institution_id = ? AND r.tb_order_id_ori = ? AND r.deleted = 'N' AND ${CURRENT_RETURN_SQL(s, 'r')}`, [inst, oriId]],
   ]
   for (const [label, sql, params] of plans) {
     const [ex] = await pool.query<any[]>(`EXPLAIN ${sql}`, params)
-    const bad = ex.filter(r => /DERIVED|MATERIALIZED/i.test(String(r.select_type)) || (r.type === 'ALL' && !/^i$|^r$/.test(String(r.table))))
+    const bad = ex.filter(r => /DERIVED|MATERIALIZED/i.test(String(r.select_type)) || (r.type === 'ALL' && !/^i$|^r$/.test(String(r.table)))
+      || r.table == null)                                                       // "Impossible WHERE" = a cerca não provou nada
     check(`EXPLAIN ${label}`, bad.length === 0, ex.map(r => `${r.id}/${r.select_type}/${r.table}/${r.type}/${r.key ?? '-'}`).join(' '))
   }
 }
