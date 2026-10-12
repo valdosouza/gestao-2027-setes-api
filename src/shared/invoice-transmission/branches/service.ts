@@ -14,7 +14,7 @@ import {
   AuthorityContext, AuthorityHttpError, DpsInput, DpsToma, DpsTotTrib, TaxAuthorityAdapter, MunicipalTerms,
   adapterFor, buildDpsId, buildDpsXml, buildCancelEventXml, buildEventId, signXml, ADN_SIGN_ALGORITHM, isLocalCredentialError,
 } from '@shared/tax-authority'
-import { TransmissionEventKind } from '../transmission.repository'
+import { TransmissionEventKind, ServiceVoiceWriteKind } from '../transmission.repository'
 import { toTsString } from '@shared/tax-authority/dps-builder'
 
 /**
@@ -487,7 +487,9 @@ export function classifyAuthorityError(err: unknown): AuthorityOutcome {
 }
 
 /** Q-N30b (Valdo 2026-09-28): falha LOCAL também fecha a tentativa com F — o fisco comprovadamente NÃO foi chamado (nada em voo). */
-export const OUTCOME_KIND: Record<Exclude<AuthorityOutcome, 'ambiguous'>, TransmissionEventKind> = { rejected: 'R', auth_failed: 'F', local: 'F' }
+// D-F106: o mapa grava na voz — tipado pelo vocabulário de ESCRITA da família (o compilador recusa S/P/D aqui) e CONGELADO (gate R22,
+// R22-02: `Object.assign`/`Reflect.set` compilavam sem cast e trocavam a voz de toda falha local do processo)
+export const OUTCOME_KIND: Readonly<Record<Exclude<AuthorityOutcome, 'ambiguous'>, ServiceVoiceWriteKind>> = Object.freeze({ rejected: 'R', auth_failed: 'F', local: 'F' })
 
 /** 1º código E0xxx das rejeições (fields[] "E0718: …"), para `authority_code`. */
 export function firstAuthorityCode(err: AuthorityHttpError): string | null {

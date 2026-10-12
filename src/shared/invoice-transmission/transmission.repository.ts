@@ -304,8 +304,19 @@ export async function fillAuthorityData(
   )
 }
 
+/**
+ * D-F106 (= Q-F112 (b), Valdo 2026-10-11): vocabulário de ESCRITA da família NFS-e — lista POSITIVA (A/R/C/K/F/N): sem S (a voz S não
+ * tem saída — D-F102/D-F105) e sem os kinds que a NE-1a trouxer para o tipo comum (P da NF-e — viva, em processamento — e D — FINAL,
+ * denegada — gate R22, S2). O TIPO pega o produtor SEMÂNTICO (constante, shorthand, mapa, parâmetro) que nenhuma cerca textual pega; o
+ * FUNIL abaixo confere a mesma lista em EXECUÇÃO (gate R22, R22-03 — cast, spread, JSON: o tipo some no JS). Ampliar = decisão.
+ * A lista é UMA constante e o tipo DERIVA dela (o `satisfies` garante que cada kind existe no vocabulário comum; se o comum virar
+ * `any`/`string`, o tipo da família continua a lista literal — a ressalva do adversarial da Rodada 22).
+ */
+export const SERVICE_VOICE_WRITE_KINDS = ['A', 'R', 'C', 'K', 'F', 'N'] as const satisfies readonly TransmissionEventKind[]
+export type ServiceVoiceWriteKind = typeof SERVICE_VOICE_WRITE_KINDS[number]
+const SERVICE_VOICE_WRITE_SET: ReadonlySet<string> = new Set(SERVICE_VOICE_WRITE_KINDS)
 export interface TransmissionEventInput {
-  kind:          TransmissionEventKind
+  kind:          ServiceVoiceWriteKind
   authorityCode?: string | null
   message?:      string | null
   dh?:           string | null      // 'YYYY-MM-DD HH:MM:SS'
@@ -318,6 +329,11 @@ export async function insertTransmissionEvent(
   conn: PoolConnection, schemaName: string, institutionId: number, invoiceId: number, attempt: number,
   userId: number | null, e: TransmissionEventInput
 ): Promise<number> {
+  // R22-03 do gate da Rodada 22: o funil ÚNICO da voz da NFS-e confere a lista da família em EXECUÇÃO (sensível a caixa — o 's' que a
+  // colação _ci leria como S também é recusado — D-F103); nada é lido nem gravado antes da recusa
+  if (!SERVICE_VOICE_WRITE_SET.has(e?.kind as string)) {
+    throw new Error(`D-F106: kind fora do vocabulário de escrita da NFS-e (${JSON.stringify(e?.kind)}) — nada gravado`)
+  }
   const s = assertSchema(schemaName)
   const [mx] = await conn.query<any[]>(
     `SELECT COALESCE(MAX(event), 0) + 1 AS next FROM \`${s}\`.tb_invoice_service_transmission_event

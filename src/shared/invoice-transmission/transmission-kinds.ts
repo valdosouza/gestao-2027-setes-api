@@ -8,7 +8,8 @@
  *
  * CONHECIMENTO NEGATIVO (D-F102/D-F103, Valdo 2026-10-11 — texto completo em `fiscal-api/src/voice/kinds.ts`): S não tem produtor nem
  * saída (quem criar produtor de S abre os DOIS portões da D-F51 na mesma entrega); `kind` não tem CHECK de domínio (nunca gravar voz
- * por fora do código). Esta composição morre na F2a.
+ * por fora do código). O escritor aceita só a lista POSITIVA da família (`ServiceVoiceWriteKind` — D-F106); a D-F102 vale só para a
+ * NFS-e (D-F105). Esta composição morre na F2a.
  */
 export type TransmissionEventKind = 'S' | 'A' | 'R' | 'C' | 'K' | 'F' | 'N'
 
