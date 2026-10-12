@@ -50,7 +50,7 @@ export function assertAppliedMatchFiles(files: MigrationFile[], applied: { versi
   }
 }
 
-function splitStatements(sql: string): string[] {
+export function splitStatements(sql: string): string[] {
   sql = sql.replace(/--[^\n]*\n/g, '\n')
 
   const statements: string[] = []
