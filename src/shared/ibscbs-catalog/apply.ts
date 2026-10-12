@@ -584,8 +584,8 @@ async function lossesAhead(
 
 /** O que esta carga deixa de aceitar. cClassTrib: veredito da peça na data do fato ANTES × DEPOIS (D-IB47 — inclui a
  *  correção de dIniVig para o futuro, a vigência encerrada, a tributação regular ligada e a linha nova sobreposta sem
- *  presença); D-IB53: para o que o fato já recusava, o veredito do CADASTRO antes × depois (linha futura da janela ou a linha
- *  vigente mais nova que esta carga tira — `registrationOnly`; D-IB59: a vigente mais antiga de uma sobreposição nunca conta);
+ *  presença); D-IB53: para o que o fato já recusava, o veredito do CADASTRO antes × depois — pela D-IB59 só uma linha FUTURA da
+ *  janela pode dar essa aceitação (se o fato já recusava, a vigente mais nova já recusava) — `registrationOnly`;
  *  cIndOp não tem vigência — qualquer aplicabilidade viva;
  *  NBS — presença perdida. Só tabelas CENTRAIS, na transação da carga (estado pós-carga, antes do rollback). */
 async function lostAfterLoad(

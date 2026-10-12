@@ -864,7 +864,7 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
   it('D-IB59: SOBREPOSIÇÃO de vigentes — o cadastro nunca aceitou pela antiga, então tirar a presença dela não é perda (antes e depois da obrigação)', async () => {
     for (const [date, from] of [['2026-10-10', '2026-10-01'], ['2027-01-05', '2027-01-02']] as const) {
       const before = [{ code: '000001', validFrom: '2026-01-01' }, { code: '000001', validFrom: from, applicable: 0 },
-        { code: '000006', validFrom: '2026-01-01' }]   // fato: a mais nova (sem presença) recusa; cadastro: a antiga aceita
+        { code: '000006', validFrom: '2026-01-01' }]   // fato e cadastro (D-IB59): a mais nova (sem presença) recusa — a antiga não conta
       const r = await runR9(date, before, [{ ...before[0], applicable: 0 }, before[1], before[2]])
       expect(r.impact).toEqual([])   // antes da D-IB59 saía registrationOnly — o selo dizia "aceita" pela antiga
     }

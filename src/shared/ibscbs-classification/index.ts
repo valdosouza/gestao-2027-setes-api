@@ -18,8 +18,8 @@ import { escapeLike } from '@shared/list'
  *     (NFSE_IBSCBS_SIMPLES_OBLIGATION_START), as que começam até ela, vale a que tem PRESENÇA
  *     no modelo — D-IB59: entre as VIGENTES só conta a MAIS NOVA (a mesma da data do fato); D-IB57: na janela
  *     futura, a ACEITA (presença e sem tributação regular — `verdictOf`) antes da só aplicável; sem nenhuma
- *     aceita, a vigente mais nova (para o 422 dizer por quê) — lista e salvar nunca discordam, e o selo diz o
- *     mesmo que o faturamento para as vigentes;
+ *     aceita: a vigente mais nova com presença → a futura com presença → a vigente mais nova (para o 422 dizer
+ *     por quê) — lista e salvar nunca discordam, e o selo diz o mesmo que o faturamento para as vigentes;
  *   - só é aceita no documento se a linha tem PRESENÇA para o modelo (SE = NFS-e);
  *     código ainda não confirmado pela Calculadora não tem presença (A-IB1);
  *   - classificação que EXIGE tributação regular é recusada: o builder não emite gTribRegular
@@ -398,29 +398,39 @@ export interface CodeLookupRow {
  * aceitos no modelo e que não exigem tributação regular. Um código por linha; a vigência vai em
  * validFrom/validUntil (texto para o usuário é da tela — i18n).
  */
+/** Linhas lidas pela lista de apoio (o resultado é cortado em 100 códigos aceitos). */
+const LOOKUP_ROWS = 400
+
 export async function listClassificationsLookup(
   filter: string, date: string, model: FiscalModel = MODEL_NFSE, q: Queryable = pool,
 ): Promise<CodeLookupRow[]> {
   const like = filter ? `%${escapeLike(filter)}%` : null
   const end = registrationWindowEnd(date) ?? date   // depois da obrigação a janela futura é vazia
+  // O filtro escolhe CÓDIGOS (por qualquer linha não superada DA JANELA — gate adversarial R11: o nome de uma linha vencida
+  // ou fora da janela não puxa o código), nunca linhas: a escolha (pickForRegistration)
+  // precisa ver todas as linhas do código — filtrar pelo nome da linha antiga de uma sobreposição oferecia o que o salvar
+  // recusa (D-IB59). Pelo mesmo motivo, o LIMIT por linha não pode cortar um código no meio (gate socrático R11, S11-2):
+  // batendo no limite, o último código (talvez incompleto) é descartado.
   const [rows] = await q.query(
     `${CLASSIFICATION_SELECT}
       WHERE v.deleted = 'N' AND v.absent_since_version IS NULL
         AND ((v.valid_from <= ? AND (v.valid_until IS NULL OR v.valid_until >= ?))
              OR (v.valid_from > ? AND v.valid_from <= ?))
-        -- o filtro escolhe CÓDIGOS (por qualquer linha do código), nunca linhas: a escolha da linha (pickForRegistration)
-        -- precisa ver todas — filtrar pelo nome da linha antiga de uma sobreposição oferecia o que o salvar recusa (D-IB59)
         AND v.code IN (SELECT f.code FROM setes_central.tb_tax_ibscbs_classification_validity f
                         WHERE f.deleted = 'N' AND f.absent_since_version IS NULL
+                          AND ((f.valid_from <= ? AND (f.valid_until IS NULL OR f.valid_until >= ?))
+                               OR (f.valid_from > ? AND f.valid_from <= ?))
                           AND (? IS NULL OR f.code LIKE ? OR f.name LIKE ?))
       ORDER BY v.code, v.valid_from
-      LIMIT 400`,
-    [model, date, date, date, end, like, like, like])
+      LIMIT ${LOOKUP_ROWS}`,
+    [model, date, date, date, end, date, date, date, end, like, like, like])
   const byCode = new Map<string, ClassificationAt[]>()
   for (const r of rows as any[]) {
     const c = toClassification(r)
     byCode.set(c.code, [...(byCode.get(c.code) ?? []), c])
   }
+  // S11-2: bateu no limite → o último código pode ter vindo pela metade (só as linhas mais antigas) — fora
+  if ((rows as any[]).length === LOOKUP_ROWS) byCode.delete(toClassification((rows as any[])[LOOKUP_ROWS - 1]).code)
   const out: CodeLookupRow[] = []
   for (const list of byCode.values()) {
     const picked = pickForRegistration(list, date)

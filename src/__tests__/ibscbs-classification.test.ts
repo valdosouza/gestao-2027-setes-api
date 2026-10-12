@@ -30,14 +30,19 @@ function fakeCatalog(opts: { validity: Validity[]; places: Record<string, string
       // lista de apoio (listClassificationsLookup): candidatas da janela, COM a presença (a peça escolhe)
       if (sql.includes('LIMIT 400')) {
         if (!sql.includes('absent_since_version IS NULL')) throw new Error('lista sem o filtro da linha superada (D-IB36)')
-        const [model, date, , , endW, like] = params as string[]
+        const [model, date, , , endW] = params as string[]
+        const like = params[params.length - 3] as string | null
+        const inWindow = (v: Validity) => (v.from <= date && (v.until === null || v.until >= date)) || (v.from > date && v.from <= endW)
+        const windowFilter = /f.valid_from <= ?/.test(sql)
         const matches = (v: Validity) => like == null || [v.code, v.name].some(x => x.toLowerCase().includes(like.replace(/%/g, '').toLowerCase()))
         const byCode = /v\.code IN \(SELECT f\.code/.test(sql)
-        const codes = new Set(opts.validity.filter(v => !v.absent && matches(v)).map(v => v.code))
+        const codes = new Set(opts.validity.filter(v => !v.absent && (!windowFilter || inWindow(v)) && matches(v)).map(v => v.code))
+        const limit = Number(/LIMIT (\d+)/.exec(sql)?.[1] ?? Infinity)
         return [opts.validity
           .filter(v => !v.absent && ((v.from <= date && (v.until === null || v.until >= date)) || (v.from > date && v.from <= endW)))
           .filter(v => byCode ? codes.has(v.code) : matches(v))
           .sort((a, b) => a.code.localeCompare(b.code) || a.from.localeCompare(b.from))
+          .slice(0, limit)
           .map(v => row(v, model))]
       }
       if (sql.includes('tb_tax_ibscbs_classification_validity v') && sql.includes('LIMIT 1')) {
@@ -420,6 +425,68 @@ describe('D-IB57 — lista × salvar com filtro por nome', () => {
           .resolves.toBeUndefined()
       }
     }
+  })
+})
+
+// gate socrático do delta R11: casos que travam a invariante "lista e salvar nunca discordam" sob filtro e LIMIT (S11-2/S11-3)
+describe('D-IB59 — lista × salvar sob filtro e LIMIT; cadastro = data do fato depois da obrigação', () => {
+  it('positivo: antiga sem presença × nova ACEITA — filtrando pelo nome da antiga, a lista oferece pela nova e o salvar aceita', async () => {
+    const q = fakeCatalog({
+      validity: [
+        { code: '550032', cst: '550', name: 'Antiga sem presença', from: '2026-01-01', until: null, regular: 'N', models: [] },
+        { code: '550032', cst: '550', name: 'Nova aceita', from: '2026-06-01', until: null, regular: 'N', models: ['SE'] },
+      ],
+      places: { '100301': ['SE'] }, nbs: [],
+    })
+    const list = await listClassificationsLookup('Antiga', '2026-10-10', 'SE', q)
+    expect(list.map(r => [r.code, r.validFrom])).toEqual([['550032', '2026-06-01']])
+    await expect(assertServiceClassification(q, { ibscbs: { classificationCode: '550032', placeIndicatorCode: '100301' } }, '2026-10-10'))
+      .resolves.toBeUndefined()
+  })
+
+  it('LIMIT: o código cortado no meio pelo limite de linhas não é oferecido (a lista nunca oferece o que o salvar recusa)', async () => {
+    const filler = Array.from({ length: 399 }, (_, i) => ({ code: String(100000 + i), cst: '000', name: 'x', from: '2026-01-01', until: null,
+      regular: 'N' as const, models: [] as string[] }))
+    const q = fakeCatalog({
+      validity: [...filler,
+        { code: '999999', cst: '999', name: 'Antiga aceita', from: '2026-01-01', until: null, regular: 'N', models: ['SE'] },
+        { code: '999999', cst: '999', name: 'Nova regular', from: '2026-06-01', until: null, regular: 'S', models: ['SE'] }],
+      places: { '100301': ['SE'] }, nbs: [],
+    })
+    expect(await listClassificationsLookup('', '2026-10-10', 'SE', q)).toEqual([])
+    await expect(assertServiceClassification(q, { ibscbs: { classificationCode: '999999', placeIndicatorCode: '100301' } }, '2026-10-10'))
+      .rejects.toMatchObject({ code: ErrorCodes.IBSCBS_CLASSIFICATION_REQUIRES_REGULAR })
+  })
+
+  it('propriedade: depois da obrigação (janela vazia) o cadastro escolhe a MESMA linha que a data do fato (a vigente mais nova)', () => {
+    const l = (from: string, until: string | null, over: Record<string, unknown> = {}) => ({ code: '000001', cst: '000', name: from,
+      validFrom: from, validUntil: until, requiresRegularTaxation: false, applicable: true, superseded: false, ...over }) as any
+    const shapes = [{}, { applicable: false }, { requiresRegularTaxation: true }]
+    for (const a of shapes) for (const b of shapes) for (const c of shapes) {
+      const rows = [l('2026-01-01', null, a), l('2026-06-01', '2027-03-31', b), l('2027-02-01', null, c)]
+      for (const today of ['2027-01-05', '2027-02-15', '2027-04-10']) {
+        const vigent = rows.filter(r => r.validFrom <= today && (r.validUntil === null || r.validUntil >= today))
+          .sort((x, y) => y.validFrom.localeCompare(x.validFrom))[0] ?? null
+        expect(pickForRegistration(rows, today)?.validFrom ?? null).toBe(vigent?.validFrom ?? null)
+      }
+    }
+  })
+})
+
+// gate adversarial do delta R11 (LOW 3): o filtro só casa com linha DA JANELA — o nome de uma linha vencida não puxa o código
+describe('lista de apoio — filtro pela janela', () => {
+  it('nome de linha vencida ou fora da janela não oferece o código; o da linha da janela oferece', async () => {
+    const q = fakeCatalog({
+      validity: [
+        { code: '000021', cst: '000', name: 'ZZVELHA expirada', from: '2025-01-01', until: '2025-12-31', regular: 'N', models: ['SE'] },
+        { code: '000021', cst: '000', name: 'Atual', from: '2026-01-01', until: null, regular: 'N', models: ['SE'] },
+        { code: '000021', cst: '000', name: 'ZZLONGE fora da janela', from: '2027-06-01', until: null, regular: 'N', models: ['SE'] },
+      ],
+      places: {}, nbs: [],
+    })
+    expect(await listClassificationsLookup('ZZVELHA', '2026-10-10', 'SE', q)).toEqual([])
+    expect(await listClassificationsLookup('ZZLONGE', '2026-10-10', 'SE', q)).toEqual([])
+    expect((await listClassificationsLookup('Atual', '2026-10-10', 'SE', q)).map(r => r.code)).toEqual(['000021'])
   })
 })
 
