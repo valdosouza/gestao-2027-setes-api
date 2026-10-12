@@ -1,5 +1,5 @@
 import { todayFor, institutionZoneFor, withZoneWall } from '@shared/time-zone'
-import { getIssuer } from '@shared/fiscal-issuer'
+import { invoiceSerieFor } from '@shared/invoice-series'
 import { HttpError } from '@shared/errors/http-error'
 import {
   findTaxRule, loadPieces, calculateItemTaxes, prorateWithResidue,
@@ -18,7 +18,11 @@ import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
 import pool from '@shared/db/connection'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
-import { cancelInvoice, CancelInvoiceResult, waiveSubstitutedCancel, CancelWaiverResult } from '@shared/invoice'
+import {
+  cancelInvoice, CancelInvoiceResult, waiveSubstitutedCancel, CancelWaiverResult, buildCancelPlan, CancelBlock, ReleasedTitle,
+  readInvoiceLives, readInvoiceFiscal, fiscalEffectOf, FiscalEffect, findCurrentCancelWaiver,
+} from '@shared/invoice'
+import { assertSchema } from '@shared/db/schema'
 import { CancelBody, CancelWaiverBody } from './billing.dto'
 import { resolveOrderParcels, MaterializedParcel as ResolvedParcel } from '@shared/order-installment'
 import { hasServiceOrderCycle } from '@shared/service-order'
@@ -51,7 +55,6 @@ import {
   ValidationReport, ValidationIssue, InvoiceResult, BillingOrderItem,
 } from './billing.interface'
 import { ValidateBodyDto, InvoiceBodyDto } from './billing.dto'
-import { reconfirmBeforeLocalCancel } from '@shared/invoice-transmission'
 
 /**
  * Orquestração do faturamento (W2 Onda 3, rodada R4):
@@ -683,10 +686,8 @@ export async function invoiceOrder(
   // só serviço → SE (interna, como no Software House)
   const hasMerchandise = computed.some(ci => ci.item.productKind !== 'S')
   const model = hasMerchandise ? '55' : 'SE'
-  // D-E2 (Onda 3): a série vem da HABILITAÇÃO do emissor por modelo (tb_establishment_issuer);
-  // sem linha = '1' (a config invoice_serie foi aposentada — seed 58)
-  const issuerLine = await getIssuer(pool, institution.schemaName, institution.institutionId, model)
-  const serie = (issuerLine?.serie ?? '1').slice(0, 10)
+  // D-E2 (Onda 3) + D-F112 (F2a): a série da nota por modelo é leitura só no ERP (`@shared/invoice-series`); sem linha = '1'
+  const serie = await invoiceSerieFor(pool, institution.schemaName, institution.institutionId, model)
 
   // R5-Q1 atualizada pelo parecer 2026-08-24: a direção do ajuste vem do
   // RAMO (gravada na abertura pelo order-returns) — fonte única, o
@@ -853,9 +854,9 @@ export async function invoiceOrder(
 export async function cancelOrderInvoice(
   institution: InstitutionPayload, input: CancelBody
 ): Promise<CancelInvoiceResult> {
+  // F2a, etapa A3 (D-F4/D-F28/D-F29): o setes-api NUNCA fala com o fisco — a reconferência (Q-ADV1b) é pedida pelo APP à nfse-api
+  // (`/v1/nfse/invoices/{id}/reconfirm`) e o plano EXIGE a prova LIDA no `fiscal_api` (veredito do núcleo — D-F109)
   const { schemaName, institutionId, userId } = institution
-  // Q-ADV1b: F de envio interrompido é reconferido no fisco ANTES do cancelamento local (fora da transação)
-  await reconfirmBeforeLocalCancel(schemaName, institutionId, userId, input.orderId)
   return withDeadlockRetry('cancelamento da nota', { institutionId, orderId: input.orderId }, 3,
     async () => {
       const conn = await pool.getConnection()
@@ -901,6 +902,84 @@ export async function waiveOrderInvoiceCancel(
     })
   // Q-TZ1: o instante sai na hora do ESTABELECIMENTO (banco em UTC)
   return withZoneWall(result, ['createdAt'] as const, await institutionZoneFor(schemaName, institutionId))
+}
+
+/** O plano de cancelamento para a TELA (D-F29/D-F115): o mesmo cálculo do POST — uma política só. */
+export interface CancelPlanView {
+  orderId:       number
+  invoiceNumber: string | null
+  cancellable:   boolean
+  blocks:        CancelBlock[]
+  /** D3/D4: com registro fiscal a nota FICA (evento C) e o pedido vira 'C'; sem, a nota some e o pedido volta a aberto. */
+  fiscalRecord:  boolean
+  effects: {
+    bankSlipsToCancel: number[]
+    releasedTitles:    ReleasedTitle[]
+    checksToReverse:   { checkId: number; number: string }[]
+    commissionsToCompensate: number
+    /** D16: o cancelamento grava linha de caixa — exige caixa aberto do operador. */
+    touchesCash:       boolean
+  }
+}
+
+/**
+ * GET /api/billing/:orderId/cancel-plan — CONSULTIVO (D-F29/D-F115): o app consulta antes de pedir o cancelamento no fisco; mudou no
+ * meio = o POST recusa com o plano novo. Roda o MESMO `buildCancelPlan` do POST (uma política só — assunção A-F115, §22.11) numa
+ * transação que SEMPRE desfaz: nada é gravado; as travas do plano duram só a leitura (lock wait → 409 RESOURCE_BUSY).
+ */
+export async function getOrderCancelPlan(institution: InstitutionPayload, orderId: number): Promise<CancelPlanView> {
+  const { schemaName, institutionId } = institution
+  const s = assertSchema(schemaName)
+  return withDeadlockRetry('plano de cancelamento (consulta)', { institutionId, orderId }, 3, async () => {
+    const conn = await pool.getConnection()
+    try {
+      await conn.beginTransaction()
+      const plan = await buildCancelPlan(conn, s, institutionId, orderId)
+      return {
+        orderId, invoiceNumber: plan.invoice.number, cancellable: plan.blocks.length === 0, blocks: plan.blocks,
+        fiscalRecord: plan.fiscalRecord,
+        effects: {
+          bankSlipsToCancel: plan.bankSlipsToCancel, releasedTitles: plan.releasedTitles,
+          checksToReverse: plan.checksToReverse.map(c => ({ checkId: c.checkId, number: c.number })),
+          commissionsToCompensate: plan.commissionEntries.length, touchesCash: plan.touchesCash,
+        },
+      }
+    } finally {
+      await conn.rollback().catch(() => undefined)     // consultivo: nada fica, nem trava
+      conn.release()
+    }
+  })
+}
+
+/** O EFEITO da voz do fisco na nota (D-F79/D-F114/D-F115) — a tela "No fisco" compõe com a nfse-api (fisco). */
+export interface FiscalEffectView {
+  orderId:          number
+  lifeEvent:        number | null
+  invoiceCancelled: boolean
+  effect:           FiscalEffect
+  /** D-F81: a decisão "manter a nota" VIGENTE (nota viva) da chave da vigente — ou null. */
+  cancelWaiver:     { accessKey: string; reason: string; userId: number; createdAt: string | null } | null
+}
+
+/**
+ * GET /api/billing/:orderId/fiscal-effect — leitura CONSULTIVA (sem trava): vida pela view de política, voz da vida pela porta
+ * `@shared/fiscal-voice`, dispensa pelo ERP. Nota inexistente → 404; nota soft-deletada (pendente cancelada) → efeito 'none'.
+ */
+export async function getOrderFiscalEffect(institution: InstitutionPayload, orderId: number): Promise<FiscalEffectView> {
+  const { schemaName, institutionId } = institution
+  const s = assertSchema(schemaName)
+  const life = (await readInvoiceLives(pool, s, institutionId, [orderId])).get(orderId)
+  if (!life) throw new HttpError(404, `Nota do pedido ${orderId} não encontrada`, undefined, 'INVOICE_NOT_FOUND')
+  const invoiceCancelled = life.lastKind === 'C'
+  if (life.invoiceDeleted) return { orderId, lifeEvent: life.lifeEvent, invoiceCancelled, effect: 'none', cancelWaiver: null }
+  const { current } = await readInvoiceFiscal(pool, institutionId, orderId, life.lifeEvent)
+  const waiver = current?.accessKey ? await findCurrentCancelWaiver(pool, s, institutionId, orderId, current.accessKey) : null
+  const zone = await institutionZoneFor(schemaName, institutionId)
+  return {
+    orderId, lifeEvent: life.lifeEvent, invoiceCancelled,
+    effect: fiscalEffectOf(current, life.lastKind, !!waiver),
+    cancelWaiver: waiver ? withZoneWall(waiver, ['createdAt'] as const, zone) : null,   // Q-TZ1: hora do ESTABELECIMENTO
+  }
 }
 
 function round2(v: number): number {

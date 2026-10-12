@@ -49,6 +49,8 @@ const arg  = (nome: string): string | undefined =>
   args.find(a => a.startsWith(`--${nome}=`))?.split('=').slice(1).join('=')
 
 const BASE    = arg('base') ?? 'http://localhost:3000'
+// F2a (D-F4): a emissão fiscal é da nfse-api — a régua é front-end das DUAS APIs do produto (o mesmo token RS256 — D-F13)
+const NFSE    = arg('nfse') ?? 'http://localhost:3002'
 const SCHEMA  = arg('schema') ?? 'setes_setes'
 const INST    = Number(arg('institution') ?? 1)
 const USER    = Number(arg('user') ?? 1)
@@ -74,6 +76,22 @@ async function api(metodo: string, caminho: string, corpo?: unknown): Promise<Re
   let body: any = null
   try { body = await res.json() } catch { body = null }
   return { status: res.status, body }
+}
+
+/** A nfse-api (`/v1`) com o MESMO token do produto. Fora do ar = status 0 (PENDENTE na régua, nunca exceção). */
+async function nfse(metodo: string, caminho: string, corpo?: unknown): Promise<Resposta> {
+  try {
+    const res = await fetch(`${NFSE}/v1${caminho}`, {
+      method: metodo,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: corpo === undefined ? undefined : JSON.stringify(corpo),
+    })
+    let body: any = null
+    try { body = await res.json() } catch { body = null }
+    return { status: res.status, body }
+  } catch (err: any) {
+    return { status: 0, body: { error: `nfse-api fora do ar em ${NFSE} (${err?.cause?.code ?? err?.message ?? 'erro'})` } }
+  }
 }
 
 /** Mensagem curta de uma resposta de erro (o envelope da API é {error, code, fields}). */
@@ -560,29 +578,30 @@ const PENDENCIA_FISCO = new Set([
   // 1ª sessão real (2026-09-28): a REJEIÇÃO do fisco chega com o E-xxxx e a frase dele (ex.: E0116 "A IM deve ser
   // informada") — a régua mostra a voz do fisco; corrigir o cadastro e retransmitir é implantação, não código
   'FISCAL_DPS_REJECTED',
+  // F2a: antes do ATO da virada a nfse-api só consulta (D-F39) — implantação, não código
+  'FISCAL_CUTOVER_PENDING',
 ])
 
 /**
- * P8b — Onda 3 (D-N3/D-N7/D-N12): a nota da OS vira DPS assinado e vai ao ADN
- * pela composição @shared/invoice-transmission; OK exige A com chave de 50 e o
- * XML + DANFSe servidos pela API. Sem habilitação SE, sem certificado ou com o
- * fisco fora fica PENDENTE com o motivo exato; DPS rejeitado (E0xxx) é erro
- * NOSSO de dado → FALHA.
+ * P8b — Onda 3 (D-N3/D-N7/D-N12) pela nfse-api desde a F2a (D-F4/D-F12): a nota da OS vira DPS assinado e vai ao ADN; OK exige A com
+ * chave de 50 e o XML + DANFSe servidos pela nfse-api. Sem habilitação SE virada, sem certificado, antes da virada ou com o fisco fora
+ * fica PENDENTE com o motivo exato; DPS rejeitado (E0xxx) é erro NOSSO de dado → FALHA.
  */
 async function p8b_transmissao(notaId: number | null): Promise<void> {
   if (!notaId) { reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE', 'sem nota da OS com ramo de serviço para transmitir'); return }
-  const iss = await api('GET', '/establishment/issuer')
+  const iss = await nfse('GET', '/emitter')
+  if (iss.status !== 200) { reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE', `emitente na nfse-api: ${motivo(iss)}`); return }
   const se = (iss.body?.data?.issuers ?? []).find((i: any) => i.model === 'SE')
   if (!se) {
-    reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE', 'estabelecimento sem habilitação SE — configure ambiente e série na aba Emissor fiscal (D-N4)')
+    reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE', 'estabelecimento sem habilitação SE na nfse-api (D-N4)')
     return
   }
   if (!se.enabled) {
     reporta('P8b', 'NFS-e (emissão fiscal)', 'PENDENTE',
-      `habilitação SE em ${se.environment} sem certificado A1 válido no cofre — envie o .pfx na aba Emissor fiscal (D-N5/D-N31: um só para H e P)`)
+      `habilitação SE em ${se.environment} não emite pela nfse-api — virada pendente (D-F39) ou sem A1 válido (D-F16)`)
     return
   }
-  let t = await api('POST', '/billing/transmit', { orderId: notaId })
+  let t = await nfse('POST', `/nfse/invoices/${notaId}/transmit`)
   if (t.status === 409 && t.body?.code === 'FISCAL_ALREADY_AUTHORIZED') {
     t = { status: 201, body: { data: { invoiceId: notaId, reused: true } } }   // a régua roda mais de uma vez sobre a mesma nota
   }
@@ -592,10 +611,10 @@ async function p8b_transmissao(notaId: number | null): Promise<void> {
       `transmissão ${PENDENCIA_FISCO.has(code) ? 'não concluída' : 'recusada'}: ${motivo(t)}`)
     return
   }
-  const view = await api('GET', `/billing/fiscal/${notaId}`)
+  const view = await nfse('GET', `/nfse/invoices/${notaId}`)
   const last = view.body?.data?.transmissions?.at?.(-1)
-  const xml = await api('GET', `/billing/fiscal/${notaId}/xml`)
-  const pdf = await api('GET', `/billing/fiscal/${notaId}/danfse`)
+  const xml = await nfse('GET', `/nfse/invoices/${notaId}/xml`)
+  const pdf = await nfse('GET', `/nfse/invoices/${notaId}/danfse`)
   const okA = view.body?.data?.state === 'authorized' && String(last?.accessKey ?? '').length === 50
   const okXml = xml.status === 200 && String(xml.body?.data?.xml ?? '').includes('<infNFSe')
   const okPdf = pdf.status === 200 && String(pdf.body?.data?.pdfBase64 ?? '').startsWith('JVBERi0')   // "%PDF-" em base64

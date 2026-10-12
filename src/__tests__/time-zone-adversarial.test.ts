@@ -20,8 +20,6 @@ jest.mock('@shared/db/connection', () => ({ __esModule: true, default: { query: 
 import { getConfigContent, getConfigContentFor } from '@shared/interface-config'
 import { compileCriteria, SearchCriterion } from '../shared/list/search-criteria'
 import { hasRegistrationEvent } from '../shared/bank-slip-registration/registration.repository'
-import { hasTransmissionEvent } from '../shared/invoice-transmission/transmission.repository'
-import { saveFiscalXml, findFiscalXml } from '../shared/invoice-transmission/branches/service'
 import express from 'express'
 import mockedPool from '@shared/db/connection'
 import request from 'supertest'
@@ -228,11 +226,7 @@ describe('idempotência de transição (UTC × parede antiga) — falso positivo
     expect(conn.query.mock.calls[0][1]).toEqual([1, 10, 1, 'G', '2026-09-30 18:00:00', '2026-09-30 15:00:00'])
   })
 
-  it('hasTransmissionEvent idem', async () => {
-    const conn = q()
-    await hasTransmissionEvent(conn as any, 'setes_x', 1, 10, 1, 'A' as any, '2026-09-30 18:00:00')
-    expect(conn.query.mock.calls[0][1]).toEqual([1, 10, 1, 'A', '2026-09-30 18:00:00', '2026-09-30 15:00:00'])
-  })
+  // (`hasTransmissionEvent` — a voz do FISCO — saiu do setes-api na F2a: é da nfse-api, com o mesmo casamento)
 
   // LOW (analisado): a janela de transição é PERMANENTE no código — uma 2ª voz REAL
   // do mesmo kind, na mesma tentativa, exatamente 3h (ao segundo) depois de uma voz
@@ -335,71 +329,5 @@ describe('Q-TZ8 — relógio único por operação', () => {
   })
 })
 
-describe('Q-TZ7 — pasta fiscal por zona', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tz-adv-'))
-  const old = process.env.STORAGE_PATH
-  beforeAll(() => { process.env.STORAGE_PATH = root })
-  afterAll(() => {
-    if (old === undefined) delete process.env.STORAGE_PATH; else process.env.STORAGE_PATH = old
-    fs.rmSync(root, { recursive: true, force: true })
-  })
-  const rel = (p: string) => path.relative(root, p).split(path.sep).join('/')
-  const at = new Date('2027-01-01T02:30:00Z')   // 31/12 23:30 em SP; 01/01 00:30 em Noronha
-
-  it.each([
-    ['America/Noronha',    '2027/01'],
-    ['America/Sao_Paulo',  '2026/12'],
-    ['America/Manaus',     '2026/12'],
-    ['America/Rio_Branco', '2026/12'],
-  ])('%s: virada de ano cai no mês da zona', (zone, ym) => {
-    const name = `y-${zone.replace('/', '_')}.xml`
-    const p = saveFiscalXml('12.345.678/0001-90', name, '<x/>', at, 'P', zone)
-    expect(rel(p)).toBe(`12345678000190/${ym}/${name}`)
-  })
-
-  it('findFiscalXml acha pela dica em UTC na zona', () => {
-    saveFiscalXml('12345678000190', 'k1-nfse.xml', '<x/>', at, 'P', 'America/Noronha')
-    expect(rel(findFiscalXml('12345678000190', 'k1-nfse.xml', ['2027-01-01 02:30:00'], 'P', 'America/Noronha')!))
-      .toBe('12345678000190/2027/01/k1-nfse.xml')
-  })
-
-  it('zona inválida/vazia lança RangeError ao gravar (só institutionZoneFor protege)', () => {
-    expect(() => saveFiscalXml('1', 'a.xml', '<x/>', at, 'P', 'Foo/Bar')).toThrow(RangeError)
-    expect(() => saveFiscalXml('1', 'b.xml', '<x/>', at, 'P', '')).toThrow()
-  })
-
-  it('nome hostil: separador recusado; ".." não escapa (falha ao gravar)', () => {
-    expect(() => saveFiscalXml('1', '../x.xml', '<x/>', at)).toThrow(/inválido/)
-    expect(() => saveFiscalXml('1', 'a\\b.xml', '<x/>', at)).toThrow(/inválido/)
-    expect(() => saveFiscalXml('1', '..', '<x/>', at)).toThrow()
-  })
-
-  it('isolamento: produção NUNCA acha arquivo de homologação; outro CNPJ nunca acha', () => {
-    saveFiscalXml('11111111000111', 'h-nfse.xml', '<h/>', at, 'H')
-    expect(findFiscalXml('11111111000111', 'h-nfse.xml', [], 'P')).toBeNull()
-    expect(findFiscalXml('22222222000122', 'h-nfse.xml', [], 'H')).toBeNull()
-  })
-
-  // LOW (provado, por desenho — compat Q-N38a): HOMOLOGAÇÃO procura também na raiz de
-  // produção; o Id do DPS (mun+CNPJ+série+nDPS) não carrega o ambiente → se a numeração
-  // de H e P se cruzar, a busca de H devolve o XML de PRODUÇÃO.
-  it('LOW: homologação devolve arquivo de PRODUÇÃO com o mesmo nome', () => {
-    saveFiscalXml('33333333000133', 'same-dps.xml', '<P/>', at, 'P')
-    const p = findFiscalXml('33333333000133', 'same-dps.xml', [], 'H')!
-    expect(fs.readFileSync(p, 'utf8')).toBe('<P/>')
-  })
-
-  // LOW (provado): findFiscalXml não valida `name` como saveFiscalXml — hoje o nome é
-  // sempre construído de dígitos (dpsId/chave), não alcançável por usuário.
-  it('LOW corrigido: findFiscalXml recusa nome com ".." (não sai da pasta do CNPJ)', () => {
-    fs.mkdirSync(path.join(root, '44444444000144', '2026', '12'), { recursive: true })
-    fs.writeFileSync(path.join(root, 'segredo.txt'), 's')
-    const p = findFiscalXml('44444444000144', path.join('..', '..', '..', 'segredo.txt'), ['2026-12-31 12:00:00'], 'P')
-    expect(p).toBeNull()   // CORRIGIDO 2026-09-30: a busca valida o nome como a gravação
-  })
-
-  it('cnpj vazio não varre outros CNPJs (pastas de 14 dígitos não casam ^\\d{4}$)', () => {
-    saveFiscalXml('55555555000155', 'only.xml', '<x/>', at)
-    expect(findFiscalXml('', 'only.xml', ['2026-12-31 12:00:00'], 'P')).toBeNull()
-  })
-})
+// Q-TZ7 (pasta fiscal do XML por zona) saiu do setes-api na F2a, etapa A3 — o arquivo fiscal é da nfse-api (D-F12), com a mesma regra
+// e os testes dela.

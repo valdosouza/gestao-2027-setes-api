@@ -14,7 +14,7 @@
  * Espelho no app: apps/web/lib/app/modules/service_orders/.
  */
 
-import type { ServiceFiscalState } from '@shared/invoice-transmission'
+import type { FiscalState as ServiceFiscalState } from 'fiscal-api/reading'
 
 export interface ServiceOrderListRow {
   id:           number

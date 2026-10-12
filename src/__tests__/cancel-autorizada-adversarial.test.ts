@@ -18,7 +18,7 @@ jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
 }))
-jest.mock('../shared/fiscal-issuer', () => ({ __esModule: true, ...jest.requireActual('../shared/fiscal-issuer'), getIssuer: jest.fn().mockResolvedValue(null) }))
+jest.mock('../shared/invoice-series', () => ({ __esModule: true, invoiceSerieFor: jest.fn().mockResolvedValue('1') }))   // F2a A3 (D-F112): série da nota = leitura só no ERP
 jest.mock('../shared/interface-config', () => ({
   getConfigContent: jest.fn().mockResolvedValue(null),
   getConfigContentFor: jest.fn().mockResolvedValue(null),

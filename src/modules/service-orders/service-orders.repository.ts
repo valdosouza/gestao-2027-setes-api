@@ -19,7 +19,7 @@ import { calcIssqn } from '@shared/tax-rule'
 import { getEntityFiscalFull } from '@shared/entity'
 import { getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { liabilityFromExigibilidade, IssLiability } from '@shared/entity-tax/entity-tax.types'
-import { getIssuer } from '@shared/fiscal-issuer'
+import { invoiceSerieFor } from '@shared/invoice-series'
 import {
   applyTitleAutomation, resolveTitleAutomationConfig,
 } from '@shared/title-automation'
@@ -1072,9 +1072,8 @@ export async function generateInvoice(
   // da ordem e conferidos contra o que foi resolvido (TOCTOU: item trocado no
   // intervalo = recusa, nunca ISS de outra regra).
   const fiscal = await resolveServiceOrderFiscal(schemaName, institutionId, orderId)
-  // D-E2: série da habilitação do emissor (linha SE); sem linha = '1'
-  const issuerLine = await getIssuer(pool, schemaName, institutionId, 'SE')
-  const invoiceSerie = (issuerLine?.serie ?? '1').slice(0, 10)
+  // D-E2 + D-F112 (F2a): série da nota SE — leitura só no ERP; sem linha (ou SE aposentada pelo ato da virada) = '1'
+  const invoiceSerie = await invoiceSerieFor(pool, schemaName, institutionId, 'SE')
 
   // Q-A5 (3ª rodada adversarial do cancelamento, 2026-09-09): os locks da
   // Rodada 2 (trava D5 no plano do cancelamento; MAX(number_seq) na sequência

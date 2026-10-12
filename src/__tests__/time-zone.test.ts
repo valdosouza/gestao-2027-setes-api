@@ -2,7 +2,6 @@
 // Fuso do estabelecimento (Q-BA14/Q-TZ2 — prompt_pesquisa_avancada.md §9.3/§10):
 // a hora de emissão da NFS-e é a da ZONA do estabelecimento, nunca a do processo.
 import { nowIsoIn, todayIn, toZoneWall, toUtcDb, withZoneWall } from '../shared/time-zone'
-import { formatDateTimeTz } from '../shared/tax-authority/dps-builder'
 
 const instant = new Date('2026-10-01T01:00:30.987Z')   // 30/09 22:00:30 em Brasília
 
@@ -18,9 +17,9 @@ describe('nowIsoIn — dhEmi/dhEvento na zona (Q-TZ2)', () => {
   })
 
   it('independe do fuso do PROCESSO: o mesmo instante dá o mesmo dhEmi', () => {
-    // o valor depende só do instante e da zona — e passa intacto pelo normalizador do XSD
+    // o valor depende só do instante e da zona (o normalizador do XSD do DPS saiu do setes-api na F2a — é da nfse-api)
     const iso = nowIsoIn('America/Sao_Paulo', instant)
-    expect(formatDateTimeTz(iso)).toBe('2026-09-30T22:00:30-03:00')
+    expect(iso).toBe('2026-09-30T22:00:30-03:00')
     expect(iso.slice(0, 10)).toBe(todayIn('America/Sao_Paulo', instant))
   })
 

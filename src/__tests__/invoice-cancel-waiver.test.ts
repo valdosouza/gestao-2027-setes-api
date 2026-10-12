@@ -1,12 +1,11 @@
 /// <reference types="jest" />
 // "Manter a nota" — Rodada 13 das APIs fiscais (D-F67/D-F72/D-F73/D-F74, Valdo 2026-10-10): peça
 // `@shared/invoice.waiveSubstitutedCancel` + rota POST /api/billing/cancel-waiver. Banco mockado na fronteira (conn/pool);
-// a nota e a transmissão vêm dos leitores mockados; a dispensa vive numa loja em memória com a MESMA chave da tabela.
+// a nota vem do lockInvoice mockado e a voz do fisco da PORTA `@shared/fiscal-voice` mockada (F2a, etapa A3: o setes-api LÊ a voz no
+// banco fiscal_api — linhas REAIS da view passadas pelo mapa da família); a dispensa vive numa loja em memória com a MESMA chave da tabela.
 import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
+import { serviceView, unrecorded, TEST_KEY } from '../test-setup/fiscal-voice-rows'
 import request from 'supertest'
-
-const JWT_SECRET = 'cancel-waiver-test'
-process.env.JWT_SECRET = JWT_SECRET
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true, default: { query: jest.fn(), getConnection: jest.fn(), on: jest.fn(), end: jest.fn() },
@@ -21,10 +20,7 @@ jest.mock('../shared/invoice/invoice', () => {
   const actual = jest.requireActual('../shared/invoice/invoice')
   return { __esModule: true, ...actual, lockInvoice: jest.fn() }
 })
-jest.mock('../shared/invoice-transmission/transmission.repository', () => {
-  const actual = jest.requireActual('../shared/invoice-transmission/transmission.repository')
-  return { __esModule: true, ...actual, latestTransmission: jest.fn(), findTransmissionEventByKind: jest.fn() }
-})
+jest.mock('../shared/fiscal-voice', () => ({ __esModule: true, readServiceVoiceOfLife: jest.fn(), readServiceVoicesOfLives: jest.fn() }))
 jest.mock('../modules/billing/billing.interface-resolver', () => {
   const resolveOrderInterface = jest.fn(async (_s: string, _i: number, _o: number) => 'service-orders')
   return {
@@ -36,7 +32,7 @@ jest.mock('../modules/billing/billing.interface-resolver', () => {
 
 import pool from '../shared/db/connection'
 import * as invoiceModule from '../shared/invoice/invoice'
-import * as repo from '../shared/invoice-transmission/transmission.repository'
+import * as voicePort from '../shared/fiscal-voice'
 import { waiveSubstitutedCancel } from '../shared/invoice'
 import { ErrorCodes } from '../shared/errors/error-codes'
 import { resetPrivilegeCache } from '../shared/auth/require-privilege'
@@ -44,15 +40,13 @@ import app from '../app'
 
 const S = { schema: 'setes_setes', inst: 1, user: 7 }
 const INVOICE = 7400
-const KEY = '41069022123456780001990000000000123202610100000123'
+const KEY = TEST_KEY
 const q = (pool as any).query as jest.Mock
 const conn = { beginTransaction: jest.fn(), query: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn() }
 
-const tx = (over: any = {}) => ({
-  institutionId: 1, invoiceId: INVOICE, attempt: 1, environment: 'P', dpsId: 'DPS1', accessKey: KEY, nfseNumber: '710', invoiceEvent: 1,
-  lastEvent: 2, lastKind: 'C', lastCode: '105102', ...over,
-})
-const voice = (over: any = {}) => ({ attempt: 1, event: 2, kind: 'C', authorityCode: '105102', invoiceEvent: null, ...over })
+/** Voz vigente: NFS-e de produção cancelada por SUBSTITUIÇÃO no fisco (C 105102), vida 1 da nota. */
+const tx = (over: any = {}) => serviceView({ invoiceId: INVOICE, lastEvent: 2, lastKind: 'C', lastCode: '105102', lastSource: 'Q', ...over })
+const readVoice = () => voicePort.readServiceVoiceOfLife as jest.Mock
 
 /** Loja da `tb_invoice_cancel_waiver`: PK (institution, invoice, terminal, access_key). */
 let waivers: Map<string, { reason: string; userId: number; deleted: 'N' | 'S'; createdAt: string }>
@@ -83,13 +77,10 @@ beforeEach(() => {
   ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
   wireConn()
   ;(invoiceModule.lockInvoice as jest.Mock).mockReset().mockImplementation(async () => {
-    lockOrder.push('nota'); return { id: INVOICE, number: '17', serie: '1', model: 'SE', value: 250, status: '0', lastEvent: 1, lastKind: 'E' }
+    lockOrder.push('nota'); return { id: INVOICE, number: '17', serie: '1', model: 'SE', value: 250, status: '0', lifeEvent: 1, lastEvent: 1, lastKind: 'E' }
   })
-  ;(repo.latestTransmission as jest.Mock).mockReset().mockImplementation(async (_c: any, _s: any, _i: any, _inv: any, forUpdate: boolean) => {
-    lockOrder.push(`transmissão${forUpdate ? ':FOR UPDATE' : ''}`); return tx()
-  })
-  ;(repo.findTransmissionEventByKind as jest.Mock).mockReset().mockImplementation(async (_c: any, _s: any, _i: any, _inv: any, _a: number, _k: string, forUpdate: boolean) => {
-    lockOrder.push(`voz${forUpdate ? ':FOR UPDATE' : ''}`); return voice()
+  readVoice().mockReset().mockImplementation(async (_q: any, inst: number, inv: number, life: number) => {
+    lockOrder.push(`voz:${inst}/${inv}/vida ${life}`); return [tx()]
   })
   q.mockImplementation(async (sql: string, params: any[]) => {
     if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: 30 }]]
@@ -105,12 +96,14 @@ const waive = (reason = 'substituta emitida no portal — serviço segue faturad
 async function settle<T>(p: Promise<T>): Promise<any> { try { return await p } catch (e) { return e } }
 
 describe('peça waiveSubstitutedCancel (D-F67/D-F73/D-F74)', () => {
-  it('caminho feliz: grava UMA decisão (nota, chave) com motivo e autor; travas na ordem nota → transmissão → voz → dispensa', async () => {
+  it('caminho feliz: grava UMA decisão (nota, chave) com motivo e autor; ordem trava da nota → voz da VIDA dela (porta) → dispensa', async () => {
     const r = await waive()
     expect(r).toEqual({ orderId: INVOICE, accessKey: KEY, createdAt: '2026-10-11 00:10:00', alreadyWaived: false })
     expect(waivers.get(wk(INVOICE, KEY))).toMatchObject({ reason: 'substituta emitida no portal — serviço segue faturado', userId: S.user })
-    // L3 do gate da Rodada 13: a dispensa não trava linha (a trava da NOTA serializa; FOR UPDATE em linha inexistente = gap lock)
-    expect(lockOrder.slice(0, 4)).toEqual(['nota', 'transmissão:FOR UPDATE', 'voz:FOR UPDATE', 'waiver'])
+    // D-F121: a voz é lida DEPOIS da trava da nota, escopada pela vida que o lockInvoice devolveu (D-F119/D-F126);
+    // L3 do gate da Rodada 13: a dispensa não trava linha (a trava da NOTA serializa)
+    expect(lockOrder.slice(0, 3)).toEqual(['nota', `voz:${S.inst}/${INVOICE}/vida 1`, 'waiver'])
+    expect(readVoice().mock.calls[0][0]).toBe(conn)                // a MESMA conexão (transação) — nunca uma 2ª do pool
   })
   it('idempotente: a 2ª vez devolve alreadyWaived=true e não grava de novo (nem troca o motivo)', async () => {
     await waive()
@@ -134,24 +127,34 @@ describe('peça waiveSubstitutedCancel (D-F67/D-F73/D-F74)', () => {
     ['cancelamento sem código (anterior à 067)', tx({ lastCode: null })],
     ['de OFÍCIO (305101)', tx({ lastCode: '305101' })],
     ['autorizada (A)', tx({ lastKind: 'A', lastCode: null })],
-    ['em voo', tx({ lastKind: null, lastCode: null })],
-    ['C 105102 sem chave', tx({ accessKey: null })],
+    ['em voo', unrecorded({ lastKind: null, lastCode: null, lastEvent: null, lastSource: null, lastDh: null, lastEventAt: null })],
+    ['C 105102 sem chave', unrecorded({ lastKind: 'C', lastCode: '105102', lastSource: 'Q' })],
     ['nunca transmitida', null],
   ])('D-F74: %s → 409 (só a SUBSTITUIÇÃO se dispensa)', async (_l, row) => {
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(row)
+    readVoice().mockResolvedValue(row ? [row] : [])
     expect(await settle(waive())).toMatchObject({ statusCode: 409, code: ErrorCodes.INVOICE_CANCEL_WAIVER_NOT_APPLICABLE })
     expect(waivers.size).toBe(0)
   })
   it('D-F80 (= Q-F87 (a)): substituição em HOMOLOGAÇÃO → 409 (sem valor jurídico — cancele a nota), nada gravado', async () => {
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ environment: 'H' }))
+    readVoice().mockResolvedValue([tx({ environment: 'H' })])
     const out = await settle(waive())
     expect(out).toMatchObject({ statusCode: 409, code: ErrorCodes.INVOICE_CANCEL_WAIVER_NOT_APPLICABLE })
     expect(String(out.message)).toMatch(/HOMOLOGAÇÃO/)
     expect(waivers.size).toBe(0)
   })
-  it('voz C já com efeito na nota → 409 (nada a manter)', async () => {
-    ;(repo.findTransmissionEventByKind as jest.Mock).mockResolvedValue(voice({ invoiceEvent: 3 }))
+  it('nota sem vida (sincronizada da origem, sem evento E) → 409 sem ler a voz (nada transmitido pela web)', async () => {
+    ;(invoiceModule.lockInvoice as jest.Mock).mockResolvedValue({ id: INVOICE, number: '17', lifeEvent: null, lastEvent: null, lastKind: null })
     expect(await settle(waive())).toMatchObject({ statusCode: 409, code: ErrorCodes.INVOICE_CANCEL_WAIVER_NOT_APPLICABLE })
+    expect(readVoice()).not.toHaveBeenCalled()
+  })
+  it('a vigente é a REGISTRADA da vida (currentOf do núcleo): uma 2ª tentativa sem registro depois não tira a substituição', async () => {
+    readVoice().mockResolvedValue([tx(), unrecorded({ attempt: 2, lastKind: 'R', lastCode: null, lastSource: 'P' })])
+    expect(await waive()).toMatchObject({ alreadyWaived: false, accessKey: KEY })
+  })
+  it('lista que mistura vidas é recusada ALTO (D-F119 — o núcleo nunca escolhe "a vigente" de duas vidas)', async () => {
+    readVoice().mockResolvedValue([tx(), tx({ attempt: 2, lifeEvent: 3 })])
+    await expect(waive()).rejects.toThrow(/mistura lifeEvent/)
+    expect(waivers.size).toBe(0)
   })
 })
 
@@ -186,7 +189,7 @@ describe('rota POST /api/billing/cancel-waiver (D-F72: privilégio CANCELAR do r
     expect(res.status).toBe(400); expect(waivers.size).toBe(0)
   })
   it('recusa da peça vira 409 com o código no envelope e a transação desfeita', async () => {
-    ;(repo.latestTransmission as jest.Mock).mockResolvedValue(tx({ lastCode: '101101' }))
+    readVoice().mockResolvedValue([tx({ lastCode: '101101' })])
     const res = await request(app).post('/api/billing/cancel-waiver').set('Authorization', token('admin')).send({ orderId: INVOICE, reason: 'a' })
     expect(res.status).toBe(409); expect(res.body.code).toBe(ErrorCodes.INVOICE_CANCEL_WAIVER_NOT_APPLICABLE)
     expect(conn.rollback).toHaveBeenCalled()

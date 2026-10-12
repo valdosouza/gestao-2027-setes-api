@@ -11,9 +11,7 @@ import { reverseCheckEvent, isCheckEventCurrent } from '@shared/check'
 import { insertCommissions, getCommissionBalanceByItem, CommissionEntryInput } from '@shared/commission'
 import { findServiceOrderForReopen, reopenServiceOrder, releaseServiceOrderCompetences } from '@shared/service-order'
 import { lockInvoice, insertInvoiceEvent, LockedInvoice } from './invoice'
-import {
-  latestTransmission, isLiveTransmission, isAuthorized, findTransmissionEventByKind, setTransmissionEventEffect,
-} from '@shared/invoice-transmission/transmission.repository'
+import { readInvoiceFiscal, fiscalCancelBarrier, invoiceFiscalRecord, FiscalCancelBarrier } from './invoice-fiscal-effect'
 
 /**
  * COMPOSIÇÃO "desfazer o faturamento" (prompt_cancelamento_nota.md D1–D17 +
@@ -33,7 +31,7 @@ import {
  *   3. EXECUTAR  D16 como invariante ÚNICO (touchesCash → caixa aberto),
  *      depois as peças, soft-delete do financeiro aberto (D6), evento C
  *      (motivo, origem = E) e o destino da nota pelo REGISTRO FISCAL (D3/D4):
- *        - pendente (sem chave do fisco): snapshots e ramos soft-deletados,
+ *        - pendente (sem registro fiscal — F2a, §22.2): snapshots e ramos soft-deletados,
  *          nota `deleted='S'` (número liberado), pedido volta a 'A' (D5), OS reabre;
  *        - com registro fiscal: nota, ramos e snapshots FICAM (é o documento),
  *          pedido vira 'C' (cancelado, nunca refaturável), OS libera a competência.
@@ -75,7 +73,7 @@ export interface CancelPlan {
   /** D16: alguma linha de caixa vai ser gravada (hoje: todo R de cheque nasce na conta 0). */
   touchesCash: boolean
   /**
-   * D3/D4: a nota tem REGISTRO FISCAL (a vigente detém a chave do fisco). true → a nota fica
+   * D3/D4: a nota tem REGISTRO FISCAL (`isFiscalRecord` da vigente — fato da view, D-NE56). true → a nota fica
    * viva com o evento C (número, ramos e snapshots mantidos) e o pedido vira 'C'; false →
    * nota pendente: soft-delete, número liberado, pedido volta a 'A'.
    */
@@ -319,35 +317,21 @@ export async function buildCancelPlan(
     })
   }
 
-  // 2f. FISCO (Onda 3 NFS-e, D-N7 / §3.9 da NF-e: "plano local → estado fiscal
-  // → pedido ao fisco → voz → efeito"): a última transmissão do ramo de
-  // serviço decide se o C local pode nascer daqui. Nunca transmitida, R ou F →
-  // cancela local; A vigente → o C local só nasce da VOZ C do fisco (rota
-  // `POST /billing/fiscal/cancel`, que grava a voz e chama esta composição na
-  // MESMA transação — aí a leitura abaixo já vê C); reserva sem voz (em voo)
-  // ou K → nada até a consulta reconciliar. Leitura travante (regra 2 do §9).
-  const tx = await latestTransmission(conn, s, institutionId, orderId, true)
-  // A é FINAL para a transmissão (o fisco não diz mais nada dela) mas VIGENTE para a nota
-  // Q-CA5b (Valdo 2026-09-30): NFS-e autorizada em HOMOLOGAÇÃO não tem valor jurídico — o cancelamento
-  // LOCAL direto é permitido (sandbox fora / prazo vencido não prende a nota); segue o caminho da pendente (Q-CA5)
-  const homologationAuthorized = !!tx && isAuthorized(tx) && tx.environment === 'H'
-  if (tx && (isLiveTransmission(tx) || isAuthorized(tx)) && !homologationAuthorized) {
-    const msg = isAuthorized(tx)   // A, ou N depois de um K (D-N17: o pedido não consta — segue autorizada)
-      ? `NFS-e ${tx.nfseNumber ?? tx.accessKey ?? ''} autorizada no fisco (tentativa ${tx.attempt}) — cancele pela ação "Cancelar NFS-e" (o fisco fala primeiro)`
-      : tx.lastKind === 'K'
-        ? `Pedido de cancelamento ao fisco sem resposta (tentativa ${tx.attempt}) — consulte a NFS-e para reconciliar antes`
-        : `Transmissão ao fisco em andamento (tentativa ${tx.attempt}) — aguarde a voz do fisco e consulte antes`
-    blocks.push({ field: 'fiscal', ref: String(tx.attempt), message: msg })
-  }
+  // 2f. FISCO — F2a, etapa A3 (D-F11/D-F28/D-F29, §22.2): o setes-api LÊ a voz onde ela é escrita (views do `fiscal_api`, porta
+  // `@shared/fiscal-voice`) e decide pelos PREDICADOS do núcleo — nunca pergunta ao fisco (D-F4) nem decide por coluna crua.
+  // A leitura vem DEPOIS da trava da nota (`lockInvoice` acima, depois do pedido — D-F121) e é ESCOPADA pela vida que o lockInvoice
+  // devolveu com 1 linha exigida (D-F119/D-F126). Nunca transmitida, R, F conclusivo ou C do fisco → cancela local (a voz C vigente
+  // É o caminho do efeito — D-F28: o app pediu o cancelamento à nfse-api e agora manda o C local); viva → espera; autorizada em
+  // produção → cancele primeiro no fisco (nfse-api); F por consulta em produção sem PROVA da reconferência → reconfira na nfse-api.
+  const fiscal = await readInvoiceFiscal(conn, institutionId, orderId, invoice.lifeEvent)
+  const barrier = fiscalCancelBarrier(fiscal)
+  if (barrier.kind !== 'none') blocks.push(fiscalBlock(barrier))
   // D3/D4 do cancelamento (Valdo, reafirmada 2026-09-29 após a 1ª NFS-e cancelada em produção):
-  // nota com REGISTRO FISCAL (a NFS-e existiu no fisco — a vigente detém a chave, D-N26) NUNCA
-  // some: fica viva com o evento C, mantém número, ramos e snapshots, e o pedido vira 'C'
-  // (cancelado — nunca volta a não faturado; fiel ao PED-01 do legado: PED_FATURADO='C').
-  // Critério pelo FATO, não pelo modelo: vale para NFS-e hoje e NF-e quando o ramo existir.
-  // Q-CA5 (Valdo 2026-09-30, "siga as recomendações"): só chave obtida em PRODUÇÃO é registro fiscal —
-  // a NFS-e de homologação não tem valor jurídico; cancelada, a nota segue o caminho da pendente
-  // (soft-delete, número liberado, pedido/OS reabertos) e o teste em H não deixa pedido 'C' para sempre.
-  const fiscalRecord = !!tx?.accessKey && tx.environment === 'P'
+  // nota com REGISTRO FISCAL (a NFS-e existiu no fisco) NUNCA some: fica viva com o evento C, mantém número,
+  // ramos e snapshots, e o pedido vira 'C' (cancelado — nunca volta a não faturado; fiel ao PED-01 do legado).
+  // Critério pelo FATO do núcleo (`isFiscalRecord` da vigente — D-NE56: registro pelo fisco EM PRODUÇÃO; Q-CA5: a de homologação
+  // não tem valor jurídico e segue o caminho da pendente). Nota (8) da F2a: NUNCA pela presença da chave (na NF-e ela é nossa).
+  const fiscalRecord = invoiceFiscalRecord(fiscal)
   // Q-G3: a trava D5 só importa para quem REABRE a OS — nota com registro fiscal não reabre
   if (!fiscalRecord && serviceOrder?.blockingOrderId != null) {
     blocks.push({
@@ -370,6 +354,22 @@ export async function buildCancelPlan(
     checksToReverse, commissionEntries,
     touchesCash: checksToReverse.length > 0,
     fiscalRecord,
+  }
+}
+
+/** O bloco `fiscal` do plano — a mensagem aponta a AÇÃO (na nfse-api ou esperar), nunca "consulte" no setes-api (D-F4). */
+function fiscalBlock(b: Exclude<FiscalCancelBarrier, { kind: 'none' }>): CancelBlock {
+  const nfse = 'nfseNumber' in b && b.nfseNumber ? `NFS-e ${b.nfseNumber}` : 'NFS-e'
+  const ref = String(b.attempt ?? '')
+  switch (b.kind) {
+    case 'authorized':
+      return { field: 'fiscal', ref, message: `${nfse} autorizada no fisco (tentativa ${b.attempt}) — cancele a NFS-e no fisco primeiro (o fisco fala primeiro)` }
+    case 'cancel-in-flight':
+      return { field: 'fiscal', ref, message: `Pedido de cancelamento ao fisco sem resposta (tentativa ${b.attempt}) — consulte a NFS-e no fisco para reconciliar antes` }
+    case 'in-flight':
+      return { field: 'fiscal', ref, message: `Transmissão ao fisco em andamento (tentativa ${b.attempt}) — aguarde a voz do fisco antes` }
+    case 'reconfirm':
+      return { field: 'fiscal', ref, message: `Envio interrompido sem prova de que a NFS-e não existe (${b.reason}) — reconfira a NFS-e no fisco antes de cancelar a nota` }
   }
 }
 
@@ -452,16 +452,8 @@ export async function cancelInvoice(
       model: plan.invoice.model, value: plan.invoice.value,
     },
   })
-  // M1 do socrático (Q-N34 a, espelho da rota fiscal): a voz C do fisco com efeito pendente ganha ESTE C
-  // como efeito — senão a pendência fica órfã quando a nota refatura (vida nova) e ninguém a resolve
-  const fiscalTx = await latestTransmission(conn, s, institutionId, input.orderId, true)
-  if (fiscalTx?.lastKind === 'C') {
-    const voice = await findTransmissionEventByKind(conn, s, institutionId, input.orderId, fiscalTx.attempt, 'C', true)
-    if (voice && voice.invoiceEvent == null) {
-      await setTransmissionEventEffect(conn, s, institutionId, input.orderId, fiscalTx.attempt, voice.event, event,
-        `Efeito ligado ao cancelamento manual (evento ${event})`)
-    }
-  }
+  // F2a (D-F28/D-F110): nenhum VÍNCULO do efeito na voz — a voz é do fisco (no `fiscal_api`, que o ERP só lê). A pendência é
+  // DERIVADA (voz C da vida × nota não-C — `fiscalEffectOf`): com este evento C a nota deixa de estar pendente por construção.
   if (plan.fiscalRecord) {
     // D3/D4 (Q-CA1/Q-CA4, Valdo 2026-09-29): nota com registro fiscal FICA — viva, com o evento C
     // (estado derivado = cancelada), número mantido (não volta ao MAX+1). O pedido vira 'C':

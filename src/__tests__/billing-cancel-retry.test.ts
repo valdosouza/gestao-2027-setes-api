@@ -27,12 +27,7 @@ jest.mock('../shared/invoice', () => ({
   issueInvoice: jest.fn(),
   cancelInvoice: jest.fn(),
 }))
-// Q-ADV1b: a reconferência no fisco antes do cancelamento local tem teste próprio — aqui só o retry
-jest.mock('../shared/invoice-transmission', () => ({
-  __esModule: true,
-  ...jest.requireActual('../shared/invoice-transmission'),
-  reconfirmBeforeLocalCancel: jest.fn().mockResolvedValue(undefined),
-}))
+// F2a A3 (D-F4): a reconferência no fisco saiu do setes-api (o app a pede à nfse-api; o plano exige a prova lida no fiscal_api)
 jest.mock('../shared/commission', () => ({
   resolveCommissionAliq: jest.fn(), getPostedItemCommissions: jest.fn(), insertCommissions: jest.fn(),
 }))

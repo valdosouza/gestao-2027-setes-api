@@ -1,9 +1,8 @@
 import { Router } from 'express'
 import * as controller from './billing.controller'
-import * as fiscal from './billing.fiscal.controller'
-import { requirePrivilegeFor, requirePrivilege, requireInterfaceFor } from '@shared/auth/require-privilege'
+import { requirePrivilegeFor, requireInterfaceFor } from '@shared/auth/require-privilege'
 import { resolveFromBody, resolveFromParam } from './billing.interface-resolver'
-import { PRIVILEGE_FATURAR, PRIVILEGE_CANCELAR, PRIVILEGE_TRANSMITIR } from '@shared/auth/privileges'
+import { PRIVILEGE_FATURAR, PRIVILEGE_CANCELAR } from '@shared/auth/privileges'
 
 /**
  * Rotas do faturamento (/api/billing — W2 Onda 3, rodada R4). Processo, não
@@ -165,8 +164,8 @@ router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody),
  *       produto (portal do fisco) e gera uma NFS-e substituta que o ERP não conhece — por isso a voz C fica sem
  *       efeito automático (D-F64). Este ato registra a decisão humana de NÃO cancelar a nota no ERP (motivo e
  *       autoria em tb_invoice_cancel_waiver): a pendência some da seção "No fisco", do rodízio e do lote. A
- *       alternativa é cancelar a nota (POST /api/billing/cancel ou /api/billing/fiscal/cancel). Só vale para a
- *       voz C vigente com código 105102, nota viva e sem efeito aplicado. Idempotente por (nota, chave):
+ *       alternativa é cancelar a nota (POST /api/billing/cancel). Só vale para a
+ *       voz C vigente com código 105102 em produção (voz lida no banco fiscal_api — F2a), nota viva e não cancelada. Idempotente por (nota, chave):
  *       repetir devolve alreadyWaived=true. Privilégio CANCELAR (7) na interface do ramo.
  *     tags: [billing]
  *     security: [{ BearerAuth: [] }]
@@ -191,211 +190,63 @@ router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody),
 router.post('/cancel-waiver', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody), controller.cancelWaiver)
 
 // ---------------------------------------------------------------------------
-// FISCO — Onda 3 NFS-e (composição @shared/invoice-transmission, D-N3/D-N7/D-N9/D-E14)
+// FISCO — F2a, etapa A3 (D-F4/D-F11/D-F115): o setes-api é PASSIVO. As 9 rotas fiscais daqui (transmitir, lote, pendentes,
+// rodízio, cancelar no fisco, consultar, visão "No fisco", XML, DANFSe) MORRERAM — o app fala com a nfse-api direto (D-F4). Ficam
+// só os FATOS DO ERP sobre a nota: o plano de cancelamento (consultivo) e o efeito da voz do fisco na nota (+ a dispensa acima).
 // ---------------------------------------------------------------------------
 
 /**
  * @swagger
- * /api/billing/transmit:
- *   post:
- *     summary: Transmite o DPS da nota de serviço ao fisco (Sefin Nacional/ADN)
- *     description: >-
- *       Onda 3 NFS-e. Reserva a tentativa (attempt N+1) sob lock da nota — a
- *       institution é travada PRIMEIRO para cunhar o nDPS write-once (D-N3) —,
- *       monta e assina o DPS (emitente = estabelecimento, tomador = entidade da
- *       nota, serviço = ramo congelado no faturamento), fala com o fisco FORA da
- *       transação e grava a voz: A (autorizada — chave 50, número, dhProc, XML em
- *       disco), R (rejeitada — E0xxx em fields[]) ou F (credencial recusada).
- *       Desfecho ambíguo (503/502) NÃO fecha estado: a tentativa fica em voo e a
- *       consulta por dps_id reconcilia. Privilégio TRANSMITIR (9) na interface do
- *       RAMO (service-orders / orders — seed sql/59).
- *     tags: [billing]
- *     security: [{ BearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [orderId]
- *             properties:
- *               orderId: { type: integer, description: id do pedido = id da nota }
- *     responses:
- *       201: { description: "{ ok, data: { invoiceId, attempt, dpsId, accessKey, nfseNumber, kind: 'A' } }" }
- *       400: { description: Payload inválido }
- *       403: { description: Sem privilégio TRANSMITIR (PRIVILEGE_REQUIRED) }
- *       404: { description: Nota não encontrada / não emitida por este estabelecimento }
- *       409: { description: FISCAL_ISSUER_MISSING · FISCAL_CERT_MISSING/EXPIRED · FISCAL_TRANSMISSION_IN_PROGRESS · FISCAL_ALREADY_AUTHORIZED · FISCAL_CANCEL_IN_FLIGHT · FISCAL_EFFECT_PENDING · FISCAL_NFSE_SUBSTITUTED (D-F67 — cancelada por substituição no fisco; nunca se transmite de novo) · INVOICE_NOT_TRANSMITTABLE · FISCAL_AUTHORITY_AUTH_FAILED (F gravado) }
- *       422: { description: "INVOICE_SERVICE_BRANCH_MISSING · SERVICE_RULE_NATIONAL_CODE_REQUIRED · FISCAL_EMITTER_INCOMPLETE · FISCAL_RECIPIENT_INCOMPLETE · FISCAL_DPS_REJECTED (R gravado, E0xxx em fields[])" }
- *       502: { description: FISCAL_AUTHORITY_UNKNOWN_RESPONSE (ambíguo — nada gravado) }
- *       503: { description: FISCAL_AUTHORITY_UNAVAILABLE (ambíguo — tentativa em voo) }
- */
-router.post('/transmit', requirePrivilegeFor(PRIVILEGE_TRANSMITIR, resolveFromBody), fiscal.transmit)
-
-/**
- * @swagger
- * /api/billing/fiscal/transmit-batch:
- *   post:
- *     summary: Lote "Transmitir pendentes" (≤ 50 por requisição; nunca 500 por item)
- *     description: >-
- *       Uma transmissão por ordem, na sequência; cada item devolve ok/erro com
- *       código; TRANSMITIR conferido POR ITEM na interface do ramo. Fisco
- *       indisponível interrompe o lote (stoppedEarly, itens restantes retryable).
- *     tags: [billing]
- *     security: [{ BearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [orderIds]
- *             properties:
- *               orderIds: { type: array, items: { type: integer }, minItems: 1, maxItems: 50 }
- *     responses:
- *       200: { description: "{ ok, data: { requested, transmitted, failed, stoppedEarly, results: [{ orderId, ok, attempt?, accessKey?, nfseNumber?, code?, error?, retryable? }] } } — orçamento de 60 s por lote (itens não processados voltam retryable)" }
- *       400: { description: Payload inválido }
- *       403: { description: Sem privilégio TRANSMITIR em nenhuma das interfaces do ramo }
- *       409: { description: FISCAL_BATCH_RUNNING — um lote por empresa de cada vez }
- */
-router.post('/fiscal/transmit-batch', requirePrivilege(['service-orders', 'orders'], PRIVILEGE_TRANSMITIR), fiscal.transmitBatch)
-
-/**
- * @swagger
- * /api/billing/fiscal/pending:
+ * /api/billing/{orderId}/cancel-plan:
  *   get:
- *     summary: Notas de serviço sem transmissão vigente/autorizada (alimenta o lote)
- *     tags: [billing]
- *     security: [{ BearerAuth: [] }]
- *     parameters:
- *       - { in: query, name: limit, schema: { type: integer, default: 50, maximum: 200 } }
- *     responses:
- *       200: { description: "{ ok, data: [{ invoiceId, number, dtEmission }] }" }
- */
-router.get('/fiscal/pending', fiscal.pending)
-
-/**
- * @swagger
- * /api/billing/fiscal/refresh:
- *   post:
- *     summary: Consulta ativa das transmissões vivas (rodízio por last_queried_at)
+ *     summary: Plano de cancelamento da nota (consultivo — nada é gravado)
  *     description: >-
- *       Uma passada por institution (duas telas = uma passada), orçamento de 20 s,
- *       para em fisco indisponível. Grava a voz (A/C) idempotente por (kind, dh);
- *       C do fisco produz o C local pela única porta de efeitos (SAVEPOINT — recusa
- *       de regra vira pendência visível).
+ *       F2a (D-F29/D-F115). O app consulta ANTES de pedir o cancelamento no fisco (nfse-api) e de mandar o
+ *       POST /api/billing/cancel. É o MESMO cálculo do POST (uma política só), numa transação sempre desfeita:
+ *       bloqueios locais (título baixado, boleto liquidado, cheque que avançou, devolução, OS do cliente aberta)
+ *       e o bloco FISCAL lido da voz do fisco no banco fiscal_api — transmissão em andamento, NFS-e autorizada em
+ *       produção (cancele no fisco primeiro) ou envio interrompido sem a PROVA da reconferência (reconfira na
+ *       nfse-api). fiscalRecord diz o destino: com registro fiscal a nota fica (evento C) e o pedido vira C.
+ *       Mudou entre a consulta e o POST = o POST recusa com o plano novo. Interface do ramo contratada (D-F37).
  *     tags: [billing]
  *     security: [{ BearerAuth: [] }]
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               minMinutes: { type: integer, default: 5 }
- *               limit: { type: integer, default: 8, maximum: 50 }
+ *     parameters:
+ *       - { in: path, name: orderId, required: true, schema: { type: integer, minimum: 1 } }
  *     responses:
- *       200: { description: "{ ok, data: { checked, changed, errors: [{ invoiceId, code, message }], stoppedEarly } }" }
- *       403: { description: Sem privilégio TRANSMITIR (D-N22 — quem consulta pode disparar efeito local) }
+ *       200: { description: "{ ok, data: { orderId, invoiceNumber, cancellable, blocks[{field: title|bankSlip|check|return|serviceOrder|fiscal, ref, message}], fiscalRecord, effects: { bankSlipsToCancel[], releasedTitles[], checksToReverse[{checkId, number}], commissionsToCompensate, touchesCash } } }" }
+ *       400: { description: orderId inválido (INVALID_ID) }
+ *       401: { description: Sem JWT }
+ *       403: { description: Interface do ramo não contratada (INTERFACE_NOT_ALLOWED) }
+ *       404: { description: Pedido/nota não encontrados (ORDER_NOT_FOUND · INVOICE_NOT_FOUND) }
+ *       409: { description: Pedido não faturado / nota não cancelável (INVOICE_NOT_CANCELLABLE) · RESOURCE_BUSY }
  */
-// D-N22 (MEDIUM-7): consultar pode produzir efeito local (C) — exige TRANSMITIR do ramo
-router.post('/fiscal/refresh', requirePrivilege(['service-orders', 'orders'], PRIVILEGE_TRANSMITIR), fiscal.refreshOpen)
+router.get('/:orderId/cancel-plan', requireInterfaceFor(resolveFromParam), controller.cancelPlan)
 
 /**
  * @swagger
- * /api/billing/fiscal/cancel:
- *   post:
- *     summary: Cancela a NFS-e NO FISCO (evento e101101) e, na mesma transação, a nota local
+ * /api/billing/{orderId}/fiscal-effect:
+ *   get:
+ *     summary: Efeito da voz do fisco na nota (D-F114) e a dispensa vigente
  *     description: >-
- *       Ordem da D-N7: (1) plano LOCAL (baixa/boleto/cheque/devolução bloqueiam
- *       ANTES do fisco — 409 INVOICE_CANCEL_BLOCKED); (2) estado fiscal — nunca
- *       transmitida/R/F cancela SÓ local; em voo → 409; K → 409; (3) prazo do PAM
- *       só como aviso em warnings[] (D-N15); (4) pedido assinado ao fisco fora da
- *       transação; (5) aceito → voz C + cancelInvoice na MESMA transação (recusa
- *       local no intervalo = pendência gravada, 409 FISCAL_EFFECT_PENDING); recusa
- *       do fisco → 409 FISCAL_CANCEL_REFUSED, nada muda; ambíguo → K em voo + 503.
- *       Privilégio CANCELAR (7) na interface do ramo.
- *     tags: [billing]
- *     security: [{ BearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [orderId, reason]
- *             properties:
- *               orderId: { type: integer }
- *               reason:  { type: string, maxLength: 255, description: vira xMotivo (15–255; curto ganha complemento padrão) }
- *     responses:
- *       200: { description: "{ ok, data: { invoiceId, attempt, atAuthority, invoiceEvent, transmissionEvent, warnings[] } }" }
- *       400: { description: Payload inválido / motivo ausente }
- *       403: { description: Sem privilégio CANCELAR }
- *       409: { description: INVOICE_CANCEL_BLOCKED · FISCAL_TRANSMISSION_IN_PROGRESS · FISCAL_CANCEL_IN_FLIGHT · FISCAL_CANCEL_REFUSED · FISCAL_EFFECT_PENDING · INVOICE_NOT_CANCELLABLE }
- *       503: { description: FISCAL_AUTHORITY_UNAVAILABLE — pedido enviado sem resposta (K gravado) }
- */
-router.post('/fiscal/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody), fiscal.cancel)
-
-/**
- * @swagger
- * /api/billing/fiscal/{orderId}/refresh:
- *   post:
- *     summary: Consulta o fisco sobre UMA nota (por dps_id ou chave) e grava a voz
+ *       F2a (D-F79/D-F114/D-F115). Classificação DERIVADA da voz vigente da vida vigente (banco fiscal_api) × nota ×
+ *       dispensa: none (nada a fazer) · apply (o fisco cancelou — aplique o cancelamento local pelo POST
+ *       /api/billing/cancel) · decide (NFS-e SUBSTITUÍDA no fisco, e105102, em produção — "manter a nota" pelo POST
+ *       /api/billing/cancel-waiver ou cancelar a nota) · cancel (cancelamento DE OFÍCIO e305101, ou substituição em
+ *       homologação — cancele a nota). A tela "No fisco" compõe com a nfse-api (a voz em si). Leitura sem trava.
+ *       Interface do ramo contratada (D-F37).
  *     tags: [billing]
  *     security: [{ BearerAuth: [] }]
  *     parameters:
- *       - { in: path, name: orderId, required: true, schema: { type: integer } }
+ *       - { in: path, name: orderId, required: true, schema: { type: integer, minimum: 1 } }
  *     responses:
- *       200: { description: "{ ok, data: { invoiceId, attempt, changed, kind, accessKey, invoiceEvent, effectRefused } }" }
- *       403: { description: Sem privilégio TRANSMITIR no ramo (D-N22) }
- *       409: { description: FISCAL_NOT_TRANSMITTED · FISCAL_ISSUER_MISSING · FISCAL_CERT_MISSING }
- *       502: { description: FISCAL_AUTHORITY_UNKNOWN_RESPONSE (nada gravado) }
- *       503: { description: FISCAL_AUTHORITY_UNAVAILABLE }
+ *       200: { description: "{ ok, data: { orderId, lifeEvent, invoiceCancelled, effect: none|apply|decide|cancel, cancelWaiver: { accessKey, reason, userId, createdAt } | null } }" }
+ *       400: { description: orderId inválido (INVALID_ID) }
+ *       401: { description: Sem JWT }
+ *       403: { description: Interface do ramo não contratada (INTERFACE_NOT_ALLOWED) }
+ *       404: { description: Nota não encontrada (INVOICE_NOT_FOUND) }
+ *       409: { description: RESOURCE_BUSY (a nota mudou durante a leitura) }
  */
-router.post('/fiscal/:orderId/refresh', requirePrivilegeFor(PRIVILEGE_TRANSMITIR, resolveFromParam), fiscal.refreshOne)
+router.get('/:orderId/fiscal-effect', requireInterfaceFor(resolveFromParam), controller.fiscalEffect)
 
-/**
- * @swagger
- * /api/billing/fiscal/{orderId}:
- *   get:
- *     summary: Linha do tempo "No fisco" da nota de serviço
- *     tags: [billing]
- *     security: [{ BearerAuth: [] }]
- *     parameters:
- *       - { in: path, name: orderId, required: true, schema: { type: integer } }
- *     responses:
- *       200: { description: "{ ok, data: { invoiceId, state: none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight, transmissions[], events[], pendingEffects, xmlAvailable, danfseAvailable, substitution: null|{ substituteAccessKey, waived } (D-F67/D-F76 — NFS-e cancelada por SUBSTITUIÇÃO), cancelWaiver: null|{ accessKey, reason, userId, createdAt } } }" }
- */
-router.get('/fiscal/:orderId', requireInterfaceFor(resolveFromParam), fiscal.view)                 // Q-N32
-
-/**
- * @swagger
- * /api/billing/fiscal/{orderId}/xml:
- *   get:
- *     summary: XML da NFS-e autorizada (do disco — nunca de coluna)
- *     tags: [billing]
- *     security: [{ BearerAuth: [] }]
- *     parameters:
- *       - { in: path, name: orderId, required: true, schema: { type: integer } }
- *     responses:
- *       200: { description: "{ ok, data: { accessKey, xml } }" }
- *       404: { description: FISCAL_NFSE_NOT_FOUND }
- */
-router.get('/fiscal/:orderId/xml', requireInterfaceFor(resolveFromParam), fiscal.xml)              // Q-N32
-
-/**
- * @swagger
- * /api/billing/fiscal/{orderId}/danfse:
- *   get:
- *     summary: DANFSe (PDF nosso, D-N13) da NFS-e autorizada
- *     tags: [billing]
- *     security: [{ BearerAuth: [] }]
- *     parameters:
- *       - { in: path, name: orderId, required: true, schema: { type: integer } }
- *     responses:
- *       200: { description: "{ ok, data: { accessKey, pdfBase64 } }" }
- *       404: { description: FISCAL_NFSE_NOT_FOUND }
- */
-router.get('/fiscal/:orderId/danfse', requireInterfaceFor(resolveFromParam), fiscal.danfse)        // Q-N32
 
 export default router

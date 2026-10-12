@@ -2,6 +2,7 @@
 // Composição @shared/invoice/invoice-cancel (prompt_cancelamento_nota.md
 // D1–D17 + Q-P1..Q-P8, 2026-09-08): travar → planejar → executar.
 import { cancelInvoice, buildCancelPlan } from '../shared/invoice'
+import { rawServiceRow } from '../test-setup/fiscal-voice-rows'
 
 jest.mock('../shared/financial-settlement', () => ({
   __esModule: true,
@@ -40,7 +41,7 @@ beforeEach(() => {
 })
 
 /** Sequência base do plano: pedido F, nota viva com E, sem cheques/baixas/boletos/devoluções. */
-const PLAN_QUERIES = 11   // +1 (Onda 3): última transmissão ao fisco — bloco `fiscal`
+const PLAN_QUERIES = 11   // +1 (Onda 3): a voz do fisco — bloco `fiscal` (F2a A3: LINHAS da view do fiscal_api pela porta, na MESMA conexão)
 function planQueries(conn: any, opts: {
   status?: string; invoice?: any[]; last?: any[]; anchor?: any[]; serviceOrder?: any[]; receipts?: any[]; payments?: any[];
   slips?: any[]; released?: any[]; returns?: any[]; fiscal?: any[];
@@ -356,89 +357,139 @@ describe('cancelInvoice — executar', () => {
   })
 })
 
-describe('buildCancelPlan — bloco fiscal (Onda 3 NFS-e, D-N7)', () => {
-  const tx = (lastKind: string | null, extra: any = {}) => [{
-    institutionId: 1, invoiceId: 100, attempt: 2, environment: 'P', dpsId: 'DPS' + '4'.repeat(42), accessKey: '5'.repeat(50),
-    nfseNumber: '123', dhProc: '2026-09-21 10:00:00', createdAt: '2026-09-21 09:59:00', lastQueriedAt: null,
-    lastEvent: 1, lastKind, lastCode: null, lastMessage: null, lastDh: null, lastEventAt: null, ...extra,
-  }]
-  it('NFS-e AUTORIZADA (A vigente) → bloqueio `fiscal` apontando "Cancelar NFS-e"; nada local se toca', async () => {
+/**
+ * F2a, etapa A3 (D-F11/D-F28/D-F29/D-F109, §22.2): o bloco fiscal LÊ a voz do fisco no banco fiscal_api — a porta
+ * `@shared/fiscal-voice` usa o leitor do núcleo (`readFamilyTransmissions`) na MESMA conexão da transação, depois da trava da nota,
+ * escopado pela vida que o lockInvoice devolveu. O mock da conexão devolve LINHAS CRUAS da view (aliases do SELECT publicado,
+ * `authority_recorded` 'S'/'N') e o mapa REAL da família as converte — a projeção também está sob teste (nota (5)).
+ */
+const row = (over: any = {}) => rawServiceRow({ invoiceId: 100, lifeEvent: 1, attempt: 2, ...over })
+const noVoice = { lastEvent: null, lastKind: null, lastCode: null, lastSource: null, lastDh: null, lastEventAt: null }
+const unrec = (over: any = {}) => row({ accessKey: null, authorityRecorded: 'N', nfseNumber: null, dhProc: null, ...over })
+
+describe('buildCancelPlan — bloco fiscal pela voz do fiscal_api (F2a A3)', () => {
+  it('NFS-e AUTORIZADA em produção → bloqueio `fiscal` (cancele no fisco primeiro); a voz é lida da VIEW do fiscal_api, na vida da nota, SEM trava e DEPOIS da trava da nota', async () => {
     const conn = fakeConn()
-    planQueries(conn, { fiscal: tx('A') })
+    planQueries(conn, { fiscal: [row()] })
     await expect(cancelInvoice(conn as any, ...scope, { orderId: 100, reason: 'erro' }))
-      .rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_CANCEL_BLOCKED', fields: [expect.objectContaining({ field: 'fiscal', ref: '2', message: expect.stringMatching(/Cancelar NFS-e/) })] })
+      .rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_CANCEL_BLOCKED', fields: [expect.objectContaining({ field: 'fiscal', ref: '2', message: expect.stringMatching(/cancele a NFS-e no fisco primeiro/) })] })
     expect(slip.cancelBankSlip).not.toHaveBeenCalled()
-    const fiscalSql = String(conn.query.mock.calls[PLAN_QUERIES - 1][0])
-    expect(fiscalSql).toMatch(/tb_invoice_service_transmission t/)
-    expect(fiscalSql).toMatch(/FOR UPDATE/)   // leitura que decide trava (regra 2 do §9)
+    const calls = conn.query.mock.calls.map((c: any) => String(c[0]))
+    const fiscalAt = calls.findIndex(q => /fiscal_api`\.vw_invoice_service_transmission/.test(q))
+    expect(fiscalAt).toBe(PLAN_QUERIES - 1)
+    expect(calls[fiscalAt]).toMatch(/v\.life_event = \?/)                          // D-F119: escopado pela VIDA
+    expect(calls[fiscalAt]).not.toMatch(/FOR UPDATE|LOCK IN SHARE MODE/)            // o leitor do núcleo não trava (D-F121)
+    expect(conn.query.mock.calls[fiscalAt][1]).toEqual(expect.arrayContaining([1, 100, 0]))
+    const lockAt = calls.findIndex(q => /FROM `setes_setes`\.tb_invoice\s+WHERE id = \?[\s\S]*FOR UPDATE/.test(q))
+    expect(lockAt).toBeGreaterThanOrEqual(0); expect(lockAt).toBeLessThan(fiscalAt)  // D-F121: a trava da nota vem ANTES
+    expect(calls.some(q => /tb_invoice_service_transmission t\b|setes_setes`\.tb_invoice_service_transmission/.test(q))).toBe(false)   // nada das tabelas do ERP
   })
   it('Q-CA5b: NFS-e autorizada em HOMOLOGAÇÃO não bloqueia — cancelamento local direto, caminho da pendente', async () => {
     const conn = fakeConn()
-    planQueries(conn, { fiscal: tx('A', { environment: 'H' }) })
+    planQueries(conn, { fiscal: [row({ environment: 'H' })] })
     const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
     expect(plan.blocks).toEqual([])
     expect(plan.fiscalRecord).toBe(false)
   })
   it('Q-CA5b: cancelamento em VOO (K) continua bloqueando mesmo em homologação', async () => {
     const conn = fakeConn()
-    planQueries(conn, { fiscal: tx('K', { environment: 'H' }) })
-    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([expect.objectContaining({ field: 'fiscal' })])
+    planQueries(conn, { fiscal: [row({ environment: 'H', lastKind: 'K', lastSource: 'P' })] })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks)
+      .toEqual([expect.objectContaining({ field: 'fiscal', message: expect.stringMatching(/cancelamento ao fisco sem resposta/) })])
   })
-  it('D-N17: N (pedido de cancelamento não consta — segue autorizada) bloqueia como A, apontando "Cancelar NFS-e"', async () => {
+  it('D-N17: N (pedido de cancelamento não consta — segue autorizada) bloqueia como A', async () => {
     const conn = fakeConn()
-    planQueries(conn, { fiscal: tx('N') })
-    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
-    expect(plan.blocks).toEqual([expect.objectContaining({ field: 'fiscal', message: expect.stringMatching(/Cancelar NFS-e/) })])
+    planQueries(conn, { fiscal: [row({ lastKind: 'N', lastSource: 'Q' })] })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks)
+      .toEqual([expect.objectContaining({ field: 'fiscal', message: expect.stringMatching(/cancele a NFS-e no fisco primeiro/) })])
   })
-  it('reserva SEM voz (em voo) e K (cancelamento em voo) → bloqueio `fiscal`', async () => {
-    for (const kind of [null, 'K']) {
+  it('reserva SEM voz (em voo) e S (enviado) → bloqueio `fiscal` "em andamento"', async () => {
+    for (const over of [noVoice, { lastKind: 'S', lastSource: 'P', lastCode: null }]) {
       const conn = fakeConn()
-      planQueries(conn, { fiscal: tx(kind) })
-      const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
-      expect(plan.blocks).toEqual([expect.objectContaining({ field: 'fiscal' })])
+      planQueries(conn, { fiscal: [unrec(over)] })
+      expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks)
+        .toEqual([expect.objectContaining({ field: 'fiscal', message: expect.stringMatching(/em andamento/) })])
     }
   })
-  it('R, F ou C (transmissão encerrada) e nunca transmitida → sem bloqueio fiscal (cancela local)', async () => {
-    for (const kind of ['R', 'F', 'C']) {
+  it('R, F do envio, C do fisco e nunca transmitida → sem bloqueio fiscal (cancela local; a voz C É o caminho do efeito — D-F28)', async () => {
+    for (const r of [unrec({ lastKind: 'R', lastSource: 'P' }), unrec({ lastKind: 'F', lastSource: 'P' }), row({ lastKind: 'C', lastCode: '101101', lastSource: 'P' })]) {
       const conn = fakeConn()
-      planQueries(conn, { fiscal: tx(kind) })
+      planQueries(conn, { fiscal: [r] })
       expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([])
     }
     const conn = fakeConn()
     planQueries(conn)
     expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([])
   })
+  it('D-F29/D-F109: F por CONSULTA em produção SEM o E2404 posterior → bloqueio "reconfira" (o setes-api nunca pergunta ao fisco — D-F4)', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: [unrec({ lastKind: 'F', lastSource: 'Q', lastEventAt: '2026-10-10 12:10:00' })] })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks)
+      .toEqual([expect.objectContaining({ field: 'fiscal', message: expect.stringMatching(/reconfira a NFS-e no fisco[\s\S]*|sem-e2404/) })])
+  })
+  it('nota (5) — caso POSITIVO com linha real: F por consulta em produção COM o E2404 posterior à última apresentação → PROVADA, cancela local', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: [unrec({ lastKind: 'F', lastSource: 'Q', createdAt: '2026-10-10 12:00:00', lastEventAt: '2026-10-10 12:10:00', nfseNotGeneratedAt: '2026-10-11 08:00:00' })] })
+    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
+    expect(plan.blocks).toEqual([])
+    expect(plan.fiscalRecord).toBe(false)
+  })
+  it('E2404 ANTERIOR a uma reapresentação do mesmo Id na vida (D-F97) → "reconfira" (apresentada-depois)', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: [
+      unrec({ attempt: 1, lastKind: 'F', lastSource: 'Q', createdAt: '2026-10-10 12:00:00', lastEventAt: '2026-10-10 12:10:00', nfseNotGeneratedAt: '2026-10-10 13:00:00' }),
+      unrec({ attempt: 2, lastKind: 'R', lastSource: 'P', createdAt: '2026-10-10 14:00:00', lastEventAt: '2026-10-10 14:00:05' }),
+    ] })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks)
+      .toEqual([expect.objectContaining({ field: 'fiscal', message: expect.stringMatching(/apresentada-depois/) })])
+  })
+  it('F por consulta em HOMOLOGAÇÃO não exige prova (Q-CA5b) → cancela local', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: [unrec({ environment: 'H', lastKind: 'F', lastSource: 'Q', lastEventAt: '2026-10-10 12:10:00' })] })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks).toEqual([])
+  })
+  it('irmã VIVA na vida (a vigente é a última F, mas há tentativa em voo) → "em andamento" ANTES da prova (nota (1) da F2a)', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: [unrec({ attempt: 1, ...noVoice }), unrec({ attempt: 2, lastKind: 'F', lastSource: 'Q', lastEventAt: '2026-10-10 12:10:00', nfseNotGeneratedAt: '2026-10-11 08:00:00' })] })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).blocks)
+      .toEqual([expect.objectContaining({ field: 'fiscal', ref: '1', message: expect.stringMatching(/em andamento/) })])
+  })
+  it('linha de OUTRA vida vinda da view (filtro perdido / view torta) → falha ALTO, nunca entra na decisão (D-F119)', async () => {
+    const conn = fakeConn()
+    planQueries(conn, { fiscal: [row({ lifeEvent: 9 })] })
+    await expect(buildCancelPlan(conn as any, 'setes_setes', 1, 100)).rejects.toThrow()
+  })
+  it('view SEM authority_recorded (migration da família não aplicada) → falha ALTO no mapa da família (nunca "não registrada" calado)', async () => {
+    const conn = fakeConn()
+    const r: any = row(); delete r.authorityRecorded
+    planQueries(conn, { fiscal: [r] })
+    await expect(buildCancelPlan(conn as any, 'setes_setes', 1, 100)).rejects.toThrow(/authority_recorded/)
+  })
 })
 
 describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Valdo 2026-09-29)', () => {
-  const keyed = (lastKind: string, accessKey: string | null = '5'.repeat(50)) => [{
-    institutionId: 1, invoiceId: 100, attempt: 17, environment: 'P', dpsId: 'DPS' + '4'.repeat(42), accessKey,
-    nfseNumber: accessKey ? '704' : null, dhProc: null, createdAt: null, lastQueriedAt: null,
-    lastEvent: 2, lastKind, lastCode: null, lastMessage: null, lastDh: null, lastEventAt: null,
-  }]
   /** Depois do plano: MAX(event)+1 devolve 2; o resto responde vazio. */
   const execTail = (conn: any) =>
     conn.query.mockImplementation(async (sql: string) => (/MAX\(event\)/.test(String(sql)) ? [[{ nextEvent: 2 }]] : [[]]))
 
-  it('plano: registro fiscal = a vigente DETÉM a chave (C do fisco já gravado); sem chave (R/F) ou sem transmissão = pendente', async () => {
-    let conn = fakeConn(); planQueries(conn, { fiscal: keyed('C') })
+  it('plano: registro fiscal = isFiscalRecord da vigente (fato `authority_recorded` EM PRODUÇÃO — nota (8): nunca a chave); sem registro (R/F) ou sem transmissão = pendente', async () => {
+    let conn = fakeConn(); planQueries(conn, { fiscal: [row({ lastKind: 'C', lastCode: '101101' })] })
     expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).fiscalRecord).toBe(true)
-    conn = fakeConn(); planQueries(conn, { fiscal: keyed('R', null) })
+    conn = fakeConn(); planQueries(conn, { fiscal: [unrec({ lastKind: 'R', lastSource: 'P' })] })
     expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).fiscalRecord).toBe(false)
     conn = fakeConn(); planQueries(conn)
     expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).fiscalRecord).toBe(false)
   })
 
-  it('Q-CA5: chave obtida em HOMOLOGAÇÃO não é registro fiscal — cancelada segue o caminho da pendente (nota S, pedido A)', async () => {
+  it('Q-CA5: registro em HOMOLOGAÇÃO não é registro fiscal — cancelada segue o caminho da pendente (nota S, pedido A)', async () => {
     const conn = fakeConn()
-    planQueries(conn, { fiscal: [{ ...keyed('C')[0], environment: 'H' }] })
-    const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
-    expect(plan.fiscalRecord).toBe(false)
+    planQueries(conn, { fiscal: [row({ lastKind: 'C', lastCode: '101101', environment: 'H' })] })
+    expect((await buildCancelPlan(conn as any, 'setes_setes', 1, 100)).fiscalRecord).toBe(false)
   })
 
-  it('venda com registro fiscal: financeiro desfeito e evento C, mas nota/ramos/snapshots FICAM e o pedido vira C (nunca A)', async () => {
+  it('venda com registro fiscal: financeiro desfeito e evento C, mas nota/ramos/snapshots FICAM e o pedido vira C (nunca A); nenhum vínculo gravado na voz (D-F28/D-F110)', async () => {
     const conn = fakeConn()
-    planQueries(conn, { fiscal: keyed('C') })
+    planQueries(conn, { fiscal: [row({ lastKind: 'C', lastCode: '101101' })] })
     execTail(conn)
     const r = await cancelInvoice(conn as any, ...scope, { orderId: 100, reason: 'Cancelada no fisco' })
     expect(r.event).toBe(2)
@@ -450,6 +501,7 @@ describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Vald
     expect(after.some(q => /tb_invoice_(merchandise|service) SET deleted = 'S'/.test(q))).toBe(false)
     expect(after.some(q => /tb_order_item_(icms|icms_fcp|ipi|ii|pis|cofins|issqn) SET deleted/.test(q))).toBe(false)
     expect(after.some(q => /tb_order SET status = 'A'/.test(q))).toBe(false)
+    expect(after.some(q => /transmission/.test(q))).toBe(false)                 // o ERP não escreve a voz (nem lê de novo)
     expect(after[after.length - 1]).toMatch(/UPDATE `setes_setes`.tb_order SET status = 'C'/)
   })
 
@@ -464,7 +516,7 @@ describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Vald
       .mockResolvedValueOnce([[{ id: 9000 }]])              // cliente JÁ tem outra OS aberta (trava ocupada)
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
-      .mockResolvedValueOnce([keyed('C')])                  // última transmissão: C com chave
+      .mockResolvedValueOnce([[rawServiceRow({ invoiceId: 8011, lifeEvent: 1, lastKind: 'C', lastCode: '101101' })]])   // voz: C registrada em P
     execTail(conn)
     const r = await cancelInvoice(conn as any, ...scope, { orderId: 8011, reason: 'Cancelada no fisco' })
     expect(r.event).toBe(2)
@@ -476,7 +528,7 @@ describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Vald
     expect(sqls.some(q => /tb_order SET status = 'C'/.test(q))).toBe(true)
   })
 
-  it('pendente (sem chave) segue o caminho antigo: nota S, pedido A — e a trava D5 ocupada ainda BLOQUEIA a reabertura', async () => {
+  it('pendente (sem registro) segue o caminho antigo: nota S, pedido A — e a trava D5 ocupada ainda BLOQUEIA a reabertura', async () => {
     const conn = fakeConn()
     conn.query
       .mockResolvedValueOnce([[{ status: 'F' }]])
@@ -487,7 +539,7 @@ describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Vald
       .mockResolvedValueOnce([[{ id: 7001 }]])
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
-      .mockResolvedValueOnce([keyed('R', null)])            // última transmissão: R sem chave
+      .mockResolvedValueOnce([[unrec({ lastKind: 'R', lastSource: 'P' })]])   // voz: R sem registro
     const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
     expect(plan.fiscalRecord).toBe(false)
     expect(plan.blocks).toEqual([expect.objectContaining({ field: 'serviceOrder', ref: '7001' })])

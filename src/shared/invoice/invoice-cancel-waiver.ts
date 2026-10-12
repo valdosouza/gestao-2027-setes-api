@@ -3,10 +3,9 @@ import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { assertSchema } from '@shared/db/schema'
+import { isSubstitutionCancel, isFiscalRecord } from 'fiscal-api/reading'
 import { lockInvoice, LAST_INVOICE_EVENT_KIND_SQL } from './invoice'
-import {
-  latestTransmission, findTransmissionEventByKind, SUBSTITUTION_CANCEL_CODE,
-} from '@shared/invoice-transmission/transmission.repository'
+import { readInvoiceFiscal } from './invoice-fiscal-effect'
 
 /**
  * PEÇA "manter a nota" — D-F67/D-F72/D-F73/D-F74 (Rodada 13 das APIs fiscais, Valdo 2026-10-10; parecer do guardião:
@@ -19,9 +18,11 @@ import {
  * (D-F80: homologação não tem valor jurídico — cancela-se a nota); nota viva e não cancelada; motivo obrigatório (D-F73);
  * idempotente por (nota, chave) — repetir devolve `alreadyWaived`. A dispensa é HISTÓRIA (D-F81): a linha fica; os leitores
  * só a apresentam como decisão vigente enquanto a nota está viva (`findCurrentCancelWaiver`).
- * Roda sob a transação do CHAMADOR (o módulo envolve com `withDeadlockRetry`). Ordem de lock = nota → transmissão → voz (a
- * mesma do `cancelInvoice`); a rota fiscal de cancelamento trava a transmissão ANTES da nota — o ciclo possível (1213) é
- * absorvido pelo retry (L2 do gate da Rodada 13). A dispensa em si não trava linha: a trava da NOTA já serializa (L3).
+ * Roda sob a transação do CHAMADOR (o módulo envolve com `withDeadlockRetry`). F2a, etapa A3: a voz é LIDA pela porta
+ * `@shared/fiscal-voice` (views do `fiscal_api`) DEPOIS da trava da nota (`lockInvoice` = 1º comando — D-F121) e escopada pela vida
+ * que ela devolve (D-F119/D-F126); decide pelos predicados do núcleo (`isSubstitutionCancel`, `isFiscalRecord`) — nunca por coluna
+ * crua. "Efeito já aplicado" = a NOTA cancelada (evento C — D-F28: sem vínculo gravado na voz). A dispensa em si não trava linha:
+ * a trava da NOTA já serializa (L3).
  */
 
 export interface CancelWaiver {
@@ -93,17 +94,13 @@ export async function waiveSubstitutedCancel(
   }
   const invoice = await lockInvoice(conn, s, institutionId, input.orderId)
   if (invoice.lastKind === 'C') throw notApplicable(`Nota ${invoice.number ?? input.orderId} já está cancelada — nada a manter`)
-  const tx = await latestTransmission(conn, s, institutionId, input.orderId, true)
-  if (!tx || tx.lastKind !== 'C' || tx.lastCode !== SUBSTITUTION_CANCEL_CODE || !tx.accessKey) {
+  const { current: tx } = await readInvoiceFiscal(conn, institutionId, input.orderId, invoice.lifeEvent)
+  if (!tx || !isSubstitutionCancel(tx) || !tx.accessKey) {
     throw notApplicable('A NFS-e vigente desta nota não foi cancelada por SUBSTITUIÇÃO no fisco (e105102) — manter a nota só vale para esse caso')
   }
   // D-F80 (= Q-F87 (a)): homologação não tem valor jurídico (Q-CA5b) — a saída é cancelar a nota (cancelável localmente)
-  if (tx.environment !== 'P') {
+  if (!isFiscalRecord(tx)) {
     throw notApplicable('NFS-e de HOMOLOGAÇÃO não tem valor jurídico — cancele a nota (cancelável localmente) em vez de mantê-la')
-  }
-  const voice = await findTransmissionEventByKind(conn, s, institutionId, input.orderId, tx.attempt, 'C', true)
-  if (!voice || voice.invoiceEvent != null) {
-    throw notApplicable('O cancelamento do fisco já tem efeito na nota — nada a manter')
   }
   const existing = await findCancelWaiver(conn, s, institutionId, input.orderId, tx.accessKey)   // L3: a trava da NOTA serializa
   if (existing) return { orderId: input.orderId, accessKey: existing.accessKey, createdAt: existing.createdAt, alreadyWaived: true }

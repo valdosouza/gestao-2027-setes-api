@@ -24,13 +24,14 @@ jest.mock('../shared/errors/crash.repository', () => ({
   __esModule: true, newCrashRef: jest.fn(() => 'REFADVA2'), recordCrash: jest.fn().mockResolvedValue(undefined),
 }))
 jest.mock('../feature-flags/flag.service', () => ({ __esModule: true, isModuleEnabled: jest.fn().mockResolvedValue(true), invalidateCache: jest.fn() }))
-jest.mock('../shared/invoice-transmission', () => ({
+// F2a, etapa A3: as rotas fiscais do setes-api morreram (o app fala com a nfse-api — D-F4). As rotas de prova passam a ser as que
+// FICAM no billing, com o serviço mockado (a autenticação e as guardas são o alvo aqui)
+jest.mock('../modules/billing/billing.service', () => ({
   __esModule: true,
-  ...jest.requireActual('../shared/invoice-transmission'),
-  transmitServiceInvoice: jest.fn(),
-  refreshOpenServiceTransmissions: jest.fn(),
-  listPendingServiceInvoices: jest.fn(),
-  cancelServiceInvoiceAtAuthority: jest.fn(),
+  ...jest.requireActual('../modules/billing/billing.service'),
+  getOrderFiscalEffect: jest.fn(),
+  getOrderCancelPlan: jest.fn(),
+  cancelOrderInvoice: jest.fn(),
 }))
 // o RAMO do pedido vem por tabela fixa (a lógica real do resolver tem testes próprios abaixo, via requireActual)
 const BRANCH: Record<number, string> = { 501: 'service-orders', 502: 'orders', 503: 'order-returns' }
@@ -44,7 +45,7 @@ jest.mock('../modules/billing/billing.interface-resolver', () => {
 })
 
 import pool from '../shared/db/connection'
-import * as itx from '../shared/invoice-transmission'
+import * as billingService from '../modules/billing/billing.service'
 import { lockInvoice, LAST_INVOICE_EVENT_KIND_SQL } from '../shared/invoice/invoice'
 import { CURRENT_RETURN_SQL } from '../shared/order-return/order-return'
 import {
@@ -53,7 +54,7 @@ import {
 import {
   loadJwtKeyRing, resetJwtKeyRing, assertJwtKeys, signFinalToken, signSelectionToken, verifyFinalToken,
 } from '../shared/auth/product-token'
-import { PRIVILEGE_TRANSMITIR, PRIVILEGE_CANCELAR } from '../shared/auth/privileges'
+import { PRIVILEGE_CANCELAR } from '../shared/auth/privileges'
 import { runMigrationsForSchema } from '../migrations/runner'
 import app from '../app'
 
@@ -93,9 +94,9 @@ beforeEach(() => {
   resetPrivilegeCache()
   contracted = new Set(Object.values(CATALOG)); privileged = new Set(); catalogLookups = 0
   routeDb()
-  ;(itx.transmitServiceInvoice as jest.Mock).mockResolvedValue({ invoiceId: 0, attempt: 1, dpsId: 'D', accessKey: 'K', nfseNumber: '1', kind: 'A' })
-  ;(itx.refreshOpenServiceTransmissions as jest.Mock).mockResolvedValue({ checked: 0, changed: 0, errors: [], stoppedEarly: false })
-  ;(itx.listPendingServiceInvoices as jest.Mock).mockResolvedValue([{ invoiceId: 501, number: '17', dtEmission: '2026-10-12' }])
+  ;(billingService.getOrderFiscalEffect as jest.Mock).mockResolvedValue({ orderId: 502, lifeEvent: 1, invoiceCancelled: false, effect: 'none', cancelWaiver: null })
+  ;(billingService.getOrderCancelPlan as jest.Mock).mockResolvedValue({ orderId: 502, cancellable: true, blocks: [] })
+  ;(billingService.cancelOrderInvoice as jest.Mock).mockResolvedValue({ orderId: 501 })
 })
 afterEach(() => { process.env = { ...ENV0 }; resetJwtKeyRing() })
 
@@ -112,9 +113,9 @@ function rawRs256(header: Record<string, unknown>, payload: Record<string, unkno
 const exp = () => Math.floor(Date.now() / 1000) + 3600
 const FINAL = { institutionId: 2, userId: 9, role: 'user', schemaName: 'setes_x' }
 
-/** Rota que só passa pela autenticação (+ flag mockada) e responde 200: a lista de pendentes (leitor mockado). */
+/** Rota que só passa pela autenticação + licença do ramo 'orders' (contratado por padrão) e responde 200: o efeito fiscal (serviço mockado). */
 const probe = (auth?: string) => {
-  const r = request(app).get('/api/billing/fiscal/pending')
+  const r = request(app).get('/api/billing/502/fiscal-effect')
   return auth === undefined ? r : r.set('Authorization', auth)
 }
 
@@ -271,41 +272,28 @@ describe('D-F37 — licença (interface contratada) para todos', () => {
   it('[RESISTIU] rota: super/admin cancelando documento do ramo service-orders NÃO contratado → 403 antes do serviço', async () => {
     contracted = new Set([CATALOG.orders])
     for (const inst of [SUPER, ADMIN]) {
-      const r = await request(app).post('/api/billing/fiscal/cancel').set('Authorization', bearer(inst)).send({ orderId: 501, reason: 'teste adversarial' })
+      const r = await request(app).post('/api/billing/cancel').set('Authorization', bearer(inst)).send({ orderId: 501, reason: 'teste adversarial' })
       expect([inst.role, r.status, r.body.code]).toEqual([inst.role, 403, 'INTERFACE_NOT_ALLOWED'])
     }
-    expect(itx.cancelServiceInvoiceAtAuthority).not.toHaveBeenCalled()
+    expect(billingService.cancelOrderInvoice).not.toHaveBeenCalled()
   })
 
-  it('[CORRIGIDO na sessão — F2A2-ADV-01 MEDIUM] lote de transmissão: o ADMIN transmite nota do ramo NÃO contratado — a guarda da rota aceita QUALQUER ramo contratado e o item pula a licença (`if (!isAdmin)` em billing.fiscal.service.ts:88)', async () => {
-    contracted = new Set([CATALOG.orders])                // service-orders FORA do contrato
-    const r = await request(app).post('/api/billing/fiscal/transmit-batch').set('Authorization', bearer(ADMIN)).send({ orderIds: [501] })
-    expect(itx.transmitServiceInvoice).not.toHaveBeenCalled()
-    expect(r.body?.data?.results?.[0]?.code).toBe('INTERFACE_NOT_ALLOWED')
-  })
-
-  it('[CORRIGIDO na sessão — F2A2-ADV-01b MEDIUM] lote de transmissão: o REGULAR com vínculo TRANSMITIR remanescente no ramo NÃO contratado transmite (o item confere só o privilégio, nunca a licença)', async () => {
-    contracted = new Set([CATALOG.orders])
-    privileged.add(`9:${CATALOG.orders}:${PRIVILEGE_TRANSMITIR}`)
-    privileged.add(`9:${CATALOG['service-orders']}:${PRIVILEGE_TRANSMITIR}`)   // vínculo de quando o ramo era contratado
-    const r = await request(app).post('/api/billing/fiscal/transmit-batch').set('Authorization', bearer(USER)).send({ orderIds: [501] })
-    expect(itx.transmitServiceInvoice).not.toHaveBeenCalled()
-    expect(r.body?.data?.results?.[0]?.code).toBe('INTERFACE_NOT_ALLOWED')
-  })
-
-  failing('[LIMITE CONHECIDO — rota morre na A3 da F2a; hoje os 4 ramos estão contratados] [ACHADO F2A2-ADV-01c MEDIUM] rodízio POST /fiscal/refresh: com só `orders` contratado, a passada roda sobre TODAS as transmissões (inclusive do ramo service-orders) — sem escopo de ramo (a nfse-api tem passScope, D-F46/D-F47)', async () => {
-    contracted = new Set([CATALOG.orders])
-    await request(app).post('/api/billing/fiscal/refresh').set('Authorization', bearer(ADMIN)).send({})
-    expect(itx.refreshOpenServiceTransmissions).toHaveBeenCalledWith(
-      ADMIN.schemaName, ADMIN.institutionId, ADMIN.userId, expect.objectContaining({ interfaces: ['orders'] }))
-  })
-
-  failing('[LIMITE CONHECIDO — rota morre na A3 da F2a] [ACHADO F2A2-ADV-06 LOW] GET /api/billing/fiscal/pending não tem guarda de licença: usuário de institution SEM nenhum ramo fiscal contratado lista as notas de serviço pendentes', async () => {
+  it('[RESISTIU — F2a A3] as consultas novas (cancel-plan, fiscal-effect) exigem a LICENÇA do ramo para todos (D-F37): ramo não contratado → 403 antes do serviço', async () => {
     contracted = new Set([CATALOG.settlements])
-    const r = await probe(bearer(USER))
-    expect(r.status).toBe(403)
+    for (const inst of [SUPER, ADMIN, USER]) {
+      for (const url of ['/api/billing/501/cancel-plan', '/api/billing/501/fiscal-effect', '/api/billing/502/fiscal-effect']) {
+        const r = await request(app).get(url).set('Authorization', bearer(inst))
+        expect([inst.role, url, r.status, r.body.code]).toEqual([inst.role, url, 403, 'INTERFACE_NOT_ALLOWED'])
+      }
+    }
+    expect(billingService.getOrderCancelPlan).not.toHaveBeenCalled()
+    expect(billingService.getOrderFiscalEffect).not.toHaveBeenCalled()
   })
+
+
 })
+
+// (F2A2-ADV-01/01b/01c/06 e ADV-02b morreram com as rotas e o código fiscal do setes-api na A3 da F2a, `prompt_apis_fiscais_isoladas.md` §22.11)
 
 // =================================================================================================
 // D-F32 — leitores pelas views da 065
@@ -360,14 +348,7 @@ describe('D-F32 — resolveOrderInterface / vida da nota / devolução vigente p
     await expect(lockInvoice(conn, 'setes_x', 2, 20)).resolves.toMatchObject({ lifeEvent: 3, lastEvent: 3, lastKind: 'E' })
   })
 
-  failing('[LIMITE CONHECIDO — código morre na A3; com a correção do ADV-02 o efeito é 409 RESOURCE_BUSY, nunca vida velha] [ACHADO F2A2-ADV-02b MEDIUM] cancelamento NO FISCO abre o retrato ANTES da trava da nota: `latestTransmission(conn, …, true)` (FOR UPDATE com subconsultas) é o 1º comando da transação "plano do cancelamento fiscal" — D-F121/PADROES §11 regra 12 querem a trava da nota primeiro', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'shared', 'invoice-transmission', 'invoice-transmission.ts'), 'utf8')
-    const at = src.indexOf("withInvoiceTx('plano do cancelamento fiscal'")
-    expect(at).toBeGreaterThan(0)
-    const block = src.slice(at, at + 1500)
-    const firstLock = Math.min(...['lockInvoice(', 'buildCancelPlan('].map(s => block.indexOf(s)).filter(i => i >= 0))
-    expect(block.indexOf('latestTransmission(')).toBeGreaterThan(firstLock)
-  })
+
 })
 
 // =================================================================================================

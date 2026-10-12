@@ -148,6 +148,51 @@ export async function lockInvoice(
   }
 }
 
+export interface InvoiceLife {
+  invoiceId: number
+  /** Cabeçalho soft-deletado (nota pendente cancelada — D3); os eventos ficam. */
+  invoiceDeleted: boolean
+  /** Evento E que abriu a VIDA vigente (D-N27); null = nota sem evento (sincronizada da origem). */
+  lifeEvent: number | null
+  lastEvent: number | null
+  lastKind: string | null
+}
+
+function mapLife(r: any): InvoiceLife {
+  return {
+    invoiceId: Number(r.invoiceId), invoiceDeleted: String(r.invoiceDeleted) === 'S',
+    lifeEvent: r.lifeEvent == null ? null : Number(r.lifeEvent),
+    lastEvent: r.lastEvent == null ? null : Number(r.lastEvent), lastKind: r.lastKind ?? null,
+  }
+}
+
+/**
+ * Vida e último evento SEM trava (F2a A3 — leituras CONSULTIVAS: selo da lista de OS, efeito fiscal da tela), pela MESMA view de
+ * política do `lockInvoice` (D-F32). Quem DECIDE usa o `lockInvoice` (trava + 1 linha exigida — D-F126). Lote = notas do mesmo
+ * estabelecimento no terminal da web; nota sem linha (inexistente) não volta no mapa.
+ */
+export async function readInvoiceLives(
+  q: Pick<PoolConnection, 'query'>, s: string, institutionId: number, invoiceIds: readonly number[]
+): Promise<Map<number, InvoiceLife>> {
+  const out = new Map<number, InvoiceLife>()
+  if (!invoiceIds.length) return out
+  const [rows] = await q.query<any[]>(
+    `SELECT tb_invoice_id AS invoiceId, invoice_deleted AS invoiceDeleted, life_event AS lifeEvent,
+            last_event AS lastEvent, last_kind AS lastKind
+       FROM \`${s}\`.vw_invoice_life
+      WHERE tb_institution_id = ? AND terminal = 0 AND tb_invoice_id IN (?)`,
+    [institutionId, [...invoiceIds]]
+  )
+  for (const r of rows) {
+    if (out.has(Number(r.invoiceId))) {
+      // a view devolve 1 linha por nota; mais de uma = retrato torto (ver lockInvoice) — falha ALTO, nunca "a primeira"
+      throw new HttpError(409, `A nota ${r.invoiceId} mudou durante a leitura — tente novamente`, undefined, ErrorCodes.RESOURCE_BUSY)
+    }
+    out.set(Number(r.invoiceId), mapLife(r))
+  }
+  return out
+}
+
 /**
  * Número MAX+1 por MODELO + SÉRIE (decisão R4-Q3) — D4: ignora notas com
  * `deleted='S'` (pendente cancelada libera o número; só reaproveita de fato
@@ -278,7 +323,7 @@ export async function issueInvoice(
          tb_city_id = VALUES(tb_city_id), base_iss_value = VALUES(base_iss_value),
          aliq_iss = VALUES(aliq_iss), iss_value = VALUES(iss_value), iss_withheld = VALUES(iss_withheld),
          liability = VALUES(liability), description = VALUES(description),
-         dps_number = NULL, deleted = 'N', updated_at = NOW()`,
+         deleted = 'N', updated_at = NOW()`,   // F2a (D-F30/§22.5 item 4): dps_number APOSENTADA — o nDPS da vida é da nfse-api
       [input.orderId, institutionId, sv.totalValue, sv.serviceListId, sv.nationalCode, sv.municipalCode,
        sv.cityId, sv.baseIss, sv.aliqIss, sv.issValue, sv.issWithheld, sv.liability, sv.description]
     )

@@ -4,7 +4,9 @@ import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import logger from '@shared/logger/logger'
 import { contentionToHttpError } from '@shared/db/contention'
-import { getServiceFiscalSummaries } from '@shared/invoice-transmission'
+import { readFiscalSeals } from '@shared/invoice'
+import { assertSchema } from '@shared/db/schema'
+import pool from '@shared/db/connection'
 import {
   ServiceOrderListRow, ServiceOrderFull, OpenOrderInput, OrderItemInput,
   MonthlyRunInput, MonthlyRunReport, InvoiceInput, InvoiceResult,
@@ -45,7 +47,8 @@ export async function fetchOrders(
   const page = await listOrders(status, query, scope.schemaName, scope.institutionId)
   // Selo fiscal: só nota emitida pela web (evento E) — a sincronizada transmite-se na origem
   const ids = page.rows.filter((r: any) => (r.status === 'F' || r.status === 'C') && Number(r.webIssued) === 1).map(r => Number(r.id))
-  const fiscal = await getServiceFiscalSummaries(scope.schemaName, scope.institutionId, ids)
+  // F2a A3: a voz do fisco vem do `fiscal_api` pela porta (`readFiscalSeals` — vidas pela view de política + lote nota × vida)
+  const fiscal = await readFiscalSeals(pool, assertSchema(scope.schemaName), scope.institutionId, ids)
   const rows = page.rows.map(({ webIssued: _w, ...r }: any) => {
     const f = fiscal.get(Number(r.id))
     return {
