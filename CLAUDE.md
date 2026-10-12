@@ -130,17 +130,18 @@ All `/api/*` routes require JWT in header:
 Authorization: Bearer <jwt_token>
 ```
 
-**Payload shape** (in `src/shared/types/express.d.ts`):
+**Payload shape** (`InstitutionPayload` em `src/shared/types/express.d.ts`; PADROES_BANCO §7):
 ```typescript
-{
-  tenantId: string      // Unique per client
-  userId: string        // User identifier
-  role: 'setes_admin' | 'client_user'
-  schemaName: string    // Database schema for this tenant
-}
+{ institutionId: number, userId: number, role: string, schemaName: string }   // role: super | admin | user …
 ```
 
-**Special case**: `tenantId = 'setes'` and `role = 'setes_admin'` bypasses feature flags.
+**Assinatura RS256 com `kid`** (D-F13 — F2a, etapa A2, 2026-10-12): peça ÚNICA `@shared/auth/product-token`
+(assina e verifica; token FINAL × token de SELEÇÃO com marca própria; `exp` obrigatório). O setes-api tem a chave
+PRIVADA; nfse-api/nfe-api só a PÚBLICA. HS256/`JWT_SECRET` aposentados — sem a chave o boot NÃO sobe. Testes assinam
+pelo `testToken` (`src/test-setup/test-token.ts`; par de TESTE gerado pelo setup do jest). NUNCA segredo em script versionado.
+
+**Licença × privilégio** (D-F37): as guardas de ação (`@shared/auth/require-privilege`) conferem a interface CONTRATADA
+para TODOS; super/admin passam só o privilégio.
 
 ### Chave do Sincronizador
 
@@ -185,7 +186,8 @@ Uses `express-rate-limit` with **per-tenant keying**:
 
 ```bash
 PORT=3000
-JWT_SECRET=your_secret_key_here
+JWT_PRIVATE_KEY_PATH=./secrets/jwt/setes-api.private.pem   # RS256 (D-F13) — ver .env.example
+JWT_KID=default
 DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
