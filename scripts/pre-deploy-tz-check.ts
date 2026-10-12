@@ -12,6 +12,9 @@
  *        - boleto apresentado sem resposta do banco → viraria "envio interrompido"
  *        - chave de ativação/recuperação emitida há pouco → expiraria na hora
  *        Deploy só com tudo ZERADO (ou com o operador ciente de cada item).
+ * F2a (D-F110, §22.5 item 14): depois da virada as tabelas fiscais do ERP são ORIGEM CONGELADA — a leitura aqui é histórica e
+ *        continua válida (o ATO da virada recusa virar com tentativa viva na origem, então elas ficam em 0); o que está em voo no
+ *        fisco passa a morar no fiscal_api, que nasceu em UTC (sem transição de fuso).
  *
  *   npx tsx --require tsconfig-paths/register scripts/pre-deploy-tz-check.ts
  * Sai com código 1 se houver algo em voo.

@@ -18,11 +18,11 @@ import { ErrorCodes } from '@shared/errors/error-codes'
  * e D5 (pedido refaturável), o cabeçalho é REVIVIDO por upsert na segunda
  * vida — por isso o evento E guarda o SNAPSHOT do fato (número/série/
  * modelo/valor). `tb_invoice.status` é ESPELHO escrito aqui ('0' = pronta):
- * o estado FISCAL não mora nele — é do RAMO, derivado do último evento da
- * última transmissão (`@shared/invoice-transmission`, D-N1: A/R/C/K/F/N vivem
- * em tb_invoice_service_transmission_event). A composição da transmissão NÃO
- * escreve `status`; ele só é lido como cinto (Q-A2) contra valor gravado pelo
- * sync ('A'/'F' vindos do desktop não são "pendente").
+ * o estado FISCAL não mora nele — é do RAMO, derivado da última voz do fisco
+ * da tentativa vigente, que desde a F2a é escrita SÓ pela nfse-api no banco
+ * fiscal_api e LIDA aqui pela porta `@shared/fiscal-voice` (D-F11/D-F15). Ninguém
+ * escreve `status` por causa do fisco; ele só é lido como cinto (Q-A2) contra
+ * valor gravado pelo sync ('A'/'F' vindos do desktop não são "pendente").
  */
 
 export type InvoiceEventKind = 'E' | 'C'
