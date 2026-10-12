@@ -490,3 +490,23 @@ describe('lista de apoio — filtro pela janela', () => {
   })
 })
 
+// D-IB61 (Rodada 12, Valdo 2026-10-11): LIMITE CONHECIDO — fixa a semântica para ninguém "consertar" sem nova decisão.
+// A linha antiga que VOLTA a valer dentro da janela não conta para o cadastro (D-IB59: entre as vigentes só a mais nova conta;
+// a volta da antiga não é "linha futura"). Falha para o lado seguro (422); reabrir para a "linha do tempo" (opção (b)) se uma carga
+// real trouxer sobreposição de vigentes — no catálogo real de 2026-10-11 há zero.
+describe('D-IB61 — limite conhecido: linha antiga que volta a valer na janela', () => {
+  it('o cadastro recusa hoje (vigente mais nova sem presença) embora a data do fato volte a aceitar pela antiga antes da obrigação', async () => {
+    const q = fakeCatalog({
+      validity: [
+        { code: '550040', cst: '550', name: 'Antiga aceita', from: '2026-01-01', until: null, regular: 'N', models: ['SE'] },
+        { code: '550040', cst: '550', name: 'Nova sem presença', from: '2026-06-01', until: '2026-11-30', regular: 'N', models: [] },
+      ],
+      places: { '100301': ['SE'] }, nbs: [],
+    })
+    expect(await classificationAcceptance(q, '550040', '100301', '2026-10-10')).toEqual({ classification: false, placeIndicator: true })
+    expect(await classificationAcceptedAt(q, '550040', 'SE', '2026-10-10')).toBe(false)
+    expect(await classificationAcceptedAt(q, '550040', 'SE', '2026-12-01')).toBe(true)   // a antiga volta — o cadastro não antecipa
+    expect(await classificationAcceptedAt(q, '550040', 'SE', '2027-01-01')).toBe(true)
+  })
+})
+
