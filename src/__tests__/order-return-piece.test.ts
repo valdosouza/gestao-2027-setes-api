@@ -11,12 +11,13 @@ describe('CURRENT_RETURN_SQL — devolução vigente', () => {
     expect(sql).toMatch(/tb_order adj[\s\S]*adj\.deleted = 'N'/)
   })
 
-  it('exclui a devolução cuja NOTA tem o último evento C (cancelada)', () => {
-    expect(sql).toMatch(/tb_invoice_event ev[\s\S]*ORDER BY ev\.event DESC LIMIT 1\), 'E'\) <> 'C'/)
+  it('exclui a devolução cuja NOTA tem o último evento C (cancelada) — o último evento vem da VIEW de política (D-F32, F2a A2)', () => {
+    expect(sql).toMatch(/SELECT lv\.last_kind FROM `setes_setes`\.vw_invoice_life lv[\s\S]*lv\.tb_invoice_id = r\.tb_order_id[\s\S]*\), 'E'\) <> 'C'/)
+    expect(sql).not.toMatch(/tb_invoice_event/)
   })
 
   it('devolução ABERTA (sem nota) continua contando — COALESCE cai em E', () => {
-    expect(sql).toMatch(/COALESCE\(\(SELECT ev\.kind/)
+    expect(sql).toMatch(/COALESCE\(\(SELECT lv\.last_kind/)
   })
 
   it('respeita o alias recebido (a peça é reusada em duas consultas)', () => {

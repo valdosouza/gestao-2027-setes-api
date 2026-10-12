@@ -184,10 +184,12 @@ function wireConn() {
       return [inv && inv.inst === Number(params[1]) && inv.deleted === 'N'
         ? [{ id: Number(params[0]), number: '17', serie: '1', model: 'SE', value: 250, status: '0' }] : []]
     }
-    if (/SELECT event, kind FROM `setes_setes`\.tb_invoice_event/.test(sql)) {
+    if (/FROM `setes_setes`\.vw_invoice_life/.test(sql)) {               // D-F32 (F2a A2): vida e último evento pela view
       const inv = invoices.get(Number(params[1]))
       const evs = inv && inv.inst === Number(params[0]) ? [...inv.events].sort((a, b) => b.event - a.event) : []
-      return [evs.slice(0, 1)]
+      const life = evs.find(e => e.kind === 'E')
+      return [inv && inv.inst === Number(params[0])
+        ? [{ lifeEvent: life?.event ?? null, lastEvent: evs[0]?.event ?? null, lastKind: evs[0]?.kind ?? null }] : []]
     }
     if (/FROM `setes_setes`\.tb_invoice_cancel_waiver/.test(sql)) {
       const w = waivers.get(wk(Number(params[1]), String(params[2])))

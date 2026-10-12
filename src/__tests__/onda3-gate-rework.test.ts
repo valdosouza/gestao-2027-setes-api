@@ -454,9 +454,11 @@ describe('LOW-1 / LOW-3 / LOW-6 / LOW-9', () => {
     q.mockResolvedValueOnce([[]])
     await real.listLiveTransmissionsToRefresh(S.schema, S.inst, 5, 8)
     const live = String(q.mock.calls[1][0]).replace(/\s+/g, ' ')
+    // (o rodízio tem cópia própria pela tentativa `t` — morre com as rotas fiscais na A3 da F2a)
     expect(live).toMatch(/le\.kind IN \('A','N'\)[^]*tb_invoice_event ev[^]*ORDER BY ev\.event DESC LIMIT 1\), '-'\) <> 'C'/)
     // D3/D4 (2026-09-29): nota com registro fiscal cancelada fica VIVA com evento C — não é pendente
-    expect(sql).toMatch(/tb_invoice_event ev[^)]*ORDER BY ev\.event DESC LIMIT 1\), '-'\) <> 'C'/)
+    // D-F32 (F2a A2): o último evento da nota vem da VIEW de política (`LAST_INVOICE_EVENT_KIND_SQL` lê a `vw_invoice_life`)
+    expect(sql).toMatch(/vw_invoice_life lv[^)]*\), '-'\) <> 'C'/)
   })
   it('LOW-6: 2xx ilegível do fisco é logado só com status e tamanho — nunca a amostra do corpo', async () => {
     const original = transport.request

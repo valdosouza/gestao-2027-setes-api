@@ -32,13 +32,16 @@ export function stateFromLastEvent(kind: string | null | undefined): InvoiceStat
   return kind === 'C' ? 'cancelled' : 'issued'
 }
 
-/** SQL do último evento de uma nota (subquery reutilizável nas listas). */
+/**
+ * SQL do último evento de uma nota (subquery reutilizável nas listas) — `[alias]` é uma linha de `tb_invoice`.
+ * D-F32 (F2a, etapa A2): lido da VIEW de política `vw_invoice_life` (migration 065 — a mesma que as APIs fiscais
+ * leem), nunca de um "ORDER BY event DESC LIMIT 1" próprio: a definição de "último evento" mora num lugar só.
+ * Sem evento (nota sincronizada da origem) → NULL, como antes.
+ */
 export const LAST_INVOICE_EVENT_KIND_SQL = (s: string, alias = 'i') =>
-  `(SELECT ev.kind FROM \`${s}\`.tb_invoice_event ev
-     WHERE ev.tb_institution_id = ${alias}.tb_institution_id
-       AND ev.tb_invoice_id = ${alias}.id AND ev.terminal = ${alias}.terminal
-       AND ev.deleted = 'N'
-     ORDER BY ev.event DESC LIMIT 1)`
+  `(SELECT lv.last_kind FROM \`${s}\`.vw_invoice_life lv
+     WHERE lv.tb_institution_id = ${alias}.tb_institution_id
+       AND lv.tb_invoice_id = ${alias}.id AND lv.terminal = ${alias}.terminal)`
 
 export interface InvoiceSnapshot {
   number: string | null
@@ -88,11 +91,22 @@ export interface LockedInvoice {
   model: string | null
   value: number
   status: string
+  /** Evento E que abriu a VIDA vigente (D-N27); null = nota sem evento (sincronizada da origem). */
+  lifeEvent: number | null
   lastEvent: number | null
   lastKind: string | null
 }
 
-/** Nota viva (deleted='N') FOR UPDATE + último evento. 404 INVOICE_NOT_FOUND. */
+/**
+ * Nota viva (deleted='N') FOR UPDATE + vida e último evento. 404 INVOICE_NOT_FOUND.
+ *
+ * D-F32 (F2a, etapa A2 — prompt_apis_fiscais_isoladas.md §22.9): a vida e o último evento vêm da VIEW de política
+ * `vw_invoice_life` (a MESMA do núcleo `fiscal-api` — `erp.lockInvoice`), no molde dele: o `FOR UPDATE` na linha da
+ * nota é o 1º comando (o ponto de serialização dos dois serviços — D-F27/D-F121) e a view é lida em leitura travante
+ * COMPARTILHADA (fresca: não depende do retrato do REPEATABLE READ — PADROES §9 regra 2). Antes era um "ORDER BY event
+ * DESC LIMIT 1 FOR UPDATE" próprio em `tb_invoice_event`: a definição de "último evento" em duas cópias. Quem grava
+ * evento (`insertInvoiceEvent`, MAX+1 FOR UPDATE) já está serializado pela trava da nota.
+ */
 export async function lockInvoice(
   conn: PoolConnection, s: string, institutionId: number, invoiceId: number
 ): Promise<LockedInvoice> {
@@ -105,16 +119,18 @@ export async function lockInvoice(
   if (!rows[0]) {
     throw new HttpError(404, `Nota do pedido ${invoiceId} não encontrada`, undefined, 'INVOICE_NOT_FOUND')
   }
-  const [last] = await conn.query<any[]>(
-    `SELECT event, kind FROM \`${s}\`.tb_invoice_event
-      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 AND deleted = 'N'
-      ORDER BY event DESC LIMIT 1 FOR UPDATE`,
+  const [life] = await conn.query<any[]>(
+    `SELECT life_event AS lifeEvent, last_event AS lastEvent, last_kind AS lastKind
+       FROM \`${s}\`.vw_invoice_life
+      WHERE tb_institution_id = ? AND tb_invoice_id = ? AND terminal = 0 LOCK IN SHARE MODE`,
     [institutionId, invoiceId]
   )
+  const l = life[0]
   return {
     id: Number(rows[0].id), number: rows[0].number ?? null, serie: rows[0].serie ?? null,
     model: rows[0].model ?? null, value: Number(rows[0].value ?? 0), status: String(rows[0].status ?? ''),
-    lastEvent: last[0] ? Number(last[0].event) : null, lastKind: last[0]?.kind ?? null,
+    lifeEvent: l?.lifeEvent == null ? null : Number(l.lifeEvent),
+    lastEvent: l?.lastEvent == null ? null : Number(l.lastEvent), lastKind: l?.lastKind ?? null,
   }
 }
 

@@ -47,16 +47,16 @@ export const QTY_EPSILON = 1e-6
  * como história e o CÁLCULO deixa de somá-los.
  *
  * Vigente = ordem de ajuste viva E (sem nota OU nota cujo último evento ≠ 'C').
+ * D-F32 (F2a, etapa A2): o "último evento" vem da VIEW de política `vw_invoice_life` (065) — uma definição só.
  */
 export const CURRENT_RETURN_SQL = (schema: string, retAlias = 'r') => `
       EXISTS (SELECT 1 FROM \`${schema}\`.tb_order adj
                WHERE adj.id = ${retAlias}.tb_order_id AND adj.tb_institution_id = ${retAlias}.tb_institution_id
                  AND adj.terminal = ${retAlias}.terminal AND adj.deleted = 'N')
-      AND COALESCE((SELECT ev.kind FROM \`${schema}\`.tb_invoice_event ev
-                     WHERE ev.tb_institution_id = ${retAlias}.tb_institution_id
-                       AND ev.tb_invoice_id = ${retAlias}.tb_order_id
-                       AND ev.terminal = ${retAlias}.terminal AND ev.deleted = 'N'
-                     ORDER BY ev.event DESC LIMIT 1), 'E') <> 'C'`
+      AND COALESCE((SELECT lv.last_kind FROM \`${schema}\`.vw_invoice_life lv
+                     WHERE lv.tb_institution_id = ${retAlias}.tb_institution_id
+                       AND lv.tb_invoice_id = ${retAlias}.tb_order_id
+                       AND lv.terminal = ${retAlias}.terminal), 'E') <> 'C'`
 
 export interface ReturnLink {
   /** item do AJUSTE (devolvido) */

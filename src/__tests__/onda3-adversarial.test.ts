@@ -756,6 +756,7 @@ describe('C.17 — POST /billing/cancel (cancelamento LOCAL, peça @shared/invoi
     conn.query.mockImplementation(async (sql: string) => {
       if (/FROM `setes_setes`\.tb_order\s+WHERE id = \?/.test(sql)) return [[{ status: 'F' }]]
       if (/FROM `setes_setes`\.tb_invoice\s+WHERE id = \?/.test(sql)) return [[{ id: INVOICE, number: '17', serie: '1', model: 'SE', value: 1234.5, status: '0' }]]
+      if (/FROM `setes_setes`\.vw_invoice_life/.test(sql)) return [[{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]]   // D-F32 (F2a A2): vida pela view
       if (/FROM `setes_setes`\.tb_invoice_event/.test(sql)) return [[{ event: 1, kind: 'E' }]]
       if (/^UPDATE/.test(sql.trim())) throw new Error(`o cancelamento local NÃO pode gravar nada aqui: ${sql.slice(0, 60)}`)
       return [[]]

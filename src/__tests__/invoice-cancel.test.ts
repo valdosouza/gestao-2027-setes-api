@@ -48,7 +48,7 @@ function planQueries(conn: any, opts: {
   conn.query
     .mockResolvedValueOnce([[{ status: opts.status ?? 'F' }]])                       // lock pedido
     .mockResolvedValueOnce([opts.invoice ?? [{ id: 100, number: '7', serie: '1', model: '55', value: '250.00', status: '0' }]])
-    .mockResolvedValueOnce([opts.last ?? [{ event: 1, kind: 'E' }]])                   // último evento
+    .mockResolvedValueOnce([opts.last ?? [{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]])                   // último evento
     .mockResolvedValueOnce([opts.anchor ?? []])                                        // H1: âncora de devolução?
     .mockResolvedValueOnce([opts.serviceOrder ?? []])                                  // Q-G3: é ordem de serviço?
     .mockResolvedValueOnce([[]])                                                       // C1: lock tb_financial
@@ -86,7 +86,7 @@ describe('cancelInvoice — travar', () => {
     const conn = fakeConn()
     conn.query.mockResolvedValueOnce([[{ status: 'F' }]])
       .mockResolvedValueOnce([[{ id: 6700, number: '9', serie: '1', model: '55', value: '30.00', status: '0' }]])
-      .mockResolvedValueOnce([[{ event: 1, kind: 'E' }]])
+      .mockResolvedValueOnce([[{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]])
       .mockResolvedValueOnce([[{ 1: 1 }]]) // âncora existe
     await expect(cancelInvoice(conn as any, ...scope, { orderId: 6700, reason: 'erro' }))
       .rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_NOT_CANCELLABLE', message: expect.stringMatching(/devolu/) })
@@ -94,7 +94,7 @@ describe('cancelInvoice — travar', () => {
   })
   it('nota já cancelada (último evento C) → 409', async () => {
     const conn = fakeConn()
-    planQueries(conn, { last: [{ event: 2, kind: 'C' }] })
+    planQueries(conn, { last: [{ lifeEvent: 1, lastEvent: 2, lastKind: 'C' }] })
     await expect(cancelInvoice(conn as any, ...scope, { orderId: 100, reason: 'erro' }))
       .rejects.toMatchObject({ statusCode: 409, code: 'INVOICE_NOT_CANCELLABLE' })
   })
@@ -225,7 +225,7 @@ describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
     conn.query
       .mockResolvedValueOnce([[{ status: 'F' }]])
       .mockResolvedValueOnce([[{ id: 100, number: '9', serie: '1', model: 'SE', value: '100.00', status: '0' }]])
-      .mockResolvedValueOnce([[{ event: 1, kind: 'E' }]])
+      .mockResolvedValueOnce([[{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]])
       .mockResolvedValueOnce([[]])                          // âncora
       .mockResolvedValueOnce([[{ customerId: 55 }]])        // tb_order_service FOR UPDATE
       .mockResolvedValueOnce([[{ id: 7001 }]])              // trava '1-55' ocupada por outra OS
@@ -245,7 +245,7 @@ describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
     conn.query
       .mockResolvedValueOnce([[{ status: 'F' }]])
       .mockResolvedValueOnce([[{ id: 100, number: '9', serie: '1', model: 'SE', value: '100.00', status: '0' }]])
-      .mockResolvedValueOnce([[{ event: 1, kind: 'E' }]])
+      .mockResolvedValueOnce([[{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]])
       .mockResolvedValueOnce([[]])                          // âncora
       .mockResolvedValueOnce([[{ customerId: 55 }]])        // OS
       .mockResolvedValueOnce([[]])                          // trava livre
@@ -458,7 +458,7 @@ describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Vald
     conn.query
       .mockResolvedValueOnce([[{ status: 'F' }]])
       .mockResolvedValueOnce([[{ id: 8011, number: '6790', serie: '1', model: 'SE', value: '250.00', status: '0' }]])
-      .mockResolvedValueOnce([[{ event: 1, kind: 'E' }]])
+      .mockResolvedValueOnce([[{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]])
       .mockResolvedValueOnce([[]])                          // âncora
       .mockResolvedValueOnce([[{ customerId: 55 }]])        // OS
       .mockResolvedValueOnce([[{ id: 9000 }]])              // cliente JÁ tem outra OS aberta (trava ocupada)
@@ -481,7 +481,7 @@ describe('D3/D4 — nota com REGISTRO FISCAL cancelada FICA (Q-CA1…Q-CA4, Vald
     conn.query
       .mockResolvedValueOnce([[{ status: 'F' }]])
       .mockResolvedValueOnce([[{ id: 100, number: '9', serie: '1', model: 'SE', value: '100.00', status: '0' }]])
-      .mockResolvedValueOnce([[{ event: 1, kind: 'E' }]])
+      .mockResolvedValueOnce([[{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]])
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[{ customerId: 55 }]])
       .mockResolvedValueOnce([[{ id: 7001 }]])
