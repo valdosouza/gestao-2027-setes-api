@@ -1,25 +1,19 @@
 import { randomInt } from 'crypto'
-import jwt from 'jsonwebtoken'
 import {
   findUserByEmail, getInstitutionsForUser, UserInstitution,
   setActivationKey, getActivationInfo, updatePassword,
 } from './auth.repository'
 import { InstitutionPayload } from '@shared/types/express'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { signFinalToken as signProductToken, signSelectionToken, verifySelectionToken } from '@shared/auth/product-token'
 import { SessionContext, getSessionContext } from '@shared/session-context'
 import { md5Password } from '@shared/auth/password'
 import { HttpError } from '@shared/errors/http-error'
 import { sendMail, isMailerConfigured } from '@shared/mailer/mailer'
 import logger from '@shared/logger/logger'
 
-const FINAL_TOKEN_TTL     = '24h'                 // decisão 19: TTL 24h, sem refresh
-const SELECTION_TOKEN_TTL = '5m'
-const SELECTION_SCOPE     = 'select-institution'
-
-interface SelectionPayload {
-  userId: number
-  scope:  string
-}
+// D-F13 (F2a, etapa A2): os tokens (final 24h — decisão 19 — e de seleção 5m) são RS256 com `kid`, assinados e
+// verificados SÓ por @shared/auth/product-token (marca própria de cada um; HS256/JWT_SECRET aposentados).
 
 export interface LoginResult {
   status:        'ok' | 'select'
@@ -40,10 +34,6 @@ export interface IssuedSession {
 // com o cadastro de Usuário (@shared/auth/password).
 const md5 = md5Password
 
-function secret(): string {
-  return process.env.JWT_SECRET!
-}
-
 // 'super' fora da institution da Setes é ignorado (decisão 14)
 function resolveRole(link: UserInstitution): string {
   const kind = link.profile ?? 'user'
@@ -60,7 +50,7 @@ async function signFinalToken(userId: number, link: UserInstitution): Promise<Is
   }
   // JWT segue IDENTIDADE MÍNIMA (invariante da Fase 2); fatos derivados vão
   // FORA do token, no bloco context (decisão 17 — fim das GB_* do Delphi).
-  const token   = jwt.sign(payload, secret(), { expiresIn: FINAL_TOKEN_TTL })
+  const token   = signProductToken(payload)
   const context = await getSessionContext(payload)
   return { token, context }
 }
@@ -84,23 +74,19 @@ export async function login(email: string, password: string): Promise<LoginResul
     return { status: 'ok', token: issued.token, context: issued.context }
   }
 
-  const selection: SelectionPayload = { userId: user.id, scope: SELECTION_SCOPE }
-  const selectionToken = jwt.sign(selection, secret(), { expiresIn: SELECTION_TOKEN_TTL })
+  const selectionToken = signSelectionToken(user.id)
   return { status: 'select', token: selectionToken, institutions }
 }
 
 // Passo 4: valida o token de seleção e o vínculo antes de emitir o JWT final
 export async function selectInstitution(selectionToken: string, institutionId: number): Promise<IssuedSession> {
-  let payload: SelectionPayload
+  let userId: number
   try {
-    payload = jwt.verify(selectionToken, secret()) as SelectionPayload
+    userId = verifySelectionToken(selectionToken).userId
   } catch {
     throw new HttpError(401, 'Token de seleção inválido ou expirado')
   }
-  if (payload.scope !== SELECTION_SCOPE || !payload.userId) {
-    throw new HttpError(401, 'Token de seleção inválido')
-  }
-  return issueForInstitution(payload.userId, institutionId)
+  return issueForInstitution(userId, institutionId)
 }
 
 // Passo 5: troca de institution com JWT final válido

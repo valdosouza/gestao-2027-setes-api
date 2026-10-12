@@ -6,13 +6,11 @@
  *   npx tsx --require tsconfig-paths/register scripts/smoke-pesquisa-avancada.ts
  */
 import 'dotenv/config'
-import jwt from 'jsonwebtoken'
+import { signFinalToken } from '../src/shared/auth/product-token'   // D-F13 (F2a A2): RS256 com kid — chave do .env (JWT_PRIVATE_KEY_PATH)
 import pool from '../src/shared/db/connection'
 
 const BASE = process.env.SMOKE_API ?? 'http://localhost:3000'
-const token = jwt.sign(
-  { institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' },
-  process.env.JWT_SECRET!, { expiresIn: '10m' })
+const token = signFinalToken({ institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' }, '10m')
 
 let failures = 0
 function check(label: string, ok: boolean, detail = ''): void {

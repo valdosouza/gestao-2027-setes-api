@@ -77,7 +77,7 @@ jest.mock('../modules/billing/billing.interface-resolver', () => {
   }
 })
 
-import jwt from 'jsonwebtoken'
+import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
 import request from 'supertest'
 import pool from '../shared/db/connection'
 import * as repo from '../shared/invoice-transmission/transmission.repository'
@@ -494,7 +494,7 @@ describe('RESISTIU — "manter a nota" sob concorrência e fora do escopo (peça
 })
 
 describe('RESISTIU — POST /api/billing/cancel-waiver: privilégio do RAMO (D-F72) e o DTO (D-F73)', () => {
-  const token = (role: string) => `Bearer ${jwt.sign({ institutionId: S.inst, userId: S.user, role, schemaName: S.schema }, JWT_SECRET)}`
+  const token = (role: string) => `Bearer ${testToken({ institutionId: S.inst, userId: S.user, role, schemaName: S.schema })}`
   beforeEach(() => {
     events.push({ attempt: 1, event: 2, kind: 'C', dh: null, source: 'Q', message: SUBSTITUTION_EFFECT_SUSPENDED, authorityCode: '105102', invoiceEvent: null })
     setTx(tx({ lastKind: 'C', lastEvent: 2, lastCode: '105102', environment: 'P' }))

@@ -11,10 +11,10 @@
  *   npx tsx --require tsconfig-paths/register scripts/smoke-pesquisa-avancada-onda2.ts
  */
 import 'dotenv/config'
-import jwt from 'jsonwebtoken'
+import { signFinalToken } from '../src/shared/auth/product-token'   // D-F13 (F2a A2): RS256 com kid — chave do .env (JWT_PRIVATE_KEY_PATH)
 
 const BASE = process.env.SMOKE_API ?? 'http://localhost:3000'
-const sign = (payload: object) => jwt.sign(payload, process.env.JWT_SECRET!, { expiresIn: '10m' })
+const sign = (payload: { institutionId: number; userId: number; role: string; schemaName: string }) => signFinalToken(payload, '10m')
 const SUPER = sign({ institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' })
 // admin FICTÍCIO da mesma institution: só muda o role do JWT (users.scopeOf lê isSuper do payload)
 const ADMIN = sign({ institutionId: 1, userId: 1, role: 'admin', schemaName: 'setes_setes' })

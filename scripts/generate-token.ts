@@ -1,28 +1,9 @@
-import jwt from 'jsonwebtoken'
+// Gera tokens FINAIS de dev para chamar a API à mão (curl, Swagger). D-F13 (F2a, etapa A2): RS256 com `kid`, assinado
+// pela chave privada do .env (JWT_PRIVATE_KEY_PATH / JWT_KID) — o mesmo caminho do login. Nunca um segredo fixo aqui
+// (o HS256 antigo tinha o segredo de produção versionado neste arquivo; aposentado com o RS256).
+// Uso: npx tsx --require tsconfig-paths/register scripts/generate-token.ts [institutionId] [userId] [role] [schemaName] [ttl]
+import 'dotenv/config'
+import { signFinalToken } from '../src/shared/auth/product-token'
 
-const secret = 'sucessoem2027!'
-
-// Fase 2: institutionId (int) no lugar de tenantId (string) — decisão 16/18.
-// TTL 24h, sem refresh token — decisão 19.
-const tokenAlpha = jwt.sign(
-  { institutionId: 2, userId: 2, role: 'user', schemaName: 'setes_alpha' },
-  secret,
-  { expiresIn: '24h' }
-)
-
-const tokenBeta = jwt.sign(
-  { institutionId: 3, userId: 3, role: 'user', schemaName: 'setes_beta' },
-  secret,
-  { expiresIn: '24h' }
-)
-
-// 'super' só é reconhecido na institution 1 (Setes) — decisão 14
-const tokenSetes = jwt.sign(
-  { institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' },
-  secret,
-  { expiresIn: '24h' }
-)
-
-console.log('Token Alpha (ERP habilitado):\n', tokenAlpha)
-console.log('\nToken Beta (ERP bloqueado):\n', tokenBeta)
-console.log('\nToken Setes Super:\n', tokenSetes)
+const [institutionId = '1', userId = '1', role = 'super', schemaName = 'setes_setes', ttl = '2h'] = process.argv.slice(2)
+process.stdout.write(signFinalToken({ institutionId: Number(institutionId), userId: Number(userId), role, schemaName }, ttl) + '\n')

@@ -19,7 +19,7 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import forge from 'node-forge'
-import jwt from 'jsonwebtoken'
+import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
 import request from 'supertest'
 import { gzipSync, gunzipSync } from 'zlib'
 
@@ -208,7 +208,7 @@ const planOk = (blocks: any[] = []) => ({
 const cancelled = { orderId: INVOICE, invoiceNumber: '17', event: 2, checksReversed: [], bankSlipsCancelled: [], releasedTitles: [], commissionsCompensated: 0 }
 const ok = (obj: unknown, status = 200) => ({ status, headers: {}, text: obj == null ? '' : typeof obj === 'string' ? obj : JSON.stringify(obj) })
 const notFound = () => ({ status: 404, headers: {}, text: '' })
-const tokenFor = (role: string, userId = 7) => jwt.sign({ institutionId: 1, userId, role, schemaName: 'setes_setes' }, JWT_SECRET)
+const tokenFor = (role: string, userId = 7) => testToken({ institutionId: 1, userId, role, schemaName: 'setes_setes' })
 const asAdmin = () => `Bearer ${tokenFor('admin')}`
 const ADMIN = { institutionId: 1, userId: 7, role: 'admin', schemaName: 'setes_setes' }
 const delay = <T,>(ms: number, v: () => T) => new Promise<T>((res, rej) => setTimeout(() => { try { res(v()) } catch (e) { rej(e) } }, ms))

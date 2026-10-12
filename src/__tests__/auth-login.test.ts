@@ -1,5 +1,8 @@
 /// <reference types="jest" />
+import fs from 'fs'
+import { createPrivateKey, createPublicKey } from 'crypto'
 import jwt from 'jsonwebtoken'
+import { testToken } from '../test-setup/test-token'
 import * as authRepo from '../modules/auth/auth.repository'
 import * as sessionRepo from '../shared/session-context/session-context.repository'
 import { login, selectInstitution, switchInstitution } from '../modules/auth/auth.service'
@@ -12,8 +15,13 @@ const mockGetInstitutions  = authRepo.getInstitutionsForUser as jest.Mock
 const mockExistsSalesman   = sessionRepo.existsSalesman      as jest.Mock
 mockExistsSalesman.mockResolvedValue(false)
 
-const SECRET = process.env.JWT_SECRET ?? 'sua_chave_secreta_aqui'
-process.env.JWT_SECRET = SECRET
+// D-F13 (F2a, etapa A2): os tokens saem em RS256 com o kid de assinatura — conferidos com a chave PÚBLICA de teste
+const PUBLIC = createPublicKey(createPrivateKey(fs.readFileSync(process.env.JWT_PRIVATE_KEY_PATH!, 'utf8')))
+function verifyRs256(token: string): any {
+  const { header } = jwt.decode(token, { complete: true }) as any
+  expect(header).toMatchObject({ alg: 'RS256', kid: process.env.JWT_KID })
+  return jwt.verify(token, PUBLIC, { algorithms: ['RS256'] })
+}
 
 // md5('12345') — mesmo hash do seed
 const MD5_12345 = '827CCB0EEA8A706C4C34A16891F84E7B'
@@ -46,7 +54,7 @@ describe('auth.service — login', () => {
     const result = await login('valdo@setes.com.br', '12345')
 
     expect(result.status).toBe('ok')
-    const payload = jwt.verify(result.token, SECRET) as any
+    const payload = verifyRs256(result.token)
     expect(payload.institutionId).toBe(1)
     expect(payload.userId).toBe(1)
     expect(payload.role).toBe('super')
@@ -62,7 +70,7 @@ describe('auth.service — login', () => {
 
     expect(result.status).toBe('select')
     expect(result.institutions).toHaveLength(2)
-    const payload = jwt.verify(result.token, SECRET) as any
+    const payload = verifyRs256(result.token)
     expect(payload.scope).toBe('select-institution')
     expect(payload.institutionId).toBeUndefined()   // não passa no auth.middleware
   })
@@ -71,7 +79,7 @@ describe('auth.service — login', () => {
     mockGetInstitutions.mockResolvedValue([{ ...alphaLink, profile: 'super' }])
     const result = await login('valdo@setes.com.br', '12345')
 
-    const payload = jwt.verify(result.token, SECRET) as any
+    const payload = verifyRs256(result.token)
     expect(payload.institutionId).toBe(2)
     expect(payload.role).toBe('user')
   })
@@ -84,12 +92,12 @@ describe('auth.service — select/switch institution', () => {
   })
 
   function makeSelectionToken(userId = 1) {
-    return jwt.sign({ userId, scope: 'select-institution' }, SECRET, { expiresIn: '5m' })
+    return testToken({ userId, scope: 'select-institution' }, { expiresIn: '5m' })
   }
 
   it('seleção com vínculo válido emite JWT final (+ context — decisão 17)', async () => {
     const issued = await selectInstitution(makeSelectionToken(), 2)
-    const payload = jwt.verify(issued.token, SECRET) as any
+    const payload = verifyRs256(issued.token)
     expect(payload.institutionId).toBe(2)
     expect(payload.schemaName).toBe('setes_alpha')
     expect(payload.role).toBe('admin')
@@ -105,13 +113,26 @@ describe('auth.service — select/switch institution', () => {
   })
 
   it('JWT final não serve como token de seleção (scope errado)', async () => {
-    const finalToken = jwt.sign({ institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' }, SECRET)
+    const finalToken = testToken({ institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' })
     await expect(selectInstitution(finalToken, 2)).rejects.toMatchObject({ statusCode: 401 })
+  })
+
+  it('D-F13: seleção em HS256, de outra chave, sem kid ou carregando institutionId → 401', async () => {
+    for (const t of [
+      jwt.sign({ userId: 1, scope: 'select-institution' }, 'qualquer-segredo', { expiresIn: '5m', keyid: process.env.JWT_KID }),
+      testToken({ userId: 1, scope: 'select-institution' }, { keyPath: process.env.TEST_JWT_OTHER_KEY_PATH }),
+      testToken({ userId: 1, scope: 'select-institution' }, { kid: null }),
+      testToken({ userId: 1, scope: 'select-institution', institutionId: 2 }),
+      testToken({ userId: 0, scope: 'select-institution' }),
+      testToken({ userId: 1, scope: 'select-institution' }, { expiresIn: -5 }),
+    ]) {
+      await expect(selectInstitution(t, 2)).rejects.toMatchObject({ statusCode: 401 })
+    }
   })
 
   it('switch-institution revalida o vínculo no banco', async () => {
     const issued = await switchInstitution(1, 2)
-    const payload = jwt.verify(issued.token, SECRET) as any
+    const payload = verifyRs256(issued.token)
     expect(payload.institutionId).toBe(2)
 
     await expect(switchInstitution(1, 99)).rejects.toMatchObject({ statusCode: 403 })

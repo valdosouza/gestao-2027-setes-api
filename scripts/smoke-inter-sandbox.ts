@@ -17,7 +17,7 @@
 import dotenv from 'dotenv'
 dotenv.config()
 import fs from 'fs'
-import jwt from 'jsonwebtoken'
+import { signFinalToken } from '../src/shared/auth/product-token'   // D-F13 (F2a A2): RS256 com kid — chave do .env (JWT_PRIVATE_KEY_PATH)
 import pool from '@shared/db/connection'
 
 const arg = (n: string) => process.argv.find(a => a.startsWith(`--${n}=`))?.split('=')[1]
@@ -25,10 +25,9 @@ const BASE   = (arg('api') ?? `http://localhost:${process.env.PORT ?? 3000}`).re
 const SCHEMA = arg('schema') ?? 'setes_setes'
 const INST   = Number(arg('institution') ?? 1)
 
-// Mesmo mecanismo da trilha: JWT assinado com o JWT_SECRET do .env (dev), sem senha no ambiente.
+// Mesmo mecanismo da trilha: JWT assinado com a chave RS256 do .env (dev), sem senha no ambiente.
 const USER = Number(arg('user') ?? 1)
-const TOKEN: string = jwt.sign({ institutionId: INST, userId: USER, role: 'super', schemaName: SCHEMA },
-  process.env.JWT_SECRET!, { expiresIn: '1h' })
+const TOKEN: string = signFinalToken({ institutionId: INST, userId: USER, role: 'super', schemaName: SCHEMA }, '1h')
 async function api(method: string, path: string, body?: unknown) {
   const res = await fetch(BASE + path, {
     method, headers: { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) },

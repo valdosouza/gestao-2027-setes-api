@@ -2,7 +2,7 @@
 // "Manter a nota" — Rodada 13 das APIs fiscais (D-F67/D-F72/D-F73/D-F74, Valdo 2026-10-10): peça
 // `@shared/invoice.waiveSubstitutedCancel` + rota POST /api/billing/cancel-waiver. Banco mockado na fronteira (conn/pool);
 // a nota e a transmissão vêm dos leitores mockados; a dispensa vive numa loja em memória com a MESMA chave da tabela.
-import jwt from 'jsonwebtoken'
+import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
 import request from 'supertest'
 
 const JWT_SECRET = 'cancel-waiver-test'
@@ -156,7 +156,7 @@ describe('peça waiveSubstitutedCancel (D-F67/D-F73/D-F74)', () => {
 })
 
 describe('rota POST /api/billing/cancel-waiver (D-F72: privilégio CANCELAR do ramo)', () => {
-  const token = (role: string) => `Bearer ${jwt.sign({ institutionId: S.inst, userId: S.user, role, schemaName: S.schema }, JWT_SECRET)}`
+  const token = (role: string) => `Bearer ${testToken({ institutionId: S.inst, userId: S.user, role, schemaName: S.schema })}`
   it('admin → 200 { ok, data: { orderId, accessKey, createdAt, alreadyWaived } }, transação confirmada', async () => {
     const res = await request(app).post('/api/billing/cancel-waiver').set('Authorization', token('admin'))
       .send({ orderId: INVOICE, reason: 'substituta emitida no portal' })

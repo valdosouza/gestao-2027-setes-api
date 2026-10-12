@@ -13,7 +13,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import jwt from 'jsonwebtoken'
+import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
 import request from 'supertest'
 import { createPrivateKey } from 'crypto'
 
@@ -118,7 +118,7 @@ function poolDefaults() {
   })
 }
 const tokenFor = (role: string, institutionId = 1) =>
-  jwt.sign({ institutionId, userId: 7, role, schemaName: 'setes_setes' }, JWT_SECRET)
+  testToken({ institutionId, userId: 7, role, schemaName: 'setes_setes' })
 const asUser  = () => `Bearer ${tokenFor('user')}`
 const asAdmin = () => `Bearer ${tokenFor('admin')}`
 const ok = (obj: unknown, status = 200) => ({ status, headers: {}, text: obj == null ? '' : JSON.stringify(obj) })

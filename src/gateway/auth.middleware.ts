@@ -1,19 +1,18 @@
 import { Request, Response, NextFunction } from 'express'
-import jwt from 'jsonwebtoken'
-import { InstitutionPayload } from '@shared/types/express'
+import { verifyFinalToken } from '@shared/auth/product-token'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
 
+/**
+ * Autenticação das rotas /api/* pelo token FINAL do produto — RS256 com `kid` (D-F13, F2a etapa A2):
+ * HS256, token sem `kid`/com `kid` desconhecido e o token de SELEÇÃO são recusados (`@shared/auth/product-token`).
+ */
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
   try {
     const header = req.headers.authorization
     if (!header?.startsWith('Bearer ')) throw new HttpError(401, 'Token ausente')
 
-    const token   = header.split(' ')[1]
-    const secret  = process.env.JWT_SECRET!
-    const payload = jwt.verify(token, secret) as InstitutionPayload
-
-    if (!payload.institutionId || !payload.role) throw new HttpError(401, 'Token inválido')
+    const payload = verifyFinalToken(header.slice(7).trim())
 
     req.institution = payload
     logger.info('Auth OK', { institutionId: payload.institutionId, path: req.path })
