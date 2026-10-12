@@ -230,6 +230,7 @@ function poolDefaults() {
     if (/setes_central\.tb_city/.test(sql)) { const ib = ibgeByCity.has(Number(params?.[0])) ? ibgeByCity.get(Number(params?.[0])) : '4106902'; return [ib ? [{ ibge: ib }] : []] }
     if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) { const id = INTERFACE_IDS[String(params?.[0])]; return [id ? [{ id }] : []] }
     if (/tb_user_has_privilege/.test(sql)) return [privilegeInterfaces.has(Number(params?.[1])) ? [{ 1: 1 }] : []]
+    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]                 // D-F37 (F2a A2): licença para todos — contratada
     return [[]]
   })
 }

@@ -836,12 +836,15 @@ describe('D. transmit-batch — bordas de entrada, isolamento por item, privilé
     expect(res.status).toBe(403); expect(adapter.transmit).toHaveBeenCalledTimes(1)
   })
 
-  it('D-N32: leituras fiscais (visão, XML, DANFSe) exigem a interface do RAMO no contrato da institution — usuário regular sem contrato → 403; admin passa', async () => {
+  it('D-N32 + D-F37: leituras fiscais (visão, XML, DANFSe) exigem a interface do RAMO no contrato da institution — sem contrato → 403 para TODOS (o admin não passa mais a licença); com contrato o admin passa', async () => {
     contractedInterfaces = false
     for (const u of ['/api/billing/fiscal/6200', '/api/billing/fiscal/6200/xml', '/api/billing/fiscal/6200/danfse']) {
-      const res = await request(app).get(u).set('Authorization', asUser())
-      expect(res.status).toBe(403); expect(res.body.code).toBe('INTERFACE_NOT_ALLOWED')
+      for (const who of [asUser(), asAdmin()]) {
+        const res = await request(app).get(u).set('Authorization', who)
+        expect(res.status).toBe(403); expect(res.body.code).toBe('INTERFACE_NOT_ALLOWED')
+      }
     }
+    contractedInterfaces = true
     const res = await request(app).get('/api/billing/fiscal/6200/xml').set('Authorization', asAdmin())
     expect(res.status).toBe(404)                                              // passou do guard: chegou ao negócio
   })

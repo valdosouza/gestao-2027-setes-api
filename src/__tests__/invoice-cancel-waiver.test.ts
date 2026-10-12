@@ -94,6 +94,7 @@ beforeEach(() => {
   q.mockImplementation(async (sql: string, params: any[]) => {
     if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: 30 }]]
     if (/tb_user_has_privilege/.test(sql)) return [privileged && Number(params?.[1]) === 30 ? [{ 1: 1 }] : []]
+    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]                 // D-F37 (F2a A2): licença para todos — contratada
     return [[]]
   })
 })

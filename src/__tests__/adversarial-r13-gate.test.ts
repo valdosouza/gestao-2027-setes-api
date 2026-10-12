@@ -217,6 +217,7 @@ function poolDefaults() {
     }
     if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: ({ 'service-orders': 30, orders: 31 } as any)[String(params[0])] ?? 99 }]]
     if (/tb_user_has_privilege/.test(sql)) return [grants.has(`${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
+    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]                 // D-F37 (F2a A2): licença para todos — contratada
     return [[]]
   })
 }
