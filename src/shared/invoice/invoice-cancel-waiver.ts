@@ -5,7 +5,7 @@ import { ErrorCodes } from '@shared/errors/error-codes'
 import { assertSchema } from '@shared/db/schema'
 import { isSubstitutionCancel, isFiscalRecord } from 'fiscal-api/reading'
 import { lockInvoice, LAST_INVOICE_EVENT_KIND_SQL } from './invoice'
-import { readInvoiceFiscal } from './invoice-fiscal-effect'
+import { readInvoiceFiscal, fiscalRecordKey } from './invoice-fiscal-effect'
 
 /**
  * PEÇA "manter a nota" — D-F67/D-F72/D-F73/D-F74 (Rodada 13 das APIs fiscais, Valdo 2026-10-10; parecer do guardião:
@@ -95,14 +95,16 @@ export async function waiveSubstitutedCancel(
   const invoice = await lockInvoice(conn, s, institutionId, input.orderId)
   if (invoice.lastKind === 'C') throw notApplicable(`Nota ${invoice.number ?? input.orderId} já está cancelada — nada a manter`)
   const { current: tx } = await readInvoiceFiscal(conn, institutionId, input.orderId, invoice.lifeEvent)
-  if (!tx || !isSubstitutionCancel(tx) || !tx.accessKey) {
+  if (!tx || !isSubstitutionCancel(tx)) {
     throw notApplicable('A NFS-e vigente desta nota não foi cancelada por SUBSTITUIÇÃO no fisco (e105102) — manter a nota só vale para esse caso')
   }
   // D-F80 (= Q-F87 (a)): homologação não tem valor jurídico (Q-CA5b) — a saída é cancelar a nota (cancelável localmente)
   if (!isFiscalRecord(tx)) {
     throw notApplicable('NFS-e de HOMOLOGAÇÃO não tem valor jurídico — cancele a nota (cancelável localmente) em vez de mantê-la')
   }
-  const existing = await findCancelWaiver(conn, s, institutionId, input.orderId, tx.accessKey)   // L3: a trava da NOTA serializa
+  // a chave é a IDENTIDADE do documento registrado — lida só depois do fato (F2A3-SOC-08; registro sem chave falha alto)
+  const accessKey = fiscalRecordKey(tx) as string
+  const existing = await findCancelWaiver(conn, s, institutionId, input.orderId, accessKey)   // L3: a trava da NOTA serializa
   if (existing) return { orderId: input.orderId, accessKey: existing.accessKey, createdAt: existing.createdAt, alreadyWaived: true }
   // soft delete reservado: uma linha morta da mesma chave REVIVE com a decisão nova
   await conn.query(
@@ -111,8 +113,8 @@ export async function waiveSubstitutedCancel(
      VALUES (?, ?, 0, ?, ?, ?, NOW(), NOW(), 'N')
      ON DUPLICATE KEY UPDATE reason = VALUES(reason), tb_user_id = VALUES(tb_user_id),
        created_at = NOW(), updated_at = NOW(), deleted = 'N'`,
-    [institutionId, input.orderId, tx.accessKey, reason.slice(0, 255), userId]
+    [institutionId, input.orderId, accessKey, reason.slice(0, 255), userId]
   )
-  const saved = await findCancelWaiver(conn, s, institutionId, input.orderId, tx.accessKey)
-  return { orderId: input.orderId, accessKey: tx.accessKey, createdAt: saved?.createdAt ?? null, alreadyWaived: false }
+  const saved = await findCancelWaiver(conn, s, institutionId, input.orderId, accessKey)
+  return { orderId: input.orderId, accessKey, createdAt: saved?.createdAt ?? null, alreadyWaived: false }
 }

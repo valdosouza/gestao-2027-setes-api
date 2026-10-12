@@ -9,11 +9,18 @@ import { splitStatements } from '../migrations/runner'
 const DIR = path.join(__dirname, '..', 'migrations', 'sql')
 const files = fs.readdirSync(DIR).filter(f => f.endsWith('.sql')).sort()
 const passivo = files.filter(f => /^\d{3}_f2a_fiscal_passivo\.sql$/.test(f))
+// As migrations DA F2a (D-F50: o nome fixo vai no ÚLTIMO arquivo da F2a — tudo o que a F2a muda no ERP entra antes do fato que a
+// nfse-api confere). F2A3-SOC-10 (gate socrático da A3): "último do REPOSITÓRIO" quebraria a suíte na 1ª migration de outra frente
+// depois da janela (a IB-2) — o invariante certo é "o último DA F2a"; o número contra o `main` se confere na janela (§22.11 passo 4).
+const F2A_MIGRATION_NAMES = ['order_interface_view_bin', 'f2a_fiscal_passivo'] as const
+const version = (f: string) => Number(f.slice(0, 3))
 
 describe('NNN_f2a_fiscal_passivo (D-F110/D-F50)', () => {
-  it('existe UMA vez, com o nome fixo, e é o ÚLTIMO arquivo de migration (o ato da virada confere o NOME)', () => {
+  it('existe UMA vez, com o nome fixo, e é o ÚLTIMO arquivo DA F2a (o ato da virada confere o NOME)', () => {
     expect(passivo).toHaveLength(1)
-    expect(files[files.length - 1]).toBe(passivo[0])
+    const f2a = files.filter(f => F2A_MIGRATION_NAMES.some(n => f.slice(4) === `${n}.sql`))
+    expect(f2a).toHaveLength(F2A_MIGRATION_NAMES.length)
+    for (const f of f2a) if (f !== passivo[0]) expect(version(f)).toBeLessThan(version(passivo[0]))
   })
   const statements = passivo.length ? splitStatements(fs.readFileSync(path.join(DIR, passivo[0]), 'utf8')) : []
   it('o runner divide em DROP IF EXISTS + CREATE TRIGGER (re-executável) para os 9 gatilhos de TRAVA, e 4 ALTER de comentário', () => {
@@ -35,6 +42,7 @@ describe('NNN_f2a_fiscal_passivo (D-F110/D-F50)', () => {
     const bu = statements.find(s => /tg_f2a_freeze_issuer_se_bu` BEFORE UPDATE/.test(s))!
     expect(bu).toMatch(/OLD\.`deleted` = 'S' AND NEW\.`deleted` <> 'S'/)                 // revive barrado; aposentar não
     expect(bu).toMatch(/NEW\.`environment` <=> OLD\.`environment`/)
+    expect(bu).toMatch(/NEW\.`tb_institution_id` <=> OLD\.`tb_institution_id`/)          // F2A3-ADV-05: a linha SE não muda de dono
     expect(bu).toMatch(/NEW\.`dps_last_number` <=> OLD\.`dps_last_number`/)
     expect(bu).not.toMatch(/serie/)
   })

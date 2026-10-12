@@ -40,6 +40,19 @@ export function invoiceFiscalRecord(r: InvoiceFiscalReading): boolean {
   return isFiscalRecord(r.current)
 }
 
+/**
+ * A IDENTIDADE do documento registrado em produção (a chave) — lida só DEPOIS do fato do registro (F2A3-SOC-08, gate socrático da
+ * A3; nota (8)): a chave é identidade, nunca a pergunta "foi registrado?" (na NF-e a chave é nossa desde a reserva). Sem registro
+ * fiscal → null; registro fiscal SEM chave é linha incoerente da view e falha ALTO (nunca "não registrado" calado).
+ */
+export function fiscalRecordKey(cur: ServiceTransmissionView | null): string | null {
+  if (!cur || !isFiscalRecord(cur)) return null
+  if (!cur.accessKey) {
+    throw new Error(`registro fiscal sem chave (nota ${cur.invoiceId}, tentativa ${cur.attempt}) — linha da view incoerente`)
+  }
+  return cur.accessKey
+}
+
 export type FiscalCancelBarrier =
   | { kind: 'none' }
   | { kind: 'authorized' | 'cancel-in-flight' | 'in-flight'; attempt: number; nfseNumber: string | null }
@@ -56,7 +69,9 @@ export type FiscalCancelBarrier =
 export function fiscalCancelBarrier(r: InvoiceFiscalReading): FiscalCancelBarrier {
   const cur = r.current
   if (cur && isLiveTransmission(cur)) {
-    return { kind: cur.lastKind === 'K' ? 'cancel-in-flight' : 'in-flight', attempt: cur.attempt, nfseNumber: cur.nfseNumber }
+    // o estado é o do núcleo (F2A3-SOC-08: nada pela letra crua — `fiscalStateOf` é o switch exaustivo do vocabulário)
+    const kind = fiscalStateOf(cur) === 'cancel_in_flight' ? 'cancel-in-flight' : 'in-flight'
+    return { kind, attempt: cur.attempt, nfseNumber: cur.nfseNumber }
   }
   if (cur && isAuthorized(cur) && isFiscalRecord(cur)) return { kind: 'authorized', attempt: cur.attempt, nfseNumber: cur.nfseNumber }
   const verdict = reconfirmationVerdict(r.service)
@@ -86,7 +101,8 @@ export type FiscalEffect = 'none' | 'apply' | 'decide' | 'cancel'
 export function fiscalEffectOf(
   current: ServiceTransmissionView | null, invoiceLastKind: string | null, waived: boolean,
 ): FiscalEffect {
-  if (!current || current.lastKind !== 'C' || invoiceLastKind === 'C') return 'none'
+  // voz C vigente = estado `cancelled` do núcleo (F2A3-SOC-08); `invoiceLastKind` é o evento da NOTA (fato do ERP, não voz do fisco)
+  if (!current || fiscalStateOf(current) !== 'cancelled' || invoiceLastKind === 'C') return 'none'
   if (localCancelPending(current, invoiceLastKind)) return 'apply'
   if (isSubstitutionCancel(current) && isFiscalRecord(current)) return waived ? 'none' : 'decide'
   return 'cancel'

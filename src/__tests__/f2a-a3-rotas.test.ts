@@ -116,12 +116,15 @@ describe('GET /api/billing/:orderId/cancel-plan (D-F29/D-F115 — consultivo)', 
 
   it('devolve o MESMO plano do POST (bloqueios + destino + o que seria desfeito) e DESFAZ a transação — nada gravado, nunca commit', async () => {
     ;(cancelPiece.buildCancelPlan as jest.Mock).mockResolvedValue(PLAN)
+    conn.query.mockResolvedValueOnce([[{ id: 3 }]])                     // caixa aberto do operador (D16 — o plano toca o caixa)
     const res = await get()
     expect(res.status).toBe(200)
     expect(res.body.data).toEqual({
       orderId: 7400, invoiceNumber: '17', cancellable: false, blocks: PLAN.blocks, fiscalRecord: true,
-      effects: { bankSlipsToCancel: [9], releasedTitles: [], checksToReverse: [{ checkId: 42, number: 'A' }], commissionsToCompensate: 2, touchesCash: true },
+      effects: { bankSlipsToCancel: [9], releasedTitles: [], checksToReverse: [{ checkId: 42, number: 'A' }], commissionsToCompensate: 2, touchesCash: true, cashierOpen: true },
     })
+    expect(String(conn.query.mock.calls[0][0])).toMatch(/tb_cashier/)
+    expect(conn.query.mock.calls[0][1]).toEqual([1, 7])                  // o caixa é o do OPERADOR que consulta
     expect((cancelPiece.buildCancelPlan as jest.Mock).mock.calls[0].slice(1)).toEqual(['setes_setes', 1, 7400])
     expect(conn.beginTransaction).toHaveBeenCalled(); expect(conn.rollback).toHaveBeenCalled()
     expect(conn.commit).not.toHaveBeenCalled(); expect(conn.release).toHaveBeenCalled()
@@ -132,9 +135,20 @@ describe('GET /api/billing/:orderId/cancel-plan (D-F29/D-F115 — consultivo)', 
     expect(res.status).toBe(409); expect(res.body.code).toBe('INVOICE_NOT_CANCELLABLE')
     expect(conn.rollback).toHaveBeenCalled(); expect(conn.commit).not.toHaveBeenCalled(); expect(conn.release).toHaveBeenCalled()
   })
-  it('sem nada bloqueando → cancellable=true (o app segue: nfse-api → POST /billing/cancel)', async () => {
+  it('sem nada bloqueando → cancellable=true (o app segue: nfse-api → POST /billing/cancel); sem linha de caixa, cashierOpen=null', async () => {
     ;(cancelPiece.buildCancelPlan as jest.Mock).mockResolvedValue({ ...PLAN, blocks: [], touchesCash: false, checksToReverse: [], fiscalRecord: false })
-    expect((await get()).body.data).toMatchObject({ cancellable: true, blocks: [], fiscalRecord: false })
+    const data = (await get()).body.data
+    expect(data).toMatchObject({ cancellable: true, blocks: [], fiscalRecord: false })
+    expect(data.effects.cashierOpen).toBeNull()
+    expect(conn.query).not.toHaveBeenCalled()                            // não tocar o caixa = não consultar o caixa
+  })
+  it('[F2A3-SOC-12] sem bloqueio mas com linha de caixa (D16) e SEM caixa aberto do operador → cancellable=false (o POST recusaria NO_OPEN_CASHIER)', async () => {
+    ;(cancelPiece.buildCancelPlan as jest.Mock).mockResolvedValue({ ...PLAN, blocks: [] })
+    conn.query.mockResolvedValueOnce([[]])
+    const data = (await get()).body.data
+    expect(data).toMatchObject({ cancellable: false, blocks: [] })
+    expect(data.effects).toMatchObject({ touchesCash: true, cashierOpen: false })
+    expect(conn.commit).not.toHaveBeenCalled(); expect(conn.rollback).toHaveBeenCalled()
   })
 })
 

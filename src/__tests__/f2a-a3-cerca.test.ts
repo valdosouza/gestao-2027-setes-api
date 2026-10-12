@@ -5,7 +5,8 @@
 //  (c) nenhuma leitura/escrita das tabelas de transmissão do ERP (origem CONGELADA — D-F110) e a habilitação só como SÉRIE
 //      (`@shared/invoice-series`, SELECT);
 //  (d) nenhuma decisão por COLUNA CRUA da voz nas composições do ERP (`environment === 'H'|'P'`, `lastQueriedAt`/`last_queried_at`,
-//      `!!…accessKey`) — registro, prova e efeito vêm dos predicados do núcleo.
+//      a chave como CONDIÇÃO, letra exclusiva da voz comparada à mão — F2A3-SOC-08) — registro, prova e efeito vêm dos predicados
+//      do núcleo.
 // Análise por AST (literais e expressões — comentário não conta). Exceção nomeada = caminho conferido aqui.
 import fs from 'fs'
 import path from 'path'
@@ -35,6 +36,31 @@ function literals(sf: ts.SourceFile): string[] {
   return out
 }
 const inPort = (f: string) => rel(f).startsWith('src/shared/fiscal-voice/')
+
+/** `x.accessKey` / `x?.accessKey` (acesso à chave da voz). */
+const isAccessKey = (n: ts.Node): n is ts.PropertyAccessExpression =>
+  ts.isPropertyAccessExpression(n) && n.name.text === 'accessKey'
+/** Exceção NOMEADA: dentro da peça que lê a chave DEPOIS do fato do registro (`fiscalRecordKey` — registro sem chave falha alto). */
+function insideFunction(n: ts.Node, name: string): boolean {
+  for (let p: ts.Node | undefined = n.parent; p; p = p.parent) if (ts.isFunctionDeclaration(p) && p.name?.text === name) return true
+  return false
+}
+/** A expressão decide por VERDADE (condição de if/ternário/while, operando de `!`, `&&`, `||`, `??`) — e não só a lê como valor. */
+function usedAsCondition(n: ts.Node): boolean {
+  let child: ts.Node = n
+  let p: ts.Node = n.parent
+  while (ts.isParenthesizedExpression(p)) { child = p; p = p.parent }
+  if (ts.isPrefixUnaryExpression(p) && p.operator === ts.SyntaxKind.ExclamationToken) return true
+  if ((ts.isIfStatement(p) || ts.isWhileStatement(p)) && p.expression === child) return true
+  if (ts.isConditionalExpression(p) && p.condition === child) return true
+  if (ts.isBinaryExpression(p)) {
+    const op = p.operatorToken.kind
+    // `a && x.accessKey` como VALOR final (lado direito) também decide nada; o lado ESQUERDO de && / || / ?? decide
+    if ((op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.QuestionQuestionToken)
+      && p.left === child) return true
+  }
+  return false
+}
 
 describe('cerca F2a A3 — o setes-api é PASSIVO', () => {
   it('(a) nenhuma URL/porta das APIs fiscais nem do fisco em código (D-F4: o app fala com elas; o setes-api nunca)', () => {
@@ -106,10 +132,16 @@ describe('cerca F2a A3 — o setes-api é PASSIVO', () => {
         }
         // "nós olhamos" nunca é prova (D-F90)
         if (ts.isPropertyAccessExpression(n) && n.name.text === 'lastQueriedAt') bad.push(`${rel(f)}: ${n.getText().slice(0, 80)}`)
-        // !!x.accessKey — a chave nunca é sinal de registro (D-NE56/nota (8))
-        if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken && ts.isPrefixUnaryExpression(n.operand)
-          && n.operand.operator === ts.SyntaxKind.ExclamationToken && /accessKey\??$/.test(n.operand.operand.getText())) {
-          bad.push(`${rel(f)}: ${n.getText().slice(0, 80)}`)
+        // a chave nunca é sinal de registro (D-NE56/nota (8)) — nem como CONDIÇÃO (F2A3-SOC-08, gate socrático da A3: `!x.accessKey`,
+        // `x?.accessKey ? … : …`, `if (x.accessKey)`, `x.accessKey && …`); a chave é IDENTIDADE, lida depois do fato (`fiscalRecordKey`)
+        if (isAccessKey(n) && usedAsCondition(n) && !insideFunction(n, 'fiscalRecordKey')) bad.push(`${rel(f)}: ${n.parent.getText().slice(0, 80)}`)
+        // letra EXCLUSIVA da voz comparada à mão (S/A/N/K/R/F) — o estado é o `fiscalStateOf`/predicados do núcleo. 'C'/'E' também são
+        // eventos da NOTA (fato do ERP) e ficam de fora desta cerca
+        if (ts.isBinaryExpression(n) && /^(===|!==|==|!=)$/.test(n.operatorToken.getText())) {
+          const sides = [n.left, n.right]
+          const kind = sides.some(x => ts.isPropertyAccessExpression(x) && x.name.text === 'lastKind')
+          const voiceOnly = sides.some(x => ts.isStringLiteral(x) && ['S', 'A', 'N', 'K', 'R', 'F'].includes(x.text))
+          if (kind && voiceOnly) bad.push(`${rel(f)}: ${n.getText().slice(0, 80)}`)
         }
         ts.forEachChild(n, visit)
       }
@@ -118,6 +150,22 @@ describe('cerca F2a A3 — o setes-api é PASSIVO', () => {
       for (const t of literals(sf)) if (/last_queried_at/.test(t)) bad.push(`${rel(f)}: ${t.slice(0, 80)}`)
     }
     expect(bad).toEqual([])
+  })
+  it('(d) a cerca da chave como CONDIÇÃO pega as formas do gate (F2A3-SOC-08) e deixa passar a leitura como VALOR', () => {
+    const snippet = [
+      'if (!tx.accessKey) x()', 'const w = cur?.accessKey ? f(cur.accessKey) : null', 'if (t.accessKey) y()', 'const z = t.accessKey && 1',
+      'while ((t.accessKey)) {}', 'const k = t.accessKey ?? "x"',
+      'const v = { key: t.accessKey }', 'g(t.accessKey)', 'const s = a && t.accessKey',
+      'function fiscalRecordKey(c: any) { if (!c.accessKey) throw 1; return c.accessKey }',
+    ].join('\n')
+    const sf = ts.createSourceFile('snippet.ts', snippet, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const hits: number[] = []
+    const visit = (n: ts.Node): void => {
+      if (isAccessKey(n) && usedAsCondition(n) && !insideFunction(n, 'fiscalRecordKey')) hits.push(sf.getLineAndCharacterOfPosition(n.getStart()).line + 1)
+      ts.forEachChild(n, visit)
+    }
+    visit(sf)
+    expect(hits).toEqual([1, 2, 3, 4, 5, 6])
   })
   it('a porta só importa a SUPERFÍCIE de leitura do núcleo; o boot confere as views das famílias (D-F113/D-F127)', () => {
     const server = fs.readFileSync(path.join(SRC, 'server.ts'), 'utf8')

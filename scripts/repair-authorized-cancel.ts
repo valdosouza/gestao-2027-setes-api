@@ -44,6 +44,15 @@ async function main() {
   const s = `\`${schema}\``
   const q = async (sql: string, params: unknown[] = []) => (await conn.query<any[]>(sql, params))[0] as any
   try {
+    // APOSENTADO pela F2a (F2A3-SOC-09, gate socrático da A3; §22.5 item 14): depois da virada as tabelas de tentativa/voz do ERP são
+    // ORIGEM CONGELADA — leitura histórica vale, decisão nova NUNCA (este script decide "registro fiscal" pela coluna crua: chave +
+    // ambiente). O estado que ele corrige (nota autorizada cancelada pelo caminho da pendente, antes da D3/D4 de 2026-09-29) não nasce
+    // mais; com a F2a aplicada no schema ele RECUSA rodar, nunca com a mensagem enganosa "é PENDENTE".
+    const f2a = (await q(`SELECT COUNT(*) AS n FROM ${s}._migrations WHERE name = 'f2a_fiscal_passivo'`))[0]
+    if (Number(f2a?.n ?? 0) > 0) {
+      throw new Error(`${schema}: script APOSENTADO pela F2a (f2a_fiscal_passivo aplicada) — a voz fiscal mora no fiscal_api e a origem do ERP `
+        + 'está congelada; correção de dado agora passa pela porta @shared/fiscal-voice (decisão nova, nunca por este script)')
+    }
     await conn.beginTransaction()
     const inst = (await q(`SELECT tb_institution_id AS i FROM ${s}.tb_order WHERE id = ? AND terminal = 0 FOR UPDATE`, [orderId]))[0]?.i
     if (inst == null) throw new Error(`Pedido ${orderId} não existe em ${schema}`)

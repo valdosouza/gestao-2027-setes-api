@@ -82,6 +82,7 @@ async function main(): Promise<void> {
     const inst = se.tb_institution_id
     await refused('SE: mudar o ambiente recusado', `UPDATE tb_establishment_issuer SET environment = IF(environment = 'P', 'H', 'P') WHERE tb_institution_id = ? AND model = 'SE'`, [inst])
     await refused('SE: mudar o contador do nDPS recusado', `UPDATE tb_establishment_issuer SET dps_last_number = dps_last_number + 1 WHERE tb_institution_id = ? AND model = 'SE'`, [inst])
+    await refused('SE: trocar o dono (tb_institution_id) recusado — F2A3-ADV-05', `UPDATE tb_establishment_issuer SET tb_institution_id = tb_institution_id + 1000 WHERE tb_institution_id = ? AND model = 'SE'`, [inst])
     await refused('SE: trocar o modelo recusado', `UPDATE tb_establishment_issuer SET model = '65' WHERE tb_institution_id = ? AND model = 'SE'`, [inst])
     await refused('SE: DELETE físico recusado', `DELETE FROM tb_establishment_issuer WHERE tb_institution_id = ? AND model = 'SE'`, [inst])
     await refused('SE: INSERT de outra linha SE recusado (outra institution)', `INSERT INTO tb_establishment_issuer (tb_institution_id, model, environment, serie, dps_last_number, created_at, updated_at, deleted) VALUES (?, 'SE', 'H', '1', 0, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'N')`, [inst + 1000])

@@ -4,9 +4,9 @@
 // D-F114 `fiscalEffectOf`, selo em lote) e a SÉRIE da nota (`@shared/invoice-series` — D-F112). Leitor do núcleo REAL; banco mockado na
 // fronteira com LINHAS CRUAS da view (o mapa da família é o real — nota (5)).
 import { fiscalDbName, readServiceVoiceOfLife, readServiceVoicesOfLives, assertFiscalVoiceReadable } from '../shared/fiscal-voice'
-import { fiscalEffectOf, fiscalCancelBarrier, readFiscalSeals, unknownFamilies, KNOWN_FAMILIES } from '../shared/invoice/invoice-fiscal-effect'
+import { fiscalEffectOf, fiscalCancelBarrier, readFiscalSeals, unknownFamilies, KNOWN_FAMILIES, fiscalRecordKey } from '../shared/invoice/invoice-fiscal-effect'
 import { invoiceSerieFor } from '../shared/invoice-series'
-import { rawServiceRow, serviceView, unrecorded } from '../test-setup/fiscal-voice-rows'
+import { rawServiceRow, serviceView, unrecorded, TEST_KEY } from '../test-setup/fiscal-voice-rows'
 import { VOICE_READINGS } from 'fiscal-api/reading'
 
 const ENV0 = { ...process.env }
@@ -109,6 +109,20 @@ describe('fiscalCancelBarrier — predicados do núcleo, nunca coluna crua', () 
     const f = { lastKind: 'F', lastSource: 'Q' as const, createdAt: '2026-10-10 12:00:00', lastEventAt: '2026-10-10 12:10:00' }
     expect(fiscalCancelBarrier(r([unrecorded(f)]))).toEqual({ kind: 'reconfirm', reason: 'sem-e2404', attempt: 1 })
     expect(fiscalCancelBarrier(r([unrecorded({ ...f, nfseNotGeneratedAt: '2026-10-11 00:00:00' })]))).toEqual({ kind: 'none' })
+  })
+})
+
+describe('F2A3-SOC-08 — a chave é IDENTIDADE do documento registrado, lida só DEPOIS do fato (fiscalRecordKey)', () => {
+  it('registro em produção → a chave; homologação, sem registro ou sem vigente → null; registro SEM chave → falha ALTO', () => {
+    expect(fiscalRecordKey(serviceView())).toBe(TEST_KEY)
+    expect(fiscalRecordKey(serviceView({ environment: 'H' }))).toBeNull()            // homologação registrada: sem valor jurídico
+    expect(fiscalRecordKey(unrecorded({ lastKind: 'R' }))).toBeNull()
+    expect(fiscalRecordKey(null)).toBeNull()
+    expect(() => fiscalRecordKey({ ...serviceView(), accessKey: null })).toThrow(/registro fiscal sem chave/)
+  })
+  it('o efeito decide pelo ESTADO do núcleo (cancelled), não pela letra: voz C em produção com a nota viva → apply; K → none', () => {
+    expect(fiscalEffectOf(serviceView({ lastKind: 'C', lastCode: '101101' }), 'E', false)).toBe('apply')
+    expect(fiscalEffectOf(serviceView({ lastKind: 'K' }), 'E', false)).toBe('none')
   })
 })
 

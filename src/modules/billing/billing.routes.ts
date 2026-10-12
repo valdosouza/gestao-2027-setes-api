@@ -207,13 +207,14 @@ router.post('/cancel-waiver', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFro
  *       e o bloco FISCAL lido da voz do fisco no banco fiscal_api — transmissão em andamento, NFS-e autorizada em
  *       produção (cancele no fisco primeiro) ou envio interrompido sem a PROVA da reconferência (reconfira na
  *       nfse-api). fiscalRecord diz o destino: com registro fiscal a nota fica (evento C) e o pedido vira C.
+ *       cancellable também exige caixa aberto do operador quando o cancelamento grava linha de caixa (D16 — cashierOpen).
  *       Mudou entre a consulta e o POST = o POST recusa com o plano novo. Interface do ramo contratada (D-F37).
  *     tags: [billing]
  *     security: [{ BearerAuth: [] }]
  *     parameters:
  *       - { in: path, name: orderId, required: true, schema: { type: integer, minimum: 1 } }
  *     responses:
- *       200: { description: "{ ok, data: { orderId, invoiceNumber, cancellable, blocks[{field: title|bankSlip|check|return|serviceOrder|fiscal, ref, message}], fiscalRecord, effects: { bankSlipsToCancel[], releasedTitles[], checksToReverse[{checkId, number}], commissionsToCompensate, touchesCash } } }" }
+ *       200: { description: "{ ok, data: { orderId, invoiceNumber, cancellable, blocks[{field: title|bankSlip|check|return|serviceOrder|fiscal, ref, message}], fiscalRecord, effects: { bankSlipsToCancel[], releasedTitles[], checksToReverse[{checkId, number}], commissionsToCompensate, touchesCash, cashierOpen (D16 do operador — null quando não toca o caixa) } } }" }
  *       400: { description: orderId inválido (INVALID_ID) }
  *       401: { description: Sem JWT }
  *       403: { description: Interface do ramo não contratada (INTERFACE_NOT_ALLOWED) }

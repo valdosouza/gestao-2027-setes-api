@@ -18,9 +18,10 @@ import { InstitutionPayload } from '@shared/types/express'
 import { resolveMvaAliq, resolveFcpAliq } from '@modules/state-tax-rates/state-tax-rates.repository'
 import pool from '@shared/db/connection'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
+import { findOpenCashierIdTx } from '@shared/financial-settlement'
 import {
   cancelInvoice, CancelInvoiceResult, waiveSubstitutedCancel, CancelWaiverResult, buildCancelPlan, CancelBlock, ReleasedTitle,
-  readInvoiceLives, readInvoiceFiscal, fiscalEffectOf, FiscalEffect, findCurrentCancelWaiver,
+  readInvoiceLives, readInvoiceFiscal, fiscalEffectOf, FiscalEffect, findCurrentCancelWaiver, fiscalRecordKey,
 } from '@shared/invoice'
 import { assertSchema } from '@shared/db/schema'
 import { CancelBody, CancelWaiverBody } from './billing.dto'
@@ -919,6 +920,8 @@ export interface CancelPlanView {
     commissionsToCompensate: number
     /** D16: o cancelamento grava linha de caixa — exige caixa aberto do operador. */
     touchesCash:       boolean
+    /** D16 do OPERADOR que consulta (F2A3-SOC-12): caixa aberto quando `touchesCash`; null quando o cancelamento não toca o caixa. */
+    cashierOpen:       boolean | null
   }
 }
 
@@ -928,20 +931,23 @@ export interface CancelPlanView {
  * transação que SEMPRE desfaz: nada é gravado; as travas do plano duram só a leitura (lock wait → 409 RESOURCE_BUSY).
  */
 export async function getOrderCancelPlan(institution: InstitutionPayload, orderId: number): Promise<CancelPlanView> {
-  const { schemaName, institutionId } = institution
+  const { schemaName, institutionId, userId } = institution
   const s = assertSchema(schemaName)
   return withDeadlockRetry('plano de cancelamento (consulta)', { institutionId, orderId }, 3, async () => {
     const conn = await pool.getConnection()
     try {
       await conn.beginTransaction()
       const plan = await buildCancelPlan(conn, s, institutionId, orderId)
+      // F2A3-SOC-12 (gate socrático da A3): o consultivo diz o que o POST diria — com linha de caixa (D16) e sem caixa aberto do
+      // operador o POST recusa (NO_OPEN_CASHIER); `cancellable` não pode mandar o app ao fisco para depois parar no caixa
+      const cashierOpen = plan.touchesCash ? (await findOpenCashierIdTx(conn, s, institutionId, userId)) != null : null
       return {
-        orderId, invoiceNumber: plan.invoice.number, cancellable: plan.blocks.length === 0, blocks: plan.blocks,
+        orderId, invoiceNumber: plan.invoice.number, cancellable: plan.blocks.length === 0 && cashierOpen !== false, blocks: plan.blocks,
         fiscalRecord: plan.fiscalRecord,
         effects: {
           bankSlipsToCancel: plan.bankSlipsToCancel, releasedTitles: plan.releasedTitles,
           checksToReverse: plan.checksToReverse.map(c => ({ checkId: c.checkId, number: c.number })),
-          commissionsToCompensate: plan.commissionEntries.length, touchesCash: plan.touchesCash,
+          commissionsToCompensate: plan.commissionEntries.length, touchesCash: plan.touchesCash, cashierOpen,
         },
       }
     } finally {
@@ -973,7 +979,9 @@ export async function getOrderFiscalEffect(institution: InstitutionPayload, orde
   const invoiceCancelled = life.lastKind === 'C'
   if (life.invoiceDeleted) return { orderId, lifeEvent: life.lifeEvent, invoiceCancelled, effect: 'none', cancelWaiver: null }
   const { current } = await readInvoiceFiscal(pool, institutionId, orderId, life.lifeEvent)
-  const waiver = current?.accessKey ? await findCurrentCancelWaiver(pool, s, institutionId, orderId, current.accessKey) : null
+  // a dispensa é da chave do documento REGISTRADO em produção (D-F80) — a chave só depois do fato do registro (F2A3-SOC-08)
+  const key = fiscalRecordKey(current)
+  const waiver = key ? await findCurrentCancelWaiver(pool, s, institutionId, orderId, key) : null
   const zone = await institutionZoneFor(schemaName, institutionId)
   return {
     orderId, lifeEvent: life.lifeEvent, invoiceCancelled,

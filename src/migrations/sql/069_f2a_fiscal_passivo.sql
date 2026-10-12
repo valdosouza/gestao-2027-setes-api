@@ -7,7 +7,8 @@
 -- do `migrate:setes` lê delas; a história fica — sem DROP: DROP = decisão futura). Gatilhos BEFORE com SIGNAL 45000:
 --   - tb_invoice_service_transmission / _event: nenhum INSERT, UPDATE ou DELETE (o código da A3 não as toca — cerca na suíte);
 --   - tb_establishment_issuer, linha SE (a habilitação que mudou de casa — D-F42/D-F44): sem INSERT de SE, sem revive S→N, sem mudar
---     `environment`, `dps_last_number` nem `model`, sem DELETE físico. N→S É PERMITIDO: é o ATO da virada (D-F44 — a única escrita de
+--     `environment`, `dps_last_number`, `model` nem o dono (`tb_institution_id` — F2A3-ADV-05: trocar a PK é DELETE + INSERT
+--     disfarçados), sem DELETE físico. N→S É PERMITIDO: é o ATO da virada (D-F44 — a única escrita de
 --     uma API fiscal no ERP, `nfse-api/scripts/cutover-erp.ts`). As linhas 55/65 (só a SÉRIE da nota — D-F21/D-F112) seguem livres.
 -- Ganhos (Rodada 1 da F2a): rollback de código pós-virada falha FECHADO (o ERP antigo tentaria escrever e o banco recusa), a lacuna (b)
 -- fica inalcançável, a D-F56/D-F58 vira fato de banco, a re-sincronia lê origem que não muda. O ensaio da virada confere os gatilhos.
@@ -83,7 +84,8 @@ CREATE TRIGGER `tg_f2a_freeze_issuer_se_bu` BEFORE UPDATE ON `tb_establishment_i
 FOR EACH ROW
 BEGIN
   IF OLD.`model` = 'SE' OR NEW.`model` = 'SE' THEN
-    IF NOT (NEW.`model` <=> OLD.`model`) OR NOT (NEW.`environment` <=> OLD.`environment`)
+    IF NOT (NEW.`model` <=> OLD.`model`) OR NOT (NEW.`tb_institution_id` <=> OLD.`tb_institution_id`)
+       OR NOT (NEW.`environment` <=> OLD.`environment`)
        OR NOT (NEW.`dps_last_number` <=> OLD.`dps_last_number`)
        OR (OLD.`deleted` = 'S' AND NEW.`deleted` <> 'S') THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'F2a (D-F110/D-F44): habilitacao SE do ERP congelada - so o ato da virada a aposenta (N para S)';
