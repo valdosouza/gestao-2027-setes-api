@@ -128,7 +128,8 @@ describe('peça waiveSubstitutedCancel (D-F67/D-F73/D-F74)', () => {
     ['de OFÍCIO (305101)', tx({ lastCode: '305101' })],
     ['autorizada (A)', tx({ lastKind: 'A', lastCode: null })],
     ['em voo', unrecorded({ lastKind: null, lastCode: null, lastEvent: null, lastSource: null, lastDh: null, lastEventAt: null })],
-    ['C 105102 sem chave', unrecorded({ lastKind: 'C', lastCode: '105102', lastSource: 'Q' })],
+    // "C 105102 sem chave" deixou de existir pela porta: o mapa da família RECUSA a voz C sem registro (D-F154 = Q-F159 (a)) — a porta
+    // dá 503 FISCAL_VOICE_UNAVAILABLE ("contrato"), coberto no gate da Rodada 4 (adversarial-f2a-r4-gate, seção 6)
     ['nunca transmitida', null],
   ])('D-F74: %s → 409 (só a SUBSTITUIÇÃO se dispensa)', async (_l, row) => {
     readVoice().mockResolvedValue(row ? [row] : [])

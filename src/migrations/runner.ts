@@ -3,6 +3,7 @@ import path   from 'path'
 import pool   from '@shared/db/connection'
 import logger from '@shared/logger/logger'
 import { getAppliedMigrationRows, recordMigration } from './repository'
+import { F2A_PASSIVO_NAME, F2A_TOMBSTONE_NAME } from './f2a-names'
 
 const SQL_DIR = path.resolve(__dirname, 'sql')
 
@@ -43,6 +44,12 @@ export function assertAppliedMatchFiles(files: MigrationFile[], applied: { versi
   const byVersion = new Map(files.map(f => [f.version, f]))
   for (const a of applied) {
     const f = byVersion.get(a.version)
+    if (f && a.name === F2A_TOMBSTONE_NAME && f.name === F2A_PASSIVO_NAME) {
+      // D-F153: o schema teve a F2a ABORTADA antes do ato — o código da F2a não sobe sobre ele por acidente
+      throw new Error(`${schemaName}: a F2a foi ABORTADA neste schema (lápide "${F2A_TOMBSTONE_NAME}" na versão ${a.version} — D-F153); `
+        + 'o código da F2a NÃO sobe sobre ele. Para voltar à F2a (ato deliberado): '
+        + '`npx tsx --require tsconfig-paths/register scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --retirar-lapide --vai`')
+    }
     if (f && a.name && f.name !== a.name) {
       throw new Error(`${schemaName}: a versão ${a.version} foi aplicada como "${a.name}", mas o arquivo é ${f.file} — `
         + 'duas migrations com o mesmo número; a do arquivo NUNCA rodaria. Renumere o arquivo.')

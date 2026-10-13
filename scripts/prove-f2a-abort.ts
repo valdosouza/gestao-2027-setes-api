@@ -7,7 +7,9 @@
  *   - --vai: os 9 gatilhos somem, a linha sai, a escrita na voz/SE volta a passar (o código antigo funciona de novo);
  *   - depois da virada (cutover_at no fiscal_api) → RECUSA e nada cai; SE do ERP aposentada pelo ato → RECUSA;
  *   - o ESCOPO é o schema: id que não é dono → RECUSA; OUTRA dona do mesmo schema virada → RECUSA (mesmo digitando a que não virou);
- *   - estado incoerente (linha no _migrations sem gatilho visível) → RECUSA sem tirar a linha (F2AR4-ADV-06).
+ *   - estado incoerente (linha no _migrations sem gatilho visível) → RECUSA sem tirar a linha (F2AR4-ADV-06);
+ *   - D-F153: o --vai deixa a LÁPIDE (mesma versão, outro nome) — o runner do código NOVO recusa subir sobre ela; --retirar-lapide a tira;
+ *   - D-F152: "reaplicar a trava do schema X" — gatilho derrubado volta pela ferramenta; com a lápide ela RECUSA.
  * Apaga os dois bancos no fim. Só LÊ o schema real.
  *
  *   npx tsx --require tsconfig-paths/register scripts/prove-f2a-abort.ts [schema=setes_setes]
@@ -16,8 +18,10 @@ import 'dotenv/config'
 import fs from 'fs'
 import path from 'path'
 import mysql from 'mysql2/promise'
-import { splitStatements } from '../src/migrations/runner'
-import { abortF2aPassivo } from './f2a-abort-before-cutover'
+import { splitStatements, assertAppliedMatchFiles } from '../src/migrations/runner'
+import { f2aFreezeTriggersMissingIn, f2aPassivoVersion, F2A_TOMBSTONE_NAME } from '../src/migrations/f2a-freeze-triggers'
+import { abortF2aPassivo, removeF2aTombstone } from './f2a-abort-before-cutover'
+import { reapplyF2aFreeze } from './f2a-reapply-freeze'
 
 const SRC = process.argv[2] ?? 'setes_setes'
 const E = `f2a_probe_abort_${process.pid}`
@@ -35,6 +39,7 @@ async function main(): Promise<void> {
   })
   const triggers = async () => Number(((await c.query<any[]>(`SELECT COUNT(*) n FROM information_schema.TRIGGERS WHERE EVENT_OBJECT_SCHEMA = ?`, [E]))[0] as any[])[0].n)
   const row = async () => Number(((await c.query<any[]>(`SELECT COUNT(*) n FROM \`${E}\`._migrations WHERE name = 'f2a_fiscal_passivo'`))[0] as any[])[0].n)
+  const tomb = async () => Number(((await c.query<any[]>(`SELECT COUNT(*) n FROM \`${E}\`._migrations WHERE name = ?`, [F2A_TOMBSTONE_NAME]))[0] as any[])[0].n)
   const writeErrno = async (sql: string, p: unknown[] = []) => { try { await c.query(sql, p); return 0 } catch (e: any) { return Number(e?.errno ?? -1) } }
   const apply069 = async () => {
     const file = path.join(__dirname, '..', 'src', 'migrations', 'sql', '069_f2a_fiscal_passivo.sql')
@@ -107,10 +112,34 @@ async function main(): Promise<void> {
 
     // --vai: tudo cai, a escrita volta
     const done = await abortF2aPassivo(c, E, inst, { vai: true, fiscalDb: F, centralDb: C })
-    check('--vai: os 9 gatilhos SOMEM e a linha SAI do _migrations', !done.dryRun && (await triggers()) === 0 && (await row()) === 0)
+    check('--vai: os 9 gatilhos SOMEM e a linha VIRA a LÁPIDE (D-F153 — mesma versão, outro nome)',
+      !done.dryRun && done.tombstone && (await triggers()) === 0 && (await row()) === 0 && (await tomb()) === 1)
+    const applied = ((await c.query<any[]>(`SELECT version, name FROM \`${E}\`._migrations`))[0] as any[]).map(r => ({ version: String(r.version), name: String(r.name) }))
+    const version = f2aPassivoVersion()!
+    let runner = ''
+    try { assertAppliedMatchFiles([{ version, name: 'f2a_fiscal_passivo', file: `${version}_f2a_fiscal_passivo.sql` }], applied, E) } catch (e: any) { runner = String(e?.message) }
+    check('o runner do código NOVO RECUSA subir sobre a lápide (nunca re-congela calado); o código antigo (sem o arquivo) não a vê',
+      /ABORTADA[\s\S]*D-F153/.test(runner) && (() => { try { assertAppliedMatchFiles([], applied, E); return true } catch { return false } })(), runner.slice(0, 90))
+    refused = ''
+    try { await reapplyF2aFreeze(c, E, { vai: true }) } catch (e: any) { refused = String(e?.message) }
+    check('D-F152: reaplicar a trava num schema com a lápide → RECUSA (voltar à F2a é o --retirar-lapide)', /ABORTADA/.test(refused) && (await triggers()) === 0, refused.slice(0, 90))
     check('--vai: a escrita volta a passar (voz e ambiente da SE — o código antigo funciona de novo)',
       (await writeErrno(`UPDATE \`${E}\`.tb_invoice_service_transmission_event SET message = message LIMIT 1`)) === 0
       && (await writeErrno(`UPDATE \`${E}\`.tb_establishment_issuer SET environment = environment WHERE tb_institution_id = ? AND model = 'SE'`, [inst])) === 0)
+
+    // D-F153: voltar à F2a = tirar a lápide (ato deliberado)
+    const back = await removeF2aTombstone(c, E, inst, { vai: true, fiscalDb: F, centralDb: C })
+    check('--retirar-lapide --vai: a lápide SAI (o próximo boot do código da F2a aplica a migration de novo)', !back.dryRun && (await tomb()) === 0)
+
+    // D-F152: a trava some (DROP à mão) → a ferramenta a REAPLICA e a conferência do boot volta a passar
+    await apply069()
+    await c.query(`DROP TRIGGER \`${E}\`.\`tg_f2a_freeze_issuer_se_bu\``)
+    const dryRe = await reapplyF2aFreeze(c, E, { vai: false })
+    check('reaplicar (ensaio) relata o que falta e nada muda', dryRe.dryRun && dryRe.missing.length === 1 && (await triggers()) === 8, JSON.stringify(dryRe.missing))
+    const re = await reapplyF2aFreeze(c, E, { vai: true })
+    check('reaplicar --vai: os 9 gatilhos de volta, iguais aos da migration (a conferência do boot passa)',
+      re.executed === 18 && (await triggers()) === 9 && (await f2aFreezeTriggersMissingIn(c, E)).length === 0
+      && (await writeErrno(`UPDATE \`${E}\`.tb_establishment_issuer SET dps_last_number = dps_last_number + 1 WHERE tb_institution_id = ? AND model = 'SE'`, [inst])) === 1644)
 
     // SE do ERP aposentada pelo ATO → recusa (o lado do ERP do --vai)
     await apply069()

@@ -7,6 +7,7 @@ import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { newCrashRef, recordCrash } from '@shared/errors/crash.repository'
 import { contentionToHttpError } from '@shared/db/contention'
+import { currentActor } from '@shared/request-actor'
 import logger from '@shared/logger/logger'
 
 /**
@@ -40,10 +41,36 @@ export function fiscalDbName(env: NodeJS.ProcessEnv = process.env): string {
  * FECHADO com esse código; a LISTA de OS degrada (selo `unavailable`) — o selo é informativo. Contenção (1205/1213) NÃO é voz ilegível:
  * segue crua para o retry/409 de sempre. O boot continua não subindo sem as views (D-F113).
  */
+/**
+ * D-F151 (= Q-F156 (b), Valdo 2026-10-13 — gate socrático do delta da Rodada 4, F2AR4-SOC-05): de ONDE veio a ilegibilidade. `source` =
+ * a FONTE falhou (banco fora, conexão perdida, GRANT revogado, view/coluna sumida — erro do driver/servidor): passageiro, "tente de novo".
+ * `contract` = a fonte respondeu e o CONTRATO não fecha (o mapa da família recusou a linha — D-F119/D-F136/D-F154 —, argumento inválido,
+ * resposta sem linhas): bug ou dado incoerente — tentar de novo não resolve, "acione o suporte". O app recebe o MESMO 503 e o MESMO
+ * código (não ramifica); a mensagem e o alarme é que separam (a triagem fica honesta).
+ */
+export type VoiceFailureCause = 'source' | 'contract'
+
+/** Códigos de rede/conexão do driver que não trazem `errno` do servidor. */
+const CONNECTION_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ENOTFOUND', 'PROTOCOL_CONNECTION_LOST',
+  'PROTOCOL_SEQUENCE_TIMEOUT', 'POOL_CLOSED', 'POOL_ENQUEUELIMIT',
+])
+
+/** Erro do DRIVER/SERVIDOR (fonte) × qualquer outro (contrato). */
+export function voiceFailureCause(err: unknown): VoiceFailureCause {
+  const e = err as { errno?: unknown; sqlState?: unknown; code?: unknown; fatal?: unknown } | null
+  if (!e || typeof e !== 'object') return 'contract'
+  if (typeof e.errno === 'number' || typeof e.sqlState === 'string' || e.fatal === true) return 'source'
+  if (typeof e.code === 'string' && (e.code.startsWith('ER_') || CONNECTION_CODES.has(e.code))) return 'source'
+  return 'contract'
+}
+
 export class FiscalVoiceUnavailableError extends HttpError {
-  constructor(public readonly causeMessage: string, ref: string) {
-    super(503, `A situação da NFS-e no fisco está indisponível agora — nada foi alterado; tente de novo em instantes (se persistir, informe o código ${ref} ao suporte)`,
-      undefined, ErrorCodes.FISCAL_VOICE_UNAVAILABLE)
+  constructor(public readonly causeMessage: string, ref: string, public readonly failureCause: VoiceFailureCause = 'source') {
+    super(503, failureCause === 'contract'
+      ? `A situação da NFS-e no fisco veio INCOERENTE — nada foi alterado; tentar de novo não resolve: informe o código ${ref} ao suporte`
+      : `A situação da NFS-e no fisco está indisponível agora — nada foi alterado; tente de novo em instantes (se persistir, informe o código ${ref} ao suporte)`,
+    undefined, ErrorCodes.FISCAL_VOICE_UNAVAILABLE)
     this.name = 'FiscalVoiceUnavailableError'
     this.ref = ref
   }
@@ -56,12 +83,16 @@ async function guarded<T>(what: string, institutionId: number, read: () => Promi
     if (err instanceof FiscalVoiceUnavailableError || contentionToHttpError(err)) throw err
     const ref = newCrashRef()
     const message = err instanceof Error ? err.message : String(err)
-    logger.error(`Voz do fisco ilegível (${what}) [ref ${ref}]`, { err })
+    const cause = voiceFailureCause(err)
+    // D-F151: o alarme leva o AUTOR da requisição (0 = fora de uma requisição — rotina, script) e a CAUSA na origem
+    const userId = currentActor()?.userId ?? 0
+    logger.error(`Voz do fisco ilegível (${what}; ${cause === 'source' ? 'fonte' : 'contrato'}) [ref ${ref}]`, { err, userId })
     void recordCrash({
-      ref, code: ErrorCodes.FISCAL_VOICE_UNAVAILABLE, statusCode: 503, origen: `API fiscal-voice ${what}`,
-      institutionId, userId: 0, message, stack: err instanceof Error ? err.stack : undefined,
+      ref, code: ErrorCodes.FISCAL_VOICE_UNAVAILABLE, statusCode: 503,
+      origen: `API fiscal-voice ${what} (${cause === 'source' ? 'fonte' : 'contrato'})`,
+      institutionId, userId, message, stack: err instanceof Error ? err.stack : undefined,
     })
-    throw new FiscalVoiceUnavailableError(message, ref)
+    throw new FiscalVoiceUnavailableError(message, ref, cause)
   }
 }
 

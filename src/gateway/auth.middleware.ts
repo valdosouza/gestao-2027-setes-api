@@ -3,6 +3,7 @@ import { verifyFinalToken } from '@shared/auth/product-token'
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import logger from '@shared/logger/logger'
+import { runAsActor } from '@shared/request-actor'
 
 /**
  * Autenticação das rotas /api/* pelo token FINAL do produto — RS256 com `kid` (D-F13, F2a etapa A2):
@@ -17,7 +18,8 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 
     req.institution = payload
     logger.info('Auth OK', { institutionId: payload.institutionId, path: req.path })
-    next()
+    // D-F151: o autor da requisição para quem registra sem receber o payload (o alarme da porta da voz do fisco)
+    runAsActor({ institutionId: payload.institutionId, userId: payload.userId }, next)
   } catch (err) {
     // envelope do Framework de Mensagens ({ error, code }) — o app recebe UnauthorizedFailure com o código
     if (err instanceof HttpError) {

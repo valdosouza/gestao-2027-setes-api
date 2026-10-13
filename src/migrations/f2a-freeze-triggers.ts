@@ -20,7 +20,29 @@ import { splitStatements } from './runner'
  */
 
 const SQL_DIR = path.resolve(__dirname, 'sql')
-const PASSIVO_FILE = /^\d{3}_f2a_fiscal_passivo\.sql$/
+const PASSIVO_FILE = /^(\d{3})_f2a_fiscal_passivo\.sql$/
+
+export { F2A_PASSIVO_NAME, F2A_TOMBSTONE_NAME } from './f2a-names'
+
+/** A versão (o número) da migration da F2a nesta árvore (null = antes da F2a). */
+export function f2aPassivoVersion(dir = SQL_DIR): string | null {
+  for (const f of fs.readdirSync(dir)) {
+    const m = PASSIVO_FILE.exec(f)
+    if (m) return m[1]
+  }
+  return null
+}
+
+/**
+ * D-F152 (= Q-F157 (b)): as instruções de GATILHO da migration (o `DROP TRIGGER IF EXISTS` + o `CREATE TRIGGER` de cada um, na ordem do
+ * arquivo, pelo divisor do runner) — o que a ferramenta "reaplicar a trava do schema X" executa (os COMMENTs de aposentadoria não).
+ */
+export function f2aFreezeStatements(dir = SQL_DIR): string[] {
+  const file = fs.readdirSync(dir).find(f => PASSIVO_FILE.test(f))
+  if (!file) return []
+  return splitStatements(fs.readFileSync(path.join(dir, file), 'utf8'))
+    .filter(s => /^(DROP TRIGGER IF EXISTS|CREATE TRIGGER) `tg_f2a_freeze_\w+`/.test(s))
+}
 
 export type FreezeTriggerSpec = Readonly<{ name: string; table: string; event: 'INSERT' | 'UPDATE' | 'DELETE'; body: string }>
 
@@ -80,7 +102,12 @@ type Q = { query: (sql: string, params?: unknown[]) => Promise<any> }
 
 /** O que FALTA (ou está diferente) no schema — pelo nome no `information_schema.TRIGGERS`. */
 export async function f2aFreezeTriggersMissing(q: Q, schemaName: string, specs = f2aFreezeTriggerSpecs()): Promise<string[]> {
-  const s = assertSchema(schemaName)
+  return f2aFreezeTriggersMissingIn(q, assertSchema(schemaName), specs)
+}
+
+/** A mesma conferência num identificador JÁ validado por quem chama (a ferramenta de reaplicar e as provas em banco descartável `f2a_*`). */
+export async function f2aFreezeTriggersMissingIn(q: Q, s: string, specs = f2aFreezeTriggerSpecs()): Promise<string[]> {
+  if (!/^[a-z][a-z0-9_]{0,63}$/.test(s)) throw new Error(`schema inválido: ${s}`)
   if (!specs.length) return []
   const [rows] = await q.query(
     `SELECT TRIGGER_NAME AS name, EVENT_OBJECT_TABLE AS tbl, EVENT_MANIPULATION AS ev, ACTION_TIMING AS timing, ACTION_STATEMENT AS body
@@ -111,7 +138,8 @@ export async function assertF2aFreezeTriggers(q: Q = pool): Promise<string> {
   }
   if (bad.length) {
     throw new Error(`D-F135: gatilhos de TRAVA da F2a faltando ou diferentes — ${bad.join(' | ')} — o ERP não está congelado (D-F110); `
-      + 'reaplique a migration f2a_fiscal_passivo (re-executável) ou confira o privilégio TRIGGER do usuário do setes-api')
+      + 'reaplique a trava do schema (D-F152): `npx tsx --require tsconfig-paths/register scripts/f2a-reapply-freeze.ts <schema> --vai` '
+      + '— ou confira o privilégio TRIGGER do usuário do setes-api')
   }
   return `${specs.length} gatilho(s) em ${(institutions as any[]).length} schema(s)`
 }

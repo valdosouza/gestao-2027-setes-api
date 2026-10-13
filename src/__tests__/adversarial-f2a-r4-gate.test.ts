@@ -482,7 +482,7 @@ describe('5 — D-F134: aborto antes do --vai', () => {
       if (/FROM `setes_\w+`\.tb_establishment_issuer/.test(sql)) return [(seRows[Number(p[0])] ?? []).map(d => ({ deleted: d }))]
       if (/cutover_at IS NOT NULL/.test(sql)) return [[{ n: cut.includes(Number(p[0])) ? 1 : 0 }]]
       if (/information_schema\.TRIGGERS/.test(sql)) return [triggers.map(name => ({ name }))]
-      if (/COUNT\(\*\) AS n FROM `setes_\w+`\._migrations/.test(sql)) return [[{ n: mig }]]
+      if (/SELECT name FROM `setes_\w+`\._migrations/.test(sql)) return [mig ? [{ name: 'f2a_fiscal_passivo' }] : []]   // D-F153: a linha e a lápide pelo nome
       return [{ affectedRows: 1 }]
     }) }
     return { c, sqls, drops: () => sqls.filter(s => /^DROP TRIGGER/.test(s)) }
@@ -576,15 +576,26 @@ describe('6 — D-F136: voz A/N ⇒ registro em todo leitor (falha fechada)', ()
     }
   })
 
-  it('[FATO → Q-F156-ADV-03] voz C (e K) SEM registro também é linha incoerente (só se cancela no fisco o que foi autorizado = registrado), mas a D-F136 cobre só A/N: o C sem registro em P passa no mapa, o efeito diz "apply" e o POST SOFT-DELETA a nota (número liberado) em vez de mantê-la viva com o C (D3/D4)', async () => {
-    const c = unrec({ lastKind: 'C', lastCode: '101101', lastSource: 'Q' })
-    expect(() => serviceView({ accessKey: null, authorityRecorded: 'N', lastKind: 'C' })).not.toThrow()
-    expect(fiscalEffectOf(serviceView({ accessKey: null, authorityRecorded: 'N', lastKind: 'C', lastCode: '101101', lastSource: 'Q' }), 'E', false)).toBe('apply')
-    const p = await buildCancelPlan(planConn({ fiscal: [c] }).conn, 'setes_setes', 1, ORDER)
-    expect([p.blocks, p.fiscalRecord]).toEqual([[], false])
-    const pc = planConn({ fiscal: [c] })
-    await cancelInvoice(pc.conn, 'setes_setes', 1, 7, { orderId: ORDER, reason: 'efeito do fisco' })
-    expect(pc.writes.some(w => /tb_invoice SET deleted = 'S'/.test(w))).toBe(true)
+  it('[DECIDIDO — D-F154 (= Q-F159 (a))] voz C (e K) SEM registro é linha incoerente como a A/N: o mapa da família falha ALTO → plano, POST cancel, "manter a nota", efeito → 503 e o selo degrada; NENHUMA escrita (antes: efeito "apply" e o POST SOFT-DELETAVA a nota)', async () => {
+    expect(() => serviceView({ accessKey: null, authorityRecorded: 'N', lastKind: 'C' })).toThrow(/D-F154/)
+    for (const kind of ['C', 'K']) {
+      const fiscal = [unrec({ lastKind: kind, lastCode: kind === 'C' ? '101101' : null, lastSource: 'Q' })]
+      jest.clearAllMocks(); routePool(); fiscalRows = fiscal
+      ;(soRepo.listOrders as jest.Mock).mockResolvedValue({ rows: [{ id: ORDER, status: 'F', webIssued: 1, invoiceNumber: 17 }], total: 1 })
+      const conns: any[] = []
+      getConn.mockImplementation(async () => { const pc = planConn({ fiscal }); conns.push(pc); return pc.conn })
+      const rs = [
+        await request(app).get(`/api/billing/${ORDER}/cancel-plan`).set('Authorization', bearer(ADMIN)),
+        await request(app).post('/api/billing/cancel').set('Authorization', bearer(ADMIN)).send({ orderId: ORDER, reason: 'teste' }),
+        await request(app).post('/api/billing/cancel-waiver').set('Authorization', bearer(ADMIN)).send({ orderId: ORDER, reason: 'teste' }),
+        await request(app).get(`/api/billing/${ORDER}/fiscal-effect`).set('Authorization', bearer(ADMIN)),
+      ]
+      expect([kind, rs.map(r => [r.status, r.body.code])]).toEqual([kind, Array(4).fill([503, 'FISCAL_VOICE_UNAVAILABLE'])])
+      // D-F151: incoerência do dado = CONTRATO — "tentar de novo não resolve"
+      expect([kind, rs[0].body.error]).toEqual([kind, expect.stringMatching(/INCOERENTE/)])
+      expect([kind, conns.flatMap(pc => pc.writes)]).toEqual([kind, []])
+      expect([kind, (await listAsServed()).body.data[0].fiscalState]).toEqual([kind, 'unavailable'])
+    }
   })
 })
 
