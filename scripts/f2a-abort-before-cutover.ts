@@ -120,20 +120,27 @@ export async function abortF2aPassivo(c: Q, schema: string, institutionId: numbe
     throw new Error('a migration f2a_fiscal_passivo não está nesta árvore — rode o aborto a partir da worktree f2a (a que a aplicou)')
   }
   const before = await stateOf(c, schema)
-  if (before.migrationRow && before.present.length === 0) {
-    throw new Error(`${schema}: a linha ${F2A_PASSIVO_NAME} está no _migrations mas NENHUM gatilho de trava é visível — confira o privilégio `
-      + 'TRIGGER do usuário (o information_schema só mostra gatilho de tabela em que ele tem TRIGGER) antes de abortar; nada foi feito')
+  const total = f2aFreezeTriggerSpecs().length
+  // a linha registrada = a migration rodou inteira: os 9 têm de estar VISÍVEIS — senão a pós-condição (que só vê o visível) "concluiria" com
+  // gatilho escondido barrando a escrita do código antigo (R5-SOC-05); gatilho apagado à mão = reaplicar a trava antes (D-F152)
+  if (before.migrationRow && before.present.length < total) {
+    throw new Error(`${schema}: a linha ${F2A_PASSIVO_NAME} está no _migrations mas ${before.present.length === 0
+      ? 'NENHUM gatilho de trava é visível' : `só ${before.present.length} dos ${total} gatilhos de trava são visíveis`} — confira o `
+      + 'privilégio TRIGGER do usuário (o information_schema só mostra gatilho de tabela em que ele tem TRIGGER); se falta de verdade, '
+      + 'reaplique a trava antes (scripts/f2a-reapply-freeze.ts <schema> --vai) e aborte de novo; nada foi feito')
   }
   if (!opts.vai) {
     return { schema, institutionId, owners, dryRun: true, triggers: before.present, migrationRow: before.migrationRow, tombstone: before.tombstone }
   }
-  for (const name of before.present) await c.query(`DROP TRIGGER IF EXISTS \`${schema}\`.\`${name}\``)
-  // D-F153: a linha vira a LÁPIDE (mesma versão, outro nome); sem a linha (gatilhos sem migration registrada), a lápide nasce
+  // D-F153: a linha vira a LÁPIDE (mesma versão, outro nome); sem a linha (gatilhos sem migration registrada), a lápide nasce. ANTES dos
+  // DROPs (gate socrático da Rodada 5, R5-SOC-05): se a conexão cair no meio, sobra "lápide + alguns gatilhos" — o código novo já recusa
+  // subir e rodar o aborto de novo termina o serviço (o inverso deixava a linha sem gatilho, estado que o próprio aborto recusa)
   if (before.migrationRow) {
     await c.query(`UPDATE \`${schema}\`._migrations SET name = ? WHERE name = ?`, [F2A_TOMBSTONE_NAME, F2A_PASSIVO_NAME])
   } else if (!before.tombstone) {
     await c.query(`INSERT INTO \`${schema}\`._migrations (version, name) VALUES (?, ?)`, [version, F2A_TOMBSTONE_NAME])
   }
+  for (const name of before.present) await c.query(`DROP TRIGGER IF EXISTS \`${schema}\`.\`${name}\``)
   const after = await stateOf(c, schema)
   if (after.present.length || after.migrationRow || !after.tombstone) {
     throw new Error(`${schema}: pós-condição do aborto FALHOU — restou ${JSON.stringify(after)} (o processo do setes-api está parado?)`)

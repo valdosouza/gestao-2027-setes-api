@@ -50,6 +50,12 @@ describe('D-F151 — a voz ilegível diz se a FONTE falhou ou o CONTRATO não fe
     }
   })
 
+  it('R5-SOC-04: os erros do POOL do mysql2 (sem code nem errno — só a mensagem) são a FONTE; os POOL_* do pacote mysql não existem aqui', () => {
+    for (const m of ['Pool is closed.', 'No connections available.', 'Queue limit reached.']) expect(voiceFailureCause(new Error(m))).toBe('source')
+    expect(voiceFailureCause(new Error('Pool is closed'))).toBe('contract')
+    expect(voiceFailureCause(Object.assign(new Error('Queue limit reached.'), { code: 'OUTRO' }))).toBe('contract')
+  })
+
   it('FONTE → "tente de novo em instantes"; CONTRATO → "INCOERENTE … tentar de novo não resolve"; os dois 503 FISCAL_VOICE_UNAVAILABLE com o ref', async () => {
     const source = readServiceVoiceOfLife({ query: jest.fn().mockRejectedValue(err('ER_TABLEACCESS_DENIED_ERROR', 1142, 'SELECT command denied')) } as any, 1, 7400, 1)
     await expect(source).rejects.toMatchObject({ statusCode: 503, code: 'FISCAL_VOICE_UNAVAILABLE', ref: 'REFR5XXX', failureCause: 'source',
@@ -110,6 +116,29 @@ describe('D-F153 — a LÁPIDE do aborto', () => {
     expect(f.sqls.some(s => /^DELETE FROM/.test(s))).toBe(false)
   })
 
+  it('R5-SOC-05: a LÁPIDE é gravada ANTES do 1º DROP; a conexão cai no meio dos DROPs → rodar de novo TERMINA (lápide + os que sobraram)', async () => {
+    const f = fake(['f2a_fiscal_passivo'])
+    const real = f.c.query.getMockImplementation()!
+    let drops = 0
+    f.c.query.mockImplementation(async (sql: string, p?: any[]) => {
+      if (/^DROP TRIGGER/.test(sql) && ++drops === 5) throw Object.assign(new Error('Connection lost'), { code: 'PROTOCOL_CONNECTION_LOST', fatal: true })
+      return real(sql, p)
+    })
+    await expect(abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' })).rejects.toThrow(/Connection lost/)
+    expect(f.sqls.findIndex(s => /^UPDATE/.test(s))).toBeLessThan(f.sqls.findIndex(s => /^DROP TRIGGER/.test(s)))
+    expect([f.rows(), f.trg().length]).toEqual([[F2A_TOMBSTONE_NAME], 5])
+    f.c.query.mockImplementation(real)
+    const again = await abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' })
+    expect([again.triggers.length, again.tombstone, f.trg(), f.rows()]).toEqual([5, true, [], [F2A_TOMBSTONE_NAME]])
+  })
+
+  it('R5-SOC-05: a linha registrada e só 8 dos 9 gatilhos VISÍVEIS → RECUSA (privilégio ou gatilho apagado — reaplicar antes); nada muda', async () => {
+    const f = fake(['f2a_fiscal_passivo'], f2aFreezeTriggerSpecs().map(t => t.name).slice(1))
+    await expect(abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' }))
+      .rejects.toThrow(/só 8 dos 9 gatilhos[\s\S]*f2a-reapply-freeze/)
+    expect([f.rows(), f.trg().length, f.sqls.some(s => /^(UPDATE|DROP|INSERT)/.test(s))]).toEqual([['f2a_fiscal_passivo'], 8, false])
+  })
+
   it('gatilhos sem a linha registrada → a lápide NASCE com a versão da migration; 2ª execução = nada a fazer (idempotente)', async () => {
     const f = fake([])
     await abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' })
@@ -124,6 +153,15 @@ describe('D-F153 — a LÁPIDE do aborto', () => {
     expect(() => assertAppliedMatchFiles(files, [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes'))
       .toThrow(/F2a foi ABORTADA[\s\S]*D-F153[\s\S]*--retirar-lapide --vai/)
     expect(() => assertAppliedMatchFiles([], [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes')).not.toThrow()
+  })
+
+  it('R5-SOC-03: a lápide vale pelo NOME — a F2a RENUMERADA num rebase também recusa; outra migration no número da lápide = "RESERVADA"', () => {
+    const renumbered = [{ version: '071', name: 'f2a_fiscal_passivo', file: '071_f2a_fiscal_passivo.sql' }]
+    expect(() => assertAppliedMatchFiles(renumbered, [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes'))
+      .toThrow(/ABORTADA[\s\S]*agora é 071_f2a_fiscal_passivo\.sql[\s\S]*--retirar-lapide/)
+    const other = [{ version, name: 'outra_coisa', file: `${version}_outra_coisa.sql` }]
+    expect(() => assertAppliedMatchFiles(other, [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes'))
+      .toThrow(/RESERVADA pela lápide[\s\S]*Renumere/)
   })
 
   it('--retirar-lapide: ensaio relata; --vai tira SÓ a lápide; sem lápide (ou com gatilho/linha) RECUSA', async () => {
@@ -172,7 +210,7 @@ describe('D-F152 — reaplicar a trava do schema X', () => {
     expect(statements.filter(s => s.startsWith('CREATE TRIGGER')).map(s => /`(tg_\w+)`/.exec(s)![1])).toEqual(f2aFreezeTriggerSpecs().map(t => t.name))
   })
 
-  it('ensaio relata o que falta; --vai reaplica no SCHEMA pedido (USE + as instruções da migration, como o runner) e confere pela conferência do boot', async () => {
+  it('ensaio relata o que falta; --vai reaplica no SCHEMA pedido (USE + SÓ o DROP+CREATE do que falta — R5-ADV-04) e confere pela conferência do boot', async () => {
     const one = f2aFreezeTriggerSpecs()[7].name
     const visible = f2aFreezeTriggerSpecs().map(t => t.name).filter(n => n !== one)
     const dry = fake(['f2a_fiscal_passivo'], visible)
@@ -180,7 +218,7 @@ describe('D-F152 — reaplicar a trava do schema X', () => {
     expect(dry.executed).toEqual([])
     const run = fake(['f2a_fiscal_passivo'], visible)
     const r = await reapply.reapplyF2aFreeze(run.c, 'setes_setes', { vai: true })
-    expect([r.executed, run.executed[0], run.executed.slice(1)]).toEqual([18, 'USE `setes_setes`', statements])
+    expect([r.executed, run.executed[0], run.executed.slice(1)]).toEqual([2, 'USE `setes_setes`', statements.filter(s => s.includes(`\`${one}\``))])
   })
 
   it('RECUSA: schema com a LÁPIDE (F2a abortada — D-F153) e schema sem a migration registrada (o boot a aplica inteira)', async () => {
@@ -188,6 +226,13 @@ describe('D-F152 — reaplicar a trava do schema X', () => {
     await expect(reapply.reapplyF2aFreeze(fake([], []).c, 'setes_setes', { vai: true })).rejects.toThrow(/não está registrada/)
     expect(() => reapply.parseReapplyArgs(['setes_setes', '--vai', '--vai'])).toThrow(/uso:/)
     expect(() => reapply.parseReapplyArgs(['fiscal_api'])).toThrow(/uso:/)
+  })
+
+  it('R5-SOC-07: reaplicar RECUSA um pool (o USE vale só numa conexão — os CREATE iriam para outro banco); nada roda', async () => {
+    const f = fake(['f2a_fiscal_passivo'], [])
+    const pool = Object.assign(f.c, { getConnection: jest.fn() })
+    await expect(reapply.reapplyF2aFreeze(pool, 'setes_setes', { vai: true })).rejects.toThrow(/UMA conexão[\s\S]*pool/)
+    expect([f.executed, (f.c.query as jest.Mock).mock.calls.length]).toEqual([[], 0])
   })
 
   it('o boot que acusa gatilho faltando aponta para a ferramenta (D-F152)', () => {

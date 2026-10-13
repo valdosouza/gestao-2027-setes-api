@@ -3,8 +3,10 @@
  *
  * O boot do setes-api confere os 9 gatilhos de TRAVA da `f2a_fiscal_passivo` em TODO schema ativo (D-F135) e NÃO sobe se um faltar ou
  * estiver diferente (global — D-F152 mantém); a mensagem do boot aponta para cá. Esta ferramenta executa SÓ as instruções de gatilho da
- * própria migration (`DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` — `f2aFreezeStatements`; os COMMENTs de aposentadoria não) no schema
- * pedido e confere a pós-condição pela MESMA conferência do boot (`f2aFreezeTriggersMissing` — corpo normalizado).
+ * própria migration (`DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` — `f2aFreezeStatements`; os COMMENTs de aposentadoria não) — e SÓ as
+ * dos gatilhos que FALTAM ou DIFEREM (gate adversarial da Rodada 5, R5-ADV-04: recriar os 9 abria, em cada um, uma janela sem trava — DDL é
+ * commit implícito, entre o DROP e o CREATE a escrita congelada passa; provado ao vivo) — no schema pedido e confere a pós-condição pela
+ * MESMA conferência do boot (`f2aFreezeTriggersMissing` — corpo normalizado).
  *
  * Só onde a migration está REGISTRADA (`_migrations.name = 'f2a_fiscal_passivo'`): sem a linha, o boot do código da F2a aplica a
  * migration inteira (nada a reaplicar); com a LÁPIDE do aborto (D-F153), a F2a foi abortada ali — RECUSA (voltar à F2a é o
@@ -27,15 +29,19 @@ export interface ReapplyReport {
   dryRun: boolean
   /** O que faltava (ou estava diferente) ANTES. */
   missing: string[]
-  /** Quantas instruções de gatilho rodaram (0 no ensaio). */
+  /** Quantas instruções de gatilho rodaram (0 no ensaio; 2 por gatilho que faltava/diferia — R5-ADV-04). */
   executed: number
 }
 
-type Q = { query: (sql: string, params?: unknown[]) => Promise<any> }
+/** UMA conexão — nunca um pool (o `USE` vale só na conexão em que roda; R5-SOC-07). `getConnection?: never` barra o Pool no tipo. */
+type Q = { query: (sql: string, params?: unknown[]) => Promise<any>; getConnection?: never }
 
 /** A reaplicação em si (exportada para a prova em banco descartável). [schema] só pela forma; o resto pelos fatos. */
 export async function reapplyF2aFreeze(c: Q, schema: string, opts: { vai: boolean }): Promise<ReapplyReport> {
   if (!IDENT.test(schema)) throw new Error(`schema inválido: ${schema}`)
+  if (typeof (c as { getConnection?: unknown }).getConnection === 'function') {
+    throw new Error('reaplicar a trava precisa de UMA conexão (o USE vale só nela) — recebeu um pool; nada foi feito')
+  }
   const statements = f2aFreezeStatements()
   if (!statements.length) throw new Error('a migration f2a_fiscal_passivo não está nesta árvore — rode a partir da árvore da F2a')
   const [mig] = await c.query(`SELECT name FROM \`${schema}\`._migrations WHERE name IN (?, ?)`, [F2A_PASSIVO_NAME, F2A_TOMBSTONE_NAME])
@@ -50,11 +56,17 @@ export async function reapplyF2aFreeze(c: Q, schema: string, opts: { vai: boolea
   if (!opts.vai || !missing.length) return { schema, dryRun: !opts.vai, missing, executed: 0 }
   // como o runner: o schema como banco da CONEXÃO e as instruções da migration como estão (o `ON tabela` do gatilho se resolve nele —
   // qualificar só o nome do gatilho deixaria a tabela sem banco numa conexão sem banco padrão)
+  // R5-ADV-04: só os que faltam/diferem (o nome abre cada item de `missing`) — os certos ficam de pé, sem janela
+  const bad = new Set(missing.map(m => m.split(' ')[0]))
+  const todo = statements.filter(s => bad.has(/^(?:DROP TRIGGER IF EXISTS|CREATE TRIGGER) `(\w+)`/.exec(s)?.[1] ?? ''))
+  if (todo.length !== bad.size * 2) {
+    throw new Error(`${schema}: a conferência acusou ${[...bad].join(', ')}, mas a migration não tem DROP+CREATE de cada um — nada foi feito`)
+  }
   await c.query(`USE \`${schema}\``)
-  for (const s of statements) await c.query(s)
+  for (const s of todo) await c.query(s)
   const after = await f2aFreezeTriggersMissingIn(c, schema)
   if (after.length) throw new Error(`${schema}: depois de reaplicar ainda falta/difere: ${after.join('; ')} — confira o privilégio TRIGGER do usuário`)
-  return { schema, dryRun: false, missing, executed: statements.length }
+  return { schema, dryRun: false, missing, executed: todo.length }
 }
 
 export function parseReapplyArgs(argv: string[]): { schema: string; vai: boolean } {

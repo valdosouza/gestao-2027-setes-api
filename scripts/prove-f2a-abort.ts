@@ -110,6 +110,21 @@ async function main(): Promise<void> {
     check('linha no _migrations sem gatilho visível → RECUSA e a linha FICA', /NENHUM gatilho/.test(refused) && (await row()) === 1, refused.slice(0, 90))
     await apply069()
 
+    // R5-SOC-05: a linha + só 8 dos 9 → recusa (gatilho apagado à mão — reaplicar antes); a lápide + alguns (aborto que caiu no meio) → termina
+    await c.query(`DROP TRIGGER \`${E}\`.\`tg_f2a_freeze_issuer_se_bu\``)
+    refused = ''
+    try { await abortF2aPassivo(c, E, inst, { vai: true, fiscalDb: F, centralDb: C }) } catch (e: any) { refused = String(e?.message) }
+    check('R5-SOC-05: linha no _migrations e só 8 dos 9 visíveis → RECUSA (reaplicar antes) e nada muda',
+      /só 8 dos 9[\s\S]*f2a-reapply-freeze/.test(refused) && (await row()) === 1 && (await triggers()) === 8, refused.slice(0, 90))
+    await apply069()
+    await c.query(`UPDATE \`${E}\`._migrations SET name = 'f2a_fiscal_passivo_abortada' WHERE name = 'f2a_fiscal_passivo'`)
+    for (const n of names.slice(0, 4)) await c.query(`DROP TRIGGER \`${E}\`.\`${n}\``)
+    const resumed = await abortF2aPassivo(c, E, inst, { vai: true, fiscalDb: F, centralDb: C })
+    check('R5-SOC-05: lápide + 5 gatilhos (aborto que caiu no meio dos DROPs) → rodar de novo TERMINA',
+      !resumed.dryRun && resumed.triggers.length === 5 && (await triggers()) === 0 && (await tomb()) === 1 && (await row()) === 0)
+    await removeF2aTombstone(c, E, inst, { vai: true, fiscalDb: F, centralDb: C })
+    await apply069()
+
     // --vai: tudo cai, a escrita volta
     const done = await abortF2aPassivo(c, E, inst, { vai: true, fiscalDb: F, centralDb: C })
     check('--vai: os 9 gatilhos SOMEM e a linha VIRA a LÁPIDE (D-F153 — mesma versão, outro nome)',
@@ -137,8 +152,8 @@ async function main(): Promise<void> {
     const dryRe = await reapplyF2aFreeze(c, E, { vai: false })
     check('reaplicar (ensaio) relata o que falta e nada muda', dryRe.dryRun && dryRe.missing.length === 1 && (await triggers()) === 8, JSON.stringify(dryRe.missing))
     const re = await reapplyF2aFreeze(c, E, { vai: true })
-    check('reaplicar --vai: os 9 gatilhos de volta, iguais aos da migration (a conferência do boot passa)',
-      re.executed === 18 && (await triggers()) === 9 && (await f2aFreezeTriggersMissingIn(c, E)).length === 0
+    check('reaplicar --vai: SÓ o que faltava (DROP+CREATE — R5-ADV-04) e os 9 de volta, iguais aos da migration (a conferência do boot passa)',
+      re.executed === 2 && (await triggers()) === 9 && (await f2aFreezeTriggersMissingIn(c, E)).length === 0
       && (await writeErrno(`UPDATE \`${E}\`.tb_establishment_issuer SET dps_last_number = dps_last_number + 1 WHERE tb_institution_id = ? AND model = 'SE'`, [inst])) === 1644)
 
     // SE do ERP aposentada pelo ATO → recusa (o lado do ERP do --vai)

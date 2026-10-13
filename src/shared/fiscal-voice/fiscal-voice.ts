@@ -53,8 +53,15 @@ export type VoiceFailureCause = 'source' | 'contract'
 /** Códigos de rede/conexão do driver que não trazem `errno` do servidor. */
 const CONNECTION_CODES: ReadonlySet<string> = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ENOTFOUND', 'PROTOCOL_CONNECTION_LOST',
-  'PROTOCOL_SEQUENCE_TIMEOUT', 'POOL_CLOSED', 'POOL_ENQUEUELIMIT',
+  'PROTOCOL_SEQUENCE_TIMEOUT',
 ])
+
+/**
+ * O POOL do mysql2 falha com um `Error` SEM `code` nem `errno` (`lib/base/pool.js`, mysql2 3.x) — só a mensagem o identifica; é a FONTE
+ * (gate socrático da Rodada 5, R5-SOC-04: sem isto, um `queueLimit` no pool diria ao usuário "INCOERENTE — tentar de novo não resolve").
+ * Conhecimento negativo: `POOL_CLOSED`/`POOL_ENQUEUELIMIT` são códigos do pacote `mysql`, não do mysql2 — nunca casariam.
+ */
+const POOL_MESSAGES: ReadonlySet<string> = new Set(['Pool is closed.', 'No connections available.', 'Queue limit reached.'])
 
 /** Erro do DRIVER/SERVIDOR (fonte) × qualquer outro (contrato). */
 export function voiceFailureCause(err: unknown): VoiceFailureCause {
@@ -62,6 +69,7 @@ export function voiceFailureCause(err: unknown): VoiceFailureCause {
   if (!e || typeof e !== 'object') return 'contract'
   if (typeof e.errno === 'number' || typeof e.sqlState === 'string' || e.fatal === true) return 'source'
   if (typeof e.code === 'string' && (e.code.startsWith('ER_') || CONNECTION_CODES.has(e.code))) return 'source'
+  if (err instanceof Error && e.code === undefined && POOL_MESSAGES.has(err.message)) return 'source'
   return 'contract'
 }
 
