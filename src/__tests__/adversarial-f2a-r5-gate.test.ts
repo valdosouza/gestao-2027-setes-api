@@ -212,13 +212,17 @@ describe('3 — D-F153: a lápide é presa à VERSÃO; a F2a renumera a migratio
       return { ok: false as const, executed, error: String(e?.message ?? e) }
     } finally { rd.mockRestore(); rf.mockRestore() }
   }
-  // o estado de PRODUÇÃO depois de um aborto: 068 da F2a (já no main) + a LÁPIDE na 069
-  const ABORTED = [{ version: '068', name: 'order_interface_view_bin' }, { version: '069', name: F2A_TOMBSTONE_NAME }]
+  // o estado de PRODUÇÃO depois de um aborto: 068 da F2a (já no main) + a LÁPIDE — com a versão SENTINELA desde a D-F162 (= Q-F170 (a));
+  // ABORTED_069 = a forma anterior (lápide no número), mantida para provar que ela também recusa pelo nome
+  const ABORTED = [{ version: '068', name: 'order_interface_view_bin' }, { version: 'F2A-ABORT', name: F2A_TOMBSTONE_NAME }]
+  const ABORTED_069 = [{ version: '068', name: 'order_interface_view_bin' }, { version: '069', name: F2A_TOMBSTONE_NAME }]
 
-  it('[RESISTIU] o código da F2a com a MESMA versão (069) recusa subir sobre a lápide e não executa nada', async () => {
-    const r = await runRunner({ '068_order_interface_view_bin.sql': 'SELECT 1;', '069_f2a_fiscal_passivo.sql': PASSIVO_SQL }, ABORTED)
-    expect([r.ok, (r as any).error]).toEqual([false, expect.stringMatching(/ABORTADA[\s\S]*D-F153/)])
-    expect(r.executed.some(s => /CREATE TRIGGER/.test(s))).toBe(false)
+  it('[RESISTIU] o código da F2a recusa subir sobre a lápide (sentinela ou na mesma versão 069) e não executa nada', async () => {
+    for (const applied of [ABORTED, ABORTED_069]) {
+      const r = await runRunner({ '068_order_interface_view_bin.sql': 'SELECT 1;', '069_f2a_fiscal_passivo.sql': PASSIVO_SQL }, applied)
+      expect([r.ok, (r as any).error]).toEqual([false, expect.stringMatching(/ABORTADA[\s\S]*D-F153/)])
+      expect(r.executed.some(s => /CREATE TRIGGER/.test(s))).toBe(false)
+    }
   })
 
   it('[CORRIGIDO] (base do R5-ADV-01) depois do aborto o main ganha migrations (a IB-2) e a F2a é RENUMERADA (071): o runner do código da F2a RECUSA subir pela lápide (pelo NOME) e não executa NADA — o ERP nunca volta a ser congelado calado', async () => {
@@ -226,22 +230,24 @@ describe('3 — D-F153: a lápide é presa à VERSÃO; a F2a renumera a migratio
     const r = await runRunner({
       '068_order_interface_view_bin.sql': 'SELECT 1;', '070_ibscbs_ib2.sql': 'SELECT 1;', '071_f2a_fiscal_passivo.sql': PASSIVO_SQL,
     }, applied)
-    expect([r.ok, (r as any).error]).toEqual([false, expect.stringMatching(/ABORTADA[\s\S]*agora é 071_f2a_fiscal_passivo\.sql/)])
+    expect([r.ok, (r as any).error]).toEqual([false, expect.stringMatching(/ABORTADA[\s\S]*arquivo da F2a: 071_f2a_fiscal_passivo\.sql/)])
     expect(r.executed.filter(s => /CREATE TRIGGER|INSERT INTO _migrations/.test(s))).toEqual([])
   })
 
   it('[CORRIGIDO R5-ADV-01 MEDIUM] a LÁPIDE só vale para a MESMA versão: com a migration da F2a renumerada (069 → 071 — o roteiro da janela manda conferir o número contra o main e renumerar; o teste exige que ela seja a última DA F2a) o runner do código da F2a NÃO a vê e re-congela o ERP calado — a promessa da D-F153 ("um restart acidental do código novo nunca re-congela calado") cai. Correção: a recusa por NOME (qualquer linha `f2a_fiscal_passivo_abortada` + arquivo `*_f2a_fiscal_passivo`), independente da versão', () => {
     expect(() => assertAppliedMatchFiles(
       [{ version: '071', name: F2A_PASSIVO_NAME, file: '071_f2a_fiscal_passivo.sql' }],
-      [...ABORTED, { version: '070', name: 'ibscbs_ib2' }], 'setes_setes',
+      [...ABORTED_069, { version: '070', name: 'ibscbs_ib2' }], 'setes_setes',
     )).toThrow(/ABORTADA[\s\S]*D-F153/)
   })
 
-  it('[CORRIGIDO EM PARTE — R5-ADV-02 LOW; o código ANTIGO do main segue com a frase genérica até a janela — Q-F170] a lápide OCUPA a versão 069 no `_migrations` de PRODUÇÃO depois do aborto: a próxima migration do main com esse número (a IB-2 escolhe "o próximo livre" = 069) derruba o boot do código ANTIGO (tsx watch = produção fora ao salvar) com a mensagem genérica de número repetido — que não diz que é a F2a abortada nem o que fazer', async () => {
-    const r = await runRunner({ '068_order_interface_view_bin.sql': 'SELECT 1;', '069_ibscbs_ib2.sql': 'SELECT 1;' }, ABORTED)
-    expect(r.ok).toBe(false)
-    // o runner da F2a (esta árvore) já diz o que é: o número está RESERVADO pela lápide (PADROES §11 regra 14)
-    expect((r as any).error).toMatch(/versão 069 está RESERVADA pela lápide da F2a abortada \(D-F153[\s\S]*Renumere o arquivo/)
+  it('[CORRIGIDO — R5-ADV-02 LOW, D-F162 (= Q-F170 (a))] lápide com versão SENTINELA: o número fica livre e a próxima migration do main com ele RODA; a forma anterior (lápide no número) segue dizendo RESERVADA — a lápide OCUPA a versão 069 no `_migrations` de PRODUÇÃO depois do aborto: a próxima migration do main com esse número (a IB-2 escolhe "o próximo livre" = 069) derruba o boot do código ANTIGO (tsx watch = produção fora ao salvar) com a mensagem genérica de número repetido — que não diz que é a F2a abortada nem o que fazer', async () => {
+    const free = await runRunner({ '068_order_interface_view_bin.sql': 'SELECT 1;', '069_ibscbs_ib2.sql': 'SELECT 1;' }, ABORTED)
+    expect(free.ok).toBe(true)
+    expect(free.executed.some(s => /INSERT INTO _migrations/.test(s) && s.includes('"069","ibscbs_ib2"'))).toBe(true)
+    const old = await runRunner({ '068_order_interface_view_bin.sql': 'SELECT 1;', '069_ibscbs_ib2.sql': 'SELECT 1;' }, ABORTED_069)
+    expect(old.ok).toBe(false)
+    expect((old as any).error).toMatch(/versão 069 está RESERVADA pela lápide da F2a abortada \(D-F153[\s\S]*Renumere o arquivo/)
   })
 })
 

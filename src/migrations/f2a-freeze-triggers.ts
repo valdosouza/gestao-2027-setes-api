@@ -22,7 +22,7 @@ import { splitStatements } from './runner'
 const SQL_DIR = path.resolve(__dirname, 'sql')
 const PASSIVO_FILE = /^(\d{3})_f2a_fiscal_passivo\.sql$/
 
-export { F2A_PASSIVO_NAME, F2A_TOMBSTONE_NAME } from './f2a-names'
+export { F2A_PASSIVO_NAME, F2A_TOMBSTONE_NAME, F2A_TOMBSTONE_VERSION } from './f2a-names'
 
 /** A versão (o número) da migration da F2a nesta árvore (null = antes da F2a). */
 export function f2aPassivoVersion(dir = SQL_DIR): string | null {

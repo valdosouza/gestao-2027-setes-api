@@ -11,9 +11,10 @@
  * CONFIRMAÇÃO do operador: tem de ser dono do schema e ter a sua linha SE no ERP (ausente = recusa — sem o fato não se prova "não virou").
  *
  * O que faz (com `--vai`; sem ele, só RELATA): derruba os gatilhos de TRAVA (a lista é a própria migration — `f2aFreezeTriggerSpecs`) e
- * troca a linha `f2a_fiscal_passivo` do `_migrations` pela LÁPIDE (D-F153 = Q-F158 (c): a mesma versão com o nome
- * `f2a_fiscal_passivo_abortada` — o código ANTIGO sobe normalmente; o código NOVO RECUSA subir sobre ela, então um restart acidental
- * nunca re-congela calado); depois CONFERE a pós-condição (nenhum gatilho, só a lápide). Os COMMENTs de aposentadoria ficam
+ * troca a linha `f2a_fiscal_passivo` do `_migrations` pela LÁPIDE (D-F153 = Q-F158 (c): o nome `f2a_fiscal_passivo_abortada` com a
+ * versão SENTINELA `F2A-ABORT` — D-F162, nunca ocupa o número —; o código ANTIGO sobe normalmente; o código NOVO RECUSA subir sobre
+ * ela, então um restart acidental nunca re-congela calado) — ANTES dos DROPs (R5-SOC-05); depois CONFERE a pós-condição (nenhum gatilho,
+ * só a lápide). A linha da migration E a lápide juntas = estado que o aborto não deixa → recusa. Os COMMENTs de aposentadoria ficam
  * (inofensivos). Estado INCOERENTE (linha no `_migrations` sem nenhum gatilho visível — usuário sem o privilégio TRIGGER, ou gatilhos
  * derrubados à mão) = recusa: não se "conclui" o que não se vê (F2AR4-ADV-06).
  *
@@ -34,7 +35,7 @@
  */
 import 'dotenv/config'
 import mysql from 'mysql2/promise'
-import { f2aFreezeTriggerSpecs, f2aPassivoVersion, F2A_PASSIVO_NAME, F2A_TOMBSTONE_NAME } from '../src/migrations/f2a-freeze-triggers'
+import { f2aFreezeTriggerSpecs, f2aPassivoVersion, F2A_PASSIVO_NAME, F2A_TOMBSTONE_NAME, F2A_TOMBSTONE_VERSION } from '../src/migrations/f2a-freeze-triggers'
 
 const IDENT = /^[a-z][a-z0-9_]{0,63}$/
 export const F2A_MIGRATION_NAME = F2A_PASSIVO_NAME
@@ -120,6 +121,10 @@ export async function abortF2aPassivo(c: Q, schema: string, institutionId: numbe
     throw new Error('a migration f2a_fiscal_passivo não está nesta árvore — rode o aborto a partir da worktree f2a (a que a aplicou)')
   }
   const before = await stateOf(c, schema)
+  if (before.migrationRow && before.tombstone) {
+    throw new Error(`${schema}: a linha ${F2A_PASSIVO_NAME} E a lápide ${F2A_TOMBSTONE_NAME} no _migrations — estado que o aborto não deixa `
+      + '(alguém reaplicou a migration sem tirar a lápide?); confira antes — nada foi feito')
+  }
   const total = f2aFreezeTriggerSpecs().length
   // a linha registrada = a migration rodou inteira: os 9 têm de estar VISÍVEIS — senão a pós-condição (que só vê o visível) "concluiria" com
   // gatilho escondido barrando a escrita do código antigo (R5-SOC-05); gatilho apagado à mão = reaplicar a trava antes (D-F152)
@@ -136,9 +141,10 @@ export async function abortF2aPassivo(c: Q, schema: string, institutionId: numbe
   // DROPs (gate socrático da Rodada 5, R5-SOC-05): se a conexão cair no meio, sobra "lápide + alguns gatilhos" — o código novo já recusa
   // subir e rodar o aborto de novo termina o serviço (o inverso deixava a linha sem gatilho, estado que o próprio aborto recusa)
   if (before.migrationRow) {
-    await c.query(`UPDATE \`${schema}\`._migrations SET name = ? WHERE name = ?`, [F2A_TOMBSTONE_NAME, F2A_PASSIVO_NAME])
+    // D-F162: a linha vira a lápide com a versão SENTINELA — o número da migration volta a ficar livre
+    await c.query(`UPDATE \`${schema}\`._migrations SET version = ?, name = ? WHERE name = ?`, [F2A_TOMBSTONE_VERSION, F2A_TOMBSTONE_NAME, F2A_PASSIVO_NAME])
   } else if (!before.tombstone) {
-    await c.query(`INSERT INTO \`${schema}\`._migrations (version, name) VALUES (?, ?)`, [version, F2A_TOMBSTONE_NAME])
+    await c.query(`INSERT INTO \`${schema}\`._migrations (version, name) VALUES (?, ?)`, [F2A_TOMBSTONE_VERSION, F2A_TOMBSTONE_NAME])
   }
   for (const name of before.present) await c.query(`DROP TRIGGER IF EXISTS \`${schema}\`.\`${name}\``)
   const after = await stateOf(c, schema)

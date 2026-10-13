@@ -18,7 +18,7 @@ import { readServiceVoiceOfLife, FiscalVoiceUnavailableError, voiceFailureCause 
 import { runAsActor, currentActor } from '../shared/request-actor'
 import * as crash from '../shared/errors/crash.repository'
 import { assertAppliedMatchFiles } from '../migrations/runner'
-import { f2aFreezeStatements, f2aFreezeTriggerSpecs, f2aPassivoVersion, F2A_TOMBSTONE_NAME } from '../migrations/f2a-freeze-triggers'
+import { f2aFreezeStatements, f2aFreezeTriggerSpecs, f2aPassivoVersion, F2A_TOMBSTONE_NAME, F2A_TOMBSTONE_VERSION } from '../migrations/f2a-freeze-triggers'
 
 const REPO = path.join(__dirname, '..', '..')
 // scripts/ fica fora do rootDir do tsc (src) — require com o tipo usado
@@ -101,7 +101,7 @@ describe('D-F153 — a LÁPIDE do aborto', () => {
       if (/information_schema\.TRIGGERS/.test(sql)) return [trg.map(name => ({ name }))]
       if (/^SELECT name FROM `setes_\w+`\._migrations/.test(sql)) return [rows.filter(n => (p as string[]).includes(n)).map(name => ({ name }))]
       if (/^DROP TRIGGER/.test(sql)) { trg = trg.filter(n => !sql.includes(n)); return [{}] }
-      if (/^UPDATE `setes_\w+`\._migrations SET name = \?/.test(sql)) { rows = rows.map(n => (n === p[1] ? p[0] : n)); return [{ affectedRows: 1 }] }
+      if (/^UPDATE `setes_\w+`\._migrations SET version = \?, name = \?/.test(sql)) { rows = rows.map(n => (n === p[2] ? p[1] : n)); return [{ affectedRows: 1 }] }
       if (/^INSERT INTO `setes_\w+`\._migrations/.test(sql)) { rows.push(p[1]); return [{ affectedRows: 1 }] }
       if (/^DELETE FROM `setes_\w+`\._migrations/.test(sql)) { rows = rows.filter(n => n !== p[0]); return [{ affectedRows: 1 }] }
       throw new Error(`SQL inesperado: ${sql.slice(0, 90)}`)
@@ -109,11 +109,19 @@ describe('D-F153 — a LÁPIDE do aborto', () => {
     return { c, sqls, rows: () => rows, trg: () => trg }
   }
 
-  it('o --vai DERRUBA os gatilhos e TROCA a linha pela lápide (mesma versão, outro nome) — nunca a apaga; a pós-condição confere', async () => {
+  it('o --vai DERRUBA os gatilhos e TROCA a linha pela lápide com a versão SENTINELA (D-F162 — o número fica livre) — nunca a apaga; a pós-condição confere', async () => {
     const f = fake(['f2a_fiscal_passivo'])
     const r = await abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' })
     expect([r.triggers.length, r.migrationRow, r.tombstone, f.trg(), f.rows()]).toEqual([9, true, true, [], [F2A_TOMBSTONE_NAME]])
     expect(f.sqls.some(s => /^DELETE FROM/.test(s))).toBe(false)
+    const upd = (f.c.query as jest.Mock).mock.calls.find(([s]: [string]) => /^UPDATE/.test(s))
+    expect([F2A_TOMBSTONE_VERSION, upd[1]]).toEqual(['F2A-ABORT', ['F2A-ABORT', F2A_TOMBSTONE_NAME, 'f2a_fiscal_passivo']])
+  })
+
+  it('D-F162: a linha da migration E a lápide juntas (alguém reaplicou sem tirar a lápide) → RECUSA; nada muda', async () => {
+    const f = fake(['f2a_fiscal_passivo', F2A_TOMBSTONE_NAME])
+    await expect(abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' })).rejects.toThrow(/E a lápide/)
+    expect([f.trg().length, f.sqls.some(s => /^(UPDATE|DROP|INSERT)/.test(s))]).toEqual([9, false])
   })
 
   it('R5-SOC-05: a LÁPIDE é gravada ANTES do 1º DROP; a conexão cai no meio dos DROPs → rodar de novo TERMINA (lápide + os que sobraram)', async () => {
@@ -139,26 +147,33 @@ describe('D-F153 — a LÁPIDE do aborto', () => {
     expect([f.rows(), f.trg().length, f.sqls.some(s => /^(UPDATE|DROP|INSERT)/.test(s))]).toEqual([['f2a_fiscal_passivo'], 8, false])
   })
 
-  it('gatilhos sem a linha registrada → a lápide NASCE com a versão da migration; 2ª execução = nada a fazer (idempotente)', async () => {
+  it('gatilhos sem a linha registrada → a lápide NASCE com a versão SENTINELA (D-F162); 2ª execução = nada a fazer (idempotente)', async () => {
     const f = fake([])
     await abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' })
     const ins = (f.c.query as jest.Mock).mock.calls.find(([s]: [string]) => /^INSERT INTO/.test(s))
-    expect(ins[1]).toEqual([version, F2A_TOMBSTONE_NAME])
+    expect(ins[1]).toEqual([F2A_TOMBSTONE_VERSION, F2A_TOMBSTONE_NAME])
     const again = await abort.abortF2aPassivo(f.c, 'setes_setes', 1, { vai: true, fiscalDb: 'fiscal_api' })
     expect([again.triggers, again.migrationRow, again.tombstone]).toEqual([[], false, true])
   })
 
   it('o runner do código NOVO recusa subir sobre a lápide com a mensagem própria (como voltar); o código ANTIGO (sem o arquivo) não a vê', () => {
     const files = [{ version, name: 'f2a_fiscal_passivo', file: `${version}_f2a_fiscal_passivo.sql` }]
-    expect(() => assertAppliedMatchFiles(files, [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes'))
-      .toThrow(/F2a foi ABORTADA[\s\S]*D-F153[\s\S]*--retirar-lapide --vai/)
-    expect(() => assertAppliedMatchFiles([], [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes')).not.toThrow()
+    for (const tombVersion of [F2A_TOMBSTONE_VERSION, version]) {                                   // a sentinela (D-F162) e a forma numérica anterior
+      expect(() => assertAppliedMatchFiles(files, [{ version: tombVersion, name: F2A_TOMBSTONE_NAME }], 'setes_setes'))
+        .toThrow(/F2a foi ABORTADA[\s\S]*D-F153[\s\S]*--retirar-lapide --vai/)
+      expect(() => assertAppliedMatchFiles([], [{ version: tombVersion, name: F2A_TOMBSTONE_NAME }], 'setes_setes')).not.toThrow()
+    }
+  })
+
+  it('D-F162: com a lápide SENTINELA o número da migration fica LIVRE — a próxima migration do main com ele roda (o código antigo não cai)', () => {
+    const next = [{ version, name: 'ibscbs_ib2', file: `${version}_ibscbs_ib2.sql` }]
+    expect(() => assertAppliedMatchFiles(next, [{ version: F2A_TOMBSTONE_VERSION, name: F2A_TOMBSTONE_NAME }], 'setes_setes')).not.toThrow()
   })
 
   it('R5-SOC-03: a lápide vale pelo NOME — a F2a RENUMERADA num rebase também recusa; outra migration no número da lápide = "RESERVADA"', () => {
     const renumbered = [{ version: '071', name: 'f2a_fiscal_passivo', file: '071_f2a_fiscal_passivo.sql' }]
     expect(() => assertAppliedMatchFiles(renumbered, [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes'))
-      .toThrow(/ABORTADA[\s\S]*agora é 071_f2a_fiscal_passivo\.sql[\s\S]*--retirar-lapide/)
+      .toThrow(/ABORTADA[\s\S]*arquivo da F2a: 071_f2a_fiscal_passivo\.sql[\s\S]*--retirar-lapide/)
     const other = [{ version, name: 'outra_coisa', file: `${version}_outra_coisa.sql` }]
     expect(() => assertAppliedMatchFiles(other, [{ version, name: F2A_TOMBSTONE_NAME }], 'setes_setes'))
       .toThrow(/RESERVADA pela lápide[\s\S]*Renumere/)

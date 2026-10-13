@@ -43,14 +43,15 @@ export function assertUniqueVersions(files: MigrationFile[]): void {
 export function assertAppliedMatchFiles(files: MigrationFile[], applied: { version: string; name: string }[], schemaName: string): void {
   const byVersion = new Map(files.map(f => [f.version, f]))
   // D-F153: o schema teve a F2a ABORTADA antes do ato — o código da F2a não sobe sobre ele por acidente. Pelo NOME, nunca pelo número
-  // (gate socrático da Rodada 5, R5-SOC-03): a F2a renumerada num rebase (069 → 071) também recusa; e o número da lápide fica RESERVADO —
-  // outra migration com ele nunca rodaria (PADROES §11 regra 14).
+  // (gate socrático da Rodada 5, R5-SOC-03): a F2a renumerada num rebase (069 → 071) também recusa. A lápide nasce com a versão
+  // SENTINELA (D-F162 — nunca ocupa número); uma lápide NUMÉRICA (forma anterior à D-F162) reserva o número — outra migration com ele
+  // nunca rodaria (PADROES §11 regra 14).
   const tomb = applied.find(a => a.name === F2A_TOMBSTONE_NAME)
   if (tomb) {
     const f2a = files.find(f => f.name === F2A_PASSIVO_NAME)
     if (f2a) {
       throw new Error(`${schemaName}: a F2a foi ABORTADA neste schema (lápide "${F2A_TOMBSTONE_NAME}" na versão ${tomb.version} — D-F153`
-        + `${f2a.version !== tomb.version ? `; o arquivo da F2a agora é ${f2a.file}` : ''}); o código da F2a NÃO sobe sobre ele. `
+        + `; arquivo da F2a: ${f2a.file}); o código da F2a NÃO sobe sobre ele. `
         + 'Para voltar à F2a (ato deliberado): '
         + '`npx tsx --require tsconfig-paths/register scripts/f2a-abort-before-cutover.ts <schema> <institutionId> --retirar-lapide --vai`')
     }

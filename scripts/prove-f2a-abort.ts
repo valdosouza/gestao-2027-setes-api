@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     check('R5-SOC-05: linha no _migrations e só 8 dos 9 visíveis → RECUSA (reaplicar antes) e nada muda',
       /só 8 dos 9[\s\S]*f2a-reapply-freeze/.test(refused) && (await row()) === 1 && (await triggers()) === 8, refused.slice(0, 90))
     await apply069()
-    await c.query(`UPDATE \`${E}\`._migrations SET name = 'f2a_fiscal_passivo_abortada' WHERE name = 'f2a_fiscal_passivo'`)
+    await c.query(`UPDATE \`${E}\`._migrations SET version = 'F2A-ABORT', name = 'f2a_fiscal_passivo_abortada' WHERE name = 'f2a_fiscal_passivo'`)
     for (const n of names.slice(0, 4)) await c.query(`DROP TRIGGER \`${E}\`.\`${n}\``)
     const resumed = await abortF2aPassivo(c, E, inst, { vai: true, fiscalDb: F, centralDb: C })
     check('R5-SOC-05: lápide + 5 gatilhos (aborto que caiu no meio dos DROPs) → rodar de novo TERMINA',
@@ -127,14 +127,25 @@ async function main(): Promise<void> {
 
     // --vai: tudo cai, a escrita volta
     const done = await abortF2aPassivo(c, E, inst, { vai: true, fiscalDb: F, centralDb: C })
-    check('--vai: os 9 gatilhos SOMEM e a linha VIRA a LÁPIDE (D-F153 — mesma versão, outro nome)',
-      !done.dryRun && done.tombstone && (await triggers()) === 0 && (await row()) === 0 && (await tomb()) === 1)
+    const tombVersion = ((await c.query<any[]>(`SELECT version FROM \`${E}\`._migrations WHERE name = 'f2a_fiscal_passivo_abortada'`))[0] as any[])[0]?.version
+    check('--vai: os 9 gatilhos SOMEM e a linha VIRA a LÁPIDE (D-F153) com a versão SENTINELA (D-F162 — o número 069 fica livre)',
+      !done.dryRun && done.tombstone && (await triggers()) === 0 && (await row()) === 0 && (await tomb()) === 1 && tombVersion === 'F2A-ABORT',
+      String(tombVersion))
     const applied = ((await c.query<any[]>(`SELECT version, name FROM \`${E}\`._migrations`))[0] as any[]).map(r => ({ version: String(r.version), name: String(r.name) }))
     const version = f2aPassivoVersion()!
     let runner = ''
     try { assertAppliedMatchFiles([{ version, name: 'f2a_fiscal_passivo', file: `${version}_f2a_fiscal_passivo.sql` }], applied, E) } catch (e: any) { runner = String(e?.message) }
     check('o runner do código NOVO RECUSA subir sobre a lápide (nunca re-congela calado); o código antigo (sem o arquivo) não a vê',
       /ABORTADA[\s\S]*D-F153/.test(runner) && (() => { try { assertAppliedMatchFiles([], applied, E); return true } catch { return false } })(), runner.slice(0, 90))
+    check('D-F162: a próxima migration do main com o número 069 RODA sobre o schema abortado (o código antigo não cai)',
+      (() => { try { assertAppliedMatchFiles([{ version: '069', name: 'ibscbs_ib2', file: '069_ibscbs_ib2.sql' }], applied, E); return true } catch { return false } })())
+    // D-F162: a linha da migration E a lápide juntas (reaplicaram sem tirar a lápide) → o aborto RECUSA
+    await apply069()
+    refused = ''
+    try { await abortF2aPassivo(c, E, inst, { vai: true, fiscalDb: F, centralDb: C }) } catch (e: any) { refused = String(e?.message) }
+    check('D-F162: linha da migration E lápide juntas → RECUSA e nada cai', /E a lápide/.test(refused) && (await triggers()) === 9 && (await tomb()) === 1, refused.slice(0, 90))
+    for (const n of names) await c.query(`DROP TRIGGER IF EXISTS \`${E}\`.\`${n}\``)
+    await c.query(`DELETE FROM \`${E}\`._migrations WHERE name = 'f2a_fiscal_passivo'`)
     refused = ''
     try { await reapplyF2aFreeze(c, E, { vai: true }) } catch (e: any) { refused = String(e?.message) }
     check('D-F152: reaplicar a trava num schema com a lápide → RECUSA (voltar à F2a é o --retirar-lapide)', /ABORTADA/.test(refused) && (await triggers()) === 0, refused.slice(0, 90))
