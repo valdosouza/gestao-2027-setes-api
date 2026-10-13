@@ -35,7 +35,8 @@ const ATO = path.join(NFSE, 'scripts', 'migrate-from-setes-api.ts')
 // =================================================================================================
 describe('1 — a regra da "metade" no ato × os gatilhos do setes-api (sem banco)', () => {
   it('[RESISTIU — cerca] a lista de gatilhos que o ATO confere (`F2A_FREEZE_TRIGGERS` da nfse-api, o módulo REAL) é a MESMA — nome, tabela, evento e corpo normalizado — que a migration da F2a cria e o aborto derruba (`f2aFreezeTriggerSpecs`): a conta "9 − ausentes" da "metade" no ato só vale se as duas listas forem iguais', () => {
-    if (!fs.existsSync(NFSE_CUTOVER)) return
+    // R9-SOC-06: a cerca cruzada falha ALTO se a nfse-api irmã sumir (D-F117 — nunca passar calada)
+    expect([NFSE_CUTOVER, fs.existsSync(NFSE_CUTOVER)]).toEqual([NFSE_CUTOVER, true])
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { F2A_FREEZE_TRIGGERS } = require(NFSE_CUTOVER) as { F2A_FREEZE_TRIGGERS: Record<string, readonly [string, string, string]> }
     const ato = Object.entries(F2A_FREEZE_TRIGGERS).map(([name, [table, event, body]]) => ({ name, table, event, body }))
@@ -44,7 +45,7 @@ describe('1 — a regra da "metade" no ato × os gatilhos do setes-api (sem banc
       .sort((a, b) => a.name.localeCompare(b.name))
     expect(ato).toHaveLength(9)
     expect(ato).toEqual(ours)
-    const atoSrc = fs.existsSync(ATO) ? fs.readFileSync(ATO, 'utf8') : ''
+    const atoSrc = fs.readFileSync(ATO, 'utf8')
     expect(atoSrc).toMatch(/Object\.keys\(F2A_FREEZE_TRIGGERS\)\.length - \(await f2aFreezeTriggersMissing\(pool, s\)\)\.filter\(m => m\.endsWith\(' ausente'\)\)\.length/)
   })
 })
