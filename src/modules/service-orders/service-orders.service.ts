@@ -4,7 +4,8 @@ import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import logger from '@shared/logger/logger'
 import { contentionToHttpError } from '@shared/db/contention'
-import { readFiscalSeals } from '@shared/invoice'
+import { readFiscalSeals, FiscalSeal, UNAVAILABLE_SEAL } from '@shared/invoice'
+import { FiscalVoiceUnavailableError } from '@shared/fiscal-voice'
 import { assertSchema } from '@shared/db/schema'
 import pool from '@shared/db/connection'
 import {
@@ -48,7 +49,15 @@ export async function fetchOrders(
   // Selo fiscal: só nota emitida pela web (evento E) — a sincronizada transmite-se na origem
   const ids = page.rows.filter((r: any) => (r.status === 'F' || r.status === 'C') && Number(r.webIssued) === 1).map(r => Number(r.id))
   // F2a A3: a voz do fisco vem do `fiscal_api` pela porta (`readFiscalSeals` — vidas pela view de política + lote nota × vida)
-  const fiscal = await readFiscalSeals(pool, assertSchema(scope.schemaName), scope.institutionId, ids)
+  let fiscal: Map<number, FiscalSeal>
+  try {
+    fiscal = await readFiscalSeals(pool, assertSchema(scope.schemaName), scope.institutionId, ids)
+  } catch (err) {
+    // D-F130: voz ILEGÍVEL em execução → a LISTA degrada (o selo é informativo; o alarme com o ref já foi gravado pela porta);
+    // qualquer outra falha (o ERP) segue o caminho de sempre
+    if (!(err instanceof FiscalVoiceUnavailableError)) throw err
+    fiscal = new Map(ids.map(id => [id, UNAVAILABLE_SEAL]))
+  }
   const rows = page.rows.map(({ webIssued: _w, ...r }: any) => {
     const f = fiscal.get(Number(r.id))
     return {

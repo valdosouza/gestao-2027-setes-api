@@ -14,7 +14,7 @@
  * Espelho no app: apps/web/lib/app/modules/service_orders/.
  */
 
-import type { FiscalState as ServiceFiscalState } from 'fiscal-api/reading'
+import type { FiscalSealState } from '@shared/invoice'
 
 export interface ServiceOrderListRow {
   id:           number
@@ -31,9 +31,10 @@ export interface ServiceOrderListRow {
   /**
    * Selo fiscal da linha — situação da NFS-e pela vigente (mesmo leitor da seção
    * "No fisco"). null = nada a mostrar: OS aberta, ou nota sem evento de emissão
-   * na web (sincronizada da origem — transmite-se lá).
+   * na web (sincronizada da origem — transmite-se lá). `unavailable` = a voz do
+   * fisco ilegível agora (D-F130 — a lista não cai; o alarme fica no crashlytics).
    */
-  fiscalState:       ServiceFiscalState | null
+  fiscalState:       FiscalSealState | null
   fiscalEnvironment: 'H' | 'P' | null
   nfseNumber:        string | null
 }

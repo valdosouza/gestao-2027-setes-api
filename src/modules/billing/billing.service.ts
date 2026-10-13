@@ -935,7 +935,15 @@ export async function getOrderCancelPlan(institution: InstitutionPayload, orderI
   const s = assertSchema(schemaName)
   return withDeadlockRetry('plano de cancelamento (consulta)', { institutionId, orderId }, 3, async () => {
     const conn = await pool.getConnection()
+    // D-F131 (= Q-F139 (a)): quem só CONSULTA espera trava por pouco tempo — `innodb_lock_wait_timeout` curto na SESSÃO, devolvido ao
+    // valor que a conexão TINHA (molde da D-F41 — `runShortCommand` do núcleo); estourou = 1205 → 409 RESOURCE_BUSY em segundos, nunca 50 s
+    // segurando a nota que a nfse-api trava como 1º comando. Devolução que falha = conexão DESCARTADA (nunca volta ao pool encurtada).
+    let shortened = false
+    let restored = false
     try {
+      await conn.query('SET @setes_plan_prev_lw = @@session.innodb_lock_wait_timeout')
+      shortened = true
+      await conn.query('SET SESSION innodb_lock_wait_timeout = ?', [CANCEL_PLAN_LOCK_WAIT_SECONDS])
       await conn.beginTransaction()
       const plan = await buildCancelPlan(conn, s, institutionId, orderId)
       // F2A3-SOC-12 (gate socrático da A3): o consultivo diz o que o POST diria — com linha de caixa (D16) e sem caixa aberto do
@@ -952,10 +960,20 @@ export async function getOrderCancelPlan(institution: InstitutionPayload, orderI
       }
     } finally {
       await conn.rollback().catch(() => undefined)     // consultivo: nada fica, nem trava
-      conn.release()
+      if (shortened) {
+        try {
+          await conn.query('SET SESSION innodb_lock_wait_timeout = @setes_plan_prev_lw')
+          restored = true
+        } catch { /* descartada abaixo */ }
+      }
+      if (!shortened || restored) conn.release()
+      else conn.destroy()
     }
   })
 }
+
+/** D-F131: quanto o plano CONSULTIVO espera uma linha travada antes de desistir com 409 (o mesmo número do comando curto — D-F41). */
+export const CANCEL_PLAN_LOCK_WAIT_SECONDS = 3
 
 /** O EFEITO da voz do fisco na nota (D-F79/D-F114/D-F115) — a tela "No fisco" compõe com a nfse-api (fisco). */
 export interface FiscalEffectView {

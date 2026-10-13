@@ -56,6 +56,19 @@ export interface CancelBlock extends FieldError {
   message: string
   /** Referência legível (título "pedido/parcela", nº do cheque, id do boleto/devolução). */
   ref: string
+  /**
+   * D-F141 (= Q-F149 (a), Valdo 2026-10-13): só no bloco `fiscal` — a barreira TIPADA (o `FiscalCancelBarrier` serializado) para a tela
+   * escolher a AÇÃO (cancelar a NFS-e no fisco · aguardar · consultar · reconferir) sem interpretar a mensagem nem recriar o plano em Dart.
+   * Aditivo: vai também no `fields[]` do 409 `INVOICE_CANCEL_BLOCKED`.
+   */
+  barrier?: FiscalBarrierView
+}
+
+/** A barreira fiscal como DADO (D-F141): o tipo, o motivo do veredito da reconferência (só em `reconfirm`) e a tentativa. */
+export interface FiscalBarrierView {
+  kind:    'authorized' | 'in-flight' | 'cancel-in-flight' | 'reconfirm'
+  reason?: string
+  attempt: number | null
 }
 
 export interface CancelPlan {
@@ -361,15 +374,16 @@ export async function buildCancelPlan(
 function fiscalBlock(b: Exclude<FiscalCancelBarrier, { kind: 'none' }>): CancelBlock {
   const nfse = 'nfseNumber' in b && b.nfseNumber ? `NFS-e ${b.nfseNumber}` : 'NFS-e'
   const ref = String(b.attempt ?? '')
+  const barrier: FiscalBarrierView = { kind: b.kind, attempt: b.attempt ?? null, ...(b.kind === 'reconfirm' ? { reason: b.reason } : {}) }
   switch (b.kind) {
     case 'authorized':
-      return { field: 'fiscal', ref, message: `${nfse} autorizada no fisco (tentativa ${b.attempt}) — cancele a NFS-e no fisco primeiro (o fisco fala primeiro)` }
+      return { field: 'fiscal', ref, barrier, message: `${nfse} autorizada no fisco (tentativa ${b.attempt}) — cancele a NFS-e no fisco primeiro (o fisco fala primeiro)` }
     case 'cancel-in-flight':
-      return { field: 'fiscal', ref, message: `Pedido de cancelamento ao fisco sem resposta (tentativa ${b.attempt}) — consulte a NFS-e no fisco para reconciliar antes` }
+      return { field: 'fiscal', ref, barrier, message: `Pedido de cancelamento ao fisco sem resposta (tentativa ${b.attempt}) — consulte a NFS-e no fisco para reconciliar antes` }
     case 'in-flight':
-      return { field: 'fiscal', ref, message: `Transmissão ao fisco em andamento (tentativa ${b.attempt}) — aguarde a voz do fisco antes` }
+      return { field: 'fiscal', ref, barrier, message: `Transmissão ao fisco em andamento (tentativa ${b.attempt}) — aguarde a voz do fisco antes` }
     case 'reconfirm':
-      return { field: 'fiscal', ref, message: `Envio interrompido sem prova de que a NFS-e não existe (${b.reason}) — reconfira a NFS-e no fisco antes de cancelar a nota` }
+      return { field: 'fiscal', ref, barrier, message: `Envio interrompido sem prova de que a NFS-e não existe (${b.reason}) — reconfira a NFS-e no fisco antes de cancelar a nota` }
   }
 }
 

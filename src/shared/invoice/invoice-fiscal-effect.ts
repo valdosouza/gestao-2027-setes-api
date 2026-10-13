@@ -113,12 +113,21 @@ export function unknownFamilies(): string[] {
   return Object.keys(VOICE_READINGS).filter(f => !(KNOWN_FAMILIES as readonly string[]).includes(f))
 }
 
+/**
+ * Estado do selo: o do núcleo (`fiscalStateOf`) ou `unavailable` — a voz do fisco ILEGÍVEL em execução (D-F130): a lista não cai por
+ * causa do selo (informativo); o alarme com a referência fica na tb_crashlytics (porta `@shared/fiscal-voice`).
+ */
+export type FiscalSealState = FiscalState | 'unavailable'
+
 /** Selo fiscal de uma linha de lista (OS): situação da NFS-e pela VIGENTE da vida vigente — o mesmo leitor do plano. */
 export interface FiscalSeal {
-  state:       FiscalState
+  state:       FiscalSealState
   environment: 'H' | 'P' | null
   nfseNumber:  string | null
 }
+
+/** D-F130: o selo quando a voz do fisco está ilegível — sem ambiente nem número (nada inventado). */
+export const UNAVAILABLE_SEAL: Readonly<FiscalSeal> = Object.freeze({ state: 'unavailable', environment: null, nfseNumber: null })
 
 /**
  * Selos de VÁRIAS notas (lista paginada de OS): vidas pela `vw_invoice_life` (sem trava — leitura consultiva) e a voz em UM lote

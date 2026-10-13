@@ -9,6 +9,12 @@ import { invoiceSerieFor } from '../shared/invoice-series'
 import { rawServiceRow, serviceView, unrecorded, TEST_KEY } from '../test-setup/fiscal-voice-rows'
 import { VOICE_READINGS } from 'fiscal-api/reading'
 
+// D-F130: a porta grava o ALARME (tb_crashlytics) quando a voz está ilegível — aqui na fronteira, sem banco
+jest.mock('../shared/errors/crash.repository', () => ({
+  __esModule: true, newCrashRef: jest.fn(() => 'REFVOZ01'), recordCrash: jest.fn().mockResolvedValue(undefined),
+}))
+jest.mock('../shared/logger/logger', () => ({ __esModule: true, default: { error: jest.fn(), warn: jest.fn(), info: jest.fn() } }))
+
 const ENV0 = { ...process.env }
 afterEach(() => { process.env = { ...ENV0 } })
 const qOf = (...results: any[][]) => {
@@ -40,14 +46,19 @@ describe('porta @shared/fiscal-voice — o único leitor do fiscal_api (D-F15/D-
     await readServiceVoiceOfLife(q, 1, 7400, 1)
     expect(q.query.mock.calls[0][0]).toMatch(/FROM `fiscal_api_teste`\.vw_invoice_service_transmission/)
   })
-  it('vida ausente/inválida → erro ANTES do banco (D-F119: nunca "todas as vidas")', async () => {
+  // D-F130: toda falha da leitura da voz (argumento recusado pelo leitor do núcleo, linha que o mapa recusa, banco) sai da porta como
+  // UM fato tipado — 503 FISCAL_VOICE_UNAVAILABLE com o ref do alarme; a causa fica em `causeMessage` (log/crashlytics), nunca na mensagem
+  const unavailable = (cause: RegExp) => expect.objectContaining({ statusCode: 503, code: 'FISCAL_VOICE_UNAVAILABLE', ref: 'REFVOZ01', causeMessage: expect.stringMatching(cause) })
+  it('vida ausente/inválida → erro ANTES do banco (D-F119: nunca "todas as vidas") — tipado pela porta (D-F130)', async () => {
     const q = qOf()
-    for (const life of [0, -1, 1.5, NaN, null as any]) await expect(readServiceVoiceOfLife(q, 1, 7400, life)).rejects.toThrow(/Vida da nota/)
+    for (const life of [0, -1, 1.5, NaN, null as any]) await expect(readServiceVoiceOfLife(q, 1, 7400, life)).rejects.toEqual(unavailable(/Vida da nota/))
     expect(q.query).not.toHaveBeenCalled()
   })
-  it('linha de OUTRA vida/nota vinda do banco → falha ALTO (D-F119)', async () => {
-    await expect(readServiceVoiceOfLife(qOf([rawServiceRow({ invoiceId: 7400, lifeEvent: 2 })]), 1, 7400, 3)).rejects.toThrow()
-    await expect(readServiceVoiceOfLife(qOf([rawServiceRow({ invoiceId: 9999, lifeEvent: 3 })]), 1, 7400, 3)).rejects.toThrow()
+  it('linha de OUTRA vida/nota vinda do banco → falha ALTO (D-F119) — tipada pela porta (D-F130), com o alarme gravado', async () => {
+    await expect(readServiceVoiceOfLife(qOf([rawServiceRow({ invoiceId: 7400, lifeEvent: 2 })]), 1, 7400, 3)).rejects.toEqual(unavailable(/./))
+    await expect(readServiceVoiceOfLife(qOf([rawServiceRow({ invoiceId: 9999, lifeEvent: 3 })]), 1, 7400, 3)).rejects.toEqual(unavailable(/./))
+    const crash = (jest.requireMock('../shared/errors/crash.repository') as any).recordCrash as jest.Mock
+    expect(crash).toHaveBeenCalledWith(expect.objectContaining({ ref: 'REFVOZ01', code: 'FISCAL_VOICE_UNAVAILABLE', statusCode: 503, institutionId: 1 }))
   })
   it('lote: pares nota × vida (selo da lista de OS); lista vazia não pergunta ao banco', async () => {
     const empty = qOf()

@@ -8,6 +8,10 @@ jest.mock('../shared/financial-settlement', () => ({
   __esModule: true,
   findOpenCashierIdTx: jest.fn(),
 }))
+// D-F130: a porta da voz grava o ALARME quando a voz está ilegível — aqui na fronteira, sem banco
+jest.mock('../shared/errors/crash.repository', () => ({
+  __esModule: true, newCrashRef: jest.fn(() => 'REFCANC1'), recordCrash: jest.fn().mockResolvedValue(undefined),
+}))
 jest.mock('../shared/bank-slip', () => ({
   __esModule: true,
   cancelBankSlip: jest.fn(),
@@ -463,7 +467,10 @@ describe('buildCancelPlan — bloco fiscal pela voz do fiscal_api (F2a A3)', () 
     const conn = fakeConn()
     const r: any = row(); delete r.authorityRecorded
     planQueries(conn, { fiscal: [r] })
-    await expect(buildCancelPlan(conn as any, 'setes_setes', 1, 100)).rejects.toThrow(/authority_recorded/)
+    // D-F130: o mapa recusa e a PORTA tipa (503 FISCAL_VOICE_UNAVAILABLE + ref); a causa fica em causeMessage
+    await expect(buildCancelPlan(conn as any, 'setes_setes', 1, 100)).rejects.toEqual(expect.objectContaining({
+      statusCode: 503, code: 'FISCAL_VOICE_UNAVAILABLE', causeMessage: expect.stringMatching(/authority_recorded/),
+    }))
   })
 })
 

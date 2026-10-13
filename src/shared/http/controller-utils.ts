@@ -21,6 +21,7 @@ export function handleError(res: Response, err: unknown, ctx: string): void {
     res.status(err.statusCode).json({
       error: err.message,
       ...(err.code ? { code: err.code } : {}),
+      ...(err.ref ? { ref: err.ref } : {}),
       ...(err.fields ? { fields: err.fields } : {}),
     })
     return

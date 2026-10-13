@@ -9,6 +9,7 @@ import { assertJwtKeys } from '@shared/auth/product-token'
 import { assertFiscalVoiceReadable } from '@shared/fiscal-voice'
 import pool from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
+import { assertF2aFreezeTriggers } from './migrations/f2a-freeze-triggers'
 
 const PORT = process.env.PORT ?? 3000
 
@@ -28,6 +29,8 @@ async function bootstrap() {
     logger.info(`Voz do fisco (views): ${await assertFiscalVoiceReadable(pool)}`)
     logger.info('Iniciando migrations...')
     await runMigrationsForAllInstitutions()
+    // D-F135 (F2a): os gatilhos de TRAVA da f2a_fiscal_passivo conferidos pelo NOME em cada schema — faltando, o setes-api NÃO sobe
+    logger.info(`Gatilhos de TRAVA da F2a: ${await assertF2aFreezeTriggers()}`)
     logger.info('Migrations concluidas. Subindo servidor...')
 
     app.listen(PORT, () => {

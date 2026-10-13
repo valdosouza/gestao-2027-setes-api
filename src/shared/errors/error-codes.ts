@@ -193,6 +193,8 @@ export const ErrorCodes = {
   // Rodada 13 das APIs fiscais (D-F67/D-F74, 2026-10-10): NFS-e cancelada por SUBSTITUIÇÃO (e105102)
   FISCAL_NFSE_SUBSTITUTED:           'FISCAL_NFSE_SUBSTITUTED',
   INVOICE_CANCEL_WAIVER_NOT_APPLICABLE: 'INVOICE_CANCEL_WAIVER_NOT_APPLICABLE',
+  // F2a, Rodada 4 (D-F130): a voz do fisco (fiscal_api) ilegível em EXECUÇÃO — quem decide falha fechado com código próprio
+  FISCAL_VOICE_UNAVAILABLE:          'FISCAL_VOICE_UNAVAILABLE',
 } as const
 
 export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
@@ -358,4 +360,5 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   FISCAL_DPS_INVALID:                'DPS não pôde ser montado com os dados da nota/cadastros (leiaute do XSD) — campo e motivo em fields[]; nada foi reservado',
   FISCAL_NFSE_SUBSTITUTED:           'NFS-e desta nota foi cancelada por SUBSTITUIÇÃO no fisco (e105102) — existe uma substituta; não se transmite de novo: cancele a nota ou mantenha-a',
   INVOICE_CANCEL_WAIVER_NOT_APPLICABLE: 'Manter a nota só vale para NFS-e cancelada por SUBSTITUIÇÃO no fisco (e105102), com a nota viva e sem efeito aplicado',
+  FISCAL_VOICE_UNAVAILABLE:          'A voz do fisco (banco do serviço fiscal) está ilegível agora — a decisão fica bloqueada (falha fechada); o ref rastreia o alarme na tb_crashlytics (D-F130)',
 }

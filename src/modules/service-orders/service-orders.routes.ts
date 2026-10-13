@@ -41,7 +41,7 @@ const router = Router()
  *         schema: { type: string }
  *         description: 'Pesquisa avançada (D-BA1) — JSON { chave: valor } com as chaves de GET /search-criteria; texto = contém, faixa = { from, to }, lookup = id, options = [valores], bool = true|false. Soma em E com filter. Desconhecida/malformada = 400 SEARCH_CRITERIA_INVALID; valor inválido = 422 SEARCH_CRITERION_INVALID com fields[]'
  *     responses:
- *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, number, customerId, customerName, status, dtRecord, itemsCount, totalValue, invoiceNumber, fiscalState (none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight; null = aberta ou nota da origem), fiscalEnvironment (H|P), nfseNumber }' }
+ *       200: { description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, number, customerId, customerName, status, dtRecord, itemsCount, totalValue, invoiceNumber, fiscalState (none|in_flight|authorized|rejected|failed|cancelled|cancel_in_flight; unavailable = a voz do fisco ilegível agora — a lista não cai, D-F130; null = aberta ou nota da origem), fiscalEnvironment (H|P), nfseNumber }' }
  *       400: { description: 'criteria malformado ou com chave desconhecida' }
  *       401: { description: Não autenticado }
  *       422: { description: 'Valor inválido em critério (fields[])' }

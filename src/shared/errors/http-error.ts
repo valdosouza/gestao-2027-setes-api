@@ -21,4 +21,7 @@ export class HttpError extends Error {
     super(message)
     this.name = 'HttpError'
   }
+  /** Referência do alarme (tb_crashlytics) quando o erro TIPADO também é um evento técnico rastreável (D-F130 — voz do fisco
+   *  ilegível): vai no payload como `ref`, como no 500. Aditivo — consumidores antigos ignoram. */
+  ref?: string
 }

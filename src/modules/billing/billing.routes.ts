@@ -147,7 +147,8 @@ router.post('/invoice', requirePrivilegeFor(PRIVILEGE_FATURAR, resolveFromBody),
  *       401: { description: Sem JWT }
  *       403: { description: Flag billing desabilitada ou sem privilégio CANCELAR (PRIVILEGE_REQUIRED) }
  *       404: { description: Pedido/nota não encontrados }
- *       409: { description: Não cancelável (INVOICE_NOT_CANCELLABLE), bloqueada (INVOICE_CANCEL_BLOCKED) ou sem caixa aberto (NO_OPEN_CASHIER) }
+ *       409: { description: Não cancelável (INVOICE_NOT_CANCELLABLE), bloqueada (INVOICE_CANCEL_BLOCKED — o bloco fiscal traz barrier {kind, reason?, attempt}, D-F141) ou sem caixa aberto (NO_OPEN_CASHIER) }
+ *       503: { description: "A voz do fisco (banco do serviço fiscal) ilegível agora — FISCAL_VOICE_UNAVAILABLE com ref do alarme (D-F130); nada foi alterado" }
  *       500: { description: Erro interno }
  */
 // Q-G16/Q-G22: CANCELAR na interface do RAMO do pedido — ciclo de OS vivo →
@@ -186,6 +187,7 @@ router.post('/cancel', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody),
  *       403: { description: Sem privilégio CANCELAR no ramo (PRIVILEGE_REQUIRED) }
  *       404: { description: Nota não encontrada (INVOICE_NOT_FOUND) }
  *       409: { description: INVOICE_CANCEL_WAIVER_NOT_APPLICABLE (não é substituição, nota já cancelada ou efeito já aplicado) · RESOURCE_BUSY }
+ *       503: { description: "A voz do fisco (banco do serviço fiscal) ilegível agora — FISCAL_VOICE_UNAVAILABLE com ref do alarme (D-F130); nada foi gravado" }
  */
 router.post('/cancel-waiver', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromBody), controller.cancelWaiver)
 
@@ -208,20 +210,25 @@ router.post('/cancel-waiver', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFro
  *       produção (cancele no fisco primeiro) ou envio interrompido sem a PROVA da reconferência (reconfira na
  *       nfse-api). fiscalRecord diz o destino: com registro fiscal a nota fica (evento C) e o pedido vira C.
  *       cancellable também exige caixa aberto do operador quando o cancelamento grava linha de caixa (D16 — cashierOpen).
- *       Mudou entre a consulta e o POST = o POST recusa com o plano novo. Interface do ramo contratada (D-F37).
+ *       Mudou entre a consulta e o POST = o POST recusa com o plano novo. O bloco fiscal traz a barreira TIPADA
+ *       (barrier {kind: authorized|in-flight|cancel-in-flight|reconfirm, reason?, attempt} — D-F141) para a tela
+ *       escolher a ação. Privilégio CANCELAR na interface do ramo — a guarda do POST (D-F131); a consulta espera
+ *       trava no máximo 3 s (409 RESOURCE_BUSY — nunca segura a nota que a nfse-api trava).
  *     tags: [billing]
  *     security: [{ BearerAuth: [] }]
  *     parameters:
  *       - { in: path, name: orderId, required: true, schema: { type: integer, minimum: 1 } }
  *     responses:
- *       200: { description: "{ ok, data: { orderId, invoiceNumber, cancellable, blocks[{field: title|bankSlip|check|return|serviceOrder|fiscal, ref, message}], fiscalRecord, effects: { bankSlipsToCancel[], releasedTitles[], checksToReverse[{checkId, number}], commissionsToCompensate, touchesCash, cashierOpen (D16 do operador — null quando não toca o caixa) } } }" }
+ *       200: { description: "{ ok, data: { orderId, invoiceNumber, cancellable, blocks[{field: title|bankSlip|check|return|serviceOrder|fiscal, ref, message, barrier? (só no fiscal)}], fiscalRecord, effects: { bankSlipsToCancel[], releasedTitles[], checksToReverse[{checkId, number}], commissionsToCompensate, touchesCash, cashierOpen (D16 do operador — null quando não toca o caixa) } } }" }
  *       400: { description: orderId inválido (INVALID_ID) }
  *       401: { description: Sem JWT }
- *       403: { description: Interface do ramo não contratada (INTERFACE_NOT_ALLOWED) }
+ *       403: { description: Interface do ramo não contratada (INTERFACE_NOT_ALLOWED) ou sem o privilégio CANCELAR (PRIVILEGE_REQUIRED) }
  *       404: { description: Pedido/nota não encontrados (ORDER_NOT_FOUND · INVOICE_NOT_FOUND) }
- *       409: { description: Pedido não faturado / nota não cancelável (INVOICE_NOT_CANCELLABLE) · RESOURCE_BUSY }
+ *       409: { description: Pedido não faturado / nota não cancelável (INVOICE_NOT_CANCELLABLE) · RESOURCE_BUSY (trava além de 3 s) }
+ *       503: { description: "A voz do fisco (banco do serviço fiscal) ilegível agora — FISCAL_VOICE_UNAVAILABLE com ref do alarme (D-F130)" }
  */
-router.get('/:orderId/cancel-plan', requireInterfaceFor(resolveFromParam), controller.cancelPlan)
+// D-F131 (= Q-F139 (a)): a MESMA guarda do POST — quem não pode cancelar não segura as travas do plano
+router.get('/:orderId/cancel-plan', requirePrivilegeFor(PRIVILEGE_CANCELAR, resolveFromParam), controller.cancelPlan)
 
 /**
  * @swagger
@@ -246,6 +253,7 @@ router.get('/:orderId/cancel-plan', requireInterfaceFor(resolveFromParam), contr
  *       403: { description: Interface do ramo não contratada (INTERFACE_NOT_ALLOWED) }
  *       404: { description: Nota não encontrada (INVOICE_NOT_FOUND) }
  *       409: { description: RESOURCE_BUSY (a nota mudou durante a leitura) }
+ *       503: { description: "A voz do fisco (banco do serviço fiscal) ilegível agora — FISCAL_VOICE_UNAVAILABLE com ref do alarme (D-F130); nunca 'nada pendente' calado" }
  */
 router.get('/:orderId/fiscal-effect', requireInterfaceFor(resolveFromParam), controller.fiscalEffect)
 

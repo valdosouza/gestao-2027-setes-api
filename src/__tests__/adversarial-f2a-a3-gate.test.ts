@@ -94,6 +94,7 @@ function planConn(sc: PlanScenario = {}) {
     query: jest.fn(async (sql: string) => {
       sqls.push(String(sql))
       if (sc.failOn && sc.failOn.test(sql)) throw sc.failWith
+      if (/^SET (@setes_plan_prev_lw|SESSION innodb_lock_wait_timeout)/.test(sql)) return [{}]   // D-F131: espera curta do plano consultivo
       if (/^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)) { writes.push(String(sql).trim().slice(0, 80)); return [{ affectedRows: 1, insertId: 0 }] }
       if (/FROM `setes_setes`\.tb_invoice_cancel_waiver/.test(sql)) return [[]]
       if (/SELECT COALESCE\(MAX\(event\), 0\) \+ 1 AS nextEvent/.test(sql)) return [[{ nextEvent: 2 }]]
@@ -116,6 +117,9 @@ function planConn(sc: PlanScenario = {}) {
   }
   return { conn, writes, sqls }
 }
+
+/** D-F130 (Rodada 4 da F2a): a falha da leitura da voz sai da PORTA tipada (503 FISCAL_VOICE_UNAVAILABLE + ref); a causa fica em causeMessage. */
+const voiceDown = (cause: RegExp) => expect.objectContaining({ statusCode: 503, code: 'FISCAL_VOICE_UNAVAILABLE', causeMessage: expect.stringMatching(cause) })
 
 const USER = { institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes' }
 const ADMIN = { ...USER, role: 'admin' }
@@ -151,7 +155,7 @@ describe('1 — cancelamento local de NFS-e autorizada em produção (barreira, 
 
   it('[RESISTIU] vidas MISTURADAS: a view devolve a vida H antiga (registrada/cancelada) junto da vida nova em P → falha ALTO (D-F119), nunca decide', async () => {
     const mixed = [row({ lifeEvent: 1, attempt: 1, environment: 'H', lastKind: 'C', lastCode: '101101' }), unrec({ lifeEvent: 3, attempt: 2, lastKind: 'F', lastSource: 'Q', lastEventAt: '2026-10-10 12:10:00' })]
-    await expect(plan(mixed, { life: [{ lifeEvent: 3, lastEvent: 3, lastKind: 'E' }] })).rejects.toThrow(/vida|não foi pedida|mistura/)
+    await expect(plan(mixed, { life: [{ lifeEvent: 3, lastEvent: 3, lastKind: 'E' }] })).rejects.toEqual(voiceDown(/vida|não foi pedida|mistura/))
     // e o veredito do núcleo recusa a lista mista mesmo que alguém a monte à mão
     expect(() => fiscalCancelBarrier({ service: mixed.map((r: any) => serviceView(r)), current: null })).toThrow(/mistura/)
   })
@@ -179,9 +183,9 @@ describe('1 — cancelamento local de NFS-e autorizada em produção (barreira, 
 
   it('[RESISTIU] códigos/kinds em minúsculas ou fora do domínio: "a"/"c"/"n" = viva (bloqueia), ambiente "p" e registro "s"/NULL = falha ALTO', async () => {
     for (const k of ['a', 'c', 'n', 'se', 'X']) expect(fiscalBlocks(await plan([row({ lastKind: k })]))).toHaveLength(1)
-    await expect(plan([row({ environment: 'p' })])).rejects.toThrow(/environment/)
-    await expect(plan([row({ authorityRecorded: 's' })])).rejects.toThrow(/authority_recorded/)
-    await expect(plan([row({ authorityRecorded: null })])).rejects.toThrow(/authority_recorded/)
+    await expect(plan([row({ environment: 'p' })])).rejects.toEqual(voiceDown(/environment/))
+    await expect(plan([row({ authorityRecorded: 's' })])).rejects.toEqual(voiceDown(/authority_recorded/))
+    await expect(plan([row({ authorityRecorded: null })])).rejects.toEqual(voiceDown(/authority_recorded/))
     // C do fisco com minúscula não "libera o efeito": 'c' é viva → o POST recusa (409), nada gravado
     const { conn, writes } = planConn({ fiscal: [row({ lastKind: 'c', lastCode: '101101' })] })
     await expect(cancelInvoice(conn, 'setes_setes', 1, 7, { orderId: 100, reason: 'x' })).rejects.toMatchObject({ code: 'INVOICE_CANCEL_BLOCKED' })
@@ -204,7 +208,7 @@ describe('1 — cancelamento local de NFS-e autorizada em produção (barreira, 
     await expect(buildCancelPlan(conn, 'setes_setes', 1, 100)).rejects.toMatchObject({ code: 'INVOICE_NOT_CANCELLABLE' })
   })
 
-  failing('[ACHADO F2A3-ADV-01 MEDIUM] voz A/N (AUTORIZADA) em PRODUÇÃO sem `authority_recorded` (linha incoerente — não há CHECK "A ⇒ chave") NÃO bloqueia: o POST /billing/cancel soft-deleta a nota e libera o número (antes da A3 bloqueava — regressão de falha FECHADA)', async () => {
+  it('[DECIDIDO — D-F136 (= Q-F144 (a)); era ACHADO F2A3-ADV-01 MEDIUM] voz A/N (AUTORIZADA) em PRODUÇÃO sem `authority_recorded` (linha incoerente — não há CHECK "A ⇒ chave") NÃO bloqueava: o POST /billing/cancel soft-deletava a nota — agora o MAPA do núcleo falha ALTO (o invariante da D-NE61 para a autorizada)', async () => {
     // antes (f5eee3b): `(isLive || isAuthorized) && !(isAuthorized && environment === 'H')` → bloqueava; hoje só bloqueia se isFiscalRecord
     for (const k of ['A', 'N']) {
       const { conn, writes } = planConn({ fiscal: [unrec({ lastKind: k, lastSource: 'P', environment: 'P' })] })
@@ -213,6 +217,7 @@ describe('1 — cancelamento local de NFS-e autorizada em produção (barreira, 
       // CERTO: falha fechado — bloqueio `fiscal` (409) ou falha ALTA do mapa (invariante da família, como a D-NE61 para D) — nunca soft-delete
       expect(writes.filter(w => /tb_invoice SET deleted = 'S'/.test(w))).toEqual([])
       expect(outcome).not.toBe('cancelou')
+      expect(outcome).toEqual(voiceDown(/autorizada\) SEM registro.*D-F136/))   // D-F130: o mapa recusa → a porta tipa (fechado)
     }
   })
 })
@@ -240,7 +245,7 @@ describe('2 — "manter a nota" (D-F67/D-F80) só na SUBSTITUIÇÃO em PRODUÇÃ
     await expect(run()).rejects.toMatchObject({ code: 'INVOICE_CANCEL_WAIVER_NOT_APPLICABLE' }); expect(pc.writes).toEqual([])
   })
   it('[RESISTIU] OUTRA vida (a substituição é da vida antiga) → a leitura escopada falha ALTO; nota cancelada → 409; nota soft-deletada → 404', async () => {
-    await expect(waive([row({ lifeEvent: 9, lastKind: 'C', lastCode: '105102' })]).run()).rejects.toThrow(/não foi pedida/)
+    await expect(waive([row({ lifeEvent: 9, lastKind: 'C', lastCode: '105102' })]).run()).rejects.toEqual(voiceDown(/não foi pedida/))
     await expect(waive([row({ lastKind: 'C', lastCode: '105102' })], { life: [{ lifeEvent: 1, lastEvent: 2, lastKind: 'C' }] }).run())
       .rejects.toMatchObject({ code: 'INVOICE_CANCEL_WAIVER_NOT_APPLICABLE' })
     await expect(waive([row({ lastKind: 'C', lastCode: '105102' })], { invoice: [] }).run()).rejects.toMatchObject({ statusCode: 404, code: 'INVOICE_NOT_FOUND' })
@@ -285,7 +290,8 @@ describe('3 — GET /api/billing/:orderId/cancel-plan e /fiscal-effect (D-F115/D
     const { conn } = planConn({ order: [] }); getConn.mockResolvedValue(conn)
     const r = await plan(555)
     expect([r.status, r.body.code]).toEqual([404, 'ORDER_NOT_FOUND'])
-    expect(conn.query.mock.calls[0][1]).toEqual([555, 1])                // (id, institution do JWT)
+    const orderRead = conn.query.mock.calls.find((c: any[]) => /FROM `setes_setes`\.tb_order\s+WHERE id = \?/.test(String(c[0])))!
+    expect(orderRead[1]).toEqual([555, 1])                                // (id, institution do JWT) — os SET da espera curta vêm antes (D-F131)
   })
 
   it('[RESISTIU] D-F128: o GET do plano percorre TODOS os ramos (cheque em custódia, boleto agrupado, baixa, devolução, voz) e NUNCA escreve nem comita', async () => {
@@ -332,13 +338,13 @@ describe('3 — GET /api/billing/:orderId/cancel-plan e /fiscal-effect (D-F115/D
     expect((await effect(300)).body.data).toMatchObject({ effect: 'none', lifeEvent: 4 })
   })
 
-  it('[FATO — Q-F141-ADV] usuário SEM o privilégio CANCELAR roda o plano consultivo (só a licença é conferida — Q-N32): as travas FOR UPDATE do plano (inclusive títulos de OUTROS pedidos do boleto agrupado) ficam ao alcance de quem não pode cancelar', async () => {
+  it('[DECIDIDO — D-F131 (= Q-F139 (a)); era FATO Q-F141-ADV] usuário SEM o privilégio CANCELAR NÃO roda o plano consultivo: 403 PRIVILEGE_REQUIRED antes de abrir conexão — as travas FOR UPDATE do plano (inclusive títulos de OUTROS pedidos do boleto agrupado) ficam fora do alcance de quem não pode cancelar', async () => {
     const { conn, sqls } = planConn({ slips: [{ id: 9, lastKind: 'E', otherOrders: 1 }], released: [{ bankSlipId: 9, orderId: 200, parcel: 1 }] })
     getConn.mockResolvedValue(conn)
     const r = await plan(100, USER)                                       // `privileged` vazio: nenhum CANCELAR
-    expect(r.status).toBe(200)
-    expect(sqls.filter(s => /FOR UPDATE/.test(s)).length).toBeGreaterThanOrEqual(8)
-    expect(sqls.some(s => /tb_bank_slip_title\s+WHERE[\s\S]*tb_order_id <> \?[\s\S]*FOR UPDATE/.test(s))).toBe(true)
+    expect([r.status, r.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
+    expect(getConn).not.toHaveBeenCalled()
+    expect(sqls).toEqual([])
   })
 
   it('[RESISTIU] fiscal-effect é leitura pura: nenhuma transação, nenhuma trava, nenhuma escrita (só SELECT no pool)', async () => {
@@ -375,13 +381,15 @@ describe('4 — efeito da voz (D-F114) e selo em lote da lista de OS', () => {
     expect(voiceCall[1]).toEqual([1, 0, [[100, 1]]])                     // só o par pedido; a nota sem vida nem entra
   })
 
-  it('[RESISTIU] selo: linha de vida NÃO pedida vinda da view → falha ALTO (D-F119), nunca um selo de outra vida', async () => {
+  it('[RESISTIU + D-F130] selo: linha de vida NÃO pedida vinda da view → nunca um selo de outra vida (D-F119): a lista DEGRADA para "unavailable"', async () => {
     ;(soRepo.listOrders as jest.Mock).mockResolvedValue({ rows: [{ id: 100, status: 'F', webIssued: 1, invoiceNumber: 17 }], total: 1 })
     fiscalRows = [row({ lifeEvent: 7 })]
-    await expect(fetchOrders('', { page: 1, pageSize: 25 } as any, { schemaName: 'setes_setes', institutionId: 1, userId: 7 })).rejects.toThrow(/não foi pedida/)
+    // D-F130 (Rodada 4): a LISTA degrada — selo `unavailable` (nunca um selo de outra vida, nunca 500); o alarme fica no crashlytics
+    const out = await fetchOrders('', { page: 1, pageSize: 25 } as any, { schemaName: 'setes_setes', institutionId: 1, userId: 7 })
+    expect(out.rows.map((r: any) => [r.id, r.fiscalState, r.fiscalEnvironment, r.nfseNumber])).toEqual([[100, 'unavailable', null, null]])
   })
 
-  failing('[ACHADO F2A3-ADV-03 MEDIUM] fiscal_api ILEGÍVEL em EXECUÇÃO (view recriada/sem GRANT/coluna nova faltando depois do boot) → a lista de OS INTEIRA cai em 500 com crashlytics; a conferência do boot (D-F113) só protege a subida', async () => {
+  it('[DECIDIDO — D-F130 (= Q-F138 (b)); era ACHADO F2A3-ADV-03 MEDIUM] fiscal_api ILEGÍVEL em EXECUÇÃO (view recriada/sem GRANT/coluna nova faltando depois do boot) → a lista de OS INTEIRA cai em 500 com crashlytics; a conferência do boot (D-F113) só protege a subida', async () => {
     ;(soRepo.listOrders as jest.Mock).mockResolvedValue({ rows: [{ id: 100, status: 'F', webIssued: 1, invoiceNumber: 17 }], total: 1 })
     for (const err of [
       Object.assign(new Error("SELECT command denied to user 'setes'@'%' for table 'vw_invoice_service_transmission'"), { code: 'ER_TABLEACCESS_DENIED_ERROR', errno: 1142 }),
@@ -552,15 +560,16 @@ const live = process.env.F2A_ADV_LIVE === '1'
       for (const sql of bad) expect(await attack(f, sql)).toBe(4025)
     })
 
-    failing('[ACHADO F2A3-ADV-01 MEDIUM — prova viva] o fiscal_api ACEITA voz A em PRODUÇÃO numa tentativa SEM chave (nenhum CHECK "A ⇒ registro") e a porta entrega ao plano uma autorizada sem registro → barreira "none"', async () => {
+    it('[DECIDIDO — D-F136, prova viva; era ACHADO F2A3-ADV-01 MEDIUM] o fiscal_api ACEITA voz A em PRODUÇÃO numa tentativa SEM chave (nenhum CHECK "A ⇒ registro") — a porta agora recusa a linha no MAPA (falha alta), nunca entrega ao plano uma autorizada sem registro', async () => {
       await f.query(`INSERT INTO tb_invoice_service_transmission_event (tb_institution_id, tb_invoice_id, terminal, attempt, event, kind, message, dh, source, created_at, deleted)
                      VALUES (1, 102, 0, 1, 1, 'A', 'sem chave', '2026-10-12 10:00:00', 'P', NOW(), 'N')`)
-      let blocked = false
+      let blocked = false, cause = ''
       try {
         const reading = await readInvoiceFiscal(f, 1, 102, 1)
         blocked = fiscalCancelBarrier(reading).kind !== 'none'
-      } catch { blocked = true }                                             // falha ALTA do mapa também é o comportamento certo
+      } catch (e: any) { blocked = true; cause = String(e?.causeMessage ?? e?.message) }   // falha ALTA do mapa, TIPADA pela porta (D-F130)
       expect(blocked).toBe(true)
+      expect(cause).toMatch(/D-F136/)
     })
 
     it('[CORRIGIDO na sessão — F2A3-ADV-02 LOW, prova viva] o CHECK do código de cancelamento (colação _ci PAD SPACE, sem COLLATE bin nem REGEXP) aceitava "105102 " — e o ERP lia "apply" em vez de "decide" (a 006 da nfse-api recusa)', async () => {
