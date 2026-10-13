@@ -296,9 +296,9 @@ describe('1 — D-F130: a porta tipa a falha de LEITURA da voz (503 + ref + alar
     expect(out).toEqual([['/api/billing/cancel', 503, 'FISCAL_VOICE_UNAVAILABLE'], ['/api/billing/cancel-waiver', 503, 'FISCAL_VOICE_UNAVAILABLE']])
   })
 
-  failing('[ACHADO F2AR4-ADV-05 LOW] linha da view "registrada SEM chave" (authority_recorded S, access_key NULL — o mapa do NÚCLEO não confere registro ⇔ chave, o `mapTx` da nfse-api confere): `fiscalRecordKey` lança Error simples FORA da porta → GET fiscal-effect e POST cancel-waiver respondem 500 INTERNAL, não o 503 tipado da D-F130', async () => {
+  it('[CORRIGIDO F2AR4-ADV-05 LOW — o mapa da família recusa registro sem chave (ADV-05 da Rodada 4); a porta responde 503 da voz ilegível] linha da view "registrada SEM chave" (authority_recorded S, access_key NULL — o mapa do NÚCLEO não confere registro ⇔ chave, o `mapTx` da nfse-api confere): `fiscalRecordKey` lança Error simples FORA da porta → GET fiscal-effect e POST cancel-waiver respondem 500 INTERNAL, não o 503 tipado da D-F130', async () => {
     const incoherent = row({ accessKey: null, authorityRecorded: 'S', lastKind: 'C', lastCode: '105102', lastSource: 'Q' })
-    expect(() => serviceView({ accessKey: null, authorityRecorded: 'S' })).not.toThrow()          // o mapa comum aceita
+    expect(() => serviceView({ accessKey: null, authorityRecorded: 'S' })).toThrow()              // o mapa da FAMÍLIA recusa (registro ⇒ chave)
     fiscalRows = [incoherent]
     const e = await request(app).get(`/api/billing/${ORDER}/fiscal-effect`).set('Authorization', bearer(ADMIN))
     getConn.mockResolvedValue(planConn({ fiscal: [incoherent] }).conn)
