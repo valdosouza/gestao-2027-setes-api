@@ -84,4 +84,8 @@ const options = {
   ],
 }
 
+/** As opções do spec — exportadas para a cerca `swagger-parse.test.ts` (todo bloco @swagger tem de ser YAML válido: o swagger-jsdoc
+ *  DESCARTA em silêncio o bloco que não parseia — F2AR4-SOC-01: o POST /api/billing/cancel sumiu do OpenAPI assim). */
+export const swaggerOptions = options
+
 export const swaggerSpec = swaggerJsdoc(options)

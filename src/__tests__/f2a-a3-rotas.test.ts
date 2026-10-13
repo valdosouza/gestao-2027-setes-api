@@ -156,9 +156,9 @@ describe('GET /api/billing/:orderId/cancel-plan (D-F29/D-F115 — consultivo; D-
     ;(cancelPiece.buildCancelPlan as jest.Mock).mockResolvedValue({ ...PLAN, blocks: [], touchesCash: false, checksToReverse: [], fiscalRecord: false })
     expect((await get()).status).toBe(200)
     const s = sqls()
-    expect(s[0]).toBe('SET @setes_plan_prev_lw = @@session.innodb_lock_wait_timeout')
-    expect(s[1]).toBe('SET SESSION innodb_lock_wait_timeout = ?'); expect(conn.query.mock.calls[1][1]).toEqual([3])
-    expect(s[s.length - 1]).toBe('SET SESSION innodb_lock_wait_timeout = @setes_plan_prev_lw')
+    expect(s[0]).toBe('SET @setes_plan_prev_lw = @@session.innodb_lock_wait_timeout, @setes_plan_prev_mdl = @@session.lock_wait_timeout')
+    expect(s[1]).toBe('SET SESSION innodb_lock_wait_timeout = ?, lock_wait_timeout = ?'); expect(conn.query.mock.calls[1][1]).toEqual([3, 3])   // F2AR4-ADV-03: metadados também
+    expect(s[s.length - 1]).toBe('SET SESSION innodb_lock_wait_timeout = @setes_plan_prev_lw, lock_wait_timeout = @setes_plan_prev_mdl')
     const calls = conn.query.mock.invocationCallOrder
     expect(calls[1]).toBeLessThan(conn.beginTransaction.mock.invocationCallOrder[0])
     expect(conn.rollback.mock.invocationCallOrder[0]).toBeLessThan(calls[calls.length - 1])

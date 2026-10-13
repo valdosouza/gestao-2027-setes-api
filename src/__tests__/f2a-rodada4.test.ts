@@ -17,7 +17,7 @@ import * as crash from '../shared/errors/crash.repository'
 
 const SPECS = f2aFreezeTriggerSpecs()
 const rowsOf = (over: Record<string, object> = {}, drop: string[] = []) => SPECS.filter(t => !drop.includes(t.name)).map(t => ({
-  name: t.name, tbl: t.table, ev: t.event, timing: 'BEFORE', body: "BEGIN\n  SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'x';\nEND", ...(over[t.name] ?? {}),
+  name: t.name, tbl: t.table, ev: t.event, timing: 'BEFORE', body: t.body, ...(over[t.name] ?? {}),
 }))
 
 describe('D-F135 — o boot confere os gatilhos de TRAVA da F2a pelo NOME (a lista é a própria migration)', () => {
@@ -39,7 +39,7 @@ describe('D-F135 — o boot confere os gatilhos de TRAVA da F2a pelo NOME (a lis
     const q = { query: jest.fn(async () => [rowsOf(), []]) }
     expect(await f2aFreezeTriggersMissing(q, 'setes_setes')).toEqual([])
     const [sql, params] = (q.query.mock.calls[0] as unknown) as [string, unknown[]]
-    expect(sql).toMatch(/FROM information_schema\.TRIGGERS WHERE TRIGGER_SCHEMA = \? AND TRIGGER_NAME IN \(\?\)/)
+    expect(sql).toMatch(/FROM information_schema\.TRIGGERS WHERE EVENT_OBJECT_SCHEMA = \? AND TRIGGER_NAME IN \(\?\)/)   // F2AR4-SOC-04
     expect(params).toEqual(['setes_setes', SPECS.map(t => t.name)])
   })
   it('DROP TRIGGER → ausente; corpo sem SIGNAL / AFTER / outro evento / outra tabela → diferente; nenhum visível (sem o privilégio TRIGGER) → os 9', async () => {

@@ -861,18 +861,22 @@ export async function cancelOrderInvoice(
   return withDeadlockRetry('cancelamento da nota', { institutionId, orderId: input.orderId }, 3,
     async () => {
       const conn = await pool.getConnection()
+      let broken = false
       try {
         await conn.beginTransaction()
         const result = await cancelInvoice(conn, schemaName, institutionId, userId, input)
         await conn.commit()
         return result
       } catch (err: any) {
-        await conn.rollback()
+        // F2AR4-ADV-04: a conexão pode ter MORRIDO (ECONNRESET/KILL — o 503 da voz na D-F130); o rollback que rejeita não substitui o
+        // erro original e a conexão quebrada é DESCARTADA (nunca volta ao pool)
+        try { await conn.rollback() } catch { broken = true }
         // lock wait → 409 RESOURCE_BUSY é TRANSVERSAL (Q-A3: @shared/db/contention
         // no handleError); aqui só propaga — deadlock reexecuta pelo retry.
         throw err
       } finally {
-        conn.release()
+        if (broken) conn.destroy()
+        else conn.release()
       }
     })
 }
@@ -889,16 +893,18 @@ export async function waiveOrderInvoiceCancel(
   const result = await withDeadlockRetry('manter a nota substituída', { institutionId, orderId: input.orderId }, 3,
     async () => {
       const conn = await pool.getConnection()
+      let broken = false
       try {
         await conn.beginTransaction()
         const out = await waiveSubstitutedCancel(conn, schemaName, institutionId, userId, input)
         await conn.commit()
         return out
       } catch (err: any) {
-        await conn.rollback()
+        try { await conn.rollback() } catch { broken = true }     // F2AR4-ADV-04 (ver cancelOrderInvoice)
         throw err
       } finally {
-        conn.release()
+        if (broken) conn.destroy()
+        else conn.release()
       }
     })
   // Q-TZ1: o instante sai na hora do ESTABELECIMENTO (banco em UTC)
@@ -938,12 +944,14 @@ export async function getOrderCancelPlan(institution: InstitutionPayload, orderI
     // D-F131 (= Q-F139 (a)): quem só CONSULTA espera trava por pouco tempo — `innodb_lock_wait_timeout` curto na SESSÃO, devolvido ao
     // valor que a conexão TINHA (molde da D-F41 — `runShortCommand` do núcleo); estourou = 1205 → 409 RESOURCE_BUSY em segundos, nunca 50 s
     // segurando a nota que a nfse-api trava como 1º comando. Devolução que falha = conexão DESCARTADA (nunca volta ao pool encurtada).
+    // F2AR4-ADV-03: a espera de METADADOS (LOCK TABLES, ALTER, dump com --lock-tables) NÃO obedece o innodb_lock_wait_timeout — o
+    // `lock_wait_timeout` (86400 s no servidor) é encurtado e devolvido junto; estoura com o MESMO 1205 → 409.
     let shortened = false
     let restored = false
     try {
-      await conn.query('SET @setes_plan_prev_lw = @@session.innodb_lock_wait_timeout')
+      await conn.query('SET @setes_plan_prev_lw = @@session.innodb_lock_wait_timeout, @setes_plan_prev_mdl = @@session.lock_wait_timeout')
       shortened = true
-      await conn.query('SET SESSION innodb_lock_wait_timeout = ?', [CANCEL_PLAN_LOCK_WAIT_SECONDS])
+      await conn.query('SET SESSION innodb_lock_wait_timeout = ?, lock_wait_timeout = ?', [CANCEL_PLAN_LOCK_WAIT_SECONDS, CANCEL_PLAN_LOCK_WAIT_SECONDS])
       await conn.beginTransaction()
       const plan = await buildCancelPlan(conn, s, institutionId, orderId)
       // F2A3-SOC-12 (gate socrático da A3): o consultivo diz o que o POST diria — com linha de caixa (D16) e sem caixa aberto do
@@ -962,7 +970,7 @@ export async function getOrderCancelPlan(institution: InstitutionPayload, orderI
       await conn.rollback().catch(() => undefined)     // consultivo: nada fica, nem trava
       if (shortened) {
         try {
-          await conn.query('SET SESSION innodb_lock_wait_timeout = @setes_plan_prev_lw')
+          await conn.query('SET SESSION innodb_lock_wait_timeout = @setes_plan_prev_lw, lock_wait_timeout = @setes_plan_prev_mdl')
           restored = true
         } catch { /* descartada abaixo */ }
       }

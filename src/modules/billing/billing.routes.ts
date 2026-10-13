@@ -147,7 +147,7 @@ router.post('/invoice', requirePrivilegeFor(PRIVILEGE_FATURAR, resolveFromBody),
  *       401: { description: Sem JWT }
  *       403: { description: Flag billing desabilitada ou sem privilégio CANCELAR (PRIVILEGE_REQUIRED) }
  *       404: { description: Pedido/nota não encontrados }
- *       409: { description: Não cancelável (INVOICE_NOT_CANCELLABLE), bloqueada (INVOICE_CANCEL_BLOCKED — o bloco fiscal traz barrier {kind, reason?, attempt}, D-F141) ou sem caixa aberto (NO_OPEN_CASHIER) }
+ *       409: { description: "Não cancelável (INVOICE_NOT_CANCELLABLE), bloqueada (INVOICE_CANCEL_BLOCKED — o bloco fiscal traz barrier {kind, reason?, attempt}, D-F141) ou sem caixa aberto (NO_OPEN_CASHIER)" }
  *       503: { description: "A voz do fisco (banco do serviço fiscal) ilegível agora — FISCAL_VOICE_UNAVAILABLE com ref do alarme (D-F130); nada foi alterado" }
  *       500: { description: Erro interno }
  */
