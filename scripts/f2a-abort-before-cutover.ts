@@ -115,6 +115,14 @@ export async function abortF2aPassivo(c: Q, schema: string, institutionId: numbe
       throw new Error(`${opts.fiscalDb}: a institution ${id} já VIROU (cutover_at) — o aborto acabou (D-F50: rollback proibido depois do --vai)`)
     }
   }
+  // 1b. D-F190 (= Q-F195-SOC-04 (a), Valdo 2026-10-13 — R12-SOC-08): o aborto da F2a só existe ANTES da 1ª janela — QUALQUER institution
+  //     da INSTALAÇÃO virada = o código da F2a já está na árvore principal (o merge da 1ª janela) e a lápide neste schema faria o boot do
+  //     setes-api recusar para TODAS (o runner recusa subir com lápide — D-F162). O `--retirar-lapide` não tem esta guarda (retirar só desbloqueia)
+  const [anyCut] = await c.query(`SELECT COUNT(*) AS n FROM \`${opts.fiscalDb}\`.tb_establishment_issuer WHERE cutover_at IS NOT NULL`, [])
+  if (Number((anyCut as any[])[0]?.n ?? 0) > 0) {
+    throw new Error(`${opts.fiscalDb}: a instalação já tem institution VIRADA — o código da F2a está na árvore principal desde a 1ª janela e a `
+      + `lápide em ${schema} faria o boot do setes-api recusar para TODAS; o aborto da F2a só existe antes da 1ª janela (D-F190) — nada foi feito`)
+  }
   // 2. o que existe para desfazer
   const version = f2aPassivoVersion()
   if (!f2aFreezeTriggerSpecs().length || !version) {
