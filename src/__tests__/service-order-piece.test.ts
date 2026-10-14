@@ -18,9 +18,11 @@ describe('findServiceOrderForReopen', () => {
   })
   it('OS: devolve a trava a restaurar e a OUTRA OS aberta do cliente (se houver), ambas sob lock', async () => {
     const conn = fakeConn()
-    conn.query.mockResolvedValueOnce([[{ customerId: 55 }]]).mockResolvedValueOnce([[{ id: 7001 }]])
+    conn.query.mockResolvedValueOnce([[{ customerId: 55 }]]).mockResolvedValueOnce([[{ id: 7001, number: '6500' }]])
     expect(await findServiceOrderForReopen(conn as any, 'setes_setes', 1, 100))
-      .toEqual({ customerId: 55, openLock: '1-55', blockingOrderId: 7001 })
+      .toEqual({ customerId: 55, openLock: '1-55', blockingOrderId: 7001, blockingOrderNumber: '6500' })
+    // a leitura traz o NÚMERO que a tela mostra (o id interno não aparece em tela nenhuma — D-F187)
+    expect(String(conn.query.mock.calls[1][0])).toMatch(/SELECT id, number FROM/)
     expect(String(conn.query.mock.calls[1][0])).toMatch(/open_lock = \? AND deleted = 'N' AND id <> \?[\s\S]*FOR UPDATE/)
     expect(conn.query.mock.calls[1][1]).toEqual([1, '1-55', 100])
     conn.query.mockResolvedValueOnce([[{ customerId: 55 }]]).mockResolvedValueOnce([[]])

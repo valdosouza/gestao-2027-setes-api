@@ -233,13 +233,16 @@ describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
       .mockResolvedValueOnce([[{ lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]])
       .mockResolvedValueOnce([[]])                          // âncora
       .mockResolvedValueOnce([[{ customerId: 55 }]])        // tb_order_service FOR UPDATE
-      .mockResolvedValueOnce([[{ id: 7001 }]])              // trava '1-55' ocupada por outra OS
+      .mockResolvedValueOnce([[{ id: 7001, number: '6500' }]])   // trava '1-55' ocupada por outra OS (id interno ≠ número da tela)
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[]]).mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([[]])                          // Onda 3: última transmissão ao fisco
     const plan = await buildCancelPlan(conn as any, 'setes_setes', 1, 100)
     expect(plan.serviceOrder).toEqual({ openLock: '1-55' })
     expect(plan.blocks).toEqual([expect.objectContaining({ field: 'serviceOrder', ref: '7001' })])
+    // passeio logado de 2026-10-14: a frase citava o id interno (8010) onde a lista mostra a OS 7373 — o NÚMERO que a tela mostra (D-F187)
+    expect(plan.blocks[0].message).toContain('ordem de serviço 6500 aberta')
+    expect(plan.blocks[0].message).not.toContain('7001')
     expect(String(conn.query.mock.calls[4][0])).toMatch(/tb_service_order c[\s\S]*FOR UPDATE/)
     expect(String(conn.query.mock.calls[5][0])).toMatch(/tb_service_order[\s\S]*open_lock = \?[\s\S]*FOR UPDATE/)
     expect(conn.query.mock.calls[5][1]).toEqual([1, '1-55', 100])

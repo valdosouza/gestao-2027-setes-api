@@ -349,7 +349,8 @@ export async function buildCancelPlan(
   if (!fiscalRecord && serviceOrder?.blockingOrderId != null) {
     blocks.push({
       field: 'serviceOrder', ref: String(serviceOrder.blockingOrderId),
-      message: `Cliente já tem a ordem de serviço ${serviceOrder.blockingOrderId} aberta — feche-a antes de cancelar a nota desta`,
+      // o NÚMERO da OS (o que a lista mostra), nunca o id interno — o operador não acharia a "8010" onde a tela diz "7373"
+      message: `Cliente já tem a ordem de serviço ${serviceOrder.blockingOrderNumber ?? serviceOrder.blockingOrderId} aberta — feche-a antes de cancelar a nota desta`,
     })
   }
 

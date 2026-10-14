@@ -28,6 +28,8 @@ export interface ServiceOrderForReopen {
   openLock: string
   /** Outra OS do MESMO cliente já aberta (trava ocupada) — bloqueio legível. */
   blockingOrderId: number | null
+  /** O NÚMERO que a tela mostra para essa OS (`tb_service_order.number`) — o id interno não aparece em tela nenhuma (D-F187). */
+  blockingOrderNumber: string | null
 }
 
 /**
@@ -56,12 +58,17 @@ export async function findServiceOrderForReopen(
   const customerId = Number(rows[0].customerId)
   const openLock = openLockOf(institutionId, customerId)
   const [open] = await conn.query<any[]>(
-    `SELECT id FROM \`${s}\`.tb_service_order
+    `SELECT id, number FROM \`${s}\`.tb_service_order
       WHERE tb_institution_id = ? AND open_lock = ? AND deleted = 'N' AND id <> ?
       LIMIT 1 FOR UPDATE`,
     [institutionId, openLock, orderId]
   )
-  return { customerId, openLock, blockingOrderId: open[0] ? Number(open[0].id) : null }
+  return {
+    customerId, openLock,
+    blockingOrderId: open[0] ? Number(open[0].id) : null,
+    // sem número gravado (legado) a tela cai no id — nunca uma frase sem OS
+    blockingOrderNumber: open[0] ? String(open[0].number ?? open[0].id) : null,
+  }
 }
 
 /**
