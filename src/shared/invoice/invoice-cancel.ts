@@ -315,7 +315,12 @@ export async function buildCancelPlan(
 
   // 2d. devoluções vigentes apontando para esta nota (Q-P7: qualquer status da ordem viva)
   const [returns] = await conn.query<any[]>(
-    `SELECT r.id FROM \`${s}\`.tb_order_stock_adjust_return r
+    // `number` = o que a tela de Devoluções mostra (a.number) — subconsulta NÃO travante: a ordem dos locks (C1) não muda
+    `SELECT r.id,
+            (SELECT a.number FROM \`${s}\`.tb_order_stock_adjust a
+              WHERE a.id = r.id AND a.tb_institution_id = r.tb_institution_id
+                AND a.terminal = r.terminal AND a.deleted = 'N') AS number
+       FROM \`${s}\`.tb_order_stock_adjust_return r
        JOIN \`${s}\`.tb_order o
          ON o.id = r.id AND o.tb_institution_id = r.tb_institution_id
         AND o.terminal = r.terminal AND o.deleted = 'N'
@@ -326,7 +331,7 @@ export async function buildCancelPlan(
   for (const rt of returns) {
     blocks.push({
       field: 'return', ref: String(rt.id),
-      message: `Devolução ${rt.id} aponta para esta nota — cancele a devolução antes`,
+      message: `Devolução ${rt.number ?? rt.id} aponta para esta nota — cancele a devolução antes`,   // o número da tela, nunca o id interno (D-F187)
     })
   }
 

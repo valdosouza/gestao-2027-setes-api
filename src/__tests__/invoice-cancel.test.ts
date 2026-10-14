@@ -143,13 +143,17 @@ describe('buildCancelPlan — bloqueios num único código (Q-P4)', () => {
       receipts: [{ checkId: 42, event: 1, parcel: 1, paymentEvent: 1, settledCode: 106, number: 'PASS-1' }],
       payments: [{ parcel: 1, event: 1, paidValue: '40.00' }, { parcel: 2, event: 1, paidValue: '30.00' }],
       slips: [{ id: 9, lastKind: 'L' }, { id: 10, lastKind: 'E' }],
-      returns: [{ id: 6700 }],
+      returns: [{ id: 6700, number: '412' }],
     })
     const err = await cancelInvoice(conn as any, ...scope, { orderId: 100, reason: 'erro' }).catch(e => e)
     expect(err).toMatchObject({ statusCode: 409, code: 'INVOICE_CANCEL_BLOCKED' })
     const fields = err.fields.map((f: any) => `${f.field}:${f.ref}`)
     // D-G7a: nenhum bloco 'check' — a parcela 1 bloqueia pelo TÍTULO, apontando a tela de Baixas
     expect(fields).toEqual(['title:100/1', 'title:100/2', 'bankSlip:9', 'return:6700'])
+    // passeio logado de 2026-10-14 (D-F187): a frase cita o NÚMERO da devolução que a tela mostra, não o id interno (ref segue o id)
+    const ret = err.fields.find((f: any) => f.field === 'return')
+    expect(ret.message).toContain('Devolução 412 aponta')
+    expect(ret.message).not.toContain('6700')
     expect(err.fields[0].message).toMatch(/cheque que já transitou \(PASS-1\)[\s\S]*tela de Baixas/)
     expect(slip.cancelBankSlip).not.toHaveBeenCalled()
     expect(chk.reverseCheckEvent).not.toHaveBeenCalled()
