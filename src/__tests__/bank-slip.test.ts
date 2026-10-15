@@ -154,6 +154,30 @@ describe('issueBankSlip', () => {
     expect(conn.query.mock.calls[10][1]).toContain('E')
   })
 
+  it('INSERT do boleto: nº de `?` = nº de parâmetros e cada coluna recebe o seu valor (um `//` no meio da linha engoliu `value, accept` — ad42018)', async () => {
+    const conn = fakeConn()
+    conn.query
+      .mockResolvedValueOnce([[AGREEMENT]]).mockResolvedValueOnce([[{ 1: 1 }]]).mockResolvedValueOnce([[{ id: 6 }]])
+      .mockResolvedValueOnce([[TITLE({ tagValue: 150, principalPaid: 50 })]]).mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[{ nextId: 12 }]]).mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]).mockResolvedValueOnce([[{ nextEvent: 1 }]]).mockResolvedValueOnce([{}])
+    await issueBankSlip(conn as any, 'setes_setes', 1, 7, base)
+    const [sql, params] = conn.query.mock.calls[7] as [string, unknown[]]
+    expect(sql).toMatch(/INSERT INTO `setes_setes`\.tb_bank_slip\b/)
+    expect(params).toHaveLength((sql.match(/\?/g) ?? []).length)
+    // as colunas na ordem do INSERT ↔ os parâmetros (os que NÃO são `?` literais no SQL — NULL/NOW() — ficam de fora)
+    const cols = sql.slice(sql.indexOf('(') + 1, sql.indexOf(')')).split(',').map(c => c.trim())
+    const placeholders = sql.slice(sql.indexOf('VALUES')).match(/\(([\s\S]*)\)/)![1].split(',').map(v => v.trim())
+    const byColumn: Record<string, unknown> = {}
+    let p = 0
+    cols.forEach((c, i) => { if (placeholders[i] === '?') byColumn[c] = params[p++] })
+    expect(p).toBe(params.length)
+    expect(byColumn).toMatchObject({
+      id: 12, tb_institution_id: 1, tb_bank_charge_agreement_id: 3, our_number: '1000', document_number: '10-1',
+      dt_expiration: '2026-10-10', value: 100, accept: 'N', instruction: 'Pagar até o vencimento', protest_days: 5, protest_day_kind: 'C', tb_user_id: 7,
+    })
+  })
+
   it('HIGH adversarial R5: face do boleto = saldo pela PEÇA (principal coberto inclui juros/multa/desconto), não tag − Σ pago', async () => {
     const conn = fakeConn()
     conn.query

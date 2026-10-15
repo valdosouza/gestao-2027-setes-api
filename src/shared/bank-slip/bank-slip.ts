@@ -503,7 +503,10 @@ export async function issueBankSlip(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
              ?, NOW(), NOW(), 'N')`,
     [id, institutionId, agreement.id, agreement.bankAccountId, agreement.chargeKindId,
-     ourNumber, documentNumber, await todayFor(schemaName, institutionId, conn), dtExpiration,   // Q-TZ1 value, agreement.accept,
+     // Q-TZ1: o dia de emissão é o do ESTABELECIMENTO (todayFor). ⚠️ NUNCA comentário no meio da linha de parâmetros: um `//` aqui
+     // engoliu `value, agreement.accept,` (commit ad42018) e o INSERT saía com 2 parâmetros a menos — o boleto não emitia (HTTP 500)
+     ourNumber, documentNumber, await todayFor(schemaName, institutionId, conn), dtExpiration,
+     value, agreement.accept,
      agreement.aliqDiscount, discountValue, discountValue != null ? dtExpiration : null,
      agreement.aliqInterest, agreement.aliqLate, agreement.valueLateMin,
      agreement.aliqFine, agreement.valueFine, agreement.valueRate,
