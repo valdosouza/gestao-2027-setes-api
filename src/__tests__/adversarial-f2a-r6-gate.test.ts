@@ -24,8 +24,9 @@ const MAIN = path.resolve(REPO, '..', 'setes-api')                       // a á
 const MAIN_SQL = path.join(MAIN, 'src', 'migrations', 'sql')
 const F2A_SQL = path.join(REPO, 'src', 'migrations', 'sql')
 const PASSIVO_SQL = fs.readFileSync(path.join(F2A_SQL, '069_f2a_fiscal_passivo.sql'), 'utf8')
+// O "código ANTIGO" (o main de ANTES da janela) é um FIXTURE congelado: depois do merge o runner da árvore viva É o da F2a (2026-10-14)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const mainRunner = require(path.join(MAIN, 'src', 'migrations', 'runner')) as typeof import('../migrations/runner')
+const mainRunner = require(path.join(__dirname, '..', 'test-setup', 'runner-main-pre-f2a')) as typeof import('../migrations/runner')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const abortTool = require(path.join(REPO, 'scripts', 'f2a-abort-before-cutover')) as {
   abortF2aPassivo: (c: any, s: string, i: number, o: { vai: boolean; fiscalDb: string; centralDb?: string }) => Promise<any>
@@ -71,13 +72,17 @@ beforeEach(() => jest.clearAllMocks())
 // =================================================================================================
 describe('1 — D-F162: o runner do MAIN (árvore viva) e o da F2a diante da lápide sentinela', () => {
   // o `_migrations` de PRODUÇÃO depois de um aborto: as do main aplicadas (o que a árvore viva tem) + a LÁPIDE sentinela
-  const mainFiles = filesOf(MAIN_SQL)
+  // o main ANTES da janela = as migrations até a 068 (a 069 é a da F2a e o que vier depois é posterior): o cenário é histórico e não pode
+  // depender do estado da árvore viva de hoje (que já tem a 069 e terá a 070…)
+  const OLD_MAIN_LAST = 68
+  const mainFiles = filesOf(MAIN_SQL).filter(f => Number(f.version) <= OLD_MAIN_LAST)
+  const afterOldMain = filesOf(MAIN_SQL).filter(f => Number(f.version) > OLD_MAIN_LAST).map(f => f.file)   // somem do diretório simulado
   const applied: Row[] = [...mainFiles.map(f => ({ version: f.version, name: f.name })), { version: F2A_TOMBSTONE_VERSION, name: F2A_TOMBSTONE_NAME }]
   const nextNumber = String(Number(mainFiles[mainFiles.length - 1].version) + 1).padStart(3, '0')
 
   it('[RESISTIU] o código ANTIGO (o main que roda depois do aborto) sobe com a lápide e a PRÓXIMA migration do main — com o número que a F2a tinha — RODA (nada de "duas migrations com o mesmo número")', async () => {
     expect(nextNumber).toBe('069')                                          // o número que a F2a ocupava é o próximo livre do main hoje
-    const r = await runWith(mainRunner, MAIN_SQL, { [`${nextNumber}_ibscbs_ib2.sql`]: 'SELECT 1;' }, applied)
+    const r = await runWith(mainRunner, MAIN_SQL, { [`${nextNumber}_ibscbs_ib2.sql`]: 'SELECT 1;' }, applied, afterOldMain)
     expect([r.ok, r.error]).toEqual([true, ''])
     expect(r.executed.filter(s => /INSERT INTO _migrations/.test(s))).toEqual([`INSERT INTO _migrations (version, name) VALUES (?, ?) ["${nextNumber}","ibscbs_ib2"]`])
     expect(r.executed.some(s => /CREATE TRIGGER/.test(s))).toBe(false)
@@ -98,7 +103,7 @@ describe('1 — D-F162: o runner do MAIN (árvore viva) e o da F2a diante da lá
 
   it('[FATO — residual da forma ANTIGA] uma lápide NUMÉRICA (aborto feito antes da D-F162) + a migration do main com o mesmo número: o runner do MAIN cai na frase genérica ("duas migrations com o mesmo número") — só existe em banco descartável (o aborto nunca rodou em produção — 0 linhas `f2a%` no `_migrations` do dev em 2026-10-13)', async () => {
     const old = [...mainFiles.map(f => ({ version: f.version, name: f.name })), { version: nextNumber, name: F2A_TOMBSTONE_NAME }]
-    const r = await runWith(mainRunner, MAIN_SQL, { [`${nextNumber}_ibscbs_ib2.sql`]: 'SELECT 1;' }, old)
+    const r = await runWith(mainRunner, MAIN_SQL, { [`${nextNumber}_ibscbs_ib2.sql`]: 'SELECT 1;' }, old, afterOldMain)
     expect([r.ok, /aplicada como "f2a_fiscal_passivo_abortada"[\s\S]*Renumere/.test(r.error)]).toEqual([false, true])
   })
 })

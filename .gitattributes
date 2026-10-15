@@ -1,0 +1,2 @@
+# Migrations SQL sempre em LF no checkout (Windows + autocrlf deixava CRLF e quebrava o runner/testes que leem o texto: F2a, 2026-10-15)
+*.sql text eol=lf
