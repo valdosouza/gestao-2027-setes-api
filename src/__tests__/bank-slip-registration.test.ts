@@ -54,7 +54,10 @@ const adapter = {
 }
 const opened = { channel: { bankAccountId: 3, institutionId: 1, environment: 'S', clientId: 'c', inboundToken: 't', active: 'S', bankNumber: '077', accountNumber: '1', accountNumberDv: '2' }, adapter, ctx: {} }
 
-const header = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, dtExpiration: '2026-10-10', aliqInterest: null, aliqFine: null, aliqDiscount: null, dtDiscountUntil: null, instruction: null }
+// BOMBA-RELÓGIO DESARMADA (2026-10-14): o vencimento era a data fixa 2026-10-10 e, passado esse dia, a composição passou a recusar o boleto
+// (BANK_SLIP_EXPIRATION_PAST — "anterior a hoje", o banco julga pelo AGORA real). O vencimento é RELATIVO a hoje (+30 dias, data local).
+const DUE = (() => { const d = new Date(Date.now() + 30 * 86400000); return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-') })()
+const header = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, dtExpiration: DUE, aliqInterest: null, aliqFine: null, aliqDiscount: null, dtDiscountUntil: null, instruction: null }
 const lockedOpen = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, discountValue: 0, aliqDiscount: 0, dtDiscountUntil: null, lastKind: 'E', lastEvent: 1, lastSettledCode: null }
 const regLive = (over: any = {}) => ({
   institutionId: 1, slipId: 262, attempt: 1, environment: 'S', requestCode: 'uuid-1', bankOurNumber: null, digitableLine: null, barcode: null,
@@ -96,7 +99,7 @@ describe('registerBankSlip — apresentar ao banco', () => {
     expect(r).toEqual({ slipId: 262, attempt: 1, requestCode: 'uuid-1', environment: 'S' })
     // pagador montado da cadeia da entidade (dígitos, UF, CEP 8)
     expect(adapter.register.mock.calls[0][1]).toMatchObject({
-      reference: '262', amount: 250, dueDate: '2026-10-10',
+      reference: '262', amount: 250, dueDate: DUE,
       payer: { document: '12345678000199', personType: 'J', name: 'Cliente Ltda', street: 'Rua A, 10', neighborhood: 'Centro', city: 'Curitiba', state: 'PR', zipCode: '80000000' },
     })
     // ordem: lock → reserva → (banco) → lock → código → S

@@ -85,7 +85,10 @@ const adapter = {
   findByReference: jest.fn(), webhookGet: jest.fn(), webhookPut: jest.fn(), webhookDelete: jest.fn(), paySandbox: jest.fn(),
 }
 const opened = { channel: { bankAccountId: 3, institutionId: 1, environment: 'S', clientId: 'c', inboundToken: 't', active: 'S', bankNumber: '077', accountNumber: '1', accountNumberDv: '2' }, adapter, ctx: {} }
-const header = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, dtExpiration: '2026-10-10', aliqInterest: null, aliqFine: null, aliqDiscount: null, dtDiscountUntil: null, instruction: null }
+// BOMBA-RELÓGIO DESARMADA (2026-10-14): o vencimento era a data fixa 2026-10-10 e, passado esse dia, a composição passou a recusar o boleto
+// (BANK_SLIP_EXPIRATION_PAST — "anterior a hoje", o banco julga pelo AGORA real). O vencimento é RELATIVO a hoje (+30 dias, data local).
+const DUE = (() => { const d = new Date(Date.now() + 30 * 86400000); return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-') })()
+const header = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, dtExpiration: DUE, aliqInterest: null, aliqFine: null, aliqDiscount: null, dtDiscountUntil: null, instruction: null }
 const lockedOpen = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, discountValue: 0, aliqDiscount: 0, dtDiscountUntil: null, lastKind: 'E', lastEvent: 1, lastSettledCode: null }
 const regLive = (over: any = {}) => ({
   institutionId: 1, slipId: 262, attempt: 1, environment: 'S', requestCode: 'uuid-1', bankOurNumber: null, digitableLine: null, barcode: null,
@@ -385,7 +388,7 @@ describe('adaptador Inter — bordas do transporte', () => {
   })
   it('seuNumero > 15 é cortado no adaptador (a composição já recusa antes com 422 — defesa em profundidade)', async () => {
     mockHttp.mockResolvedValueOnce(tokenResp).mockResolvedValueOnce(ok({ codigoSolicitacao: 'x' }))
-    await interAdapter.register(adapterCtx, { reference: '1234567890123456', amount: 10.005, dueDate: '2026-10-10', payer: { document: '12345678901', personType: 'F', name: 'n', street: 's', neighborhood: null, city: 'c', state: 'PR', zipCode: '80000000' } })
+    await interAdapter.register(adapterCtx, { reference: '1234567890123456', amount: 10.005, dueDate: DUE, payer: { document: '12345678901', personType: 'F', name: 'n', street: 's', neighborhood: null, city: 'c', state: 'PR', zipCode: '80000000' } })
     const body = JSON.parse(mockHttp.mock.calls[1][0].body)
     expect(body.seuNumero).toHaveLength(15)
     expect(body.valorNominal).toBe(10.01)                                      // 3 casas → 2 (toFixed)

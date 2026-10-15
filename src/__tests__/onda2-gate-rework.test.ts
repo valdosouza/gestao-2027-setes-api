@@ -66,7 +66,10 @@ const adapter = {
   findByReference: jest.fn(), webhookGet: jest.fn(), webhookPut: jest.fn(), webhookDelete: jest.fn(), paySandbox: jest.fn(),
 }
 const opened = { channel: { bankAccountId: 3, institutionId: 1, environment: 'S', clientId: 'c', inboundToken: 't', active: 'S', bankNumber: '077', accountNumber: '1', accountNumberDv: '2' }, adapter, ctx: {} }
-const header = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, dtExpiration: '2026-10-10', aliqInterest: null, aliqFine: null, aliqDiscount: null, dtDiscountUntil: null, instruction: null }
+// BOMBA-RELÓGIO DESARMADA (2026-10-14): o vencimento era a data fixa 2026-10-10 e, passado esse dia, a composição passou a recusar o boleto
+// (BANK_SLIP_EXPIRATION_PAST — "anterior a hoje", o banco julga pelo AGORA real). O vencimento é RELATIVO a hoje (+30 dias, data local).
+const DUE = (() => { const d = new Date(Date.now() + 30 * 86400000); return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-') })()
+const header = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, dtExpiration: DUE, aliqInterest: null, aliqFine: null, aliqDiscount: null, dtDiscountUntil: null, instruction: null }
 const lockedOpen = { id: 262, bankAccountId: 3, ourNumber: '262', value: 250, discountValue: 0, aliqDiscount: 0, dtDiscountUntil: null, lastKind: 'E', lastEvent: 1, lastSettledCode: null }
 const regLive = (over: any = {}) => ({
   institutionId: 1, slipId: 262, attempt: 1, environment: 'S', requestCode: 'uuid-1', bankOurNumber: null, digitableLine: null, barcode: null,
