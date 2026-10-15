@@ -1,3 +1,5 @@
+import { IbscbsOutcome } from '@shared/ibscbs-classification'
+
 /**
  * Tipos do módulo service-orders — Ordens de Serviço / ciclo mensal
  * (Módulo Software House, seções 4.4–4.6 e 6 do prompt FECHADO;
@@ -116,6 +118,9 @@ export interface InvoiceResult {
   bankSlipsIssued: number
   /** Parcelas com valor > 0 — o denominador da cobrança (D26). */
   chargeableParcels: number
+  /** Fase IBS/CBS, IB-2 (D-IB65): a declaração IBS/CBS congelada — `declared` = o grupo está CONGELADO no ramo (vai ao DPS a partir da IB-3 — até lá não é prova de envio); `omitted` = por
+   *  que não (antes da obrigação; nunca gravado). */
+  ibscbs: IbscbsOutcome
 }
 
 /** Lookup de produtos/serviços ativos (itens avulsos). */
@@ -163,6 +168,8 @@ export interface BatchInvoiceEntry {
    */
   chargedParcels?:    number
   chargeableParcels?: number
+  /** D-IB65: a declaração IBS/CBS desta ordem (só nas faturadas). */
+  ibscbs?:        IbscbsOutcome
   error?:         string
   code?:          string
   /**
@@ -184,5 +191,8 @@ export interface BatchInvoiceReport {
   partiallyCharged: number
   /** Recusadas por contenção que a passada extra (D25) NÃO resolveu — repetir é do operador. */
   retryable: number
+  /** D-IB65: faturadas COM o grupo IBS/CBS × SEM ele (antes da obrigação; o motivo vai em cada linha). */
+  ibscbsDeclared: number
+  ibscbsOmitted:  number
   results:   BatchInvoiceEntry[]
 }

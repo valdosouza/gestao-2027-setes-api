@@ -6,6 +6,7 @@
 import {
   stateFromLastEvent, nextInvoiceNumber, issueInvoice, insertInvoiceEvent, lockInvoice,
 } from '../shared/invoice'
+import type { IbscbsDeclaration } from '../shared/ibscbs-classification'
 
 function fakeConn() { return { query: jest.fn() } }
 beforeEach(() => jest.clearAllMocks())
@@ -46,13 +47,13 @@ describe('issueInvoice', () => {
       noteText: 'obs', merchandise: {
         baseIcms: 250, icms: 45, baseIcmsSt: 0, icmsSt: 0, ipi: 0, totalValue: 250,
         freight: 0, expenses: 0, discount: 0, quantity: 2,
-      }, service: null, dtRecord: '2026-09-08',
+      }, service: null, dtEmission: '2026-09-08',
     })
     expect(r).toEqual({ invoiceNumber: '7', event: 3 })
     const sqls = conn.query.mock.calls.map(c => String(c[0]))
     expect(sqls[1]).toMatch(/INSERT INTO `setes_setes`.tb_invoice[\s\S]*ON DUPLICATE KEY UPDATE[\s\S]*deleted = 'N'/)
-    // dt_emission = hoje do estabelecimento (Q-TZ1), nunca CURDATE() da sessão UTC
-    expect(conn.query.mock.calls[1][1]).toEqual([100, 1, 1, '7', '1', 209, expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), 250, '55', 'obs'])
+    // D-IB64: dt_emission = a data que o PRODUTOR calculou UMA vez (hoje do estabelecimento — Q-TZ1), a mesma do evento E
+    expect(conn.query.mock.calls[1][1]).toEqual([100, 1, 1, '7', '1', 209, '2026-09-08', 250, '55', 'obs'])
     expect(sqls[2]).toMatch(/tb_invoice_merchandise[\s\S]*ON DUPLICATE KEY UPDATE/)
     expect(sqls[3]).toMatch(/UPDATE `setes_setes`.tb_invoice_service SET deleted = 'S'/)
     expect(sqls[5]).toMatch(/INSERT INTO `setes_setes`.tb_invoice_event/)
@@ -68,11 +69,34 @@ describe('issueInvoice', () => {
       .mockResolvedValueOnce([[{ nextEvent: 1 }]]).mockResolvedValueOnce([{}])
     await issueInvoice(conn as any, 'setes_setes', 1, 7, {
       orderId: 101, recipientEntityId: 209, model: 'SE', serie: '1', totalValue: 80,
-      noteText: null, merchandise: null, service: { totalValue: 80, serviceListId: '1.02', nationalCode: '010201', municipalCode: '0102', cityId: 4004, baseIss: 80, aliqIss: 5, issValue: 4, issWithheld: 'N', liability: '1', description: 'Suporte' },
+      noteText: null, merchandise: null, dtEmission: '2026-10-15',
+      service: { totalValue: 80, serviceListId: '1.02', nationalCode: '010201', municipalCode: '0102', cityId: 4004, baseIss: 80, aliqIss: 5, issValue: 4, issWithheld: 'N', liability: '1', description: 'Suporte',
+        ibscbs: { group: { classificationCode: '000001', placeIndicatorCode: '100301' }, nbs: '115021000', omitted: [] } as unknown as IbscbsDeclaration },
     })
     const sqls = conn.query.mock.calls.map(c => String(c[0]))
     expect(sqls[2]).toMatch(/UPDATE `setes_setes`.tb_invoice_merchandise SET deleted = 'S'/)
     expect(sqls[3]).toMatch(/tb_invoice_service[\s\S]*national_code[\s\S]*ON DUPLICATE KEY UPDATE[\s\S]*total_value = VALUES\(total_value\)/)
+    // D-IB71: a declaração IBS/CBS congelada no ramo — gravada no INSERT e no ON DUPLICATE (a revivida nunca herda)
+    expect(sqls[3]).toMatch(/classification_code, place_indicator_code, nbs/)
+    expect(sqls[3]).toMatch(/classification_code = VALUES\(classification_code\), place_indicator_code = VALUES\(place_indicator_code\),\s*nbs = VALUES\(nbs\)/)
+    expect(conn.query.mock.calls[3][1].slice(-3)).toEqual(['000001', '100301', '115021000'])
+  })
+
+  it('D-IB71: grupo OMITIDO grava NULL nas 3 colunas mesmo na revivida (a NBS pode ir sozinha — D-IB62)', async () => {
+    const conn = fakeConn()
+    conn.query
+      .mockResolvedValueOnce([[{ nextNumber: 2 }]])
+      .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([[{ nextEvent: 3 }]]).mockResolvedValueOnce([{}])
+    await issueInvoice(conn as any, 'setes_setes', 1, 7, {
+      orderId: 101, recipientEntityId: 209, model: 'SE', serie: '1', totalValue: 80,
+      noteText: null, merchandise: null, dtEmission: '2026-12-20',
+      service: { totalValue: 80, serviceListId: '1.02', nationalCode: '010201', municipalCode: '0102', cityId: 4004, baseIss: 80, aliqIss: 5, issValue: 4, issWithheld: 'N', liability: '1', description: 'Suporte',
+        ibscbs: { group: null, nbs: '115021000', omitted: ['not-classified'] } as unknown as IbscbsDeclaration },
+    })
+    expect(conn.query.mock.calls[3][1].slice(-3)).toEqual([null, null, '115021000'])
+    // evento E com a MESMA data da emissão
+    expect(conn.query.mock.calls[5][1][4]).toBe('2026-12-20')
   })
 })
 

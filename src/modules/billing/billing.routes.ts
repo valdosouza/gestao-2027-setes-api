@@ -101,13 +101,13 @@ router.post('/validate', controller.validate)
  *                       vendedor derivado. Venda gera comissão POSITIVA por
  *                       item na mesma transação (kind F).
  *     responses:
- *       201: { description: "{ ok, data: { orderId, invoiceNumber, serie, model, totalValue, parcels } }" }
+ *       201: { description: "{ ok, data: { orderId, invoiceNumber, serie, model, totalValue, parcels, autoSettled, bankSlipsIssued, chargeableParcels, ibscbs } } — ibscbs (IB-2, D-IB65): { declared, omitted[] } da declaração IBS/CBS CONGELADA no ramo de serviço (vai ao DPS a partir da IB-3 — declared não é prova de envio); null = nota sem ramo de serviço" }
  *       400: { description: Payload inválido }
  *       401: { description: Sem JWT }
  *       403: { description: Flag billing desabilitada }
  *       404: { description: Ordem não encontrada }
  *       409: { description: Ordem já faturada }
- *       422: { description: Pendências de validação (REQUIRES_VALIDATION) ou negociação ausente }
+ *       422: { description: "Pendências de validação (REQUIRES_VALIDATION), negociação ausente ou — com ramo de serviço, depois da obrigação (D-IB8/D-IB62/D-IB63) — INVOICE_SERVICE_IBSCBS_REQUIRED / INVOICE_SERVICE_MULTI_DECLARATION (fields[] por item)" }
  *       500: { description: Erro interno }
  */
 // Q-P5 (cancelamento, 2026-09-08): FATURAR e CANCELAR são privilégios de

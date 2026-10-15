@@ -844,6 +844,7 @@ export async function invoiceOrder(
     returnPlan,
     serviceLiability: liabilityFromExigibilidade(ctx.emitterIssExigibilidade),
     dpsDescriptionFormat,
+    dtEmission: baseDate,   // D-IB64: a data calculada UMA vez (a mesma dos vencimentos)
   })
 }
 

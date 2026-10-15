@@ -1,3 +1,5 @@
+import { IbscbsOutcome } from '@shared/ibscbs-classification'
+
 /**
  * Tipos do módulo billing — validação + faturamento de ordens (W2 Onda 3,
  * rodada R4 do prompt_fase_faturamento_financeiro.md). Dois endpoints:
@@ -36,6 +38,9 @@ export interface InvoiceResult {
   // "faturada" não quer dizer "cobrada" — quem chama precisa saber dos dois
   bankSlipsIssued: number
   chargeableParcels: number   // denominador da cobrança (D26) — simetria com a OS
+  /** Fase IBS/CBS, IB-2 (D-IB65): a declaração IBS/CBS congelada no ramo de serviço — `declared` = o grupo está CONGELADO no ramo (a nfse-api o leva ao DPS a partir da IB-3 — até lá não é prova de envio);
+   *  `omitted` = por que não (antes da obrigação; nunca gravado). null = nota sem ramo de serviço. */
+  ibscbs: IbscbsOutcome | null
 }
 
 /** Linha viva de tb_order_item para o faturamento. */

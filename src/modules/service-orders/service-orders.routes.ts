@@ -351,11 +351,12 @@ router.delete('/:id/items/:itemId', controller.removeOrderItem)
  *               paymentTypeId: { type: integer, description: 'Forma vinculada e habilitada na institution' }
  *               parcels: { type: integer, default: 1, minimum: 1, maximum: 99 }
  *     responses:
- *       201: { description: 'Envelope { ok, data: { invoiceNumber, parcels, totalValue } }' }
+ *       201: { description: 'Envelope { ok, data: { invoiceNumber, parcels, totalValue, dtExpiration, paymentTypeId, autoSettled, bankSlipsIssued, chargeableParcels, ibscbs: { declared, omitted[] } } } — ibscbs (IB-2, D-IB65) = a declaração IBS/CBS congelada no ramo: declared = o grupo está CONGELADO no ramo (a nfse-api o leva ao DPS a partir da IB-3 — até lá não é prova de envio); omitted = por que não (antes da obrigação; nunca gravado)' }
  *       400: { description: 'Validação / forma indisponível / ordem sem itens' }
  *       401: { description: Não autenticado }
  *       404: { description: OS não encontrada }
  *       409: { description: Ordem já faturada }
+ *       422: { description: 'Depois da obrigação (D-IB8/D-IB62/D-IB63): INVOICE_SERVICE_IBSCBS_REQUIRED (classificação cClassTrib+cIndOp e NBS aceitas em todo serviço) ou INVOICE_SERVICE_MULTI_DECLARATION (serviços com declarações diferentes) — fields[] por serviço (product.N); a mensagem nomeia os serviços' }
  */
 // Q-G23 (Valdo 2026-09-09): FATURAR na interface do ramo (seed 53) — admin/super passam
 router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR), controller.invoice)
@@ -402,7 +403,7 @@ router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR
  *               paymentTypeId: { type: integer, description: 'OPCIONAL (D14) — ausente = forma combinada no contrato de cada ordem' }
  *               parcels: { type: integer, enum: [1], default: 1, description: 'D30 — cobrança recorrente é sempre 1 parcela; outro valor → 400 (parcelamento só no faturamento individual)' }
  *     responses:
- *       200: { description: 'Envelope { ok, data: { requested, invoiced, failed, uncharged, partiallyCharged, retryable, results[] } } — cada linha traz dtExpiration/paymentTypeId REALMENTE usados, chargedParcels/chargeableParcels e retryable' }
+ *       200: { description: 'Envelope { ok, data: { requested, invoiced, failed, uncharged, partiallyCharged, retryable, ibscbsDeclared, ibscbsOmitted, results[] } } — cada linha traz dtExpiration/paymentTypeId REALMENTE usados, chargedParcels/chargeableParcels, retryable e ibscbs { declared, omitted[] } (IB-2, D-IB65: faturadas COM × SEM o grupo IBS/CBS CONGELADO no ramo — vai ao DPS a partir da IB-3; depois da obrigação a ordem sem declaração cai com o 422 e a mensagem nomeia os serviços)' }
  *       400: { description: Validação do lote }
  *       401: { description: Não autenticado }
  *       403: { description: Sem o privilégio FATURAR }

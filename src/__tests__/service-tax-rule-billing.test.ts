@@ -11,6 +11,11 @@ import {
 import * as taxRule from '../shared/tax-rule'
 import { validateOrder, invoiceOrder } from '../modules/billing/billing.service'
 
+// IB-2 (D-IB71): a declaração IBS/CBS tem teste próprio (ibscbs-declaration.test.ts) — aqui a fronteira é mockada
+jest.mock('../shared/service-ibscbs-declaration', () => ({
+  __esModule: true,
+  declareServiceIbscbs: jest.fn().mockResolvedValue({ group: null, nbs: null, omitted: ['not-classified'] }),
+}))
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
@@ -218,6 +223,7 @@ describe('invoiceOrder — caminho kind=S', () => {
       .mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1)
       .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // issqn item
+      .mockResolvedValueOnce([[{ id: 1, kind: 'Service', productId: 18 }]]) // IB-2: itens relidos SOB o lock (iguais)
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}])
       .mockResolvedValueOnce([{}])
 

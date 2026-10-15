@@ -9,6 +9,11 @@ import { validateOrder, invoiceOrder } from '../modules/billing/billing.service'
 import { invoiceBodyDto } from '../modules/billing/billing.dto'
 import * as taxRule from '../shared/tax-rule'
 
+// IB-2 (D-IB71): a declaração IBS/CBS tem teste próprio (ibscbs-declaration.test.ts) — aqui a fronteira é mockada
+jest.mock('../shared/service-ibscbs-declaration', () => ({
+  __esModule: true,
+  declareServiceIbscbs: jest.fn().mockResolvedValue({ group: null, nbs: null, omitted: ['not-classified'] }),
+}))
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
@@ -608,12 +613,16 @@ describe('invoiceOrder', () => {
       .mockResolvedValueOnce([[{ id: 5, description: 'BOLETO', kind: 'O', maxParcels: 6 }]]) // assertPaymentRules (Q-N1)
       .mockResolvedValueOnce([[]])                  // kinds
       .mockResolvedValueOnce([{}])                  // issqn item
+      .mockResolvedValueOnce([[{ id: 1, kind: 'Sale', productId: 100 }]]) // IB-2: itens relidos SOB o lock (iguais)
       .mockResolvedValueOnce([{}]).mockResolvedValueOnce([{}]) // financeiro p1
       .mockResolvedValueOnce([{}])                  // status F
 
     const result = await invoiceOrder(inst as any, { orderId: 10, useMvaOriginal: false })
 
     expect(result.model).toBe('SE')                 // só serviço → SE
+    // IB-2 (gate socrático): a releitura dos itens é TRAVANTE (não abre o retrato) e vem antes da declaração
+    const reread = conn.query.mock.calls.find(c => /FROM `setes_setes`\.tb_order_item i[\s\S]*LOCK IN SHARE MODE/.test(String(c[0])))
+    expect(reread?.[1]).toEqual([10, 1])
     const sqls = conn.query.mock.calls.map(c => c[0] as string)
     // natureza por PRESENÇA chega à peça: serviço com total, mercadoria ausente
     const inv = jest.requireMock('../shared/invoice') as any
@@ -622,6 +631,16 @@ describe('invoiceOrder', () => {
     expect(inv.issueInvoice.mock.calls[0][4].service.totalValue).toBeGreaterThan(0)
     expect(inv.issueInvoice.mock.calls[0][4].service.nationalCode).toBe('010201')
     expect(sqls.some(s => s.includes('tb_invoice_merchandise'))).toBe(false)
+    // IB-2 (D-IB64/D-IB71): a declaração IBS/CBS pela composição ÚNICA na transação (conexão dela), com o campo do ITEM e a
+    // MESMA data que vai à nota; congelada no ramo e devolvida no resultado (D-IB65)
+    const decl = jest.requireMock('../shared/service-ibscbs-declaration') as any
+    expect(decl.declareServiceIbscbs).toHaveBeenCalledWith(conn, 'setes_setes', 1, {
+      items: [{ productId: expect.any(Number), field: 'item.1' }],
+      competenceDate: inv.issueInvoice.mock.calls[0][4].dtEmission,
+    })
+    expect(inv.issueInvoice.mock.calls[0][4].dtEmission).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(inv.issueInvoice.mock.calls[0][4].service.ibscbs).toEqual({ group: null, nbs: null, omitted: ['not-classified'] })
+    expect(result.ibscbs).toEqual({ declared: false, omitted: ['not-classified'] })
   })
 
   it('ordem já faturada detectada DENTRO da transação -> 409 e rollback', async () => {

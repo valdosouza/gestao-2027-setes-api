@@ -12,7 +12,9 @@ import { isLockWaitTimeout, isDeadlock } from '@shared/db/contention'
 import { assertSchemaName } from '@shared/field-config'
 import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { upsertOrderBilling } from '@shared/order-billing'
-import { issueInvoice, InvoiceServiceInput } from '@shared/invoice'
+import { issueInvoice, InvoiceServiceDraft } from '@shared/invoice'
+import { declareServiceIbscbs } from '@shared/service-ibscbs-declaration'
+import { ibscbsOutcomeOf } from '@shared/ibscbs-classification'
 import { releaseServiceOrderCompetences } from '@shared/service-order'
 import { resolveServiceTaxRule, checkServiceRule, serviceRuleProblemMessage, ServiceTaxRuleResolved } from '@shared/service-tax-rule'
 import { calcIssqn } from '@shared/tax-rule'
@@ -1005,10 +1007,11 @@ export async function resolveServiceOrderFiscal(
   return { customerId, ruleByProduct, descriptionByProduct, withheld: tax?.issRetido === 'S', liability: liabilityFromExigibilidade(emitterTax?.issExigibilidade) }
 }
 
-/** Sob o lock da ordem: ISS por item em tb_order_item_issqn + ramo de serviço agregado. */
+/** Sob o lock da ordem: ISS por item em tb_order_item_issqn + ramo de serviço agregado (ANTES da declaração IBS/CBS)
+ *  + os serviços RELIDOS sob o lock — a declaração IBS/CBS os recebe (IB-2, D-IB71). */
 export async function freezeServiceOrderIss(
   conn: PoolConnection, schemaName: string, institutionId: number, orderId: number, fiscal: ServiceOrderFiscal
-): Promise<InvoiceServiceInput> {
+): Promise<{ draft: InvoiceServiceDraft; productIds: number[] }> {
   const [items] = await conn.query<any[]>(
     `SELECT i.id, i.tb_product_id AS productId, i.quantity, i.unit_value AS unitValue,
             COALESCE(i.discount_value, 0) AS discountValue
@@ -1045,11 +1048,14 @@ export async function freezeServiceOrderIss(
   }
   if (!first) throw new HttpError(400, 'Ordem sem itens — nada a faturar', [{ field: 'items', message: 'Inclua ao menos um item' }], 'ORDER_NO_ITEMS')
   return {
-    totalValue: r2(total), serviceListId: first.serviceListId, nationalCode: first.nationalCode,
-    municipalCode: first.municipalCode, cityId: first.cityId,
-    baseIss: r2(baseIss), aliqIss: first.aliq, issValue: r2(issValue),
-    issWithheld: fiscal.withheld ? 'S' : 'N', liability: fiscal.liability,
-    description: parts.join('; ').slice(0, 2000) || null,
+    draft: {
+      totalValue: r2(total), serviceListId: first.serviceListId, nationalCode: first.nationalCode,
+      municipalCode: first.municipalCode, cityId: first.cityId,
+      baseIss: r2(baseIss), aliqIss: first.aliq, issValue: r2(issValue),
+      issWithheld: fiscal.withheld ? 'S' : 'N', liability: fiscal.liability,
+      description: parts.join('; ').slice(0, 2000) || null,
+    },
+    productIds: [...new Set((items as any[]).map(it => Number(it.productId)))],
   }
 }
 
@@ -1091,6 +1097,10 @@ export async function generateInvoice(
       // adversarial provou 6 de 12 morrendo com 1213).
       await lockInstitutionCounters(conn, institutionId)
       await lockOpenOrder(conn, schemaName, institutionId, orderId)
+      // D-IB64: data de EMISSÃO calculada UMA vez (hoje do estabelecimento pelo relógio da operação — no lote, o da ORDEM,
+      // Q-TZ9; na conexão da transação — C1): a mesma vai à nota, à declaração IBS/CBS (competência fiscal = `dCompet`) e
+      // aos automatismos do título.
+      const dtEmission = await todayFor(schemaName, institutionId, conn)
 
       // M1 (gate socrático R5): condições vindas do fato da competência são
       // reconferidas AQUI, sob o lock da ordem — o mesmo padrão fixado na
@@ -1144,7 +1154,15 @@ export async function generateInvoice(
 
       // ISS por item congelado (tb_order_item_issqn — mesma tabela e forma da venda com
       // serviço) + ramo de serviço da nota (migration 058). Itens relidos SOB o lock.
-      const service = await freezeServiceOrderIss(conn, schemaName, institutionId, orderId, fiscal)
+      const { draft, productIds } = await freezeServiceOrderIss(conn, schemaName, institutionId, orderId, fiscal)
+
+      // Fase IBS/CBS, IB-2 (D-IB9/D-IB70/D-IB71): a DECLARAÇÃO IBS/CBS pela composição ÚNICA (a mesma da venda), sob o
+      // lock da ordem e logo antes da nota — os serviços RELIDOS sob o lock; obrigatória e incompleta = 422 (no lote,
+      // só esta ordem cai — a mensagem nomeia os serviços, D-IB65).
+      const ibscbs = await declareServiceIbscbs(conn, schemaName, institutionId, {
+        items: productIds.map(productId => ({ productId, field: `product.${productId}` })),
+        competenceDate: dtEmission,
+      })
 
       // condições de cobrança (passo 5 da sequência — tb_order_billing) pela
       // peça @shared/order-billing (D2 da negociação): OS informa o nº de
@@ -1160,7 +1178,7 @@ export async function generateInvoice(
       // (POST /billing/cancel) reabre a OS devolvendo a trava D5.
       const { invoiceNumber } = await issueInvoice(conn, schemaName, institutionId, userId, {
         orderId, recipientEntityId: customerId, model: 'SE', serie: invoiceSerie, totalValue: total,
-        noteText: null, merchandise: null, service,
+        noteText: null, merchandise: null, service: { ...draft, ibscbs }, dtEmission,
       })
 
       // financeiro: 1 tb_financial + 1 bill 'RA' POR PARCELA (P7 — PK natural);
@@ -1202,7 +1220,7 @@ export async function generateInvoice(
       const automation = await applyTitleAutomation(
         conn, schemaName, institutionId, userId, {
           orderId,
-          dtPayment: await todayFor(schemaName, institutionId, conn),   // Q-TZ1
+          dtPayment: dtEmission,   // Q-TZ1 — a MESMA data da emissão (D-IB64)
           parcels: Array.from({ length: input.parcels }, (_, i) => ({
             parcel: i + 1,
             paymentTypeId: terms.paymentTypeId,
@@ -1234,6 +1252,7 @@ export async function generateInvoice(
         autoSettled: automation.autoSettled,
         bankSlipsIssued: automation.bankSlipsIssued,
         chargeableParcels: automation.chargeable,
+        ibscbs: ibscbsOutcomeOf(ibscbs),
       }
     } catch (err) {
       await conn.rollback()

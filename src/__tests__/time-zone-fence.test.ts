@@ -30,7 +30,8 @@ it('nenhum padrão proibido de "hoje"/fuso do processo em src/ (fora a peça de 
   for (const file of walk(SRC)) {
     const rel = path.relative(SRC, file)
     if (SKIP_FILES.has(rel)) continue
-    fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+    // CRLF (checkout do Windows com autocrlf — worktree): o `.` do JS não casa `\r`, então `//.*$` não tirava o comentário
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, i) => {
       const code = line.replace(/\/\/.*$/, '')            // comentário de linha não conta
       if (/^\s*\*/.test(code)) return                       // nem linha de bloco de comentário
       for (const [re, why] of FORBIDDEN) if (re.test(code)) hits.push(`${rel}:${i + 1} ${why}`)
@@ -46,7 +47,8 @@ it('nenhum padrão proibido de "hoje"/fuso do processo em scripts/', () => {
   const hits: string[] = []
   for (const file of walk(SCRIPTS)) {
     const rel = path.relative(SCRIPTS, file)
-    fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+    // CRLF (checkout do Windows com autocrlf — worktree): o `.` do JS não casa `\r`, então `//.*$` não tirava o comentário
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, i) => {
       const code = line.replace(/\/\/.*$/, '')
       if (/^\s*\*/.test(code)) return
       for (const [re, why] of FORBIDDEN) if (re.test(code)) hits.push(`scripts/${rel}:${i + 1} ${why}`)

@@ -1,4 +1,3 @@
-import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
@@ -10,7 +9,9 @@ import {
 import { receiveChecksOnBilling, CheckReceiveItem } from '@shared/check'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { insertCommissions, CommissionEntryInput } from '@shared/commission'
-import { issueInvoice, InvoiceServiceInput } from '@shared/invoice'
+import { issueInvoice, InvoiceServiceDraft } from '@shared/invoice'
+import { declareServiceIbscbs } from '@shared/service-ibscbs-declaration'
+import { ibscbsOutcomeOf, IbscbsOutcome } from '@shared/ibscbs-classification'
 import { IssLiability } from '@shared/entity-tax/entity-tax.types'
 import { persistReturn, assertReturnableInTx, ReturnPlan } from '@shared/order-return'
 import logger from '@shared/logger/logger'
@@ -438,6 +439,9 @@ export interface PersistInvoiceParams {
   dpsDescriptionFormat?: 'I' | 'O' | 'A'
   /** Devolução de mercadoria: âncora + elos por item (presença = é devolução). */
   returnPlan: ReturnPlan | null
+  /** D-IB64: data de EMISSÃO calculada UMA vez pelo produtor (hoje do estabelecimento, Q-TZ1) — a mesma vai à nota, à
+   *  declaração IBS/CBS (competência fiscal = `dCompet`), ao cheque e aos automatismos do título. */
+  dtEmission: string
 }
 
 /** Tentativas da transação do faturamento em deadlock (D-G4 — Rodada 4 do contrato). */
@@ -498,6 +502,34 @@ async function persistInvoiceOnce(
     const merchItems = params.items.filter(ci => ci.item.productKind !== 'S')
     const serviceItems = params.items.filter(ci => ci.item.productKind === 'S')
     const agg = merchItems.length > 0 ? aggregateForMerchandise(merchItems) : null
+    // Fase IBS/CBS, IB-2 (D-IB9/D-IB70/D-IB71): a DECLARAÇÃO IBS/CBS do ramo de serviço pela composição ÚNICA (a mesma da
+    // OS), sob o lock do pedido e logo antes da nota — presunção do serviço travada (compartilhada), competência = a data
+    // de emissão (D-IB64). Obrigatória e incompleta = 422 e a transação inteira desfaz. Ramo montado ANTES (o 422 do
+    // código nacional — D-N2 — continua vindo primeiro).
+    // ⚠️ Conhecimento: as leituras do catálogo central aqui são NÃO travantes (D-IB70) — numa DEVOLUÇÃO elas viriam antes
+    // do recomputo do saldo devolvível (invariante do `assertReturnableInTx` abaixo); a devolução nasce só com itens P/M
+    // (`order-returns`: pré-carga `p.kind IN ('P','M')`), por isso ela não tem ramo de serviço nem passa por aqui.
+    if (serviceItems.length > 0) {
+      // CINTO (gate socrático da IB-2): a devolução não tem ramo de serviço por construção de OUTRO módulo — se um dia
+      // tiver, as leituras não travantes do catálogo abaixo viriam antes do recomputo do saldo devolvível. Erro de
+      // programação, não regra de negócio: falha alto em vez de quebrar a invariante em silêncio.
+      if (params.returnPlan) {
+        throw new Error(`Devolução ${params.orderId} com ramo de serviço — a invariante do saldo devolvível (assertReturnableInTx) não admite`)
+      }
+      // D-IB71 no 2º produtor (gate socrático da IB-2): os itens foram lidos FORA da transação (billing.service) — relidos
+      // aqui SOB o lock do pedido (travante: não abre o retrato da transação); mudou no intervalo = 409, nunca uma
+      // declaração de serviços que já não estão no pedido (a OS relê em freezeServiceOrderIss).
+      await assertBillingItemsUnchanged(conn, s, institutionId, params.orderId, params.items)
+    }
+    const serviceDraft = serviceItems.length > 0
+      ? buildServiceBranch(serviceItems, { liability: params.serviceLiability, descriptionFormat: params.dpsDescriptionFormat, noteText: params.noteText || null })
+      : null
+    const ibscbs = serviceDraft
+      ? await declareServiceIbscbs(conn, s, institutionId, {
+          items: serviceItems.map(ci => ({ productId: ci.item.productId, field: `item.${ci.item.id}` })),
+          competenceDate: params.dtEmission,
+        })
+      : null
     const issued = await issueInvoice(conn, s, institutionId, params.userId, {
       orderId: params.orderId, recipientEntityId: params.recipientEntityId,
       model: params.model, serie: params.serie, totalValue: params.totalValue,
@@ -507,9 +539,8 @@ async function persistInvoiceOnce(
         ipi: agg.ipi, totalValue: params.totalValue, freight: agg.freight,
         expenses: agg.expenses, discount: agg.discount, quantity: agg.quantity,
       } : null,
-      service: serviceItems.length > 0
-        ? buildServiceBranch(serviceItems, { liability: params.serviceLiability, descriptionFormat: params.dpsDescriptionFormat, noteText: params.noteText || null })
-        : null,
+      service: serviceDraft && ibscbs ? { ...serviceDraft, ibscbs } : null,
+      dtEmission: params.dtEmission,
     })
     const invoiceNumber = issued.invoiceNumber
 
@@ -558,8 +589,8 @@ async function persistInvoiceOnce(
     // positivos (venda) ou negativos (devolução); id reservado UMA vez
     await insertCommissions(conn, schemaName, institutionId, params.commissions)
 
-    // data LOCAL do faturamento — fato gerador dos automatismos e do cheque
-    const invoiceDate = await todayFor(schemaName, institutionId, conn)   // Q-TZ1
+    // data LOCAL do faturamento — fato gerador dos automatismos e do cheque: a MESMA da emissão (D-IB64)
+    const invoiceDate = params.dtEmission   // Q-TZ1
 
     // recebimento de CHEQUES (D8/D9 do cheque — Infra-IA/prompts/prompt_
     // cheque_rastreabilidade.md): nasce SÓ aqui, na transação da baixa —
@@ -611,12 +642,33 @@ async function persistInvoiceOnce(
       autoSettled: automation.autoSettled,
       bankSlipsIssued: automation.bankSlipsIssued,
       chargeableParcels: automation.chargeable,
+      ibscbs: ibscbs ? ibscbsOutcomeOf(ibscbs) : null,
     }
   } catch (err) {
     await conn.rollback()
     throw err
   } finally {
     conn.release()
+  }
+}
+
+/** Os itens vivos do pedido (mesmo critério de `listBillingItems`: item vivo com produto) relidos SOB o lock do pedido,
+ *  com trava compartilhada, = os que o faturamento calculou? Diferença = 409 RESOURCE_BUSY (tente de novo). */
+async function assertBillingItemsUnchanged(
+  conn: PoolConnection, s: string, institutionId: number, orderId: number, items: ComputedItem[]
+): Promise<void> {
+  const [rows] = await conn.query<any[]>(
+    `SELECT i.id, i.kind, i.tb_product_id AS productId
+       FROM \`${s}\`.tb_order_item i
+       JOIN \`${s}\`.tb_product p ON p.id = i.tb_product_id AND p.tb_institution_id = i.tb_institution_id
+      WHERE i.tb_order_id = ? AND i.tb_institution_id = ? AND i.terminal = 0 AND i.deleted = 'N'
+      LOCK IN SHARE MODE`,
+    [orderId, institutionId])
+  const key = (id: unknown, kind: unknown, productId: unknown) => `${Number(id)}|${String(kind)}|${Number(productId)}`
+  const now = new Set((rows as any[]).map(r => key(r.id, r.kind, r.productId)))
+  const computed = new Set(items.map(ci => key(ci.item.id, ci.item.kind, ci.item.productId)))
+  if (now.size !== computed.size || [...now].some(k => !computed.has(k))) {
+    throw new HttpError(409, `Itens do pedido ${orderId} mudaram durante o faturamento — tente de novo`, undefined, 'RESOURCE_BUSY')
   }
 }
 
@@ -767,7 +819,7 @@ export function serviceDescription(items: string, noteText: string | null | unde
   return text.slice(0, 2000) || null
 }
 
-export function buildServiceBranch(serviceItems: ComputedItem[], opts: ServiceBranchOptions = {}): InvoiceServiceInput {
+export function buildServiceBranch(serviceItems: ComputedItem[], opts: ServiceBranchOptions = {}): InvoiceServiceDraft {
   const r2 = (n: number) => Math.round(n * 100) / 100
   const codes = new Set(serviceItems.map(ci => ci.issqnExtras?.nationalCode ?? ''))
   if (codes.size > 1) {

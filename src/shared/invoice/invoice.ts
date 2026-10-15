@@ -1,5 +1,5 @@
-import { todayFor } from '@shared/time-zone'
 import { PoolConnection } from 'mysql2/promise'
+import { IbscbsDeclaration } from '@shared/ibscbs-classification'
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 
@@ -236,7 +236,14 @@ export interface InvoiceServiceInput {
   issWithheld:   'S' | 'N'          // tpRetISSQN (D-N8)
   liability:     '1' | '2' | '3' | '4'  // tribISSQN (D-N8)
   description:   string | null      // xDescServ montado dos itens
+  /** Fase IBS/CBS, IB-2 (D-IB9/D-IB62/D-IB71): a DECLARAÇÃO IBS/CBS congelada no ramo — OBRIGATÓRIA (produtor que não
+   *  decide não compila) e construída só pela peça `@shared/ibscbs-classification` (pela composição
+   *  `@shared/service-ibscbs-declaration`). Grupo omitido = colunas NULL (o motivo nunca é gravado — D-IB65). */
+  ibscbs:        IbscbsDeclaration
 }
+
+/** O ramo de serviço ANTES da declaração IBS/CBS — o que o produtor monta dos itens (ISS, códigos, descrição). */
+export type InvoiceServiceDraft = Omit<InvoiceServiceInput, 'ibscbs'>
 
 export interface IssueInvoiceInput {
   orderId: number
@@ -251,8 +258,9 @@ export interface IssueInvoiceInput {
    *  carrega o que o DPS precisa, CONGELADO no faturamento — um DPS declara UM
    *  serviço (D-N2), por isso um único código nacional/municipal/cidade por nota. */
   service: InvoiceServiceInput | null
-  /** Data do fato (E); default hoje (local). */
-  dtRecord?: string
+  /** D-IB64: data de EMISSÃO (= `dCompet` do DPS) — o produtor a calcula UMA vez (hoje do estabelecimento, Q-TZ1) e
+   *  passa a MESMA à declaração IBS/CBS e aqui: `tb_invoice.dt_emission` e a data do evento E. */
+  dtEmission: string
 }
 
 export interface IssuedInvoice {
@@ -280,7 +288,7 @@ export async function issueInvoice(
        tb_entity_id = VALUES(tb_entity_id), dt_emission = VALUES(dt_emission), value = VALUES(value),
        model = VALUES(model), status = '0', note = VALUES(note), deleted = 'N', updated_at = NOW()`,
     [input.orderId, institutionId, institutionId, invoiceNumber, input.serie,
-     input.recipientEntityId, await todayFor(s, institutionId, conn),   // Q-TZ1: dt_emission = hoje do estabelecimento
+     input.recipientEntityId, input.dtEmission,   // D-IB64 (Q-TZ1): a data que o produtor calculou UMA vez
      input.totalValue, input.model, input.noteText || null]
   )
   if (input.merchandise) {
@@ -315,17 +323,23 @@ export async function issueInvoice(
       `INSERT INTO \`${s}\`.tb_invoice_service
          (id, tb_institution_id, terminal, total_value, tb_service_list_id, national_code, municipal_code,
           tb_city_id, base_iss_value, aliq_iss, iss_value, iss_withheld, liability, description,
+          classification_code, place_indicator_code, nbs,
           created_at, updated_at, deleted)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
        ON DUPLICATE KEY UPDATE
          total_value = VALUES(total_value), tb_service_list_id = VALUES(tb_service_list_id),
          national_code = VALUES(national_code), municipal_code = VALUES(municipal_code),
          tb_city_id = VALUES(tb_city_id), base_iss_value = VALUES(base_iss_value),
          aliq_iss = VALUES(aliq_iss), iss_value = VALUES(iss_value), iss_withheld = VALUES(iss_withheld),
          liability = VALUES(liability), description = VALUES(description),
+         classification_code = VALUES(classification_code), place_indicator_code = VALUES(place_indicator_code),
+         nbs = VALUES(nbs),
          deleted = 'N', updated_at = NOW()`,   // F2a (D-F30/§22.5 item 4): dps_number APOSENTADA — o nDPS da vida é da nfse-api
+      // D-IB71: as 3 colunas da declaração SEMPRE regravadas (inclusive NULL) — a nota REVIVIDA nunca herda a da 1ª vida.
+      // ÚNICO escritor delas (cerca: ibscbs-declaration-fence.test.ts).
       [input.orderId, institutionId, sv.totalValue, sv.serviceListId, sv.nationalCode, sv.municipalCode,
-       sv.cityId, sv.baseIss, sv.aliqIss, sv.issValue, sv.issWithheld, sv.liability, sv.description]
+       sv.cityId, sv.baseIss, sv.aliqIss, sv.issValue, sv.issWithheld, sv.liability, sv.description,
+       sv.ibscbs.group?.classificationCode ?? null, sv.ibscbs.group?.placeIndicatorCode ?? null, sv.ibscbs.nbs]
     )
   } else {
     await conn.query(
@@ -335,7 +349,7 @@ export async function issueInvoice(
     )
   }
   const event = await insertInvoiceEvent(conn, s, institutionId, input.orderId, userId, {
-    kind: 'E', dtRecord: input.dtRecord ?? await todayFor(s, institutionId, conn),
+    kind: 'E', dtRecord: input.dtEmission,
     snapshot: { number: invoiceNumber, serie: input.serie, model: input.model, value: input.totalValue },
   })
   return { invoiceNumber, event }

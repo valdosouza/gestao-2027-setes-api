@@ -475,3 +475,232 @@ export async function listNbsLookup(filter: string, q: Queryable = pool): Promis
     [like, like, codeLike, codeLike])
   return rows
 }
+
+// ---------------------------------------------------------------------------
+// IB-2 — a DECLARAÇÃO IBS/CBS da nota (prompt_fase_ibs_cbs.md §12.3; D-IB62…D-IB72)
+// ---------------------------------------------------------------------------
+// A declaração = o par cClassTrib + cIndOp e a NBS que a NFS-e apresenta ao fisco, decididos UMA vez na
+// competência fiscal da nota (`dCompet` = `dt_emission` — D-IB64) e congelados no ramo `tb_invoice_service`.
+// Distinta da PRESUNÇÃO do serviço (o cadastro: tb_service_ibscbs + tb_service.nbs) e da VOZ do fisco (os valores).
+// A ausência antes da obrigação NÃO é fato: é consequência desta regra sobre fatos já gravados (data + regime +
+// calendário) — o motivo volta no resultado e nunca é persistido (D-IB65). Esta regra não conhece o ERP: recebe as
+// presunções já lidas (composição `@shared/service-ibscbs-declaration`, chamada pelos DOIS produtores — D-IB71).
+
+/** D-IB67: obrigação do grupo IBS/CBS na NFS-e do NÃO optante — data única conservadora para qualquer subitem
+ *  (a lista de 01/12 por subitem do Ato Conjunto nº 4/2026 NÃO é modelada — revisar com o 1º não optante). */
+export const NFSE_IBSCBS_REGULAR_OBLIGATION_START = '2026-10-01'
+
+/** opSimpNac do emitente (1 não optante · 2 MEI · 3 ME/EPP · 4 pendente — NT 009). */
+export type SimplesRegime = '1' | '2' | '3' | '4'
+
+/** O enquadramento que a regra da obrigação lê (D-IB66 — hoje só o opSimpNac; a tabela datada nasce com o 1º fato datado). */
+export interface EmitterRegime {
+  simplesRegime: SimplesRegime | null
+}
+
+/**
+ * D-IB66/D-IB67: início da obrigação do grupo IBS/CBS por documento × enquadramento — a constante da obrigação LEGAL
+ * (D-IB13), lida pela competência. MEI, ME/EPP e opSimpNac 4 ("pendente") = 01/01/2027 (Ato Conjunto nº 4/2026 § 1º);
+ * não optante = 01/10/2026. Sem opSimpNac conhecido vale a data do NÃO optante (A-IB3: quem não diz o regime não ganha o
+ * prazo do Simples — o lado conservador da D-IB67). Só a NFS-e está decidida; a NF-e é da F4 (falha alto).
+ */
+export function ibscbsObligationStart(model: FiscalModel, regime: EmitterRegime): string {
+  if (model !== MODEL_NFSE) throw new Error(`Obrigação IBS/CBS do modelo ${model} não decidida (F4 — NF-e)`)
+  switch (regime.simplesRegime) {
+    case '2': case '3': case '4': return NFSE_IBSCBS_SIMPLES_OBLIGATION_START
+    default:                      return NFSE_IBSCBS_REGULAR_OBLIGATION_START
+  }
+}
+
+/** O que o SERVIÇO presume (cadastro), já lido por quem compõe — um por produto. */
+export interface ServicePresumption {
+  productId:          number
+  /** Nome do serviço: a mensagem do 422 o nomeia (D-IB65 — o lote descarta `fields[]`). */
+  description:        string
+  /** Campo do 422 — quem fatura diz (`item.N` na venda, `product.N` na OS). */
+  field:              string
+  nbs:                string | null
+  classificationCode: string | null
+  placeIndicatorCode: string | null
+}
+
+/** Por que o grupo IBS/CBS foi omitido (D-IB62/D-IB63/D-IB65). */
+export type IbscbsOmission =
+  | 'not-classified' | 'no-line' | 'not-applicable' | 'requires-regular'
+  | 'place-indicator' | 'nbs-missing' | 'nbs-not-accepted' | 'divergent'
+
+const OMISSION_ORDER: readonly IbscbsOmission[] = [
+  'divergent', 'not-classified', 'no-line', 'not-applicable', 'requires-regular',
+  'place-indicator', 'nbs-missing', 'nbs-not-accepted',
+]
+
+declare const DECLARED: unique symbol
+
+/**
+ * A declaração IBS/CBS da nota (D-IB62): só esta peça a constrói (marca de tipo) e o ramo de serviço da nota a EXIGE
+ * (D-IB71 — produtor que não decide não compila).
+ */
+export interface IbscbsDeclaration {
+  readonly [DECLARED]: true
+  /** Grupo IBSCBS: só com o TRIO aceito (E0322 — grupo exige NBS). null = omitido. */
+  readonly group: { readonly classificationCode: string; readonly placeIndicatorCode: string } | null
+  /** cNBS: com o grupo sempre; sem ele, vai sozinha se aceita e única (D-IB62). */
+  readonly nbs: string | null
+  /** Motivos da omissão do grupo (vazio = declarado). NÃO persistido (D-IB65). */
+  readonly omitted: readonly IbscbsOmission[]
+}
+
+const declaration = (
+  group: IbscbsDeclaration['group'], nbs: string | null, omitted: readonly IbscbsOmission[],
+): IbscbsDeclaration => ({ group, nbs, omitted } as unknown as IbscbsDeclaration)
+
+export interface IbscbsRefusal {
+  code:    string
+  message: string
+  fields:  FieldError[]
+}
+
+export interface IbscbsEvaluation {
+  /** O que o ramo congela (antes da obrigação a omissão é RESULTADO, nunca 422 — D-IB34/D-IB41/D-IB42/D-IB58). */
+  declaration:     IbscbsDeclaration
+  /** Data da competência ≥ início da obrigação. */
+  obligatory:      boolean
+  obligationStart: string
+  /** Só quando obrigatória e incompleta: o 422 do faturamento (D-IB8/D-IB62/D-IB63). */
+  refusal:         IbscbsRefusal | null
+}
+
+const distinct = (values: (string | null)[]): string[] => [...new Set(values.filter((v): v is string => v !== null))]
+
+/**
+ * A REGRA da declaração (D-IB62/D-IB63/D-IB69): reduz N serviços a UMA declaração na data da competência e aplica o
+ * calendário. Componente ausente em qualquer serviço = motivo da falta; valores diferentes entre serviços = `divergent`
+ * (nunca "o maior valor decide"); cClassTrib pelo VEREDITO da data (D-IB47 — `classificationVerdictsAt`); cIndOp e NBS
+ * pelo estado do catálogo no momento (sem vigência no catálogo — D-IB69: limite conhecido); SEMPRE pelo modelo SE — o ramo
+ * de serviço vai ao fisco como NFS-e mesmo na conjugada da venda (model 55). O catálogo é lido em `q` sem trava (D-IB70).
+ */
+export async function evaluateIbscbsDeclaration(
+  q: Queryable, services: readonly ServicePresumption[], date: string, obligationStart: string,
+  context: { regimeUnknown?: boolean } = {},
+): Promise<IbscbsEvaluation> {
+  const byProduct = new Map<number, ServicePresumption>()
+  for (const sv of services) if (!byProduct.has(sv.productId)) byProduct.set(sv.productId, sv)
+  const list = [...byProduct.values()]
+  if (list.length === 0) throw new Error('Declaração IBS/CBS sem serviço — o ramo de serviço exige ao menos um')
+
+  const problems = new Map<number, string[]>()
+  const note = (productId: number, text: string) => problems.set(productId, [...(problems.get(productId) ?? []), text])
+  const all = (text: string) => { for (const sv of list) note(sv.productId, text) }
+  const omitted = new Set<IbscbsOmission>()
+
+  const unclassified = list.filter(sv => sv.classificationCode === null || sv.placeIndicatorCode === null)
+  const noNbs = list.filter(sv => sv.nbs === null)
+  for (const sv of unclassified) note(sv.productId, 'sem classificação IBS/CBS (cClassTrib e cIndOp) no cadastro do serviço')
+  for (const sv of noNbs) note(sv.productId, 'sem NBS no cadastro do serviço')
+  if (unclassified.length > 0) omitted.add('not-classified')
+  if (noNbs.length > 0) omitted.add('nbs-missing')
+
+  const classCodes = distinct(list.map(sv => sv.classificationCode))
+  const placeCodes = distinct(list.map(sv => sv.placeIndicatorCode))
+  const nbsCodes = distinct(list.map(sv => sv.nbs))
+  const nbsDivergent = nbsCodes.length > 1
+  if (classCodes.length > 1 || placeCodes.length > 1 || nbsDivergent) {
+    omitted.add('divergent')
+    for (const sv of list) {
+      note(sv.productId, `declara cClassTrib ${sv.classificationCode ?? '—'} · cIndOp ${sv.placeIndicatorCode ?? '—'} · `
+        + `NBS ${sv.nbs ?? '—'}, diferente dos outros serviços da nota — uma NFS-e declara UMA classificação`)
+    }
+  }
+
+  if (unclassified.length === 0 && classCodes.length === 1 && placeCodes.length === 1) {
+    const [code] = classCodes
+    const [place] = placeCodes
+    const verdict = (await classificationVerdictsAt(q, [code], MODEL_NFSE, date)).get(code)!
+    if (verdict.reason === 'no-line') {
+      omitted.add('no-line'); all(`cClassTrib ${code} inexistente ou fora de vigência em ${date}`)
+    } else if (verdict.reason === 'not-applicable') {
+      omitted.add('not-applicable'); all(`cClassTrib ${code} não aceito na NFS-e (ou ainda não confirmado pela Calculadora oficial)`)
+    } else if (verdict.reason === 'requires-regular') {
+      omitted.add('requires-regular'); all(`cClassTrib ${code} exige o grupo de tributação regular, que ainda não é emitido`)
+    }
+    const indicator = await findPlaceIndicator(q, place, MODEL_NFSE)
+    if (!indicator || !indicator.applicable) {
+      omitted.add('place-indicator'); all(`cIndOp ${place} inexistente ou não aceito na NFS-e`)
+    }
+  }
+  let nbsAccepted = false
+  if (noNbs.length === 0 && !nbsDivergent) {
+    const [nbs] = nbsCodes
+    nbsAccepted = await nbsExists(q, nbs)
+    if (!nbsAccepted) { omitted.add('nbs-not-accepted'); all(`NBS ${nbs} fora da lista oficial`) }
+  }
+
+  const reasons = OMISSION_ORDER.filter(r => omitted.has(r))
+  const nbs = nbsAccepted ? nbsCodes[0] : null
+  const decl = reasons.length === 0
+    ? declaration({ classificationCode: classCodes[0], placeIndicatorCode: placeCodes[0] }, nbs, [])
+    : declaration(null, nbs, reasons)
+
+  const obligatory = date >= obligationStart
+  let refusal: IbscbsRefusal | null = null
+  if (obligatory && reasons.length > 0) {
+    const affected = list.filter(sv => problems.has(sv.productId))
+    const fields: FieldError[] = affected
+      .map(sv => ({ field: sv.field, message: `${sv.description}: ${problems.get(sv.productId)!.join('; ')}` }))
+    const names = affected.map(sv => sv.description)
+    const summary = names.length > 3 ? `${names.slice(0, 3).join(', ')} e mais ${names.length - 3}` : names.join(', ')
+    // D-IB74 (Q-IB74 (a)): a data veio do regime NÃO informado (A-IB3) — a mensagem diz a causa e as duas saídas
+    const why = context.regimeUnknown
+      ? ` (regime do Simples NÃO informado no estabelecimento — vale a obrigação do não optante, ${obligationStart}: informe o `
+        + 'regime na aba Tributação do estabelecimento ou classifique os serviços)'
+      : ''
+    refusal = omitted.has('divergent')
+      ? {
+          code: ErrorCodes.INVOICE_SERVICE_MULTI_DECLARATION,
+          message: `Serviços da nota com declarações IBS/CBS diferentes (${summary}) — uma NFS-e declara UMA classificação; `
+            + `a declaração é obrigatória desde ${obligationStart}${why}`,
+          fields,
+        }
+      : {
+          code: ErrorCodes.INVOICE_SERVICE_IBSCBS_REQUIRED,
+          message: `Declaração IBS/CBS obrigatória desde ${obligationStart}${why} e incompleta em ${affected.length} `
+            + `serviço(s) — ${groupedReasons(affected, problems)}`,
+          fields,
+        }
+  }
+  return { declaration: decl, obligatory, obligationStart, refusal }
+}
+
+/** Teto de nomes por motivo na mensagem (o resto vira "e mais N" — nunca some calado). */
+const NAMES_PER_REASON = 12
+
+/**
+ * ADV-IB2-03 (gate adversarial da IB-2): a mensagem do 422 é o que o LOTE mostra (ele descarta `fields[]` — D-IB65) — agrupa
+ * por MOTIVO e nomeia os serviços de cada um; acima do teto diz quantos faltam. Antes cortava o texto em 600 caracteres e o
+ * operador corrigia uma parte, refaturava e caía de novo.
+ */
+function groupedReasons(affected: readonly ServicePresumption[], problems: Map<number, string[]>): string {
+  const byReason = new Map<string, string[]>()
+  for (const sv of affected) {
+    for (const reason of problems.get(sv.productId) ?? []) byReason.set(reason, [...(byReason.get(reason) ?? []), sv.description])
+  }
+  return [...byReason.entries()].map(([reason, names]) => {
+    const shown = names.slice(0, NAMES_PER_REASON).join(', ')
+    return `${reason}: ${shown}${names.length > NAMES_PER_REASON ? ` e mais ${names.length - NAMES_PER_REASON}` : ''}`
+  }).join(' | ')
+}
+
+/** O faturamento: obrigatória e incompleta = 422 (D-IB8); senão, a declaração a congelar. */
+export function assertIbscbsDeclarable(ev: IbscbsEvaluation): IbscbsDeclaration {
+  if (ev.refusal) throw new HttpError(422, ev.refusal.message, ev.refusal.fields, ev.refusal.code)
+  return ev.declaration
+}
+
+/** O que volta no RESULTADO do faturamento e no relatório do lote (D-IB65) — o motivo nunca é gravado. */
+export interface IbscbsOutcome {
+  declared: boolean
+  omitted:  IbscbsOmission[]
+}
+
+export const ibscbsOutcomeOf = (d: IbscbsDeclaration): IbscbsOutcome =>
+  ({ declared: d.group !== null, omitted: [...d.omitted] })

@@ -180,6 +180,10 @@ export async function invoiceOrderBatch(
       r => (r.chargedParcels ?? 0) > 0
         && (r.chargedParcels ?? 0) < (r.chargeableParcels ?? 0)).length,
     retryable: results.filter(r => r.retryable === true).length,
+    // D-IB65 (fase IBS/CBS, IB-2): quantas faturadas levam o grupo IBS/CBS e quantas saíram SEM ele — antes da
+    // obrigação a omissão não é erro, mas não pode passar sem ninguém ver (envio voluntário desligado em dezembro)
+    ibscbsDeclared: faturadas.filter(r => r.ibscbs?.declared === true).length,
+    ibscbsOmitted:  faturadas.filter(r => r.ibscbs?.declared === false).length,
     results,
   }
 }
@@ -257,6 +261,7 @@ async function invoiceOneInBatch(
       invoiceNumber: r.invoiceNumber, totalValue: r.totalValue,
       autoSettled: r.autoSettled, bankSlipsIssued: r.bankSlipsIssued,
       chargedParcels: charged, chargeableParcels: chargeable,
+      ibscbs: r.ibscbs,
     }
   } catch (err) {
     // CONTENÇÃO não é erro técnico (D-A3, transversal): fora do lote ela

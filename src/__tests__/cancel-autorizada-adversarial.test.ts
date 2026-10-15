@@ -71,6 +71,7 @@ describe('A2 (HIGH) — pedido cancelado com registro fiscal (status C) NUNCA re
       orderId: 10, recipientEntityId: 55, model: 'SE', serie: '1', items: [], totalValue: 100,
       resolveParcels, checks: [], financialKind: 'RA', financialOperation: 'C', noteText: '',
       approxTaxByItem: new Map(), userId: 7, automationConfig: {} as any, commissions: [], returnPlan: null,
+      dtEmission: '2026-10-15',
     })).rejects.toMatchObject({ statusCode: 409, code: 'ORDER_CANCELLED' })
     expect(resolveParcels).not.toHaveBeenCalled()
     expect(mockIssueInvoice).not.toHaveBeenCalled()

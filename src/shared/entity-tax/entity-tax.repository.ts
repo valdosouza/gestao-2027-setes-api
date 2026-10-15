@@ -72,3 +72,28 @@ export async function getEntityTax(
   )
   return (rows[0] as EntityTaxRow | undefined) ?? null
 }
+
+/** opSimpNac do emitente na data (1 não optante · 2 MEI · 3 ME/EPP · 4 pendente — NT 009). */
+export interface EmitterSimplesRegime {
+  simplesRegime: '1' | '2' | '3' | '4' | null
+}
+
+/**
+ * ENQUADRAMENTO DO EMITENTE NA DATA (fase IBS/CBS, D-IB66 — prompt_fase_ibs_cbs.md §12.6). Assinatura já DATADA, mas
+ * sob a convenção NOMEADA "sem história, o enquadramento conhecido vale para toda data": lê a linha ATUAL da relação
+ * emitente × institution (`tb_entity_tax`, id = institution). A tabela datada `tb_establishment_tax_regime` (D-IB7), a
+ * D-IB24 (CRT derivado) e o leitor por competência nascem com o 1º FATO datado (gatilhos: Q-IB1 em 30/10, XSD da NT 009
+ * ou 1º não optante) — quem chama já passa a data e não muda. Dentro da transação: leitura TRAVANTE compartilhada
+ * (PADROES §9 regra 2 — decide o 422 da obrigação). Valor fora do domínio = desconhecido (null).
+ */
+export async function emitterRegimeAt(
+  q: Executor | { query: (sql: string, params?: unknown[]) => Promise<any> },
+  schemaName: string, institutionId: number, _date: string, opts: { lock: boolean },
+): Promise<EmitterSimplesRegime> {
+  const [rows] = await (q as Executor).query<any[]>(
+    `SELECT simples_regime AS simplesRegime FROM ??
+      WHERE id = ? AND tb_institution_id = ? AND deleted = 'N'${opts.lock ? ' LOCK IN SHARE MODE' : ''}`,
+    [`${schemaName}.tb_entity_tax`, institutionId, institutionId])
+  const raw = rows[0]?.simplesRegime == null ? null : String(rows[0].simplesRegime).trim()
+  return { simplesRegime: raw === '1' || raw === '2' || raw === '3' || raw === '4' ? raw : null }
+}

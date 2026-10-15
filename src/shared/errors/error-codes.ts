@@ -76,6 +76,9 @@ export const ErrorCodes = {
   IBSCBS_CLASSIFICATION_NOT_APPLICABLE:   'IBSCBS_CLASSIFICATION_NOT_APPLICABLE',
   IBSCBS_CLASSIFICATION_REQUIRES_REGULAR: 'IBSCBS_CLASSIFICATION_REQUIRES_REGULAR',
   IBSCBS_PLACE_INDICATOR_INVALID:         'IBSCBS_PLACE_INDICATOR_INVALID',
+  // Fase IBS/CBS (IB-2 — §12.6): declaração congelada no faturamento
+  INVOICE_SERVICE_IBSCBS_REQUIRED:        'INVOICE_SERVICE_IBSCBS_REQUIRED',
+  INVOICE_SERVICE_MULTI_DECLARATION:      'INVOICE_SERVICE_MULTI_DECLARATION',
   SERVICE_TAX_RULE_NATIONAL_CODE_MISMATCH: 'SERVICE_TAX_RULE_NATIONAL_CODE_MISMATCH',
   SERVICE_ORDER_ITEM_NO_RULE:       'SERVICE_ORDER_ITEM_NO_RULE',
   BANK_CHANNEL_HAS_LIVE_REGISTRATIONS: 'BANK_CHANNEL_HAS_LIVE_REGISTRATIONS',
@@ -258,6 +261,8 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   IBSCBS_CLASSIFICATION_NOT_APPLICABLE:   'cClassTrib não aceito neste documento fiscal (indicador do IT) ou ainda não confirmado pela Calculadora oficial (A-IB1)',
   IBSCBS_CLASSIFICATION_REQUIRES_REGULAR: 'cClassTrib exige o grupo de tributação regular (gTribRegular), que este sistema ainda não emite — escolha outra classificação',
   IBSCBS_PLACE_INDICATOR_INVALID:         'cIndOp inexistente ou não aceito neste documento fiscal (Anexo VII)',
+  INVOICE_SERVICE_IBSCBS_REQUIRED:        'Declaração IBS/CBS obrigatória na competência e incompleta — classificação (cClassTrib + cIndOp) e NBS aceitas em todo serviço da nota (D-IB8/D-IB62)',
+  INVOICE_SERVICE_MULTI_DECLARATION:      'Serviços da nota com declarações IBS/CBS diferentes — uma NFS-e declara UMA classificação (D-IB63): harmonize o cadastro ou fature em ordens separadas',
   SERVICE_ORDER_ITEM_NO_RULE: 'Serviço da OS sem regra de ISS válida (regra ausente, inativa, cidade de incidência diferente do cliente ou sem código nacional)',
   BANK_CHANNEL_HAS_LIVE_REGISTRATIONS: 'Conta tem boletos com apresentação viva no banco — encerre-os antes de excluir o canal ou mudar o ambiente (D-I26/D-I27)',
   BANK_PAYER_INCOMPLETE: 'Cadastro do cliente sem CPF/CNPJ, nome ou endereço completo exigidos pelo banco (D-I17) — corrigir no cliente',

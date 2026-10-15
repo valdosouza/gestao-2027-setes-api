@@ -9,6 +9,11 @@
 import pool from '../shared/db/connection'
 import { generateInvoice } from '../modules/service-orders/service-orders.repository'
 
+// IB-2 (D-IB71): a declaração IBS/CBS tem teste próprio (ibscbs-declaration.test.ts) — aqui a fronteira é mockada
+jest.mock('../shared/service-ibscbs-declaration', () => ({
+  __esModule: true,
+  declareServiceIbscbs: jest.fn().mockResolvedValue({ group: null, nbs: null, omitted: ['not-classified'] }),
+}))
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },

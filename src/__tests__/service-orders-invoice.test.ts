@@ -5,6 +5,11 @@
 import pool from '../shared/db/connection'
 import { generateInvoice } from '../modules/service-orders/service-orders.repository'
 
+// IB-2 (D-IB71): a declaração IBS/CBS tem teste próprio (ibscbs-declaration.test.ts) — aqui a fronteira é mockada
+jest.mock('../shared/service-ibscbs-declaration', () => ({
+  __esModule: true,
+  declareServiceIbscbs: jest.fn().mockResolvedValue({ group: null, nbs: null, omitted: ['not-classified'] }),
+}))
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
   default: { query: jest.fn(), getConnection: jest.fn() },
@@ -89,16 +94,28 @@ describe('service-orders.generateInvoice (Q-G3)', () => {
       invoiceNumber: '12', parcels: 2, totalValue: 150,
       dtExpiration: '2026-10-05', paymentTypeId: 6,
       autoSettled: 0, bankSlipsIssued: 0, chargeableParcels: 2,
+      // IB-2 (D-IB65): o que a declaração IBS/CBS decidiu volta no resultado (o motivo nunca é gravado)
+      ibscbs: { declared: false, omitted: ['not-classified'] },
     })
+    // IB-2 (D-IB71): a declaração pela composição ÚNICA, com os serviços RELIDOS sob o lock e a MESMA data da emissão
+    const decl = jest.requireMock('../shared/service-ibscbs-declaration') as any
+    expect(decl.declareServiceIbscbs).toHaveBeenCalledWith(conn, 'setes_setes', 1, {
+      items: [{ productId: 40, field: 'product.40' }],
+      competenceDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    })
+    const dtEmission = decl.declareServiceIbscbs.mock.calls[0][3].competenceDate
     expect(inv.issueInvoice).toHaveBeenCalledWith(conn, 'setes_setes', 1, 7, {
       orderId: 300, recipientEntityId: 55, model: 'SE', serie: '1', totalValue: 150,
-      noteText: null, merchandise: null,
-      // Onda 3 (A2 fechado): ramo de serviço CONGELADO — regra do serviço, ISS por item
+      noteText: null, merchandise: null, dtEmission,
+      // Onda 3 (A2 fechado): ramo de serviço CONGELADO — regra do serviço, ISS por item + a declaração IBS/CBS (IB-2)
       service: {
         totalValue: 150, serviceListId: '1.02', nationalCode: '010201', municipalCode: '0102', cityId: 4004,
         baseIss: 150, aliqIss: 5, issValue: 7.5, issWithheld: 'N', liability: '1', description: 'Suporte mensal',
+        ibscbs: { group: null, nbs: null, omitted: ['not-classified'] },
       },
     })
+    // a declaração roda DEPOIS do ISS congelado e ANTES da nota
+    expect(decl.declareServiceIbscbs.mock.invocationCallOrder[0]).toBeLessThan(inv.issueInvoice.mock.invocationCallOrder[0])
     // ISS por item na MESMA tabela da venda com serviço
     const issqn = conn.query.mock.calls.filter(c => /tb_order_item_issqn/.test(String(c[0])))
     expect(issqn).toHaveLength(1)

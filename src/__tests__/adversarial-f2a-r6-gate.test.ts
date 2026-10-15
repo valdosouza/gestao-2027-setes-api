@@ -20,8 +20,10 @@ import * as f2aRunner from '../migrations/runner'
 import { F2A_TOMBSTONE_NAME, F2A_TOMBSTONE_VERSION, F2A_PASSIVO_NAME } from '../migrations/f2a-freeze-triggers'
 
 const REPO = path.join(__dirname, '..', '..')
-const MAIN = path.resolve(REPO, '..', 'setes-api')                       // a árvore VIVA (produção) — só leitura
-const MAIN_SQL = path.join(MAIN, 'src', 'migrations', 'sql')
+// O runner-fixture (`test-setup/runner-main-pre-f2a`) lê as migrations da PRÓPRIA árvore: o diretório simulado tem de ser o dela. Na
+// árvore viva é o mesmo da produção; numa worktree (ex.: `setes-api-ib2`), apontar para a árvore viva deixava a 069 da árvore de teste
+// fora da simulação e o teste falhava sem relação com a mudança (IB-2, 2026-10-15).
+const MAIN_SQL = path.join(REPO, 'src', 'migrations', 'sql')
 const F2A_SQL = path.join(REPO, 'src', 'migrations', 'sql')
 const PASSIVO_SQL = fs.readFileSync(path.join(F2A_SQL, '069_f2a_fiscal_passivo.sql'), 'utf8')
 // O "código ANTIGO" (o main de ANTES da janela) é um FIXTURE congelado: depois do merge o runner da árvore viva É o da F2a (2026-10-14)
