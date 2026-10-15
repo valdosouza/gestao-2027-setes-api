@@ -1,4 +1,5 @@
-import { todayFor, institutionZoneFor, withZoneWall } from '@shared/time-zone'
+import { institutionZoneFor, withZoneWall } from '@shared/time-zone'
+import { invoiceEmissionDateFor } from '@shared/invoice/emission-date'
 import { invoiceSerieFor } from '@shared/invoice-series'
 import { HttpError } from '@shared/errors/http-error'
 import {
@@ -24,6 +25,7 @@ import {
   readInvoiceLives, readInvoiceFiscal, fiscalEffectOf, FiscalEffect, findCurrentCancelWaiver, fiscalRecordKey,
 } from '@shared/invoice'
 import { assertSchema } from '@shared/db/schema'
+import { previewServiceIbscbs } from '@shared/service-ibscbs-declaration'
 import { CancelBody, CancelWaiverBody } from './billing.dto'
 import { resolveOrderParcels, MaterializedParcel as ResolvedParcel } from '@shared/order-installment'
 import { hasServiceOrderCycle } from '@shared/service-order'
@@ -350,7 +352,13 @@ export async function validateOrder(
       message: 'Ordem sem condições de cobrança (forma de pagamento/prazo) — negocie antes de faturar' })
   }
 
-  return { orderId: input.orderId, branch: branch.branch, issues, rulesResolved, rulesManual }
+  // IB-3 (D-IB76 = Q-IB76 (a)): a declaração IBS/CBS PREVISTA — mesma composição do faturamento, só-pergunta, na data que ele usaria;
+  // antes da obrigação fica só no campo próprio (aviso); depois, a recusa vira issue de bloqueio com o mesmo texto do 422
+  const serviceProductIds = items.filter(i => i.productKind === 'S').map(i => Number(i.productId))
+  const ibscbs = await previewServiceIbscbs(pool, assertSchema(schemaName), institutionId, serviceProductIds)
+  if (ibscbs?.refusal) issues.push({ scope: 'ibscbs', field: 'ibscbs', message: ibscbs.refusal.message })
+
+  return { orderId: input.orderId, branch: branch.branch, issues, rulesResolved, rulesManual, ibscbs }
 }
 
 export async function invoiceOrder(
@@ -650,7 +658,8 @@ export async function invoiceOrder(
   // do faturamento, depois do FOR UPDATE em tb_order — um PUT da negociação
   // concorrente não pode mais deixar tb_financial nascendo de uma grade que
   // já não existe; o retry em deadlock re-resolve junto com a transação.
-  const baseDate = await todayFor(schemaName, institutionId)   // Q-TZ1: vencimentos a partir do HOJE do estabelecimento
+  // Q-TZ1 + D-IB64/D-IB88: a data de emissão (= competência fiscal da declaração IBS/CBS = base dos vencimentos) pelo DONO ÚNICO
+  const baseDate = await invoiceEmissionDateFor(schemaName, institutionId)
   const resolveParcels = async (db: Queryable): Promise<ResolvedParcel[]> => {
     const resolved = await resolveOrderParcels(db, schemaName, institutionId, input.orderId,
       { noteBase: financialBase, baseDate })

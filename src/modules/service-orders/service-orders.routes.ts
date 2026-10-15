@@ -205,7 +205,7 @@ router.get('/products', controller.productsLookup)
  *         required: true
  *         schema: { type: integer }
  *     responses:
- *       200: { description: 'Envelope { ok, data } — { id, number, customerId, customerName, status, dtRecord, items[], totalValue, invoiceNumber, dtEmission }' }
+ *       200: { description: 'Envelope { ok, data } — { id, number, customerId, customerName, status, dtRecord, items[], totalValue, invoiceNumber, dtEmission, ibscbs } — ibscbs (IB-3, D-IB76): { preview, frozen } — preview = a declaração IBS/CBS PREVISTA na OS aberta (mesma composição do faturamento, só-pergunta: competenceDate, obligationStart, obligatory, declared, omitted[], refusal); frozen = a CONGELADA no ramo da nota faturada (classificationCode, placeIndicatorCode, nbs); null = sem itens ou sem ramo — omitted[] ∈ not-classified | no-line | not-applicable | requires-regular | place-indicator | nbs-missing | nbs-not-accepted | divergent (lista FECHADA — IBSCBS_OMISSIONS, D-IB91) · preview.atObligation (D-IB89): antes da obrigação, o veredito { declared, omitted[], refusal } NA DATA DA OBRIGAÇÃO (null depois) · unavailable: true (D-IB87) = a leitura IBS/CBS falhou — preview/frozen null, o detalhe segue' }
  *       401: { description: Não autenticado }
  *       404: { description: OS não encontrada }
  *   delete:
@@ -351,7 +351,7 @@ router.delete('/:id/items/:itemId', controller.removeOrderItem)
  *               paymentTypeId: { type: integer, description: 'Forma vinculada e habilitada na institution' }
  *               parcels: { type: integer, default: 1, minimum: 1, maximum: 99 }
  *     responses:
- *       201: { description: 'Envelope { ok, data: { invoiceNumber, parcels, totalValue, dtExpiration, paymentTypeId, autoSettled, bankSlipsIssued, chargeableParcels, ibscbs: { declared, omitted[] } } } — ibscbs (IB-2, D-IB65) = a declaração IBS/CBS congelada no ramo: declared = o grupo está CONGELADO no ramo (a nfse-api o leva ao DPS a partir da IB-3 — até lá não é prova de envio); omitted = por que não (antes da obrigação; nunca gravado)' }
+ *       201: { description: 'Envelope { ok, data: { invoiceNumber, parcels, totalValue, dtExpiration, paymentTypeId, autoSettled, bankSlipsIssued, chargeableParcels, ibscbs: { declared, omitted[] } } } — ibscbs (IB-2, D-IB65) = a declaração IBS/CBS congelada no ramo: declared = o grupo está CONGELADO no ramo (a nfse-api o leva ao DPS a partir da IB-3 — até lá não é prova de envio); omitted = por que não (antes da obrigação; nunca gravado) — omitted[] ∈ not-classified | no-line | not-applicable | requires-regular | place-indicator | nbs-missing | nbs-not-accepted | divergent (lista FECHADA — IBSCBS_OMISSIONS, D-IB91)' }
  *       400: { description: 'Validação / forma indisponível / ordem sem itens' }
  *       401: { description: Não autenticado }
  *       404: { description: OS não encontrada }
@@ -403,7 +403,7 @@ router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR
  *               paymentTypeId: { type: integer, description: 'OPCIONAL (D14) — ausente = forma combinada no contrato de cada ordem' }
  *               parcels: { type: integer, enum: [1], default: 1, description: 'D30 — cobrança recorrente é sempre 1 parcela; outro valor → 400 (parcelamento só no faturamento individual)' }
  *     responses:
- *       200: { description: 'Envelope { ok, data: { requested, invoiced, failed, uncharged, partiallyCharged, retryable, ibscbsDeclared, ibscbsOmitted, results[] } } — cada linha traz dtExpiration/paymentTypeId REALMENTE usados, chargedParcels/chargeableParcels, retryable e ibscbs { declared, omitted[] } (IB-2, D-IB65: faturadas COM × SEM o grupo IBS/CBS CONGELADO no ramo — vai ao DPS a partir da IB-3; depois da obrigação a ordem sem declaração cai com o 422 e a mensagem nomeia os serviços)' }
+ *       200: { description: 'Envelope { ok, data: { requested, invoiced, failed, uncharged, partiallyCharged, retryable, ibscbsDeclared, ibscbsOmitted, results[] } } — cada linha traz dtExpiration/paymentTypeId REALMENTE usados, chargedParcels/chargeableParcels, retryable e ibscbs { declared, omitted[] } (IB-2, D-IB65: faturadas COM × SEM o grupo IBS/CBS CONGELADO no ramo — vai ao DPS a partir da IB-3; depois da obrigação a ordem sem declaração cai com o 422 e a mensagem nomeia os serviços) — omitted[] ∈ not-classified | no-line | not-applicable | requires-regular | place-indicator | nbs-missing | nbs-not-accepted | divergent (lista FECHADA — IBSCBS_OMISSIONS, D-IB91)' }
  *       400: { description: Validação do lote }
  *       401: { description: Não autenticado }
  *       403: { description: Sem o privilégio FATURAR }

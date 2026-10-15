@@ -1,4 +1,5 @@
 import { todayFor } from '@shared/time-zone'
+import { invoiceEmissionDateFor } from '@shared/invoice/emission-date'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { HttpError } from '@shared/errors/http-error'
@@ -566,7 +567,7 @@ export async function getNegotiation(
     const days = parseDeadline(billing.deadline)
     if (days) {
       preview = materializeParcels({
-        days, base: base.base, baseDate: await todayFor(schemaName, institutionId), paymentTypeId: billing.paymentTypeId,
+        days, base: base.base, baseDate: await invoiceEmissionDateFor(schemaName, institutionId), paymentTypeId: billing.paymentTypeId,   // D-IB88
       }).map(p => describe(p, false))
     }
   }

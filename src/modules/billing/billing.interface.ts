@@ -1,4 +1,5 @@
 import { IbscbsOutcome } from '@shared/ibscbs-classification'
+import type { IbscbsPreview } from '@shared/service-ibscbs-declaration'
 
 /**
  * Tipos do módulo billing — validação + faturamento de ordens (W2 Onda 3,
@@ -10,7 +11,7 @@ import { IbscbsOutcome } from '@shared/ibscbs-classification'
 export type OrderBranch = 'sale' | 'purchase' | 'adjust' | 'service'
 
 export interface ValidationIssue {
-  scope: 'order' | 'emitter' | 'recipient' | 'item'
+  scope: 'order' | 'emitter' | 'recipient' | 'item' | 'ibscbs'
   itemId?: number
   field?: string
   message: string
@@ -24,6 +25,12 @@ export interface ValidationReport {
   rulesResolved: number
   /** Itens que já tinham escolha manual (origin 'M' — respeitados). */
   rulesManual: number
+  /**
+   * IB-3 (D-IB76): a declaração IBS/CBS PREVISTA para o ramo de serviço (a mesma composição do faturamento, só-pergunta, na data de hoje do
+   * estabelecimento). Antes da obrigação é só AVISO aqui — nunca entra em `issues` (no app toda issue bloqueia); depois, a recusa que o
+   * faturamento daria também vira issue `scope: 'ibscbs'` (bloqueia). null = sem itens de serviço.
+   */
+  ibscbs: IbscbsPreview | null
 }
 
 export interface InvoiceResult {

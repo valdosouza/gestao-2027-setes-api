@@ -13,6 +13,7 @@ import * as taxRule from '../shared/tax-rule'
 jest.mock('../shared/service-ibscbs-declaration', () => ({
   __esModule: true,
   declareServiceIbscbs: jest.fn().mockResolvedValue({ group: null, nbs: null, omitted: ['not-classified'] }),
+  previewServiceIbscbs: jest.fn().mockResolvedValue(null),
 }))
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,

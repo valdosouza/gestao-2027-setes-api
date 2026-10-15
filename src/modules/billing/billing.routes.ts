@@ -48,7 +48,7 @@ const router = Router()
  *                       valor unitário; o vendedor é DERIVADO do pedido
  *                       original.
  *     responses:
- *       200: { description: "{ ok, data: { orderId, branch, issues[], rulesResolved, rulesManual } }" }
+ *       200: { description: "{ ok, data: { orderId, branch, issues[], rulesResolved, rulesManual, ibscbs } } — ibscbs (IB-3, D-IB76): a declaração IBS/CBS PREVISTA do ramo de serviço { competenceDate, obligationStart, obligatory, declared, omitted[], refusal: {code, message} | null } pela mesma composição do faturamento (só-pergunta, hoje do estabelecimento); antes da obrigação é só aviso; depois, a recusa também vira issue scope ibscbs (bloqueia). null = sem serviço — omitted[] ∈ not-classified | no-line | not-applicable | requires-regular | place-indicator | nbs-missing | nbs-not-accepted | divergent (lista FECHADA — IBSCBS_OMISSIONS, D-IB91) · atObligation (D-IB89): antes da obrigação, o veredito NA DATA DA OBRIGAÇÃO" }
  *       400: { description: Payload inválido }
  *       401: { description: Sem JWT }
  *       403: { description: Flag billing desabilitada }
@@ -101,7 +101,7 @@ router.post('/validate', controller.validate)
  *                       vendedor derivado. Venda gera comissão POSITIVA por
  *                       item na mesma transação (kind F).
  *     responses:
- *       201: { description: "{ ok, data: { orderId, invoiceNumber, serie, model, totalValue, parcels, autoSettled, bankSlipsIssued, chargeableParcels, ibscbs } } — ibscbs (IB-2, D-IB65): { declared, omitted[] } da declaração IBS/CBS CONGELADA no ramo de serviço (vai ao DPS a partir da IB-3 — declared não é prova de envio); null = nota sem ramo de serviço" }
+ *       201: { description: "{ ok, data: { orderId, invoiceNumber, serie, model, totalValue, parcels, autoSettled, bankSlipsIssued, chargeableParcels, ibscbs } } — ibscbs (IB-2, D-IB65): { declared, omitted[] } da declaração IBS/CBS CONGELADA no ramo de serviço (vai ao DPS a partir da IB-3 — declared não é prova de envio); null = nota sem ramo de serviço — omitted[] ∈ not-classified | no-line | not-applicable | requires-regular | place-indicator | nbs-missing | nbs-not-accepted | divergent (lista FECHADA — IBSCBS_OMISSIONS, D-IB91)" }
  *       400: { description: Payload inválido }
  *       401: { description: Sem JWT }
  *       403: { description: Flag billing desabilitada }

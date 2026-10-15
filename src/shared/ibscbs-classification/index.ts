@@ -524,10 +524,16 @@ export interface ServicePresumption {
   placeIndicatorCode: string | null
 }
 
-/** Por que o grupo IBS/CBS foi omitido (D-IB62/D-IB63/D-IB65). */
-export type IbscbsOmission =
-  | 'not-classified' | 'no-line' | 'not-applicable' | 'requires-regular'
-  | 'place-indicator' | 'nbs-missing' | 'nbs-not-accepted' | 'divergent'
+/**
+ * Por que o grupo IBS/CBS foi omitido (D-IB62/D-IB63/D-IB65) — lista FECHADA e PUBLICADA (D-IB91, gates da IB-3): o tipo SAI dela, o
+ * Swagger a enumera (validate, OS, faturamento, lote) e o app guarda um espelho conferido contra ESTA constante por teste
+ * (`setes-app/apps/web/test/ibscbs_ib3_test.dart`). Motivo novo = entrada aqui + chave i18n no app (o teste do app fica vermelho).
+ */
+export const IBSCBS_OMISSIONS = Object.freeze([
+  'not-classified', 'no-line', 'not-applicable', 'requires-regular',
+  'place-indicator', 'nbs-missing', 'nbs-not-accepted', 'divergent',
+] as const)
+export type IbscbsOmission = typeof IBSCBS_OMISSIONS[number]
 
 const OMISSION_ORDER: readonly IbscbsOmission[] = [
   'divergent', 'not-classified', 'no-line', 'not-applicable', 'requires-regular',

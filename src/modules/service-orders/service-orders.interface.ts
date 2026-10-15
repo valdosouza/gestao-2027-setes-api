@@ -1,4 +1,6 @@
 import { IbscbsOutcome } from '@shared/ibscbs-classification'
+import type { IbscbsPreview } from '@shared/service-ibscbs-declaration'
+import type { FrozenIbscbsDeclaration } from '@shared/invoice'
 
 /**
  * Tipos do módulo service-orders — Ordens de Serviço / ciclo mensal
@@ -63,6 +65,14 @@ export interface ServiceOrderFull {
   /** Preenchidos quando FATURADA. */
   invoiceNumber: string | null
   dtEmission:    string | null
+  /**
+   * IB-3 (D-IB76): a declaração IBS/CBS — PREVISTA na OS aberta (a mesma composição do faturamento, só-pergunta, na data de hoje do
+   * estabelecimento: antes da obrigação é aviso, depois a recusa que o faturamento daria) ou CONGELADA na OS faturada (lida do ramo da nota).
+   * null = OS sem itens ou sem ramo de serviço. Só exibição — o app só renderiza.
+   * D-IB87 (gates da IB-3): a leitura que falha (catálogo, fuso, banco) DEGRADA TIPADA — `unavailable: true` com preview/frozen null + alarme
+   * no log (molde do `UNAVAILABLE_SEAL`); nunca derruba o detalhe da OS (o operador segue podendo incluir item, cancelar, faturar).
+   */
+  ibscbs: { preview: IbscbsPreview | null; frozen: FrozenIbscbsDeclaration | null; unavailable?: true } | null
 }
 
 export interface OpenOrderInput {

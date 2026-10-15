@@ -1,5 +1,6 @@
 import { runWithOperationClock } from '@shared/time-zone'
 import { todayFor } from '@shared/time-zone'
+import { invoiceEmissionDateFor } from '@shared/invoice/emission-date'
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertOrderOpen } from '@shared/order'
@@ -146,10 +147,10 @@ export async function listOrders(
 
 export async function getOrder(
   id: number, schemaName: string, institutionId: number
-): Promise<ServiceOrderFull | null> {
+): Promise<(Omit<ServiceOrderFull, 'ibscbs'> & { terminal: number }) | null> {
   assertSchemaName(schemaName)
   const [rows] = await pool.query<any[]>(
-    `SELECT c.id, c.number,
+    `SELECT c.id, c.number, c.terminal,
             s.tb_customer_id AS customerId,
             COALESCE(e.nick_trade, e.name_company) AS customerName,
             o.status,
@@ -1100,7 +1101,7 @@ export async function generateInvoice(
       // D-IB64: data de EMISSÃO calculada UMA vez (hoje do estabelecimento pelo relógio da operação — no lote, o da ORDEM,
       // Q-TZ9; na conexão da transação — C1): a mesma vai à nota, à declaração IBS/CBS (competência fiscal = `dCompet`) e
       // aos automatismos do título.
-      const dtEmission = await todayFor(schemaName, institutionId, conn)
+      const dtEmission = await invoiceEmissionDateFor(schemaName, institutionId, conn)   // D-IB88: o dono único da data
 
       // M1 (gate socrático R5): condições vindas do fato da competência são
       // reconferidas AQUI, sob o lock da ordem — o mesmo padrão fixado na

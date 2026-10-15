@@ -4,7 +4,8 @@ import { HttpError } from '@shared/errors/http-error'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
 import logger from '@shared/logger/logger'
 import { contentionToHttpError } from '@shared/db/contention'
-import { readFiscalSeals, FiscalSeal, UNAVAILABLE_SEAL } from '@shared/invoice'
+import { readFiscalSeals, FiscalSeal, UNAVAILABLE_SEAL, readFrozenIbscbs } from '@shared/invoice'
+import { previewServiceIbscbs } from '@shared/service-ibscbs-declaration'
 import { FiscalVoiceUnavailableError } from '@shared/fiscal-voice'
 import { assertSchema } from '@shared/db/schema'
 import pool from '@shared/db/connection'
@@ -74,9 +75,34 @@ export async function fetchOrders(
 export async function fetchOrder(
   id: number, scope: ServiceOrderScope
 ): Promise<ServiceOrderFull> {
-  const order = await getOrder(id, scope.schemaName, scope.institutionId)
-  if (!order) throw new HttpError(404, `Ordem de serviço ${id} não encontrada`)
-  return order
+  const found = await getOrder(id, scope.schemaName, scope.institutionId)
+  if (!found) throw new HttpError(404, `Ordem de serviço ${id} não encontrada`)
+  const { terminal, ...order } = found          // o terminal liga a OS ao ramo da nota (L6) — não vai ao JSON
+  return { ...order, ibscbs: await ibscbsOfOrder(order, terminal, scope) }
+}
+
+/** IB-3 (D-IB76): prevista na OS aberta (com itens) · congelada na faturada/cancelada (ramo da nota) · null sem nada a mostrar. */
+async function ibscbsOfOrder(
+  order: Omit<ServiceOrderFull, 'ibscbs'>, terminal: number, scope: ServiceOrderScope,
+): Promise<ServiceOrderFull['ibscbs']> {
+  const s = assertSchema(scope.schemaName)
+  try {
+    if (order.status === 'A') {
+      if (order.items.length === 0) return null
+      const preview = await previewServiceIbscbs(pool, s, scope.institutionId, order.items.map(i => Number(i.productId)))
+      return preview ? { preview, frozen: null } : null
+    }
+    if (!order.invoiceNumber) return null
+    const frozen = await readFrozenIbscbs(pool, s, scope.institutionId, order.id, terminal)
+    return frozen ? { preview: null, frozen } : null
+  } catch (err) {
+    // D-IB87: só exibição — degrada TIPADA (nunca 500 no detalhe, nunca null ambíguo com "sem serviço"); alarme com rótulo fixo
+    logger.error('Declaração IBS/CBS indisponível no detalhe da OS (D-IB87)', {
+      institutionId: scope.institutionId, orderId: order.id, status: order.status, code: (err as any)?.code ?? null,
+      kind: (err as any)?.name ?? null,   // gate do delta (L4): TypeError de programação × erro do banco — sem a mensagem
+    })
+    return { preview: null, frozen: null, unavailable: true }
+  }
 }
 
 export async function createOrder(

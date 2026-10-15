@@ -356,3 +356,27 @@ export async function issueInvoice(
 }
 
 
+
+/**
+ * IB-3 (D-IB76): a declaração IBS/CBS CONGELADA no ramo de serviço da nota — o que o faturamento gravou (IB-2), lido para o detalhe
+ * faturado; nunca recalculada. null = a nota não tem ramo de serviço vivo. Os campos null = o grupo/NBS não foram declarados.
+ */
+export interface FrozenIbscbsDeclaration {
+  classificationCode: string | null
+  placeIndicatorCode: string | null
+  nbs:                string | null
+}
+
+export async function readFrozenIbscbs(
+  q: { query: (sql: string, params?: unknown[]) => Promise<any> }, s: string, institutionId: number, invoiceId: number, terminal: number,
+): Promise<FrozenIbscbsDeclaration | null> {
+  if (!/^[A-Za-z0-9_]+$/.test(s)) throw new Error(`schema inválido: ${s}`)
+  // gate socrático da IB-3 (L6): o TERMINAL do ramo da nota (o mesmo que liga a OS à nota) — nunca `terminal = 0` fixo
+  const [rows] = await q.query(
+    `SELECT classification_code AS classificationCode, place_indicator_code AS placeIndicatorCode, nbs
+       FROM \`${s}\`.tb_invoice_service
+      WHERE id = ? AND tb_institution_id = ? AND terminal = ? AND deleted = 'N'`,
+    [invoiceId, institutionId, terminal])
+  const r = (rows as any[])[0]
+  return r ? { classificationCode: r.classificationCode ?? null, placeIndicatorCode: r.placeIndicatorCode ?? null, nbs: r.nbs ?? null } : null
+}

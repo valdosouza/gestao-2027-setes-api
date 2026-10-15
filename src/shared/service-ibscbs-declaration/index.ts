@@ -1,8 +1,9 @@
 import { readServicePresumptions, PresumptionRequest, Queryable } from '@shared/service-ibscbs'
+import { invoiceEmissionDateFor } from '@shared/invoice/emission-date'
 import { emitterRegimeAt } from '@shared/entity-tax/entity-tax.repository'
 import {
   MODEL_NFSE, ibscbsObligationStart, evaluateIbscbsDeclaration, assertIbscbsDeclarable,
-  IbscbsDeclaration, IbscbsEvaluation,
+  IbscbsDeclaration, IbscbsEvaluation, IbscbsOmission,
 } from '@shared/ibscbs-classification'
 
 /**
@@ -46,3 +47,45 @@ export async function declareServiceIbscbs(
   return assertIbscbsDeclarable(
     await evaluateServiceIbscbs(conn, schemaName, institutionId, input, { lock: true }))
 }
+
+/**
+ * IB-3 (D-IB76 — prompt_fase_ibs_cbs.md §13.3): a declaração PREVISTA antes de faturar — a MESMA composição só-pergunta (sem trava), na
+ * data que o faturamento usaria (hoje do estabelecimento). O que volta é o que a tela mostra: antes da obrigação um AVISO (a nota sairia
+ * sem o grupo — nunca bloqueia); depois, a recusa (o mesmo código e mensagem do 422 do faturamento). Nenhuma regra nova no app.
+ */
+export interface IbscbsVerdict {
+  /** true = a nota sairia COM o grupo IBS/CBS. */
+  declared: boolean
+  omitted:  IbscbsOmission[]
+  refusal:  { code: string; message: string } | null
+}
+
+export interface IbscbsPreview extends IbscbsVerdict {
+  competenceDate:  string
+  obligationStart: string
+  obligatory:      boolean
+  /**
+   * D-IB89 (gates da IB-3): ANTES da obrigação, o veredito da MESMA composição na data da obrigação (o que o lote de janeiro vai encontrar
+   * — "hoje sai sem o grupo; a partir de 01/01/2027 seria recusada"). null depois da obrigação (o veredito de hoje já é ele).
+   */
+  atObligation:    IbscbsVerdict | null
+}
+
+export async function previewServiceIbscbs(
+  q: Queryable, schemaName: string, institutionId: number, productIds: readonly number[],
+): Promise<IbscbsPreview | null> {
+  const ids = [...new Set(productIds)]
+  if (ids.length === 0) return null
+  // a data que o faturamento usaria — pelo DONO ÚNICO da data de emissão (D-IB88; relógio da operação — Q-TZ8)
+  const competenceDate = await invoiceEmissionDateFor(schemaName, institutionId, q)
+  const items = ids.map(productId => ({ productId, field: `product.${productId}` }))
+  const ev = await evaluateServiceIbscbs(q, schemaName, institutionId, { items, competenceDate }, { lock: false })
+  const atObligation = ev.obligatory ? null
+    : verdictOf(await evaluateServiceIbscbs(q, schemaName, institutionId, { items, competenceDate: ev.obligationStart }, { lock: false }))
+  return { competenceDate, obligationStart: ev.obligationStart, obligatory: ev.obligatory, ...verdictOf(ev), atObligation }
+}
+
+const verdictOf = (ev: IbscbsEvaluation): IbscbsVerdict => ({
+  declared: ev.declaration.group !== null, omitted: [...ev.declaration.omitted],
+  refusal: ev.refusal ? { code: ev.refusal.code, message: ev.refusal.message } : null,
+})

@@ -15,6 +15,7 @@ import { validateOrder, invoiceOrder } from '../modules/billing/billing.service'
 jest.mock('../shared/service-ibscbs-declaration', () => ({
   __esModule: true,
   declareServiceIbscbs: jest.fn().mockResolvedValue({ group: null, nbs: null, omitted: ['not-classified'] }),
+  previewServiceIbscbs: jest.fn().mockResolvedValue(null),
 }))
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
@@ -137,6 +138,38 @@ describe('validateOrder — caminho kind=S (D6/D12/D14)', () => {
       (c[0] as string).includes('tb_order_item_service_tax_rule') && (c[0] as string).includes('INSERT'))
     expect(upsert).toBeDefined()
     expect(upsert![1]).toEqual([10, 1, 1, 'Service', 2])
+  })
+
+  it('IB-3 (D-IB76): a declaração IBS/CBS PREVISTA vai no campo próprio; antes da obrigação NÃO vira issue (no app toda issue bloqueia)', async () => {
+    const decl = jest.requireMock('../shared/service-ibscbs-declaration') as any
+    const aviso = { competenceDate: '2026-12-20', obligationStart: '2027-01-01', obligatory: false, declared: false,
+      omitted: ['not-classified', 'nbs-missing'], refusal: null }
+    decl.previewServiceIbscbs.mockResolvedValueOnce(aviso)
+    mockOrderBase(); mockBranchSale(); mockContext()
+    mockQuery.mockResolvedValueOnce([[serviceItem()]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[ruleRow()]])
+    mockQuery.mockResolvedValueOnce([{}])
+    const report = await validateOrder(inst as any, { orderId: 10 })
+    expect(report.ibscbs).toEqual(aviso)
+    expect(report.issues).toEqual([])
+    // a prévia é pedida com os PRODUTOS de serviço da ordem (a composição da IB-2, só-pergunta)
+    expect(decl.previewServiceIbscbs).toHaveBeenCalledWith(expect.anything(), 'setes_setes', 1, [18])
+  })
+
+  it('IB-3 (D-IB76): depois da obrigação a recusa que o faturamento daria vira issue `ibscbs` (bloqueia) com o MESMO texto do 422', async () => {
+    const decl = jest.requireMock('../shared/service-ibscbs-declaration') as any
+    decl.previewServiceIbscbs.mockResolvedValueOnce({ competenceDate: '2027-01-05', obligationStart: '2027-01-01', obligatory: true,
+      declared: false, omitted: ['not-classified'], refusal: { code: 'INVOICE_SERVICE_IBSCBS_REQUIRED', message: 'Declaração IBS/CBS obrigatória desde 2027-01-01 e incompleta em 1 serviço(s) — x' } })
+    mockOrderBase(); mockBranchSale(); mockContext()
+    mockQuery.mockResolvedValueOnce([[serviceItem()]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[]])
+    mockQuery.mockResolvedValueOnce([[ruleRow()]])
+    mockQuery.mockResolvedValueOnce([{}])
+    const report = await validateOrder(inst as any, { orderId: 10 })
+    expect(report.issues).toEqual([{ scope: 'ibscbs', field: 'ibscbs', message: expect.stringMatching(/^Declaração IBS\/CBS obrigatória desde 2027-01-01/) }])
   })
 
   it('serviço SEM regra: issue serviceTaxRule + limpa vínculo A, nada gravado (D6)', async () => {
