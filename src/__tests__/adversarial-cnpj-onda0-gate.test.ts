@@ -84,29 +84,31 @@ describe('P5 — catálogo público das telas de papel: kind federalId e NENHUMA
 })
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
-// Promessa 5 — a porta de ESCRITA segue numérica nesta onda (D-CJ8)
+// Promessa 5 — a porta de ESCRITA: na onda 0 era numérica; na ONDA 1 (D-CJ8, 2026-10-16) ABRIU para o CNPJ alfanumérico CANÔNICO — e só para ele
 // ---------------------------------------------------------------------------------------------------------------------------------------
 const cnpjIssue = (r: any, path: (string | number)[]) =>
   !r.success && r.error.issues.some((i: any) => JSON.stringify(i.path) === JSON.stringify(path))
 
-describe('P5 — nenhum DTO de papel aceita CNPJ com letra (nem minúsculo, nem com máscara) nesta onda (RESISTIU)', () => {
-  const BAD = ['PC3D315K000193', '00000000E08G12', 'pc3d315k000193', '12.345.678/0001-95', ' 12345678000195', '12345678000195\u0085']
+describe('P5 — os DTOs de papel aceitam o CNPJ alfanumérico CANÔNICO e recusam o resto (minúsculo, máscara, branco, NEL) — onda 1', () => {
+  const GOOD = ['PC3D315K000193', '00000000E08G12', '12345678000195']
+  const BAD = ['pc3d315k000193', '12.345.678/0001-95', ' 12345678000195', '12345678000195\u0085', '12345678000199', 'PC3D315K00019Z']
   it('companyBody', () => {
     for (const cnpj of BAD) expect([cnpj, cnpjIssue(companyBody.safeParse({ cnpj }), ['cnpj'])]).toEqual([cnpj, true])
-    expect(companyBody.safeParse({ cnpj: '12345678000195' }).success).toBe(true)
-    // a regra da peça JÁ aceita o alfanumérico — quem segura a porta é só o regex do DTO
+    for (const cnpj of GOOD) expect([cnpj, companyBody.safeParse({ cnpj }).success]).toEqual([cnpj, true])
     expect(isValidCnpj('PC3D315K000193')).toBe(true)
   })
   it.each([
     ['customers', customerCreateDto], ['carriers', carrierCreateDto], ['providers', providerCreateDto], ['collaborators', collaboratorCreateDto],
     ['institutions (create)', institutionCreateDto], ['institutions (update)', institutionUpdateDto],
-  ] as const)('%s → issue em company.cnpj', (_m, dto: any) => {
+  ] as const)('%s → issue em company.cnpj só fora da forma canônica', (_m, dto: any) => {
     for (const cnpj of BAD) {
       const r = dto.safeParse({ personType: 'J', company: { cnpj }, entity: { nameCompany: 'X' } })
       expect([cnpj, cnpjIssue(r, ['company', 'cnpj'])]).toEqual([cnpj, true])
     }
-    const ok = dto.safeParse({ personType: 'J', company: { cnpj: '12345678000195' }, entity: { nameCompany: 'X' } })
-    expect(cnpjIssue(ok, ['company', 'cnpj'])).toBe(false)
+    for (const cnpj of GOOD) {
+      const ok = dto.safeParse({ personType: 'J', company: { cnpj }, entity: { nameCompany: 'X' } })
+      expect([cnpj, cnpjIssue(ok, ['company', 'cnpj'])]).toEqual([cnpj, false])
+    }
   })
 })
 

@@ -8,7 +8,10 @@
 //      0-9 / \d / 0123456789;
 //  (2) regex que COLETA dígitos: só `\d`/`[0-9]` (com + ou *) e a flag g;
 //  (3) regex que só casa LETRAS seguida de '' (tira as letras: o CNPJ alfanumérico vira outro número);
-//  (4) comparação com o texto '0' ou '9' (filtro por caractere).
+//  (4) comparação com o texto '0' ou '9' (filtro por caractere);
+//  (5) D-CJ15 (onda 1, 2026-10-16 — a cerca vigia o VALOR): helper de dígitos (`digits`, `digitsOf`, `onlyDigits`, `stripNonDigits`)
+//      chamado com um argumento que É inscrição federal (texto com cnpj/cpf/inscri/document/federal) — o helper genérico do montador
+//      seguia legítimo para CEP/fone e passava calado sobre o CNPJ.
 // O alarme é o TEXTO da menor chamada/construção que contém o achado — a lista branca da cerca é por esse texto, com o MOTIVO.
 import fs from 'fs'
 import path from 'path'
@@ -17,6 +20,8 @@ import ts from 'typescript'
 const NOT_DIGIT = /\\D|\[\^[^\]]*(?:0-9|\\d|0123456789)[^\]]*\]/
 const DIGITS_ONLY = /^(?:\\d|\[0-9\])[+*]?$/
 const LETTERS_ONLY = /^\[(?:A-Z|a-z|A-Za-z|a-zA-Z)\][+*]?$/
+const DIGIT_HELPERS: ReadonlySet<string> = new Set(['digits', 'digitsOf', 'onlyDigits', 'stripNonDigits'])
+const INSCRIPTION_TEXT = /cnpj|cpf|inscri|document|federal/i
 
 interface RegexParts { body: string; flags: string }
 
@@ -58,6 +63,8 @@ export function strippingHitsIn(code: string): string[] {
         if (i >= 0 && isEmptyString(args[i + 1])) add(n)
       }
     }
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && DIGIT_HELPERS.has(n.expression.text) && n.arguments[0]
+      && INSCRIPTION_TEXT.test(n.arguments[0].getText())) add(n)
     if (ts.isBinaryExpression(n) && [ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.LessThanEqualsToken,
       ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.LessThanToken].includes(n.operatorToken.kind)
       && [n.left, n.right].some(s => ts.isStringLiteral(s) && (s.text === '0' || s.text === '9'))) add(n)
@@ -91,8 +98,11 @@ export const FENCE_PROBES_CAUGHT: readonly string[] = [
   String.raw`cnpj.replace(/[A-Z]/g, '')`, String.raw`cnpj.replace(/[^0-9.]/g, '')`, String.raw`cnpj.replace(/[^0123456789]/g, '')`,
   String.raw`cnpj['replace'](/\D/g, '')`, String.raw`String.prototype.replace.call(cnpj, /\D/g, '')`,
   String.raw`[...cnpj].filter(c => c >= '0' && c <= '9').join('')`,
+  String.raw`el('CNPJ', digits(p.cnpj, 'CNPJ do prestador', 14))`, String.raw`const d = digitsOf(full?.cnpj)`,
+  String.raw`stripNonDigits(input.document)`,
 ]
 /** E o que NÃO é mutilação não alarma (a máscara da peça, subir minúscula, conferir a forma). */
 export const FENCE_PROBES_CLEAN: readonly string[] = [
   String.raw`x.replace(/[./\- ]/g, '')`, String.raw`x.replace(/[a-z]/g, c => c.toUpperCase())`, String.raw`/^[0-9A-Z]{12}[0-9]{2}$/.test(x)`,
+  String.raw`el('CEP', digits(t.end.cep, 'CEP do tomador', 8))`, String.raw`digitsOf(rows[0]?.ibge)`,
 ]

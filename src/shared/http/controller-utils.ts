@@ -79,10 +79,15 @@ export function parseOptionalQueryId(req: Request, name: string): number | null 
 
 /** Converte os issues do Zod para o formato por campo da decisão 20. */
 export function zodToFields(error: z.ZodError): FieldError[] {
-  return error.issues.map(issue => ({
-    field:   issue.path.join('.') || '(body)',
-    message: issue.message,
-  }))
+  return error.issues.map(issue => {
+    // D-CJ3: issue `custom` pode levar o valor ESPERADO (`params.expected` — ex.: a forma canônica do CNPJ)
+    const expected = issue.code === 'custom' ? (issue.params as { expected?: unknown } | undefined)?.expected : undefined
+    return {
+      field:   issue.path.join('.') || '(body)',
+      message: issue.message,
+      ...(typeof expected === 'string' || typeof expected === 'number' ? { expected } : {}),
+    }
+  })
 }
 
 /**
