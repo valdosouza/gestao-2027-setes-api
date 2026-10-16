@@ -179,7 +179,8 @@ describe('D-CJ10 — buildPayer: a inscrição vai como está ou não vai (RESIS
     ['CPF sentinela "0" (antes ia "0" ao banco)', { person: { cpf: '0' } }, /inválido no cadastro/],
     ['CPF gravado com máscara', { person: { cpf: '529.982.247-25' } }, /inválido no cadastro/],
     ['CNPJ minúsculo', { company: { cnpj: 'pc3d315k000193' } }, /inválido no cadastro/],
-    ['CNPJ com 3 letras (antes: 11 dígitos como JURÍDICA)', { company: { cnpj: 'ABC12345000110' } }, /CNPJ alfanumérico/],
+    // gate socrático da onda 1: a recusa diz a SAÍDA (cancelar o boleto que não foi ao banco e cobrar por outro meio)
+    ['CNPJ com 3 letras (antes: 11 dígitos como JURÍDICA)', { company: { cnpj: 'ABC12345000110' } }, /CNPJ alfanumérico.*cancele este boleto.*outro meio/],
   ])('%s → 422 BANK_PAYER_INCOMPLETE no payer.document', async (_l, over, msg) => {
     ;(entity.getEntityFiscalFull as jest.Mock).mockResolvedValue(fullEntity(over))
     const err: any = await buildPayer('setes_setes', 1, 262).then(() => null, e => e)

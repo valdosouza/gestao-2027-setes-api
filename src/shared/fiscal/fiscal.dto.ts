@@ -26,6 +26,9 @@ function federalIdIssue(kind: 'cpf' | 'cnpj', v: string, ctx: z.RefinementCtx): 
     ctx.addIssue({ code: 'custom', message: kind === 'cnpj'
       ? 'CNPJ deve ter 12 letras ou números e 2 dígitos verificadores, sem máscara'
       : 'CPF deve ter 11 dígitos numéricos, sem máscara' })
+  } else if (/^(\d)\1+$/.test(canonical)) {
+    // gate adversarial da onda 1 (LOW): os 14 (11) dígitos iguais FECHAM o DV — quem recusa é o veto; dizer "DV não confere" era falso
+    ctx.addIssue({ code: 'custom', message: `${label} com todos os dígitos iguais não é válido` })
   } else {
     ctx.addIssue({ code: 'custom', message: `${label} inválido (dígito verificador não confere)` })
   }

@@ -102,9 +102,14 @@ export async function buildPayer(schemaName: string, institutionId: number, slip
   const document = fact?.state === 'valid' ? fact.id.value : ''
   if (!fact || fact.state === 'absent') missing.push({ field: 'payer.document', message: 'Cliente sem CPF/CNPJ' })
   else if (fact.state === 'invalid') missing.push({ field: 'payer.document', message: 'CPF/CNPJ do cliente inválido no cadastro (forma ou dígito verificador)' })
-  // até a sonda no sandbox do banco confirmar que aceita letra (D-CJ10): recusa LEGÍVEL antes de apresentar ao banco
+  // até a sonda no sandbox do banco confirmar que aceita letra (D-CJ10): recusa LEGÍVEL antes de apresentar ao banco — e com a SAÍDA
+  // (gate socrático da onda 1): o boleto local não foi ao banco, então cancelá-lo libera o título (D-B1) para outro meio de cobrança
   else if (personType === 'J' && !/^[0-9]{14}$/.test(document)) {
-    missing.push({ field: 'payer.document', message: 'CNPJ alfanumérico: o registro do boleto no banco ainda não aceita CNPJ com letras' })
+    missing.push({
+      field: 'payer.document',
+      message: 'CNPJ alfanumérico: o banco ainda não recebe CNPJ com letras no registro do boleto — cancele este boleto (nada foi ao banco; '
+        + 'o título fica livre) e cobre por outro meio (PIX, depósito, espécie)',
+    })
   }
   const name = (full.entity.nameCompany ?? full.entity.nickTrade ?? '').trim()
   if (!name) missing.push({ field: 'payer.name', message: 'Cliente sem nome' })

@@ -17,6 +17,8 @@ const ALLOWED: Record<string, string> = {
     'conta corrente do canal do banco (dígitos)',
   "src/shared/bank-slip-registration/bank-slip-registration.ts: (addr?.zipCode ?? '').replace(/\\D/g, '')": 'CEP (8 dígitos)',
   "src/shared/ibscbs-classification/index.ts: filter.replace(/\\D/g, '')": 'filtro por código numérico do catálogo IBS/CBS (NBS/cClassTrib)',
+  "src/shared/validation/validators.ts: /\\d/.test(c)":
+    'matchesMask do motor de máscara configurável: confere UM caractere na posição `#` (não coleta) — CPF/CNPJ fora do motor (D-CJ11)',
 }
 
 describe('D-CJ12 — cerca: nunca "tirar o que não é dígito" de inscrição federal ou chave de acesso', () => {
