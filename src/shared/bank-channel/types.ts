@@ -49,7 +49,7 @@ export interface ChannelSecretsStatus {
 // ---------------------------------------------------------------------------
 
 export interface ChargePayer {
-  document:     string          // CPF/CNPJ só dígitos
+  document:     string          // CPF/CNPJ na forma CANÔNICA (D-CJ10: nunca mutilado; CNPJ só numérico até a sonda do banco)
   personType:   'F' | 'J'
   name:         string
   street:       string          // endereço (logradouro + número)

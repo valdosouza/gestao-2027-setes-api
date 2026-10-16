@@ -3,7 +3,7 @@ import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
 import { parseListQuery, pagedEnvelope } from '@shared/list'
 import { findEntityIdByCpf, findEntityIdByCnpj } from '@shared/fiscal/fiscal.repository'
-import { isValidCpf, isValidCnpj } from '@shared/validation'
+import { isValidCpf, isValidCnpj, normalizeCpf, normalizeCnpj } from '@shared/validation'
 import { institutionCreateDto, institutionUpdateDto } from './institutions.dto'
 import {
   fetchInstitutions, fetchInstitution, createInstitution,
@@ -18,12 +18,13 @@ import {
  * do salvar (cadeia compartilhada). ignoreId = entity em edição.
  */
 export async function fiscalExists(req: Request, res: Response): Promise<void> {
-  const cpf      = req.query.cpf ? String(req.query.cpf) : null
-  const cnpj     = req.query.cnpj ? String(req.query.cnpj) : null
+  // D-CJ3: leitura canonicaliza pela peça (máscara sai, minúscula sobe, nada é apagado); o que não chega à forma segue cru → 400 abaixo
+  const cpf      = req.query.cpf ? (normalizeCpf(String(req.query.cpf)) ?? String(req.query.cpf)) : null
+  const cnpj     = req.query.cnpj ? (normalizeCnpj(String(req.query.cnpj)) ?? String(req.query.cnpj)) : null
   const ignoreId = req.query.ignoreId ? Number(req.query.ignoreId) : null
 
   if ((cpf === null) === (cnpj === null)) {
-    res.status(400).json({ error: 'Informe cpf OU cnpj (somente dígitos)' })
+    res.status(400).json({ error: 'Informe cpf OU cnpj' })
     return
   }
   if (cpf !== null && !isValidCpf(cpf)) {

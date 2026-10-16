@@ -140,7 +140,8 @@ const TARGETS: Target[] = [
 // --- valores de amostra por kind (só precisam COMPILAR; o plano não depende do valor)
 function sampleFor(def: SearchCriterion): unknown {
   switch (def.kind) {
-    case 'text':    return def.digits ? '12345678' : 'a'
+    case 'text':    return 'a'
+    case 'federalId': return '12345678'
     case 'number':  return { from: 1, to: 10 }
     case 'money':   return { from: 1, to: 1000 }
     case 'date':    return { from: '2026-01-01', to: '2026-12-31' }

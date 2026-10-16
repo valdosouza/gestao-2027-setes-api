@@ -3,6 +3,7 @@ import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
 import { HttpError, FieldError } from '@shared/errors/http-error'
+import { readFederalIdFact } from '@shared/validation'
 import logger from '@shared/logger/logger'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { runIsolated } from '@shared/db/savepoint'
@@ -92,9 +93,19 @@ export async function buildPayer(schemaName: string, institutionId: number, slip
   const full = await getEntityFiscalFull(entityId)
   if (!full) throw new HttpError(422, `Cliente ${entityId} não encontrado`, undefined, 'BANK_PAYER_INCOMPLETE')
   const missing: FieldError[] = []
-  const document = (full.person?.cpf ?? full.company?.cnpj ?? '').replace(/\D/g, '')
+  // D-CJ10 (frente do CNPJ alfanumérico): o pagador sai na forma CANÔNICA, NUNCA mutilado — antes `replace(/\D/g,'')` tirava as letras e um
+  // CNPJ com 3 letras virava 11 dígitos enviados como JURÍDICA (boleto no documento de OUTRA pessoa — S3 do inventário). PF × PJ pela
+  // presença da especialização (já era certo); o fato em três estados diz se falta ou está errado.
   const personType: 'F' | 'J' | null = full.person ? 'F' : full.company ? 'J' : null
-  if (!personType || !document) missing.push({ field: 'payer.document', message: 'Cliente sem CPF/CNPJ' })
+  const fact = personType === 'F' ? readFederalIdFact('cpf', full.person?.cpf)
+    : personType === 'J' ? readFederalIdFact('cnpj', full.company?.cnpj) : null
+  const document = fact?.state === 'valid' ? fact.id.value : ''
+  if (!fact || fact.state === 'absent') missing.push({ field: 'payer.document', message: 'Cliente sem CPF/CNPJ' })
+  else if (fact.state === 'invalid') missing.push({ field: 'payer.document', message: 'CPF/CNPJ do cliente inválido no cadastro (forma ou dígito verificador)' })
+  // até a sonda no sandbox do banco confirmar que aceita letra (D-CJ10): recusa LEGÍVEL antes de apresentar ao banco
+  else if (personType === 'J' && !/^[0-9]{14}$/.test(document)) {
+    missing.push({ field: 'payer.document', message: 'CNPJ alfanumérico: o registro do boleto no banco ainda não aceita CNPJ com letras' })
+  }
   const name = (full.entity.nameCompany ?? full.entity.nickTrade ?? '').trim()
   if (!name) missing.push({ field: 'payer.name', message: 'Cliente sem nome' })
   const addr = full.addresses.find(a => a.main === 'S') ?? full.addresses[0]

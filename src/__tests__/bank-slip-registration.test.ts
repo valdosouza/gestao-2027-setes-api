@@ -75,7 +75,7 @@ function poolDefaults() {
   })
 }
 const fullEntity = () => ({
-  id: 900, entity: { nameCompany: 'Cliente Ltda', nickTrade: null }, personType: 'J', person: null, company: { cnpj: '12.345.678/0001-99' }, noDoc: null,
+  id: 900, entity: { nameCompany: 'Cliente Ltda', nickTrade: null }, personType: 'J', person: null, company: { cnpj: '12345678000195' }, noDoc: null,
   addresses: [{ kind: 'C', street: 'Rua A', nmbr: '10', complement: null, neighborhood: 'Centro', zipCode: '80.000-000', tbCountryId: 1, tbStateId: 16, tbCityId: 1, main: 'S', countryName: 'Brasil', stateName: 'Paraná', cityName: 'Curitiba' }],
   phones: [], socialMedia: [],
 })
@@ -100,7 +100,7 @@ describe('registerBankSlip — apresentar ao banco', () => {
     // pagador montado da cadeia da entidade (dígitos, UF, CEP 8)
     expect(adapter.register.mock.calls[0][1]).toMatchObject({
       reference: '262', amount: 250, dueDate: DUE,
-      payer: { document: '12345678000199', personType: 'J', name: 'Cliente Ltda', street: 'Rua A, 10', neighborhood: 'Centro', city: 'Curitiba', state: 'PR', zipCode: '80000000' },
+      payer: { document: '12345678000195', personType: 'J', name: 'Cliente Ltda', street: 'Rua A, 10', neighborhood: 'Centro', city: 'Curitiba', state: 'PR', zipCode: '80000000' },
     })
     // ordem: lock → reserva → (banco) → lock → código → S
     expect(slipPiece.lockSlip).toHaveBeenCalledTimes(2)

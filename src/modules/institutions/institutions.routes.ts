@@ -56,7 +56,7 @@ router.get('/', controller.list)
  *     security:
  *       - BearerAuth: []
  *     responses:
- *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool), labelKey, lookup?, options? }' }
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool|federalId — prefixo da inscrição federal, D-CJ9), labelKey, lookup?, options? }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */
@@ -72,11 +72,11 @@ router.get('/search-criteria', controller.searchCriteria)
  *       - in: query
  *         name: cpf
  *         schema: { type: string }
- *         description: CPF com 11 dígitos, sem máscara (informe cpf OU cnpj)
+ *         description: CPF com 11 dígitos, com ou sem máscara (informe cpf OU cnpj) — canonicalizado pela peça (D-CJ3)
  *       - in: query
  *         name: cnpj
  *         schema: { type: string }
- *         description: CNPJ com 14 dígitos, sem máscara
+ *         description: CNPJ (12 letras/números + 2 DV — alfanumérico desde 07/2026), com ou sem máscara — canonicalizado pela peça (D-CJ3)
  *       - in: query
  *         name: ignoreId
  *         schema: { type: integer }

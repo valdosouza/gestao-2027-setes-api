@@ -101,7 +101,7 @@ const bankStatus = (over: any = {}) => ({
   bankOurNumber: null, digitableLine: null, barcode: null, pixCopyPaste: null, pixTxid: null, cancelReason: null, ...over,
 })
 const fullEntity = () => ({
-  id: 900, entity: { nameCompany: 'Cliente Ltda', nickTrade: null }, personType: 'J', person: null, company: { cnpj: '12.345.678/0001-99' }, noDoc: null,
+  id: 900, entity: { nameCompany: 'Cliente Ltda', nickTrade: null }, personType: 'J', person: null, company: { cnpj: '12345678000195' }, noDoc: null,
   addresses: [{ kind: 'C', street: 'Rua A', nmbr: '10', complement: null, neighborhood: 'Centro', zipCode: '80.000-000', tbCountryId: 1, tbStateId: 16, tbCityId: 1, main: 'S', countryName: 'Brasil', stateName: 'Paraná', cityName: 'Curitiba' }],
   phones: [], socialMedia: [],
 })
@@ -402,12 +402,27 @@ describe('adaptador Inter — bordas do transporte', () => {
     await interAdapter.query({ ...adapterCtx, channel: { ...adapterCtx.channel, accountNumber: null, accountNumberDv: null } }, 'a')
     expect(mockHttp.mock.calls[1][0].headers['x-conta-corrente']).toBeUndefined()
   })
-  it('pagador com CPF/CNPJ e CEP mascarados → só dígitos chegam ao banco', async () => {
+  // D-CJ10 (frente do CNPJ alfanumérico): o teste A23 do inventário INVERTIDO — antes "só dígitos chegam ao banco" fixava a MUTILAÇÃO
+  // (`replace(/\D/g,'')` no pagador). O CEP segue normalizado (dígitos são a forma dele); a inscrição federal NUNCA perde caractere.
+  it('pagador: CEP mascarado → só dígitos; CNPJ canônico vai como está', async () => {
     adapter.register.mockResolvedValue({ requestCode: 'u' })
-    const e = fullEntity(); e.company = { cnpj: '12.345.678/0001-99' }; e.addresses[0].zipCode = '80.000-000'
+    const e = fullEntity(); e.addresses[0].zipCode = '80.000-000'
     ;(entity.getEntityFiscalFull as jest.Mock).mockResolvedValue(e)
     await registerBankSlip(S.schema, S.inst, S.user, 262)
-    expect(adapter.register.mock.calls[0][1].payer).toMatchObject({ document: '12345678000199', zipCode: '80000000' })
+    expect(adapter.register.mock.calls[0][1].payer).toMatchObject({ document: '12345678000195', personType: 'J', zipCode: '80000000' })
+  })
+  it.each([
+    ['CNPJ gravado com máscara → inválido no cadastro (nunca mutilado)', { cnpj: '12.345.678/0001-95' }, /inválido no cadastro/],
+    ['CNPJ com DV errado → inválido', { cnpj: '12345678000199' }, /inválido no cadastro/],
+    // com 3 letras, tirar o que não é dígito deixava 11 dígitos — ia ao banco como JURIDICA com forma de CPF (S3)
+    ['CNPJ ALFANUMÉRICO válido (3 letras) → recusa LEGÍVEL até a sonda do banco', { cnpj: 'ABC12345000110' }, /CNPJ alfanumérico/],
+  ])('pagador %s; NADA é apresentado ao banco', async (_l, company, message) => {
+    const e = fullEntity(); e.company = company
+    ;(entity.getEntityFiscalFull as jest.Mock).mockResolvedValue(e)
+    const err = await registerBankSlip(S.schema, S.inst, S.user, 262).then(() => null, x => x)
+    expect(err).toMatchObject({ statusCode: 422 })
+    expect(JSON.stringify(err.fields)).toMatch(message)
+    expect(adapter.register).not.toHaveBeenCalled()
   })
 })
 

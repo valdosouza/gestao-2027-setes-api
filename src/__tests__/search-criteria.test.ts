@@ -32,7 +32,7 @@ const mockQuery = (pool as any).query as jest.Mock
 
 const DEFS: SearchCriterion[] = [
   { key: 'name',   kind: 'text',    labelKey: 'x', expr: ['e.a', 'e.b'] },
-  { key: 'doc',    kind: 'text',    labelKey: 'x', expr: 'p.cpf', digits: true },
+  { key: 'doc',    kind: 'federalId', labelKey: 'x', expr: ['p.cpf', 'c.cnpj'] },
   { key: 'qty',    kind: 'number',  labelKey: 'x', expr: 'i.qty' },
   { key: 'value',  kind: 'money',   labelKey: 'x', expr: 't.v' },
   { key: 'when',   kind: 'date',    labelKey: 'x', expr: 'o.dt' },
@@ -62,9 +62,15 @@ describe('compileCriteria — o tipo decide o operador (D-BA4), tudo em E (D-BA5
     expect(c.params).toEqual(['%50\\%\\_x%', '%50\\%\\_x%'])
   })
 
-  it('texto de documento compara só dígitos', () => {
+  // D-CJ9 (= Q-CJ9 (a), frente do CNPJ alfanumérico): o teste A24 do inventário INVERTIDO — antes "documento compara só dígitos" (o
+  // `PC3D315K` virava '%315%'); agora a inscrição federal é por PREFIXO, canonicalizada (máscara sai, minúscula sobe, letra FICA)
+  it('inscrição federal = PREFIXO canonicalizado pela peça, CPF ou CNPJ (OU), letras preservadas', () => {
     const c = compileCriteria(json({ doc: '123.456.789-0' }), DEFS)
-    expect(c.params).toEqual(['%1234567890%'])
+    expect(c.sql).toBe(' AND ((p.cpf LIKE ? OR c.cnpj LIKE ?))')
+    expect(c.params).toEqual(['1234567890%', '1234567890%'])
+    expect(compileCriteria(json({ doc: 'pc.3d3' }), DEFS).params).toEqual(['PC3D3%', 'PC3D3%'])
+    expect(compileCriteria(json({ doc: '00.000.000/E08G-12' }), DEFS).params).toEqual(['00000000E08G12%', '00000000E08G12%'])
+    expect(compileCriteria(json({ doc: '   ' }), DEFS)).toBe(NO_CRITERIA)        // em branco = não informado
   })
 
   it('faixas: número, dinheiro normalizado pela peça money e data com fim inclusivo', () => {
@@ -117,7 +123,11 @@ describe('compileCriteria — o tipo decide o operador (D-BA4), tudo em E (D-BA5
     ['opção fora do domínio', { kind: ['X'] }],
     ['bool não booleano',    { active: 'S' }],
     ['texto não string',     { name: 12 }],
-    ['documento sem dígito (L1 do socrático)', { doc: 'abc' }],
+    ['documento só com máscara (L1 do socrático — nunca "sem critério" calado)', { doc: '../-' }],
+    ['documento com caractere estranho (nunca apagado)', { doc: '12%34' }],
+    ['documento com acento', { doc: '12Á' }],
+    ['documento com mais de 14 posições', { doc: '123456789012345' }],
+    ['documento não string', { doc: 12345678 }],
     ['número em hexadecimal', { qty: { from: '0x10' } }],
     ['dinheiro que estoura o round2 (H1)', { value: { from: 1e307 } }],
     ['lookup além do inteiro seguro', { seller: 2 ** 60 }],

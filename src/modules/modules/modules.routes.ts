@@ -51,7 +51,7 @@ router.get('/', controller.list)
  *     security:
  *       - BearerAuth: []
  *     responses:
- *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool), labelKey, lookup?, options? }' }
+ *       200: { description: 'Envelope { ok, data } — lista { key, kind (text|number|money|date|lookup|options|bool|federalId — prefixo da inscrição federal, D-CJ9), labelKey, lookup?, options? }' }
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */

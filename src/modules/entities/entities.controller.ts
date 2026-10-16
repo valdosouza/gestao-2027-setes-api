@@ -1,13 +1,18 @@
 import { Request, Response } from 'express'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
-import { isValidCpf, isValidCnpj } from '@shared/validation'
+import { isValidCpf, isValidCnpj, normalizeCpf, normalizeCnpj } from '@shared/validation'
 import { entityTaxBody } from '@shared/entity-tax/entity-tax.dto'
 import { findEntityByDocument, fetchEntityTax, saveEntityTax } from './entities.service'
 
-/** GET /api/entities/by-document?personType=F|J&doc=<somente dígitos> */
+/**
+ * GET /api/entities/by-document?personType=F|J&doc=<CPF/CNPJ>
+ * D-CJ3 (frente do CNPJ alfanumérico): LEITURA canonicaliza a entrada pela peça (máscara sai, minúscula sobe, nada é apagado) e compara
+ * por IGUALDADE da forma canônica; a ESCRITA é que exige a forma canônica.
+ */
 export async function byDocument(req: Request, res: Response): Promise<void> {
   const personType = String(req.query.personType ?? '')
-  const doc        = String(req.query.doc ?? '')
+  const raw        = String(req.query.doc ?? '')
+  const doc        = (personType === 'F' ? normalizeCpf(raw) : normalizeCnpj(raw)) ?? raw
 
   if (personType !== 'F' && personType !== 'J') {
     res.status(400).json({ error: "personType deve ser 'F' ou 'J' (sem documento não tem busca)" })

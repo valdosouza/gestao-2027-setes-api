@@ -32,7 +32,8 @@ export function entityRoleSearchCriteria(
     // D-BA21 (Valdo 2026-10-03): o NOME que o usuário digitaria está sempre no painel
     { key: 'name', kind: 'text', labelKey: `search.${moduleKey}.name`,
       expr: [`${entity}.nick_trade`, `${entity}.name_company`] },
-    { key: 'document', kind: 'text', digits: true, labelKey: `search.${moduleKey}.document`,
+    // D-CJ9: inscrição federal por PREFIXO (kind próprio — o operador é da peça); CPF ou CNPJ, alfanumérico incluído
+    { key: 'document', kind: 'federalId', labelKey: `search.${moduleKey}.document`,
       expr: [personCpf, companyCnpj] },
     // D-BA16: casa com QUALQUER endereço principal (GROUP_CONCAT das cidades main='S')
     { key: 'city', kind: 'text', labelKey: `search.${moduleKey}.city`,

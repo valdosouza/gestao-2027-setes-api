@@ -14,7 +14,11 @@ function walk(dir: string): string[] {
     d.isDirectory() ? (d.name === 'node_modules' ? [] : walk(path.join(dir, d.name))) : /\.(?:ts|js)$/.test(d.name) ? [path.join(dir, d.name)] : [])
 }
 
-describe('cerca F2a — o setes-api só importa `fiscal-api/reading`', () => {
+// D-CJ2 (frente do CNPJ alfanumérico, 2026-10-15): o 2º subpath permitido é a inscrição federal `fiscal-api/federal-id` — peça PURA
+// (sem banco, sem I/O), a regra única do CPF/CNPJ que o `@shared/validation` reexporta. Nada do lado de escrita.
+const ALLOWED = new Set(['fiscal-api/reading', 'fiscal-api/federal-id'])
+
+describe('cerca F2a — o setes-api só importa `fiscal-api/reading` e `fiscal-api/federal-id`', () => {
   it('nenhum import/require/import() de `fiscal-api` (raiz) ou de outro subpath dele', () => {
     const bad: string[] = []
     for (const f of ROOTS.flatMap(walk)) {
@@ -26,7 +30,7 @@ describe('cerca F2a — o setes-api só importa `fiscal-api/reading`', () => {
         const spec = (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier) ? n.moduleSpecifier.text
           : ts.isCallExpression(n) && (n.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === 'require'))
             && n.arguments[0] && ts.isStringLiteral(n.arguments[0]) ? n.arguments[0].text : null
-        if (spec && /^fiscal-api(?:\/|$)/.test(spec) && spec !== 'fiscal-api/reading') bad.push(`${path.relative(path.join(__dirname, '..', '..'), f)}: ${spec}`)
+        if (spec && /^fiscal-api(?:\/|$)/.test(spec) && !ALLOWED.has(spec)) bad.push(`${path.relative(path.join(__dirname, '..', '..'), f)}: ${spec}`)
         ts.forEachChild(n, visit)
       }
       visit(sf)

@@ -1,6 +1,6 @@
 import { HttpError, FieldError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
-import { isValidIsoDate, stripNonDigits } from '@shared/validation'
+import { isValidIsoDate, canonicalizeFederalIdText } from '@shared/validation'
 import { round2 } from '@shared/money'
 import { escapeLike } from './escape-like'
 import { DEFAULT_TIME_ZONE, dayStartUtc, nextDay } from '@shared/time-zone'
@@ -47,6 +47,7 @@ export type CriterionKind =
   | 'lookup'   // igualdade com o id escolhido na lista de apoio do PRÓPRIO módulo
   | 'options'  // um ou mais valores do domínio declarado
   | 'bool'     // tri-estado: ausente = ignora; true/false
+  | 'federalId' // inscrição federal (CPF/CNPJ) por PREFIXO — canonicalizada pela peça, nunca mutilada (D-CJ9)
 
 export interface SearchCriterion {
   key:       string
@@ -59,8 +60,6 @@ export interface SearchCriterion {
   lookup?:   string
   /** `options`: domínio permitido — reusar a constante do enum do dto/domínio. */
   options?:  readonly string[]
-  /** `text`: compara só os dígitos (documento) — o valor é normalizado. */
-  digits?:   boolean
   /** `bool`: valores gravados para sim/não (ex.: ['S','N']). Ausente = `expr`
    *  já é um predicado booleano (critério derivado, sempre EXISTS escopado). */
   boolValues?: readonly [string, string]
@@ -220,17 +219,29 @@ export function compileCriteria(
     switch (def.kind) {
       case 'text': {
         if (typeof value !== 'string') { errors.push({ field: key, message: 'Informe um texto' }); break }
-        let text = value.trim()
+        const text = value.trim()
         if (text === '') break
-        if (def.digits) {
-          text = stripNonDigits(text)
-          // L1 do gate socrático: "abc" num critério de dígitos não pode virar "sem critério"
-          // (a lista voltaria inteira com o chip dizendo o contrário)
-          if (text === '') { errors.push({ field: key, message: 'Informe só números' }); break }
-        }
         if (text.length > MAX_TEXT_LENGTH) { errors.push({ field: key, message: `Máximo de ${MAX_TEXT_LENGTH} caracteres` }); break }
         const exprs = Array.isArray(def.expr) ? def.expr as string[] : [def.expr as string]
         const like = `%${escapeLike(text)}%`
+        parts.push(`(${exprs.map(e => `${e} LIKE ?`).join(' OR ')})`)
+        exprs.forEach(() => params.push(like))
+        applied.push(key)
+        break
+      }
+      case 'federalId': {
+        // D-CJ9 (= Q-CJ9 (a), frente do CNPJ alfanumérico — diverge da D-BA20/21): a inscrição é identificador POSICIONAL — o pedaço com
+        // significado é o PREFIXO (as 8 primeiras = raiz da empresa); "contém" não significa nada. Antes: tirava as letras e fazia
+        // LIKE '%…%' com o resto (`PC3D315K` virava '%315%' e o chip dizia que filtrou — S1 do inventário).
+        if (typeof value !== 'string') { errors.push({ field: key, message: 'Informe o CPF/CNPJ ou o começo dele' }); break }
+        if (value.trim() === '') break
+        const prefix = canonicalizeFederalIdText(value)
+        // L1 do gate socrático da pesquisa: o que o usuário digitou nunca vira "sem critério" calado
+        if (prefix === null) { errors.push({ field: key, message: 'CPF/CNPJ tem só letras, números e a máscara (. / -)' }); break }
+        if (prefix === '') { errors.push({ field: key, message: 'Informe o CPF/CNPJ ou o começo dele' }); break }
+        if (prefix.length > 14) { errors.push({ field: key, message: 'CPF/CNPJ tem no máximo 14 posições' }); break }
+        const exprs = Array.isArray(def.expr) ? def.expr as string[] : [def.expr as string]
+        const like = `${escapeLike(prefix)}%`
         parts.push(`(${exprs.map(e => `${e} LIKE ?`).join(' OR ')})`)
         exprs.forEach(() => params.push(like))
         applied.push(key)

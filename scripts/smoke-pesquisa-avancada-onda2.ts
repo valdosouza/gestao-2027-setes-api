@@ -43,7 +43,8 @@ interface Criterion { key: string; kind: string; lookup?: string; options?: stri
 
 function sampleFor(c: Criterion): unknown {
   switch (c.kind) {
-    case 'text':    return c.key === 'document' ? '1' : 'a'   // documento compara só dígitos
+    case 'text':    return 'a'
+    case 'federalId': return '1'                                  // D-CJ9: prefixo da inscrição federal
     case 'number':  return { from: 0, to: 1000000 }
     case 'money':   return { from: 0, to: 1000000 }
     case 'date':    return { from: '2000-01-01', to: '2099-12-31' }

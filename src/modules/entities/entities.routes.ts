@@ -30,7 +30,9 @@ const router = Router()
  *         name: doc
  *         required: true
  *         schema: { type: string }
- *         description: Documento SEM máscara (11 dígitos CPF / 14 dígitos CNPJ)
+ *         description: >
+ *           CPF (11 dígitos) ou CNPJ (12 letras/números + 2 DV — alfanumérico desde 07/2026), com ou sem máscara: a leitura
+ *           canonicaliza pela peça da inscrição federal (tira só . / - e espaço, sobe minúscula, nunca apaga) e compara por igualdade (D-CJ3)
  *     responses:
  *       200:
  *         description: >

@@ -3,7 +3,7 @@
 // As regras são ESPELHADAS no app (package setes_validators) — mudar aqui
 // exige mudar lá.
 import {
-  isValidCpf, isValidCnpj, matchesMask, isOnlyDigits, stripNonDigits,
+  isValidCpf, isValidCnpj, matchesMask, isOnlyDigits, normalizeCnpj,
 } from '../shared/validation'
 
 describe('isValidCpf', () => {
@@ -30,8 +30,17 @@ describe('isValidCnpj', () => {
     '00000000000000',    // repetido
     '12345678000199',    // dígito não confere
     '11.222.333/0001-81', // com máscara
+    'pc3d315k000193',    // minúscula — a forma canônica é MAIÚSCULA (D-CJ2)
   ])('rejeita %s', cnpj => {
     expect(isValidCnpj(cnpj)).toBe(false)
+  })
+  // D-CJ2 (frente do CNPJ alfanumérico): a regra é a peça do NÚCLEO reexportada — o vetor oficial completo roda no fiscal-api e no Dart
+  it.each(['12ABC34501DE35', 'PC3D315K000193', '00000000E08G12'])('aceita CNPJ ALFANUMÉRICO válido %s (DV ASCII − 48)', cnpj => {
+    expect(isValidCnpj(cnpj)).toBe(true)
+  })
+  it('normalizar = canonicalizar, nunca apagar', () => {
+    expect(normalizeCnpj('12.abc.345/01de-35')).toBe('12ABC34501DE35')
+    expect(normalizeCnpj('12ÁBC34501DE35')).toBeNull()
   })
 })
 
@@ -57,7 +66,7 @@ describe('helpers', () => {
     expect(isOnlyDigits('')).toBe(true)
     expect(isOnlyDigits('12a')).toBe(false)
   })
-  it('stripNonDigits', () => {
-    expect(stripNonDigits('(31) 9-8888-7777')).toBe('31988887777')
+  it('D-CJ9: o "tira o que não é dígito" saiu da superfície (sem consumidor; aplicado a CNPJ alfanumérico dá OUTRO número)', () => {
+    expect('stripNonDigits' in require('../shared/validation')).toBe(false)
   })
 })
