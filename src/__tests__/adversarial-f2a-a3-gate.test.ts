@@ -268,9 +268,10 @@ describe('3 — GET /api/billing/:orderId/cancel-plan e /fiscal-effect (D-F115/D
   const plan = (id: string | number = 100, who: object = ADMIN) => request(app).get(`/api/billing/${id}/cancel-plan`).set('Authorization', bearer(who))
   const effect = (id: string | number = 100, who: object = ADMIN) => request(app).get(`/api/billing/${id}/fiscal-effect`).set('Authorization', bearer(who))
 
-  it('[RESISTIU] ramo NÃO contratado → 403 INTERFACE_NOT_ALLOWED para usuário, admin e super (D-F37) — nas duas rotas, antes de abrir transação', async () => {
+  // A-PV1 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): revê a D-F37 SÓ para o super (ele passa a licença).
+  it('[RESISTIU] ramo NÃO contratado → 403 INTERFACE_NOT_ALLOWED para usuário e admin (D-F37) — nas duas rotas, antes de abrir transação', async () => {
     contracted.delete(CATALOG['service-orders'])
-    for (const who of [USER, ADMIN, SUPER]) {
+    for (const who of [USER, ADMIN]) {
       for (const r of [await plan(7400, who), await effect(7400, who)]) expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
     }
     expect(getConn).not.toHaveBeenCalled()

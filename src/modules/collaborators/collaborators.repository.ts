@@ -5,6 +5,7 @@ import { entityRoleSearchCriteria, roleStatusSearchCriteria, saveEntityFiscalCha
 import {
   CollaboratorInput, CollaboratorListRow, CollaboratorFull,
 } from './collaborators.interface'
+import { assertNotOwnEstablishment } from '@shared/entity/own-establishment'
 
 /**
  * Repositório do CONCRETO Collaborator — CONSUMIDOR da cadeia de entidade
@@ -129,6 +130,7 @@ export async function insertCollaboratorCascade(
     await conn.beginTransaction()
 
     const { id, reused } = await saveEntityFiscalChain(conn, null, input, updatedBy)
+    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino): o emitente se edita em Meu Estabelecimento
 
     const [existing] = await conn.query<any[]>(
       `SELECT deleted FROM ?? WHERE id = ? AND tb_institution_id = ? FOR UPDATE`,
@@ -179,6 +181,7 @@ export async function updateCollaboratorCascade(
   try {
     await conn.beginTransaction()
 
+    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino)
     await saveEntityFiscalChain(conn, id, input, updatedBy)
 
     await conn.query(

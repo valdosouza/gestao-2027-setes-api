@@ -7,6 +7,7 @@ import {
   fetchVitrine, fetchVitrineSearchCriteria, INTERFACE_CONFIG_SEARCH_CRITERIA, fetchResolvedConfigs, fetchResolvedConfigsByKey,
   saveConfigValue, saveConfigValueByKey,
 } from './interface-configs.service'
+import { ErrorCodes } from '@shared/errors/error-codes'
 
 const CONFIG_NAME_RE = /^[a-z][a-z0-9_]{0,49}$/
 const MODULE_KEY_RE  = /^[a-z][a-z0-9_-]{0,99}$/
@@ -65,6 +66,13 @@ export async function putValueByKey(req: Request, res: Response): Promise<void> 
   }
   const body = parseBody(configValueDto, req, res)
   if (body === null) return
+  // D-PV2/A-PV6: esta porta é ABERTA (o itens/página de toda lista grava aqui) — então só o override PESSOAL; o valor da
+  // institution (target 'I') tem UMA porta, a do painel (`PUT /:id/:name`, guardada por ALTERAR do painel)
+  if (body.target !== 'U') {
+    res.status(403).json({ error: 'O valor da institution se grava pelo painel de configurações',
+      code: ErrorCodes.CONFIG_INSTITUTION_VIA_PANEL, fields: [] })
+    return
+  }
   try {
     await saveConfigValueByKey(req.institution!, moduleKey, name, body)
     logger.info('Valor de configuração salvo (por chave)', {

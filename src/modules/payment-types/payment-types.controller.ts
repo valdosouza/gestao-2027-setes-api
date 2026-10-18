@@ -8,6 +8,7 @@ import {
   PaymentTypeScope, fetchLinked, fetchCatalog, saveLink, editLink, removeLink,
   PAYMENT_TYPE_SEARCH_CRITERIA, fetchPaymentTypeSearchCriteria,
 } from './payment-types.service'
+import { fetchFinancialPlansLookup } from './payment-types.service'
 
 /** Escopo SEMPRE do JWT (o vínculo é por institution). */
 function scopeOf(req: Request): PaymentTypeScope {
@@ -79,5 +80,13 @@ export async function remove(req: Request, res: Response): Promise<void> {
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'payment-types/:id DELETE')
+  }
+}
+
+export async function financialPlansLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchFinancialPlansLookup(String(req.query.filter ?? ''), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'payment-types/financial-plans GET')
   }
 }

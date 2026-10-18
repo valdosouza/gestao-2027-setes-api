@@ -110,6 +110,21 @@ export async function listInstitutionLookup(filter: string): Promise<Institution
   return rows as InstitutionLookupRow[]
 }
 
+/**
+ * TODOS os vínculos do usuário, vivos ou adormecidos (estabelecimento + perfil + se está vivo) — o login é GLOBAL
+ * (`setes_central.tb_user`). Re-prova do gate adversarial da D-PV11: contar só os vivos deixava o admin de um cliente trocar a senha
+ * de quem tinha um vínculo SUPER revogado — e o Super, ao reativá-lo, entregava a conta (o `setInstitutionLinks` revive a linha).
+ */
+export async function listActiveUserLinks(userId: number): Promise<Array<{ institutionId: number; kind: string; alive: boolean }>> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT tb_institution_id AS institutionId, kind, (active = 'S' AND deleted = 'N') AS alive
+       FROM setes_central.tb_institution_has_user
+      WHERE tb_user_id = ?`,
+    [userId]
+  )
+  return rows.map(r => ({ institutionId: Number(r.institutionId), kind: String(r.kind ?? ''), alive: Boolean(Number(r.alive)) }))
+}
+
 /** Usuário tem vínculo ATIVO com a institution? (escopo do admin) */
 export async function userLinkedToInstitution(
   userId: number, institutionId: number
@@ -232,8 +247,9 @@ export async function findInstitutionSchema(institutionId: number): Promise<stri
 // ao usuário (tb_user_has_privilege no schema do cliente).
 // ---------------------------------------------------------------------
 
+/** `excludedKeys` (D-PV5): interfaces que o cadastro de privilégios não oferece — a lista é do service. */
 export async function listUserPrivileges(
-  schemaName: string, institutionId: number, userId: number
+  schemaName: string, institutionId: number, userId: number, excludedKeys: readonly string[]
 ): Promise<UserInterfacePrivileges[]> {
   const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
@@ -263,10 +279,16 @@ export async function listUserPrivileges(
         AND uhp.tb_privilege_id = p.id
         AND uhp.active = 'S' AND uhp.deleted = 'N'
       WHERE ihi.tb_institution_id = ? AND ihi.active = 'S' AND ihi.deleted = 'N'
+        AND i.i18n_key NOT IN (?)
       ORDER BY i.description, p.id`,
-    [userId, institutionId]
+    [userId, institutionId, excludedKeys.length > 0 ? excludedKeys : ['']]
   )
 
+  return groupByInterface(rows)
+}
+
+/** Linhas (interface × privilégio × concedido) → uma entrada por interface, na ordem da consulta. */
+function groupByInterface(rows: any[]): UserInterfacePrivileges[] {
   const byInterface = new Map<number, UserInterfacePrivileges>()
   for (const row of rows) {
     let entry = byInterface.get(row.interfaceId)
@@ -288,6 +310,52 @@ export async function listUserPrivileges(
     } as UserPrivilegeGrant)
   }
   return Array.from(byInterface.values())
+}
+
+/**
+ * D-PV11 (Valdo 2026-10-18): telas do grupo Super DELEGÁVEIS (fora do contrato — tela do Super não é vendida), com o catálogo
+ * de privilégios delas e o que o usuário já tem. Só o SUPER vê e marca (o service decide quem chama).
+ */
+export async function listDelegableSuperPrivileges(
+  schemaName: string, userId: number, keys: readonly string[]
+): Promise<UserInterfacePrivileges[]> {
+  if (keys.length === 0) return []
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT i.id            AS interfaceId,
+            i.description,
+            i.i18n_key      AS i18nKey,
+            i.group_default AS groupDefault,
+            NULL            AS moduleNames,
+            p.id            AS privilegeId,
+            p.description   AS privilegeDescription,
+            CASE WHEN uhp.tb_user_id IS NULL THEN 'N' ELSE 'S' END AS granted
+       FROM setes_central.tb_interface i
+       INNER JOIN setes_central.tb_interface_has_privilege ihp
+         ON ihp.tb_interface_id = i.id AND ihp.active = 'S' AND ihp.deleted = 'N'
+       INNER JOIN setes_central.tb_privilege p
+         ON p.id = ihp.tb_privilege_id AND p.deleted = 'N'
+       LEFT JOIN \`${s}\`.tb_user_has_privilege uhp
+         ON uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id AND uhp.tb_privilege_id = p.id
+        AND uhp.active = 'S' AND uhp.deleted = 'N'
+      WHERE i.deleted = 'N' AND i.i18n_key IN (?)
+      ORDER BY i.description, p.id`,
+    [userId, keys]
+  )
+  return groupByInterface(rows)
+}
+
+/**
+ * Interface do catálogo central PELO ID, viva ou excluída (null = o id não existe). Gate socrático da D-PV11: com o filtro
+ * `deleted = 'N'` aqui, soft-deletar a tela delegável (o gesto natural do Super para "desligar a delegação") fazia a trava do
+ * service ser pulada — o service decide com a chave E o estado.
+ */
+export async function findInterfaceKey(interfaceId: number): Promise<{ key: string | null; deleted: boolean } | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT i18n_key AS i18nKey, deleted FROM setes_central.tb_interface WHERE id = ? LIMIT 1`,
+    [interfaceId]
+  )
+  return rows[0] ? { key: rows[0].i18nKey ?? null, deleted: rows[0].deleted === 'S' } : null
 }
 
 /** Ids dos privilégios definidos no catálogo para a interface (validação). */

@@ -12,6 +12,7 @@ import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
   PartnershipPartnerRow, PartnershipPartnerInput,
 } from './customers.interface'
+import { assertNotOwnEstablishment } from '@shared/entity/own-establishment'
 
 /**
  * Repositório do CONCRETO Customer — CONSUMIDOR da cadeia de entidade fiscal
@@ -174,6 +175,7 @@ export async function insertCustomerCascade(
     await conn.beginTransaction()
 
     const { id, reused } = await saveEntityFiscalChain(conn, null, input, updatedBy)
+    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino): o emitente se edita em Meu Estabelecimento
 
     const [existing] = await conn.query<any[]>(
       `SELECT deleted FROM ?? WHERE id = ? AND tb_institution_id = ? FOR UPDATE`,
@@ -231,6 +233,7 @@ export async function updateCustomerCascade(
   try {
     await conn.beginTransaction()
 
+    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino)
     await saveEntityFiscalChain(conn, id, input, updatedBy)
 
     const paymentTypesId =
@@ -388,4 +391,27 @@ export async function setCustomerPartnership(
   } finally {
     conn.release()
   }
+}
+
+export interface CollaboratorLookupRow { id: number; nickTrade: string | null; nameCompany: string | null }
+
+/**
+ * D-PV2: colaboradores da institution para a aba Parceria — MESMO conjunto da lista de Colaboradores (institution,
+ * `deleted='N'`, ativos e inativos: o salvar da parceria só confere `deleted`), mesma ordem; até 50.
+ */
+export async function listCollaboratorLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<CollaboratorLookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT c.id, e.nick_trade AS nickTrade, e.name_company AS nameCompany
+       FROM ?? c
+       INNER JOIN setes_central.tb_entity e ON e.id = c.id
+      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
+        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+      ORDER BY e.nick_trade, c.id
+      LIMIT 50`,
+    [`${schemaName}.tb_collaborator`, institutionId, like, like, like]
+  )
+  return rows.map(r => ({ id: Number(r.id), nickTrade: r.nickTrade ?? null, nameCompany: r.nameCompany ?? null }))
 }

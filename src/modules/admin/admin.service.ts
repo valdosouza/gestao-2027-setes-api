@@ -3,6 +3,7 @@ import {
   upsertFeatureFlag, InterfaceGrantRow,
 } from './admin.repository'
 import { HttpError } from '@shared/errors/http-error'
+import type { InterfaceGrantChange } from '@shared/institution-interfaces'
 
 // O onboarding de institution foi ABSORVIDO pelo cadastro de Estabelecimento
 // (POST /api/institutions — módulo institutions, decisão do Valdo 2026-07-11).
@@ -21,14 +22,14 @@ async function resolveTargetSchema(institutionId: number): Promise<string> {
 
 export async function getInstitutionInterfaces(institutionId: number): Promise<InterfaceGrantRow[]> {
   const schemaName = await resolveTargetSchema(institutionId)
-  return listInterfacesWithGrant(schemaName)
+  return listInterfacesWithGrant(schemaName, institutionId)
 }
 
 export async function updateInstitutionInterfaces(
   institutionId: number, interfaceIds: number[]
-): Promise<void> {
+): Promise<InterfaceGrantChange> {
   const schemaName = await resolveTargetSchema(institutionId)
-  await setInstitutionInterfaces(schemaName, institutionId, interfaceIds)
+  return setInstitutionInterfaces(schemaName, institutionId, interfaceIds)
 }
 
 // Gate técnico (decisão 17): a tela de cliente do Super chama este endpoint

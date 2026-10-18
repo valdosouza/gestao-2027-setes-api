@@ -291,7 +291,8 @@ export async function listCustomerLookup(
   assertSchemaName(schemaName)
   const like = filter ? `%${escapeLike(filter)}%` : null
   const [rows] = await pool.query<any[]>(
-    `SELECT cu.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name
+    `SELECT cu.id, COALESCE(NULLIF(e.nick_trade, ''), e.name_company) AS name,
+            e.nick_trade AS nickTrade, e.name_company AS nameCompany   -- D-PV2: o formulário lê os dois (a pesquisa só o name)
        FROM \`${schemaName}\`.tb_customer cu
        INNER JOIN setes_central.tb_entity e ON e.id = cu.id
       WHERE cu.tb_institution_id = ? AND cu.deleted = 'N'
@@ -309,7 +310,7 @@ export async function listPaymentTypesLookup(
   filter: string, schemaName: string, institutionId: number
 ): Promise<LookupRow[]> {
   const rows = await listEnabledPaymentTypes(pool, schemaName, institutionId, filter)
-  return rows.map(r => ({ id: r.id, name: r.description }))
+  return rows.map(r => ({ id: r.id, name: r.description, description: r.description }))   // D-PV2: o form lê description
 }
 
 /** Lookup de SERVIÇOS ativos da institution (form de itens do contrato). */

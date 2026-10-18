@@ -1,6 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
 import * as controller from './service-orders.controller'
-import { requirePrivilege } from '@shared/auth/require-privilege'
 import { PRIVILEGE_FATURAR } from '@shared/auth/privileges'
 
 /**
@@ -104,7 +104,8 @@ router.post('/', controller.create)
  *       401: { description: Não autenticado }
  *       500: { description: Erro interno }
  */
-router.post('/monthly-run', controller.monthly)
+// D-PV8 (fecha a Q-R5.5): a rotina mensal é ato da COBRANÇA do mês — FATURAR (o DELETE da OS aberta = EXCLUIR, pelo verbo)
+router.post('/monthly-run', privilegeAct(PRIVILEGE_FATURAR), controller.monthly)
 
 /**
  * @swagger
@@ -190,6 +191,26 @@ router.get('/customer-lookup', controller.customerLookup)
  *       401: { description: Não autenticado }
  */
 router.get('/products', controller.productsLookup)
+
+/**
+ * @swagger
+ * /api/service-orders/payment-types:
+ *   get:
+ *     summary: Formas HABILITADAS (negociação do faturamento da OS — lista de apoio)
+ *     tags: [ServiceOrders]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, description, kind, maxParcels } (até 100)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela); declarada ANTES de GET /:id
+router.get('/payment-types', controller.paymentTypesLookup)
 
 /**
  * @swagger
@@ -359,7 +380,7 @@ router.delete('/:id/items/:itemId', controller.removeOrderItem)
  *       422: { description: 'Depois da obrigação (D-IB8/D-IB62/D-IB63): INVOICE_SERVICE_IBSCBS_REQUIRED (classificação cClassTrib+cIndOp e NBS aceitas em todo serviço) ou INVOICE_SERVICE_MULTI_DECLARATION (serviços com declarações diferentes) — fields[] por serviço (product.N); a mensagem nomeia os serviços' }
  */
 // Q-G23 (Valdo 2026-09-09): FATURAR na interface do ramo (seed 53) — admin/super passam
-router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR), controller.invoice)
+router.post('/:id/invoice', privilegeAct(PRIVILEGE_FATURAR), controller.invoice)
 
 /**
  * @swagger
@@ -408,6 +429,6 @@ router.post('/:id/invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR
  *       401: { description: Não autenticado }
  *       403: { description: Sem o privilégio FATURAR }
  */
-router.post('/batch-invoice', requirePrivilege('service-orders', PRIVILEGE_FATURAR), controller.batchInvoice)
+router.post('/batch-invoice', privilegeAct(PRIVILEGE_FATURAR), controller.batchInvoice)
 
 export default router

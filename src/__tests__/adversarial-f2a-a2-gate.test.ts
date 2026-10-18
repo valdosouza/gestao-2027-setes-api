@@ -236,9 +236,11 @@ function res() {
 }
 
 describe('D-F37 — licença (interface contratada) para todos', () => {
-  it('[RESISTIU] as 3 guardas × super/admin/regular com a interface NÃO contratada → 403 INTERFACE_NOT_ALLOWED, sem next', async () => {
+  // A-PV1 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): revê a D-F37 SÓ para o super — ele passa a licença
+  // (teste próprio em require-privilege.test.ts); admin e regular seguem barrados aqui.
+  it('[RESISTIU] as 3 guardas × admin/regular com a interface NÃO contratada → 403 INTERFACE_NOT_ALLOWED, sem next', async () => {
     contracted = new Set([CATALOG.settlements])          // nada do ramo contratado
-    for (const inst of [SUPER, ADMIN, USER]) {
+    for (const inst of [ADMIN, USER]) {
       privileged.add(`${inst.userId}:${CATALOG.orders}:${PRIVILEGE_CANCELAR}`)   // vínculo "velho" não salva ninguém
       for (const guard of [
         requirePrivilege('orders', PRIVILEGE_CANCELAR),
@@ -269,18 +271,19 @@ describe('D-F37 — licença (interface contratada) para todos', () => {
     expect(catalogLookups).toBe(1)
   })
 
-  it('[RESISTIU] rota: super/admin cancelando documento do ramo service-orders NÃO contratado → 403 antes do serviço', async () => {
+  it('[RESISTIU] rota: admin cancelando documento do ramo service-orders NÃO contratado → 403 antes do serviço; o super passa (A-PV1)', async () => {
     contracted = new Set([CATALOG.orders])
-    for (const inst of [SUPER, ADMIN]) {
-      const r = await request(app).post('/api/billing/cancel').set('Authorization', bearer(inst)).send({ orderId: 501, reason: 'teste adversarial' })
-      expect([inst.role, r.status, r.body.code]).toEqual([inst.role, 403, 'INTERFACE_NOT_ALLOWED'])
-    }
+    const r = await request(app).post('/api/billing/cancel').set('Authorization', bearer(ADMIN)).send({ orderId: 501, reason: 'teste adversarial' })
+    expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
     expect(billingService.cancelOrderInvoice).not.toHaveBeenCalled()
+    const s = await request(app).post('/api/billing/cancel').set('Authorization', bearer(SUPER)).send({ orderId: 501, reason: 'teste adversarial' })
+    expect(s.body.code).not.toBe('INTERFACE_NOT_ALLOWED')
+    expect(billingService.cancelOrderInvoice).toHaveBeenCalledTimes(1)
   })
 
-  it('[RESISTIU — F2a A3] as consultas novas (cancel-plan, fiscal-effect) exigem a LICENÇA do ramo para todos (D-F37): ramo não contratado → 403 antes do serviço', async () => {
+  it('[RESISTIU — F2a A3] as consultas novas (cancel-plan, fiscal-effect) exigem a LICENÇA do ramo (D-F37; o super passa — A-PV1): ramo não contratado → 403 antes do serviço', async () => {
     contracted = new Set([CATALOG.settlements])
-    for (const inst of [SUPER, ADMIN, USER]) {
+    for (const inst of [ADMIN, USER]) {
       for (const url of ['/api/billing/501/cancel-plan', '/api/billing/501/fiscal-effect', '/api/billing/502/fiscal-effect']) {
         const r = await request(app).get(url).set('Authorization', bearer(inst))
         expect([inst.role, url, r.status, r.body.code]).toEqual([inst.role, url, 403, 'INTERFACE_NOT_ALLOWED'])

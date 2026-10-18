@@ -1,4 +1,7 @@
 import { HttpError } from '@shared/errors/http-error'
+import { ErrorCodes } from '@shared/errors/error-codes'
+import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { DELEGABLE_SUPER_INTERFACES, isDelegableSuperInterface } from '@shared/auth/super-delegation'
 import { ListQuery, PagedRows, PublicSearchCriterion, SearchCriterion, publicCriteria } from '@shared/list'
 import { md5Password } from '@shared/auth/password'
 import {
@@ -11,7 +14,7 @@ import {
   updateUserCascade, userExists, deleteUser, userLinkedToInstitution,
   listInstitutionLinks, setInstitutionLinks,
   findInstitutionSchema, listUserPrivileges, setUserPrivileges,
-  listInterfaceCatalogPrivilegeIds,
+  listInterfaceCatalogPrivilegeIds, findInterfaceKey, listDelegableSuperPrivileges, listActiveUserLinks,
   USER_SEARCH_CRITERIA, listInstitutionLookup,
 } from './users.repository'
 
@@ -36,6 +39,30 @@ async function assertInScope(scope: UserScope, userId: number): Promise<void> {
   // 404 (não 403) para não vazar a existência de usuários de outros clientes.
   if (!(await userLinkedToInstitution(userId, scope.institutionId))) {
     throw new HttpError(404, 'Usuário não encontrado')
+  }
+}
+
+/**
+ * Editar/desativar/excluir a CONTA (login global): gate adversarial da D-PV11 (HIGH, 2026-10-18 — prompt_privilegios_interfaces.md
+ * §11.9). O admin da Setes editava a conta do SUPER (senha, e-mail, exclusão) e, com ela, concedia a si a delegação — furando a
+ * D-PV10 ("só o super tem tudo") e a D-PV11 (b); o admin de OUTRO cliente trocava a senha de usuário vinculado também à Setes.
+ * D-PV12 (Valdo, fecha a Q-PV37): trocar senha é ROTINA do admin — ele mexe na conta de todos do próprio estabelecimento, MENOS a do
+ * super (o super é um só; o usuário liberado pelo Super segue editável pelo admin da Setes — a liberação não muda quem gere a conta).
+ * Quem não é super só mexe na conta cujos vínculos — TODOS, vivos ou adormecidos — são com o próprio estabelecimento e nenhum de perfil
+ * super; A-PV13 (a ratificar): a conta com vínculo com OUTRO estabelecimento também fica com o Super (o HIGH 2 do gate — o admin de um
+ * cliente tomaria a conta que outro cliente, ou a Setes, usa; vínculo com vários estabelecimentos já é ato exclusivo do super —
+ * `saveInstitutionLinks`).
+ */
+async function assertAccountManageable(scope: UserScope, userId: number): Promise<void> {
+  if (scope.isSuper) return
+  const links = await listActiveUserLinks(userId)
+  // escopo: vínculo VIVO com o próprio estabelecimento; a barreira conta TODO vínculo (vivo ou adormecido — re-prova do gate)
+  if (!links.some(l => l.alive && l.institutionId === scope.institutionId)) {
+    throw new HttpError(404, 'Usuário não encontrado')
+  }
+  if (links.some(l => l.kind === 'super' || l.institutionId !== scope.institutionId)) {
+    throw new HttpError(403, 'Esta conta tem vínculo de super ou com outro estabelecimento — só o Super altera', [],
+      ErrorCodes.USER_MANAGED_BY_SUPER)
   }
 }
 
@@ -114,7 +141,7 @@ export async function editUser(
   scope: UserScope, id: number, input: UserInput
 ): Promise<void> {
   if (!(await userExists(id))) throw new HttpError(404, 'Usuário não encontrado')
-  await assertInScope(scope, id)
+  await assertAccountManageable(scope, id)
   await assertLoginEmailFree(input.email, id)
   const hash = input.password ? md5Password(input.password) : null
   await updateUserCascade(id, input, hash)
@@ -122,7 +149,7 @@ export async function editUser(
 
 export async function removeUser(scope: UserScope, id: number): Promise<void> {
   if (!(await userExists(id))) throw new HttpError(404, 'Usuário não encontrado')
-  await assertInScope(scope, id)
+  await assertAccountManageable(scope, id)
   await deleteUser(id)
 }
 
@@ -187,13 +214,24 @@ async function assertUserLinkedTo(
   }
 }
 
+/**
+ * D-PV5 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): telas do PERFIL admin — `users` (quem tem a tela concede
+ * privilégio a si mesmo: escalada) e `establishment` (regime e configuração fiscal — D41 "só Admin"). Seguem no
+ * `adminGuard`; o catálogo delas (A-PV4) serve só aos botões do admin/super — o cadastro de privilégios NUNCA as oferece.
+ */
+export const ADMIN_PROFILE_INTERFACE_KEYS: readonly string[] = ['users', 'establishment']
+
 export async function fetchUserPrivileges(
   scope: UserScope, userId: number, institutionId: number | null
 ): Promise<UserInterfacePrivileges[]> {
   if (!(await userExists(userId))) throw new HttpError(404, 'Usuário não encontrado')
   const target = await resolvePrivilegeTarget(scope, institutionId)
   await assertUserLinkedTo(userId, target)
-  return listUserPrivileges(target.schemaName, target.institutionId, userId)
+  const rows = await listUserPrivileges(target.schemaName, target.institutionId, userId,
+    [...ADMIN_PROFILE_INTERFACE_KEYS, ...DELEGABLE_SUPER_INTERFACES])
+  // D-PV11 (b): a tela do Super delegável só aparece quando quem edita é o SUPER e o usuário é da Setes
+  if (!scope.isSuper || target.institutionId !== SETES_INSTITUTION_ID) return rows
+  return rows.concat(await listDelegableSuperPrivileges(target.schemaName, userId, DELEGABLE_SUPER_INTERFACES))
 }
 
 export async function saveUserPrivileges(
@@ -203,6 +241,27 @@ export async function saveUserPrivileges(
   if (!(await userExists(userId))) throw new HttpError(404, 'Usuário não encontrado')
   const target = await resolvePrivilegeTarget(scope, institutionId)
   await assertUserLinkedTo(userId, target)
+
+  // Interface inexistente ou EXCLUÍDA do catálogo não se concede (falha fechado — gate socrático da D-PV11: soft-deletar a tela
+  // delegável não pode abrir a trava abaixo)
+  const found = await findInterfaceKey(interfaceId)
+  if (!found || found.deleted) {
+    throw new HttpError(400, 'Interface inexistente ou excluída do catálogo',
+      [{ field: 'privilegeIds', message: `Interface ${interfaceId} fora do catálogo` }], ErrorCodes.VALIDATION_FAILED)
+  }
+  const key = found.key
+  // D-PV5: as telas do perfil admin (Usuários, Meu Estabelecimento) não se concedem — nem a listagem as mostra.
+  if (key !== null && ADMIN_PROFILE_INTERFACE_KEYS.includes(key)) {
+    throw new HttpError(400, 'Esta tela é do perfil administrador — não se concede por privilégio',
+      [{ field: 'privilegeIds', message: `A tela ${key} segue o perfil admin (não tem privilégio por usuário)` }],
+      ErrorCodes.PRIVILEGE_ADMIN_PROFILE)
+  }
+
+  // D-PV11 (b)/(c): tela do Super delegável — SÓ o Super libera, e só para usuário da Setes (o admin nunca concede, nem a si)
+  if (isDelegableSuperInterface(key) && (!scope.isSuper || target.institutionId !== SETES_INSTITUTION_ID)) {
+    throw new HttpError(403, 'Esta tela do Super só o Super libera, e só para usuário da Setes',
+      [{ field: 'privilegeIds', message: `A tela ${key} é delegável só pelo Super` }], ErrorCodes.SUPER_DELEGATION_SUPER_ONLY)
+  }
 
   // Só privilégios DEFINIDOS no catálogo da interface (tb_interface_has_privilege).
   const catalog = new Set(await listInterfaceCatalogPrivilegeIds(interfaceId))

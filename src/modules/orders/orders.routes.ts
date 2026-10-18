@@ -109,6 +109,27 @@ router.get('/salesman-lookup', controller.salesmanLookup)
 
 /**
  * @swagger
+ * /api/orders/active-salesman-lookup:
+ *   get:
+ *     summary: Vendedores ATIVOS para o vendedor do pedido (lista de apoio do formulário)
+ *     tags: [Orders]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name } (até 50)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela) — o formulário lia /api/customers/salesman-lookup (só ATIVOS); o /salesman-lookup daqui é o da pesquisa
+// avançada (ativos E inativos — D-BA42) e não muda
+router.get('/active-salesman-lookup', controller.activeSalesmanLookup)
+
+/**
+ * @swagger
  * /api/orders:
  *   post:
  *     summary: Abre um pedido de venda (cliente + vendedor)

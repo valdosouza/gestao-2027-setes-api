@@ -235,3 +235,30 @@ export async function unlinkPaymentType(
     conn.release()
   }
 }
+
+export interface FinancialPlanLookupRow {
+  id: number; description: string; positLevel: string; kind: string; active: string
+}
+
+/**
+ * D-PV2: plano de contas da institution para o vínculo da forma — MESMO conjunto da lista do cadastro de plano de contas
+ * (institution, `deleted='N'`, filtro pela descrição, ordem do caminho); a tela separa receita/despesa e ativas.
+ */
+export async function listFinancialPlansLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<FinancialPlanLookupRow[]> {
+  assertSchemaName(schemaName)
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT p.id, p.description, p.posit_level AS positLevel, p.kind, p.active
+       FROM \`${schemaName}\`.tb_financial_plans p
+      WHERE p.tb_institution_id = ? AND p.deleted = 'N'
+        AND (? IS NULL OR p.description LIKE ?)
+      ORDER BY p.posit_level, p.id`,
+    [institutionId, like, like]
+  )
+  return rows.map(r => ({
+    id: Number(r.id), description: String(r.description ?? ''), positLevel: String(r.positLevel ?? ''),
+    kind: String(r.kind ?? ''), active: String(r.active ?? 'S'),
+  }))
+}

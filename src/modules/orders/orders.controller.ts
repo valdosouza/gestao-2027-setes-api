@@ -10,6 +10,7 @@ import {
   fetchNegotiation, updateNegotiation, fetchPaymentTypesLookup, fetchBanksLookup,
   ORDER_SEARCH_CRITERIA, fetchOrderSearchCriteria, fetchCustomerLookup, fetchSalesmanLookup,
 } from './orders.service'
+import { fetchActiveSalesmanLookup } from './orders.service'
 
 function scopeOf(req: Request): OrdersScope {
   const { schemaName, institutionId, userId, role } = req.institution!
@@ -202,5 +203,13 @@ export async function banksLookup(req: Request, res: Response): Promise<void> {
     res.json({ ok: true, data: await fetchBanksLookup(filter) })
   } catch (err) {
     handleError(res, err, 'orders/banks-lookup GET')
+  }
+}
+
+export async function activeSalesmanLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchActiveSalesmanLookup(String(req.query.filter ?? ''), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'orders/active-salesman-lookup GET')
   }
 }

@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { byDocument, getTax, putTax } from './entities.controller'
+import { adminGuard } from '@gateway/admin.guard'
 
 const router = Router()
 
@@ -68,6 +69,8 @@ router.get('/by-document', byDocument)
  *         schema: { type: integer }
  *     responses:
  *       200: { description: 'Envelope { ok, data } — EntityTaxRow ou null se nunca configurada' }
+ *       403:
+ *         description: Só o perfil administrador (interino da Q-PV25 — gate adversarial da D-PV2)
  *       401: { description: Não autenticado }
  *       404: { description: Entidade não encontrada }
  *       500: { description: Erro interno }
@@ -95,11 +98,17 @@ router.get('/by-document', byDocument)
  *     responses:
  *       200: { description: 'Envelope { ok }' }
  *       400: { description: Validação (erro por campo) }
+ *       403:
+ *         description: Só o perfil administrador (interino da Q-PV25 — gate adversarial da D-PV2)
  *       401: { description: Não autenticado }
  *       404: { description: Entidade não encontrada }
  *       500: { description: Erro interno }
  */
-router.get('/:id/tax', getTax)
-router.put('/:id/tax', putTax)
+// Gate adversarial da D-PV2 (HIGH, 2026-10-18 — prompt_privilegios_interfaces.md §11, Q-PV25): a tributação AVULSA da entidade não tem
+// consumidor no app (a aba Tributação salva na transação do PAPEL) e, aberta, deixava o usuário regular reescrever a tributação de
+// qualquer entidade — inclusive a do EMITENTE (regime do Simples, apuração, pTotTribSN, que a nfse-api lê para o DPS), por fora do
+// adminGuard e das validações do Meu Estabelecimento (D41/D-PV5, Q-N36/Q-N37). Interino até a Q-PV25: só o perfil admin.
+router.get('/:id/tax', adminGuard, getTax)
+router.put('/:id/tax', adminGuard, putTax)
 
 export default router

@@ -119,6 +119,26 @@ router.get('/catalog', controller.catalog)
 
 /**
  * @swagger
+ * /api/payment-types/financial-plans:
+ *   get:
+ *     summary: Contas do plano de contas (vínculo da forma — lista de apoio da tela)
+ *     tags: [PaymentTypes]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, description, positLevel, kind, active }' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela)
+router.get('/financial-plans', controller.financialPlansLookup)
+
+/**
+ * @swagger
  * /api/payment-types/{id}:
  *   put:
  *     summary: Atualiza o VÍNCULO (atributos operacionais) e, se enviado, o código NF-e da linha central

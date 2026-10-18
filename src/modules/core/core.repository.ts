@@ -255,3 +255,33 @@ export async function getAllCentralInterfaces(): Promise<MenuInterfaceRow[]> {
   )
   return rows
 }
+
+/**
+ * D-PV11 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): telas do grupo Super DELEGÁVEIS que o Super liberou ao usuário da
+ * Setes (VISUALIZAR marcado no cadastro dele). Fora do contrato e fora do `NOT_SUPER_GROUP` por construção: só entram estas
+ * chaves, e só com o vínculo explícito do usuário (admin inclusive).
+ */
+export async function getDelegatedSuperInterfaces(
+  schemaName: string, userId: number, keys: readonly string[]
+): Promise<MenuInterfaceRow[]> {
+  if (keys.length === 0) return []
+  const s = assertSchema(schemaName)
+  const [rows] = await pool.query<any[]>(
+    `SELECT NULL            AS moduleId,
+            i.group_default AS moduleDescription,
+            NULL            AS moduleIcon,
+            i.id            AS interfaceId,
+            i.description   AS interfaceDescription,
+            i.i18n_key      AS i18nKey,
+            NULL            AS buttonAction,
+            NULL            AS imgIndex
+       FROM setes_central.tb_interface i
+      WHERE i.deleted = 'N' ${ONLY_SCREEN_KIND} AND i.i18n_key IN (?)
+        AND EXISTS (SELECT 1 FROM \`${s}\`.tb_user_has_privilege uhp
+                     WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id AND uhp.tb_privilege_id = ?
+                       AND uhp.active = 'S' AND uhp.deleted = 'N')
+      ORDER BY i.position, i.description`,
+    [keys, userId, PRIVILEGE_VISUALIZAR]
+  )
+  return rows
+}

@@ -126,12 +126,16 @@ router.put('/institutions/:id/interfaces', async (req: Request, res: Response) =
     return
   }
   try {
-    await updateInstitutionInterfaces(institutionId, parsed.data.interfaceIds)
-    logger.info('Contrato de interfaces atualizado', { institutionId, total: parsed.data.interfaceIds.length })
+    const change = await updateInstitutionInterfaces(institutionId, parsed.data.interfaceIds)
+    // trilha (gate socrático da D-PV11): o que entrou e o que saiu, e quem fez — a mesma linha da tela delegável
+    logger.info('Interfaces do estabelecimento atualizadas', {
+      door: 'admin', targetInstitutionId: institutionId, added: change.added, removed: change.removed,
+      byInstitutionId: req.institution!.institutionId, byUserId: req.institution!.userId, byRole: req.institution!.role,
+    })
     res.json({ ok: true })
   } catch (err) {
     if (err instanceof HttpError) {
-      res.status(err.statusCode).json({ error: err.message })
+      res.status(err.statusCode).json({ error: err.message, code: err.code, fields: err.fields ?? [] })
       return
     }
     logger.error('Erro ao atualizar interfaces do cliente', { err })

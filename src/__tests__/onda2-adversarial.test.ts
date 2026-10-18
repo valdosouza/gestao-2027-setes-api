@@ -14,6 +14,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
+import { grantingPrivileges } from '../test-setup/privilege-db'
 import request from 'supertest'
 import { createPrivateKey } from 'crypto'
 
@@ -110,7 +111,8 @@ const channelRow = { bankAccountId: 1, institutionId: 1, environment: 'S', clien
 const accountRow = { id: 1, bankId: 77, bankNumber: '077', bankName: 'Inter', agency: '0001', number: '12345', numberDv: '6', active: 'S' }
 
 function poolDefaults() {
-  q.mockImplementation(async (sql: string, params: any[]) => {
+  // D-PV2: a guarda por roteador consulta catálogo/contrato/vínculo — aqui o usuário tem o privilégio (o teste é da rota)
+  q.mockImplementation(grantingPrivileges(async (sql: string, params: any[]) => {
     if (/FROM `setes_setes`\.tb_bank_slip WHERE/.test(sql)) return [[header]]
     if (/tb_bank_slip_title t/.test(sql)) return [[{ entityId: 900 }]]
     if (/tb_state WHERE/.test(sql)) return [[{ abbreviation: 'PR' }]]
@@ -118,7 +120,7 @@ function poolDefaults() {
     if (/tb_bank_account_channel c/.test(sql)) return [[channelRow]]
     if (/tb_bank_account a/.test(sql)) return [[accountRow]]
     return [[]]
-  })
+  }))
 }
 const tokenFor = (role: string, institutionId = 1) =>
   testToken({ institutionId, userId: 7, role, schemaName: 'setes_setes' })
@@ -543,12 +545,12 @@ describe('rotas — autorização, escopo e bordas de entrada', () => {
     expect(res.status).toBe(400); expect(res.body.code).toBe('VALIDATION_FAILED')
   })
   it('GET /channel de conta de OUTRO institution → 404 sem vazar', async () => {
-    q.mockImplementation(async () => [[]])
+    q.mockImplementation(grantingPrivileges(async () => [[]]))
     const res = await request(app).get('/api/bank-accounts/77/channel').set('Authorization', asUser())
     expect(res.status).toBe(404); expect(res.body.code).toBe('BANK_ACCOUNT_NOT_FOUND')
   })
   it('POST /:id/register para boleto de OUTRO institution → 404 BANK_SLIP_NOT_FOUND, banco nunca chamado', async () => {
-    q.mockImplementation(async () => [[]])
+    q.mockImplementation(grantingPrivileges(async () => [[]]))
     const res = await request(app).post('/api/bank-slips/999/register').set('Authorization', asUser())
     expect(res.status).toBe(404); expect(res.body.code).toBe('BANK_SLIP_NOT_FOUND')
     expect(adapter.register).not.toHaveBeenCalled()

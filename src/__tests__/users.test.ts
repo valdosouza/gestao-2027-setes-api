@@ -7,7 +7,7 @@
 import { NO_CRITERIA } from '../shared/list'
 import * as repo from '../modules/users/users.repository'
 import {
-  fetchUsers, createUser, editUser, saveInstitutionLinks,
+  fetchUsers, createUser, editUser, removeUser, saveInstitutionLinks,
   fetchUserPrivileges, saveUserPrivileges,
 } from '../modules/users/users.service'
 import { UserCreateInput, UserScope } from '../modules/users/users.interface'
@@ -25,6 +25,9 @@ const mockSchema     = repo.findInstitutionSchema           as jest.Mock
 const mockListPrivs  = repo.listUserPrivileges              as jest.Mock
 const mockSetPrivs   = repo.setUserPrivileges               as jest.Mock
 const mockCatalogIds = repo.listInterfaceCatalogPrivilegeIds as jest.Mock
+const mockIfaceKey   = repo.findInterfaceKey                 as jest.Mock
+const mockDelegable  = repo.listDelegableSuperPrivileges     as jest.Mock
+const mockLinks      = repo.listActiveUserLinks              as jest.Mock
 
 const superScope: UserScope =
   { isSuper: true,  institutionId: 1, schemaName: 'setes_setes' }
@@ -122,11 +125,24 @@ describe('editUser', () => {
   })
 
   it('admin NÃO edita usuário de outra institution (404 — sem vazar existência)', async () => {
-    mockLinked.mockResolvedValue(false)
+    mockLinks.mockResolvedValue([{ institutionId: 77, kind: 'user', alive: true }])
 
     await expect(editUser(adminScope, 9, input))
       .rejects.toMatchObject({ statusCode: 404 })
     expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  it('gate adversarial da D-PV11 (HIGH): admin NÃO mexe na conta com vínculo SUPER nem na que tem vínculo com OUTRO estabelecimento', async () => {
+    for (const links of [[{ institutionId: 5, kind: 'super', alive: true }], [{ institutionId: 5, kind: 'user', alive: true }, { institutionId: 1, kind: 'admin', alive: true }],
+      [{ institutionId: 5, kind: 'user', alive: true }, { institutionId: 1, kind: 'super', alive: false }]]) {   // adormecido também conta
+      mockLinks.mockResolvedValue(links)
+      await expect(editUser(adminScope, 9, input)).rejects.toMatchObject({ statusCode: 403, code: 'USER_MANAGED_BY_SUPER' })
+      await expect(removeUser(adminScope, 9)).rejects.toMatchObject({ statusCode: 403, code: 'USER_MANAGED_BY_SUPER' })
+    }
+    expect(mockUpdate).not.toHaveBeenCalled()
+    mockLinks.mockResolvedValue([{ institutionId: 5, kind: 'user', alive: true }])        // só o próprio estabelecimento: segue editável
+    await editUser(adminScope, 9, input)
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -135,12 +151,13 @@ describe('privilégios de acesso (ACL — workflow 2026-07-12)', () => {
     mockSchema.mockResolvedValue('setes_cliente')
     mockListPrivs.mockResolvedValue([])
     mockCatalogIds.mockResolvedValue([1, 2, 3, 6])
+    mockIfaceKey.mockResolvedValue({ key: 'customers', deleted: false })
   })
 
   it('super informa o institution alvo; schema resolvido na central', async () => {
     await fetchUserPrivileges(superScope, 9, 7)
 
-    expect(mockListPrivs).toHaveBeenCalledWith('setes_cliente', 7, 9)
+    expect(mockListPrivs).toHaveBeenCalledWith('setes_cliente', 7, 9, ['users', 'establishment', 'institution-interfaces'])
   })
 
   it('super sem institutionId → 400 por campo', async () => {
@@ -153,7 +170,7 @@ describe('privilégios de acesso (ACL — workflow 2026-07-12)', () => {
   it('admin do cliente é FORÇADO ao próprio institution/schema', async () => {
     await fetchUserPrivileges(adminScope, 9, 999)
 
-    expect(mockListPrivs).toHaveBeenCalledWith('setes_acme', 5, 9)
+    expect(mockListPrivs).toHaveBeenCalledWith('setes_acme', 5, 9, ['users', 'establishment', 'institution-interfaces'])
     expect(mockSchema).not.toHaveBeenCalled()
   })
 
@@ -173,6 +190,78 @@ describe('privilégios de acesso (ACL — workflow 2026-07-12)', () => {
         statusCode: 400,
         fields: [{ field: 'privilegeIds', message: expect.stringContaining('5') }],
       })
+  })
+})
+
+describe('D-PV5 — telas do perfil admin não se concedem por privilégio', () => {
+  beforeEach(() => {
+    mockCatalogIds.mockResolvedValue([1, 2, 3, 6])
+  })
+
+  it.each(['users', 'establishment'])('PUT de privilégio na tela %s → 400 no campo privilegeIds, nada gravado', async (key) => {
+    mockIfaceKey.mockResolvedValue({ key, deleted: false })
+    await expect(saveUserPrivileges(adminScope, 9, 8, [6], null)).rejects.toMatchObject({
+      statusCode: 400,
+      fields: [{ field: 'privilegeIds', message: expect.stringContaining(key) }],
+    })
+    expect(mockSetPrivs).not.toHaveBeenCalled()
+  })
+
+  it('a tela Módulos (D-GE20) e as demais seguem concedíveis', async () => {
+    mockIfaceKey.mockResolvedValue({ key: 'modules', deleted: false })
+    await saveUserPrivileges(adminScope, 9, 26, [6, 2], null)
+    expect(mockSetPrivs).toHaveBeenCalledWith('setes_acme', 9, 26, [6, 2])
+  })
+})
+
+describe('D-PV11 — tela do Super delegável: só o Super libera, e só para usuário da Setes', () => {
+  const setesAdmin: UserScope = { isSuper: false, institutionId: 1, schemaName: 'setes_setes' }
+  beforeEach(() => {
+    mockCatalogIds.mockResolvedValue([2, 6])
+    mockListPrivs.mockResolvedValue([{ interfaceId: 20 }])
+    mockDelegable.mockResolvedValue([{ interfaceId: 41 }])
+  })
+
+  it('a listagem do SUPER para usuário da Setes acrescenta a tela delegável; para outro estabelecimento, não', async () => {
+    mockSchema.mockResolvedValue('setes_setes')
+    expect(await fetchUserPrivileges(superScope, 9, 1)).toEqual([{ interfaceId: 20 }, { interfaceId: 41 }])
+    expect(mockDelegable).toHaveBeenCalledWith('setes_setes', 9, ['institution-interfaces'])
+    mockDelegable.mockClear(); mockSchema.mockResolvedValue('setes_cliente')
+    expect(await fetchUserPrivileges(superScope, 9, 7)).toEqual([{ interfaceId: 20 }])
+    expect(mockDelegable).not.toHaveBeenCalled()
+  })
+
+  it('o ADMIN da Setes não vê a tela delegável no cadastro de privilégios (nunca concede, nem a si)', async () => {
+    expect(await fetchUserPrivileges(setesAdmin, 2, null)).toEqual([{ interfaceId: 20 }])
+    expect(mockDelegable).not.toHaveBeenCalled()
+  })
+
+  it('gate socrático: tela EXCLUÍDA do catálogo (o Super "desligou" a delegação) ou id inexistente → 400, nada gravado — a trava não é pulada', async () => {
+    mockIfaceKey.mockResolvedValue({ key: 'institution-interfaces', deleted: true })
+    await expect(saveUserPrivileges(setesAdmin, 2, 41, [6], null))
+      .rejects.toMatchObject({ statusCode: 400, code: 'VALIDATION_FAILED' })
+    mockIfaceKey.mockResolvedValue(null)
+    await expect(saveUserPrivileges(setesAdmin, 2, 999, [6], null))
+      .rejects.toMatchObject({ statusCode: 400 })
+    expect(mockSetPrivs).not.toHaveBeenCalled()
+  })
+
+  it('a listagem do contrato NUNCA traz a tela delegável (nem para o admin, nem duplicada para o super)', async () => {
+    await fetchUserPrivileges(setesAdmin, 2, null)
+    expect(mockListPrivs.mock.calls[0][3]).toEqual(['users', 'establishment', 'institution-interfaces'])
+  })
+
+  it('gravar a tela delegável: admin da Setes → 403 SUPER_DELEGATION_SUPER_ONLY; super para outro estabelecimento → 403; super para a Setes → grava', async () => {
+    mockIfaceKey.mockResolvedValue({ key: 'institution-interfaces', deleted: false })
+    await expect(saveUserPrivileges(setesAdmin, 2, 41, [6], null))
+      .rejects.toMatchObject({ statusCode: 403, code: 'SUPER_DELEGATION_SUPER_ONLY' })
+    mockSchema.mockResolvedValue('setes_cliente')
+    await expect(saveUserPrivileges(superScope, 30, 41, [6], 7))
+      .rejects.toMatchObject({ statusCode: 403, code: 'SUPER_DELEGATION_SUPER_ONLY' })
+    expect(mockSetPrivs).not.toHaveBeenCalled()
+    mockSchema.mockResolvedValue('setes_setes')
+    await saveUserPrivileges(superScope, 2, 41, [6, 2], 1)
+    expect(mockSetPrivs).toHaveBeenCalledWith('setes_setes', 2, 41, [6, 2])
   })
 })
 

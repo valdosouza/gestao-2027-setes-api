@@ -12,6 +12,7 @@ import {
   getCustomerPartnership, setCustomerPartnership,
   CUSTOMER_SEARCH_CRITERIA,
 } from './customers.repository'
+import { listCollaboratorLookup, CollaboratorLookupRow } from './customers.repository'
 
 export { CUSTOMER_SEARCH_CRITERIA }
 
@@ -151,4 +152,9 @@ export async function saveCustomerPartnership(
   await fetchCustomer(customerId, scope)  // 404 + filtro de carteira
   await setCustomerPartnership(customerId, partners,
     scope.schemaName, scope.institutionId)
+}
+
+/** D-PV2: colaboradores para a aba Parceria — o mesmo conjunto que ela lia de /api/collaborators (ativos e inativos). */
+export async function fetchCollaboratorLookup(filter: string, scope: CustomerScope): Promise<CollaboratorLookupRow[]> {
+  return listCollaboratorLookup(filter.trim(), scope.schemaName, scope.institutionId)
 }

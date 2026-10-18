@@ -4,6 +4,7 @@ import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { entityRoleSearchCriteria, roleStatusSearchCriteria, saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { ProviderInput, ProviderListRow, ProviderFull } from './providers.interface'
+import { assertNotOwnEstablishment } from '@shared/entity/own-establishment'
 
 /**
  * Repositório do CONCRETO Provider — CONSUMIDOR da cadeia de entidade fiscal
@@ -110,6 +111,7 @@ export async function insertProviderCascade(
     await conn.beginTransaction()
 
     const { id, reused } = await saveEntityFiscalChain(conn, null, input, updatedBy)
+    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino): o emitente se edita em Meu Estabelecimento
 
     const [existing] = await conn.query<any[]>(
       `SELECT deleted FROM ?? WHERE id = ? AND tb_institution_id = ? FOR UPDATE`,
@@ -160,6 +162,7 @@ export async function updateProviderCascade(
   try {
     await conn.beginTransaction()
 
+    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino)
     await saveEntityFiscalChain(conn, id, input, updatedBy)
 
     await conn.query(

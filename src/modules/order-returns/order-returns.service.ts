@@ -7,6 +7,7 @@ import {
   cancelReturn,
   ORDER_RETURN_SEARCH_CRITERIA, listCustomerLookup,
 } from './order-returns.repository'
+import { listCfopLookup, CfopLookupRow } from './order-returns.repository'
 
 export interface OrderReturnsScope {
   schemaName:    string
@@ -63,4 +64,9 @@ export async function deleteItem(
 
 export async function removeReturn(orderId: number, scope: OrderReturnsScope): Promise<void> {
   await cancelReturn(orderId, scope.schemaName, scope.institutionId)
+}
+
+/** D-PV2: CFOPs para o faturamento da devolução — o mesmo conjunto que a tela lia de /api/cfop (a tela tira as inativas). */
+export async function fetchCfopLookup(filter: string): Promise<CfopLookupRow[]> {
+  return listCfopLookup(filter.trim())
 }

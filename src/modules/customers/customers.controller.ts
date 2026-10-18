@@ -10,6 +10,7 @@ import {
   fetchCustomerPartnership, saveCustomerPartnership,
   customerSearchCriteriaFor, fetchCustomerSearchCriteria,
 } from './customers.service'
+import { fetchCollaboratorLookup } from './customers.service'
 
 /** Escopo SEMPRE do JWT (decisão 2 — o papel é por institution). */
 function scopeOf(req: Request): CustomerScope {
@@ -123,5 +124,13 @@ export async function putPartnership(req: Request, res: Response): Promise<void>
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'customers/:id/partnership PUT')
+  }
+}
+
+export async function collaboratorLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCollaboratorLookup(String(req.query.filter ?? ''), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'customers/collaborator-lookup GET')
   }
 }

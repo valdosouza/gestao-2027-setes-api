@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_ALTERAR, PRIVILEGE_CANCELAR, PRIVILEGE_IMPRIMIR, PRIVILEGE_TRANSMITIR } from '@shared/auth/privileges'
 import * as controller from './bank-slips.controller'
 import * as registration from './bank-slips.registration.controller'
 
@@ -202,7 +204,9 @@ router.get('/open-titles', controller.openTitlesLookup)
  *     responses:
  *       200: { description: 'Envelope { ok, data: { checked, changed, reconciled, errors[], stoppedEarly } }' }
  */
-router.post('/refresh', registration.refreshOpen)
+// A-PV7: falar com o BANCO (registrar, consultar, simular no sandbox, reaplicar a voz dele) = TRANSMITIR — simétrico ao
+// fisco, onde consultar também é TRANSMITIR (nfse-api `refresh`/rodízio)
+router.post('/refresh', privilegeAct(PRIVILEGE_TRANSMITIR), registration.refreshOpen)
 
 router.get('/:id', controller.getOne)
 
@@ -243,7 +247,7 @@ router.get('/:id', controller.getOne)
  *       409: { description: 'BANK_SLIP_NOT_OPEN' }
  *       500: { description: Erro interno }
  */
-router.post('/:id/settle', controller.settle)
+router.post('/:id/settle', privilegeAct(PRIVILEGE_ALTERAR), controller.settle)                // D-PV7: liquidar = A
 
 /**
  * @swagger
@@ -272,7 +276,7 @@ router.post('/:id/settle', controller.settle)
  *       409: { description: 'BANK_SLIP_NOT_OPEN (liquidado ou já cancelado)' }
  *       500: { description: Erro interno }
  */
-router.post('/:id/cancel', controller.cancel)
+router.post('/:id/cancel', privilegeAct(PRIVILEGE_CANCELAR), controller.cancel)              // D-PV7: cancelar = 7
 
 /**
  * @swagger
@@ -303,7 +307,7 @@ router.post('/:id/cancel', controller.cancel)
  *       409: { description: 'BANK_SLIP_NOT_SETTLED (último evento não é L)' }
  *       500: { description: Erro interno }
  */
-router.post('/:id/reverse', controller.reverse)
+router.post('/:id/reverse', privilegeAct(PRIVILEGE_CANCELAR), controller.reverse)            // D-PV7: estornar = 7
 
 /**
  * @swagger
@@ -358,10 +362,10 @@ router.post('/:id/reverse', controller.reverse)
  *       200: { description: 'Envelope { ok, data } (forma do refresh)' }
  *       409: { description: Fora do sandbox / sem apresentação }
  */
-router.post('/:id/register', registration.register)
-router.post('/:id/refresh', registration.refresh)
-router.get('/:id/pdf', registration.pdf)
-router.post('/:id/pay-sandbox', registration.paySandboxHandler)
+router.post('/:id/register', privilegeAct(PRIVILEGE_TRANSMITIR), registration.register)       // D-PV7: registrar no banco = 9
+router.post('/:id/refresh', privilegeAct(PRIVILEGE_TRANSMITIR), registration.refresh)         // A-PV7
+router.get('/:id/pdf', privilegeAct(PRIVILEGE_IMPRIMIR), registration.pdf)                    // D-PV7: PDF = 4
+router.post('/:id/pay-sandbox', privilegeAct(PRIVILEGE_TRANSMITIR), registration.paySandboxHandler)   // A-PV7
 
 /**
  * @swagger
@@ -387,7 +391,7 @@ router.post('/:id/pay-sandbox', registration.paySandboxHandler)
  *       404: { description: BANK_SLIP_REGISTRATION_EVENT_NOT_FOUND }
  *       409: { description: 'BANK_SLIP_EFFECT_NOT_PENDING (sem efeito / já aplicado) ou a recusa da regra (ex.: BANK_SLIP_NOT_OPEN, caixa fechado)' }
  */
-router.post('/:id/reapply', registration.reapply)
+router.post('/:id/reapply', privilegeAct(PRIVILEGE_TRANSMITIR), registration.reapply)        // A-PV7
 // Nota: POST /:id/register devolve 409 BANK_SLIP_EFFECT_PENDING enquanto houver voz R/C/V
 // com efeito recusado — a pendência se resolve pelo reapply, nunca por nova apresentação.
 

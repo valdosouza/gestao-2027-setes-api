@@ -1,5 +1,4 @@
 import { getFlagsForInstitution, FeatureFlag } from './flag.repository'
-import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
 
 interface CacheEntry {
   flags:     FeatureFlag[]
@@ -10,8 +9,8 @@ const cache = new Map<number, CacheEntry>()
 const TTL   = Number(process.env.FLAG_CACHE_TTL_MS ?? 60_000)
 
 export async function isModuleEnabled(institutionId: number, moduleKey: string): Promise<boolean> {
-  // A própria Setes (institution 1) tem acesso a tudo
-  if (institutionId === SETES_INSTITUTION_ID) return true
+  // D-PV10 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): a Setes é um cliente como os outros — morreu o atalho
+  // "a própria Setes (institution 1) tem acesso a tudo". Só o SUPER escapa das flags (featureFlagMiddleware).
 
   const now    = Date.now()
   const cached = cache.get(institutionId)

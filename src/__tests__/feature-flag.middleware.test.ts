@@ -22,9 +22,9 @@ jest.mock('../feature-flags/flag.repository', () => ({
 }))
 
 describe('flag.service', () => {
-  it('institution da Setes (id 1) tem acesso a qualquer módulo', async () => {
-    const result = await isModuleEnabled(1, 'erp')
-    expect(result).toBe(true)
+  it('D-PV10: a Setes (id 1) segue as flags como qualquer cliente — sem flag do módulo, não entra (só o SUPER escapa, no middleware)', async () => {
+    const result = await isModuleEnabled(1, 'erp')          // o dublê devolve erp desligado para a 1 (ramo padrão)
+    expect(result).toBe(false)
   })
 
   it('institution com erp habilitado retorna true', async () => {
@@ -85,5 +85,13 @@ describe('featureFlagMiddleware (montado em /api, como no app.ts)', () => {
     }
     const res = await request(buildApp(superPayload)).get('/api/erp/status')
     expect(res.status).toBe(200)
+  })
+
+  it('D-PV10: o ADMIN da Setes (institution 1) NÃO passa direto — segue as flags como o admin de qualquer cliente', async () => {
+    const adminSetes: InstitutionPayload = {
+      institutionId: 1, userId: 2, role: 'admin', schemaName: 'setes_setes',
+    }
+    const res = await request(buildApp(adminSetes)).get('/api/erp/status')
+    expect(res.status).toBe(403)
   })
 })

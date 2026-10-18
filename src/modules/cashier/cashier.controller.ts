@@ -5,6 +5,7 @@ import { withdrawDto, closeCashierDto } from './cashier.dto'
 import {
   CashierScope, fetchCurrent, open, fetchBalance, withdraw, close,
 } from './cashier.service'
+import { fetchBankAccountLookup } from './cashier.service'
 
 function scopeOf(req: Request): CashierScope {
   const { schemaName, institutionId, userId } = req.institution!
@@ -66,5 +67,13 @@ export async function closeCashier(req: Request, res: Response): Promise<void> {
     res.status(201).json({ ok: true, data: result })
   } catch (err) {
     handleError(res, err, 'cashier/:id/close POST')
+  }
+}
+
+export async function bankAccountsLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBankAccountLookup(String(req.query.filter ?? ''), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'cashier/bank-accounts GET')
   }
 }

@@ -136,8 +136,11 @@ export async function putPrivileges(req: Request, res: Response): Promise<void> 
   try {
     await saveUserPrivileges(
       scopeOf(req), id, interfaceId, body.privilegeIds, body.institutionId ?? null)
-    logger.info('Privilégios do usuário atualizados',
-      { userId: id, interfaceId, total: body.privilegeIds.length })
+    // trilha (gate socrático da D-PV11): quem concedeu o quê a quem — inclusive a liberação da tela delegável
+    logger.info('Privilégios do usuário atualizados', {
+      userId: id, interfaceId, privilegeIds: body.privilegeIds,
+      byInstitutionId: req.institution!.institutionId, byUserId: req.institution!.userId, byRole: req.institution!.role,
+    })
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'users/:id/privileges/:interfaceId PUT')

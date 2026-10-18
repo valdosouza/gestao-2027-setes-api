@@ -111,6 +111,26 @@ router.get('/search-criteria', controller.searchCriteria)
  *       500: { description: Erro interno }
  */
 router.get('/customer-lookup', controller.customerLookup)
+
+/**
+ * @swagger
+ * /api/order-returns/cfop-lookup:
+ *   get:
+ *     summary: CFOPs do catálogo central para o faturamento da devolução (lista de apoio da tela)
+ *     tags: [OrderReturns]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, description, active } (até 50)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela) — o /api/cfop é do Super (superGuard): o admin recebia 403 nesse diálogo; declarada ANTES de GET /:id
+router.get('/cfop-lookup', controller.cfopLookup)
 router.post('/', controller.create)
 
 /**

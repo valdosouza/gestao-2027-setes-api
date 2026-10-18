@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { openRoute } from '@shared/auth/module-privilege-gate'
 import * as controller from './interface-fields.controller'
 
 /**
@@ -75,7 +76,8 @@ router.get('/search-criteria', controller.searchCriteria)
  *       200:
  *         description: 'Lista resolvida ([] quando o módulo não tem catálogo)'
  */
-router.get('/key/:moduleKey', controller.getFieldsByKey)
+// D-PV2 (exceção nomeada): a config resolvida monta TODA tela — sem privilégio do painel
+router.get('/key/:moduleKey', openRoute('config de campos que monta toda tela'), controller.getFieldsByKey)
 
 /**
  * @swagger

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express'
 import { isModuleEnabled } from '@feature-flags/flag.service'
 import { isSuper } from '@shared/auth/roles'
 import logger from '@shared/logger/logger'
+import { ErrorCodes } from '@shared/errors/error-codes'
 
 // Módulos fora do gate tb_feature_flag: todo cliente autenticado precisa deles
 // para o app sequer carregar ('core' serve o menu em /api/core/menus;
@@ -35,7 +36,7 @@ export function featureFlagMiddleware(req: Request, res: Response, next: NextFun
     .then(enabled => {
       if (!enabled) {
         logger.warn('Módulo bloqueado', { institutionId, moduleKey })
-        res.status(403).json({ error: `Módulo "${moduleKey}" não habilitado para este cliente` })
+        res.status(403).json({ error: `Módulo "${moduleKey}" não habilitado para este cliente`, code: ErrorCodes.MODULE_NOT_ENABLED, fields: [] })
         return
       }
       next()

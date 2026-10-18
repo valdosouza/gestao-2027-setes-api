@@ -53,13 +53,13 @@ describe('requirePrivilege', () => {
     expect(r.status).toHaveBeenCalledWith(401)
     expect(next).not.toHaveBeenCalled()
   })
-  it('super e admin passam o PRIVILÉGIO (sem consultar vínculo) — com a interface contratada', async () => {
+  it('super e admin passam o PRIVILÉGIO (sem consultar vínculo); só o admin consulta o contrato (A-PV1)', async () => {
     const next = jest.fn()
     await requirePrivilege('orders', 7)({ institution: SUPER } as any, res(), next)
     await requirePrivilege('orders', 7)({ institution: ADMIN } as any, res(), next)
     expect(next).toHaveBeenCalledTimes(2)
     expect(sqlCalls(/tb_user_has_privilege/)).toHaveLength(0)
-    expect(sqlCalls(/tb_institution_has_interface/).map(c => c[1])).toEqual([[1, 29], [2, 29]])
+    expect(sqlCalls(/tb_institution_has_interface/).map(c => c[1])).toEqual([[2, 29]])
   })
   it('Q-G16: lista de interfaces — passa pelo privilégio em QUALQUER uma (orders sem, service-orders com)', async () => {
     privileged.add('9:20:7')
@@ -102,10 +102,10 @@ describe('requirePrivilege', () => {
 })
 
 describe('D-F37 — a LICENÇA vale para todos (admin passa só o privilégio)', () => {
-  it('interface NÃO contratada → 403 INTERFACE_NOT_ALLOWED para admin, super e regular com o privilégio — nem chega ao vínculo', async () => {
+  it('interface NÃO contratada → 403 INTERFACE_NOT_ALLOWED para admin e regular com o privilégio — nem chega ao vínculo', async () => {
     contracted.delete(29)
     privileged.add('9:29:7')
-    for (const inst of [ADMIN, SUPER, USER]) {
+    for (const inst of [ADMIN, USER]) {
       const r = res(); const next = jest.fn()
       await requirePrivilege('orders', 7)({ institution: inst } as any, r, next)
       expect(r.status).toHaveBeenCalledWith(403)
@@ -162,6 +162,30 @@ describe('D-F37 — a LICENÇA vale para todos (admin passa só o privilégio)',
     const lic = sqlCalls(/tb_institution_has_interface/)
     expect(String(lic[0][0])).toMatch(/`setes_x`\.tb_institution_has_interface/)
     expect(lic[0][1]).toEqual([2, 21])
+  })
+})
+
+describe('A-PV1 — o super escapa também da LICENÇA (revê a D-F37 só para ele — Valdo 2026-10-18)', () => {
+  it('as 3 guardas passam o super com a interface NÃO contratada — sem consultar contrato nem vínculo', async () => {
+    contracted.clear()
+    for (const guard of [
+      requirePrivilege('orders', 7),
+      requirePrivilege(['orders', 'service-orders'], 5),
+      requirePrivilegeFor(7, async () => 'service-orders'),
+      requireInterfaceFor(async () => 'orders'),
+    ]) {
+      const next = jest.fn()
+      await guard({ institution: SUPER, body: { orderId: 1 } } as any, res(), next)
+      expect(next).toHaveBeenCalledTimes(1)
+    }
+    expect(sqlCalls(/tb_institution_has_interface|tb_user_has_privilege/)).toHaveLength(0)
+  })
+  it('role "super" fora da institution da Setes NÃO é super (isSuper exige a institution 1) — segue barrado pela licença', async () => {
+    contracted.clear()
+    const r = res(); const next = jest.fn()
+    await requirePrivilege('orders', 7)({ institution: { ...SUPER, institutionId: 2, schemaName: 'setes_x' } } as any, r, next)
+    expect(r.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'INTERFACE_NOT_ALLOWED' }))
+    expect(next).not.toHaveBeenCalled()
   })
 })
 

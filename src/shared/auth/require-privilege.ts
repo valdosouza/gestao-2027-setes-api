@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from 'express'
 import pool from '@shared/db/connection'
 import { assertSchema } from '@shared/db/schema'
-import { isAdmin } from '@shared/auth/roles'
+import { isAdmin, isSuper } from '@shared/auth/roles'
+import { InstitutionPayload } from '@shared/types/express'
 import { ErrorCodes } from '@shared/errors/error-codes'
 
 /**
@@ -22,10 +23,17 @@ import { ErrorCodes } from '@shared/errors/error-codes'
  * o que se vendeu). Mesma regra das guardas da nfse-api (`nfse-api/src/modules/guards.ts`); a licença é conferida
  * ANTES do privilégio (403 INTERFACE_NOT_ALLOWED × 403 PRIVILEGE_REQUIRED). Antes de ligar, o dado foi conferido
  * (2026-10-12): a única institution ativa contrata as 4 interfaces das guardas — ninguém perdeu acesso.
+ *
+ * A-PV1 (Valdo 2026-10-18 — `Infra-IA/prompts/prompt_privilegios_interfaces.md`, D-PV3: "o super deve escapar de todas
+ * as verificações"): o SUPER passa também a LICENÇA — revê a D-F37 SÓ para ele (admin e regular seguem barrados pela
+ * licença). A interface tem de EXISTIR no catálogo central — isso é integridade do código, não licença: chave que não
+ * existe no catálogo nega para todos. Peça única: `licensedFor`.
+ * Conhecimento negativo: o id por i18n_key fica no cache do PROCESSO sem expirar — interface soft-deletada no catálogo
+ * segue "existindo" para o super até o próximo restart (o catálogo é estável; admin/regular seguem barrados pelo contrato).
  */
 const interfaceIdCache = new Map<string, number>()
 
-async function resolveInterfaceId(interfaceKey: string): Promise<number | null> {
+export async function resolveInterfaceId(interfaceKey: string): Promise<number | null> {
   const cached = interfaceIdCache.get(interfaceKey)
   if (cached !== undefined) return cached
   const [rows] = await pool.query<any[]>(
@@ -54,6 +62,36 @@ export async function userHasPrivilege(
   return rows.length > 0
 }
 
+/**
+ * A-PV1: a interface vale para QUEM PEDE? Super → basta existir no catálogo central; admin e regular → CONTRATADA
+ * (`tb_institution_has_interface` ativa — D-F14/D-F37).
+ */
+export async function licensedFor(inst: InstitutionPayload, interfaceKey: string): Promise<boolean> {
+  if (isSuper(inst)) return (await resolveInterfaceId(interfaceKey)) != null
+  return institutionHasInterface(inst.schemaName, inst.institutionId, interfaceKey)
+}
+
+/** Veredito de UMA ação: licença (A-PV1/D-F37) antes do privilégio; com lista, vale QUALQUER interface licenciada (Q-G16). */
+export type PrivilegeVerdict = 'ok' | 'not-contracted' | 'no-privilege'
+
+export async function privilegeVerdict(
+  inst: InstitutionPayload, keys: readonly string[], privilegeId: number
+): Promise<PrivilegeVerdict> {
+  let contracted = false
+  for (const key of keys) {
+    if (!(await licensedFor(inst, key))) continue
+    contracted = true
+    if (isAdmin(inst) || await userHasPrivilege(inst.schemaName, inst.userId, key, privilegeId)) return 'ok'
+  }
+  return contracted ? 'no-privilege' : 'not-contracted'
+}
+
+/** Resposta do veredito negado — o MESMO envelope em toda guarda (403 INTERFACE_NOT_ALLOWED × 403 PRIVILEGE_REQUIRED). */
+export function denyPrivilege(res: Response, verdict: Exclude<PrivilegeVerdict, 'ok'>, keys: readonly string[]): void {
+  if (verdict === 'not-contracted') { interfaceNotAllowed(res, [...keys]); return }
+  res.status(403).json({ error: 'Privilégio necessário para esta ação', code: ErrorCodes.PRIVILEGE_REQUIRED, fields: [] })
+}
+
 function interfaceNotAllowed(res: Response, keys: string[]): void {
   res.status(403).json({
     error: `Interface ${keys.join(' / ')} não contratada para este estabelecimento`, code: ErrorCodes.INTERFACE_NOT_ALLOWED, fields: [],
@@ -65,7 +103,7 @@ function interfaceNotAllowed(res: Response, keys: string[]): void {
  * das interfaces (Q-G16 do cancelamento, Valdo 2026-09-09: a nota da OS
  * cancela pelo mesmo POST /billing/cancel, mas o operador de OS tem a
  * interface `service-orders`, não `orders` — privilégio na interface do RAMO).
- * D-F37: só contam as interfaces CONTRATADAS — nenhuma contratada = 403 INTERFACE_NOT_ALLOWED, para todos.
+ * D-F37: só contam as interfaces CONTRATADAS — nenhuma contratada = 403 INTERFACE_NOT_ALLOWED (A-PV1: menos para o super).
  */
 export function requirePrivilege(interfaceKey: string | string[], privilegeId: number) {
   const keys = Array.isArray(interfaceKey) ? interfaceKey : [interfaceKey]
@@ -76,20 +114,8 @@ export function requirePrivilege(interfaceKey: string | string[], privilegeId: n
       return
     }
     try {
-      let contracted = false
-      let ok = false
-      for (const key of keys) {
-        if (!(await institutionHasInterface(inst.schemaName, inst.institutionId, key))) continue   // D-F37: licença para todos
-        contracted = true
-        if (isAdmin(inst) || await userHasPrivilege(inst.schemaName, inst.userId, key, privilegeId)) { ok = true; break }
-      }
-      if (!contracted) { interfaceNotAllowed(res, keys); return }
-      if (!ok) {
-        res.status(403).json({
-          error: 'Privilégio necessário para esta ação', code: 'PRIVILEGE_REQUIRED', fields: [],
-        })
-        return
-      }
+      const verdict = await privilegeVerdict(inst, keys, privilegeId)   // D-F37 + A-PV1: licença (o super passa) antes do privilégio
+      if (verdict !== 'ok') { denyPrivilege(res, verdict, keys); return }
       next()
     } catch (err) {
       next(err)
@@ -102,7 +128,7 @@ export function requirePrivilege(interfaceKey: string | string[], privilegeId: n
  * é RESOLVIDA por requisição (ex.: `POST /billing/cancel` → pedido com ciclo
  * de OS exige CANCELAR em `service-orders`, senão em `orders`). Quem tem o
  * privilégio só numa interface não cancela documento da outra.
- * D-F37: a interface do ramo tem de estar CONTRATADA — para todos (o admin passa só o privilégio).
+ * D-F37: a interface do ramo tem de estar CONTRATADA (o admin passa só o privilégio; A-PV1: o super passa as duas).
  */
 export function requirePrivilegeFor(
   privilegeId: number, resolveInterface: (req: Request) => Promise<string>
@@ -115,15 +141,8 @@ export function requirePrivilegeFor(
     }
     try {
       const key = await resolveInterface(req)
-      if (!(await institutionHasInterface(inst.schemaName, inst.institutionId, key))) { interfaceNotAllowed(res, [key]); return }
-      if (isAdmin(inst)) { next(); return }
-      const ok = await userHasPrivilege(inst.schemaName, inst.userId, key, privilegeId)
-      if (!ok) {
-        res.status(403).json({
-          error: 'Privilégio necessário para esta ação', code: 'PRIVILEGE_REQUIRED', fields: [],
-        })
-        return
-      }
+      const verdict = await privilegeVerdict(inst, [key], privilegeId)
+      if (verdict !== 'ok') { denyPrivilege(res, verdict, [key]); return }
       next()
     } catch (err) {
       next(err)
@@ -136,7 +155,7 @@ export function requirePrivilegeFor(
  * XML carrega dados do tomador) passam pelo ACESSO À INTERFACE do ramo, sem privilégio novo: a interface
  * resolvida por requisição tem que estar no contrato da institution (`tb_institution_has_interface`
  * ativa). Não existe acesso por usuário a interface no modelo — o contrato é da institution.
- * D-F37 (F2a A2): o admin NÃO passa a licença (antes passava) — vale para todos.
+ * D-F37 (F2a A2): o admin NÃO passa a licença (antes passava). A-PV1: o super passa (`licensedFor`).
  */
 export async function institutionHasInterface(schemaName: string, institutionId: number, interfaceKey: string): Promise<boolean> {
   const s = assertSchema(schemaName)
@@ -159,7 +178,7 @@ export function requireInterfaceFor(resolveInterface: (req: Request) => Promise<
     }
     try {
       const key = await resolveInterface(req)
-      if (!(await institutionHasInterface(inst.schemaName, inst.institutionId, key))) { interfaceNotAllowed(res, [key]); return }
+      if (!(await licensedFor(inst, key))) { interfaceNotAllowed(res, [key]); return }   // A-PV1: o super passa a licença
       next()
     } catch (err) {
       next(err)

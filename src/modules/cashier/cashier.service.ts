@@ -9,6 +9,7 @@ import {
   CashierRow, CashierBalance, WithdrawResult, CloseCashierResult,
 } from './cashier.interface'
 import { WithdrawDto, CloseCashierDto } from './cashier.dto'
+import { listBankAccountLookup, BankAccountLookupRow } from '@shared/bank-account'
 
 export interface CashierScope {
   schemaName: string
@@ -75,4 +76,9 @@ export async function close(
   )
 
   return { cashierId, hrEnd, items: closingItems, transfer: transferResult }
+}
+
+/** D-PV2: contas para a retirada/transferência pela peça `@shared/bank-account`. */
+export async function fetchBankAccountLookup(filter: string, scope: CashierScope): Promise<BankAccountLookupRow[]> {
+  return listBankAccountLookup(scope.schemaName, scope.institutionId, filter)
 }
