@@ -10,7 +10,9 @@
  *        - cancelamento de NFS-e pedido sem resposta (K vigente) → viraria N "não consta"
  *        - DPS reservado sem resposta do fisco → viraria tentativa abandonada
  *        - boleto apresentado sem resposta do banco → viraria "envio interrompido"
- *        - chave de ativação/recuperação emitida há pouco → expiraria na hora
+ *        - chave de ativação/recuperação emitida há pouco → expiraria na hora (LEGADO `tb_user.activation_key`: desde a Q-PV38 o
+ *          código vive em `setes_central.tb_user_password_reset`, que nasceu em UTC — sem transição de fuso, fora desta conferência;
+ *          o sql/67 limpa a activation_key, então esta contagem só acusa resto da forma antiga)
  *        Deploy só com tudo ZERADO (ou com o operador ciente de cada item).
  * F2a (D-F110, §22.5 item 14): depois da virada as tabelas fiscais do ERP são ORIGEM CONGELADA — a leitura aqui é histórica e
  *        continua válida (o ATO da virada recusa virar com tentativa viva na origem, então elas ficam em 0); o que está em voo no
