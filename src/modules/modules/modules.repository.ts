@@ -8,8 +8,9 @@ import { ModuleBodyDto } from './modules.dto'
 /**
  * Repositório dos MÓDULOS DE MENU (tb_module + tb_module_has_interface no
  * schema do cliente — prompt_modulo_menus.md D1–D4). Escopo = schema do JWT
- * (o Super atua no cliente trocando de institution). GROUP_CONCAT devolve
- * os vínculos NA ORDEM do menu (position — D3).
+ * (o Super atua no cliente trocando de institution); os módulos são do GRUPO
+ * (D-GE5), só a ELEGIBILIDADE lê o contrato — também do grupo (D-GE22), lido
+ * pela chave (D-GE4). GROUP_CONCAT devolve os vínculos NA ORDEM do menu (position — D3).
  */
 
 /** Campos da linha + vínculos agregados NA ORDEM (D3). */
@@ -80,11 +81,13 @@ export async function getModule(schemaName: string, id: number): Promise<ModuleR
 
 /**
  * Interfaces ELEGÍVEIS ao vínculo: contratadas (tb_institution_has_interface
- * viva), tela vendável kind='T' e FORA do grupo Super (regra do menu de
- * não-super — core.repository NOT_SUPER_GROUP).
+ * viva pela chave do contrato — D-GE4; o contrato é do grupo, D-GE22: na onda 1
+ * a chave passa a ser a do grupo, hoje = a institution do JWT), tela vendável kind='T' e
+ * FORA do grupo Super (regra do menu de não-super — core.repository
+ * NOT_SUPER_GROUP).
  */
 export async function listEligibleInterfaces(
-  schemaName: string
+  schemaName: string, institutionId: number
 ): Promise<ModuleInterfaceLookupRow[]> {
   const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
@@ -93,17 +96,18 @@ export async function listEligibleInterfaces(
        FROM \`${s}\`.tb_institution_has_interface ihi
       INNER JOIN setes_central.tb_interface i
          ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-      WHERE ihi.active = 'S' AND ihi.deleted = 'N'
+      WHERE ihi.tb_institution_id = ? AND ihi.active = 'S' AND ihi.deleted = 'N'
         AND i.kind = 'T'
         AND (i.group_default IS NULL OR i.group_default <> 'Super')
-      ORDER BY i.group_default, i.description`
+      ORDER BY i.group_default, i.description`,
+    [institutionId]
   )
   return rows
 }
 
 /** Ids do input que NÃO são elegíveis (base do 422 do service). */
 export async function findIneligibleInterfaceIds(
-  schemaName: string, interfaceIds: number[]
+  schemaName: string, institutionId: number, interfaceIds: number[]
 ): Promise<number[]> {
   if (interfaceIds.length === 0) return []
   const s = assertSchema(schemaName)
@@ -112,11 +116,11 @@ export async function findIneligibleInterfaceIds(
        FROM \`${s}\`.tb_institution_has_interface ihi
       INNER JOIN setes_central.tb_interface i
          ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-      WHERE ihi.active = 'S' AND ihi.deleted = 'N'
+      WHERE ihi.tb_institution_id = ? AND ihi.active = 'S' AND ihi.deleted = 'N'
         AND i.kind = 'T'
         AND (i.group_default IS NULL OR i.group_default <> 'Super')
         AND i.id IN (?)`,
-    [interfaceIds]
+    [institutionId, interfaceIds]
   )
   const eligible = new Set(rows.map((r: any) => r.id))
   return interfaceIds.filter(id => !eligible.has(id))

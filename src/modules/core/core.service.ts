@@ -14,8 +14,8 @@ import { isSuper } from '@shared/auth/roles'
 import { SessionContext, getSessionContext } from '@shared/session-context'
 import { HttpError } from '@shared/errors/http-error'
 
-export async function getInstitutionData(schemaName: string) {
-  const institution = await getInstitutionInfo(schemaName)
+export async function getInstitutionData(payload: InstitutionPayload) {
+  const institution = await getInstitutionInfo(payload.institutionId, payload.schemaName)
   if (!institution) throw new Error('Institution não encontrada')
   return institution
 }
@@ -35,7 +35,7 @@ export interface SessionInfo {
 export async function getSessionInfo(payload: InstitutionPayload): Promise<SessionInfo> {
   const [userName, institution, context] = await Promise.all([
     getUserName(payload.userId),
-    getInstitutionInfo(payload.schemaName),
+    getInstitutionInfo(payload.institutionId, payload.schemaName),
     getSessionContext(payload),
   ])
   return {
@@ -150,7 +150,7 @@ export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[
   //           (o módulo Super não existe no schema do cliente);
   // REGULAR → só interfaces com privilégio VISUALIZAR (opção 1 do workflow).
   const adminUser = !superUser && payload.role === 'admin'
-  const { schemaName, userId } = payload
+  const { schemaName, institutionId, userId } = payload
 
   const [inModules, ungrouped, privileges] = superUser
     ? await Promise.all([
@@ -159,8 +159,9 @@ export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[
         getAllInterfacePrivileges(),
       ])
     : await Promise.all([
-        getModuleInterfaces(schemaName, userId, adminUser),
-        getUngroupedInterfaces(schemaName, userId, adminUser),
+        // módulos do GRUPO (D-GE5) × contrato lido pela chave (D-GE4 — do grupo pela D-GE22; hoje = a institution)
+        getModuleInterfaces(schemaName, institutionId, userId, adminUser),
+        getUngroupedInterfaces(schemaName, institutionId, userId, adminUser),
         // Admin opera tudo: botões liberados com o catálogo de privilégios
         // de cada interface; regular recebe só o que lhe foi concedido.
         adminUser ? getAllInterfacePrivileges() : getUserPrivileges(schemaName, userId),

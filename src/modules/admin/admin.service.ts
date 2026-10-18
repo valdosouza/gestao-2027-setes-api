@@ -21,7 +21,7 @@ async function resolveTargetSchema(institutionId: number): Promise<string> {
 
 export async function getInstitutionInterfaces(institutionId: number): Promise<InterfaceGrantRow[]> {
   const schemaName = await resolveTargetSchema(institutionId)
-  return listInterfacesWithGrant(schemaName)
+  return listInterfacesWithGrant(schemaName, institutionId)
 }
 
 export async function updateInstitutionInterfaces(

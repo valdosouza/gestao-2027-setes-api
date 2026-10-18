@@ -599,7 +599,7 @@ describe('webhook público — bordas', () => {
     ;(channel.findBankChannelByInboundToken as jest.Mock).mockResolvedValue(null)
     const res = await request(app).post(`/hooks/bank-channel/1/${TOKEN}`).send([{ codigoSolicitacao: 'uuid-0001-aaaa' }])
     expect(res.status).toBe(404)
-    expect(channel.findBankChannelByInboundToken).toHaveBeenCalledWith('setes_setes', TOKEN)
+    expect(channel.findBankChannelByInboundToken).toHaveBeenCalledWith('setes_setes', 1, TOKEN)
   })
   it('10.000 itens: extractRequestCodes tem TETO (LOW corrigido — MAX_WEBHOOK_CODES) e a rota responde 200 antes de processar', async () => {
     const body = Array.from({ length: 10_000 }, (_, i) => ({ codigoSolicitacao: `uuid-${String(i).padStart(8, '0')}` }))

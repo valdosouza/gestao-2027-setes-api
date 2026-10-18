@@ -32,8 +32,13 @@ export interface InterfaceGrantRow {
   granted:      boolean
 }
 
-// Catálogo completo (central) + situação do contrato no schema do cliente alvo
-export async function listInterfacesWithGrant(schemaName: string): Promise<InterfaceGrantRow[]> {
+// Catálogo completo (central) + situação do contrato da institution ALVO, lido pela chave dela — nunca o
+// schema inteiro: sem o filtro, com 2 institutions no schema a tela mostraria o contratado da outra (e o
+// salvar o copiaria) e a tela das duas sairia duplicada (D-GE4). O contrato é do GRUPO (D-GE22): na onda 1
+// a chave passa a ser a do grupo (`groupInstitutionId`); hoje as duas coincidem (1 institution por schema).
+export async function listInterfacesWithGrant(
+  schemaName: string, institutionId: number
+): Promise<InterfaceGrantRow[]> {
   const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
     `SELECT i.id,
@@ -43,9 +48,11 @@ export async function listInterfacesWithGrant(schemaName: string): Promise<Inter
             CASE WHEN ihi.tb_interface_id IS NOT NULL THEN TRUE ELSE FALSE END AS granted
      FROM setes_central.tb_interface i
      LEFT JOIN \`${s}\`.tb_institution_has_interface ihi
-       ON (ihi.tb_interface_id = i.id AND ihi.active = 'S' AND ihi.deleted = 'N')
+       ON (ihi.tb_interface_id = i.id AND ihi.tb_institution_id = ?
+           AND ihi.active = 'S' AND ihi.deleted = 'N')
      WHERE i.deleted = 'N'
-     ORDER BY i.group_default, i.description`
+     ORDER BY i.group_default, i.description`,
+    [institutionId]
   )
   return rows.map(r => ({ ...r, granted: Boolean(r.granted) }))
 }

@@ -1,7 +1,7 @@
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
-import { ModuleRow, ModuleInterfaceLookupRow } from './modules.interface'
+import { ModuleRow, ModuleInterfaceLookupRow, MenuScope } from './modules.interface'
 import { ModuleBodyDto } from './modules.dto'
 import {
   listModules, getModule, listEligibleInterfaces, findIneligibleInterfaceIds,
@@ -13,7 +13,8 @@ import {
  * Regra do módulo de Menus (prompt_modulo_menus.md D1–D4): escopo SEMPRE
  * pelo schema do JWT (adminGuard no gateway — o Super atua num cliente
  * trocando de institution). Interface vinculada precisa ser ELEGÍVEL
- * (contratada + kind 'T' + fora do Super) → 422 com os ids inválidos.
+ * (contratada — contrato do grupo, D-GE22, lido pela chave, D-GE4 — + kind 'T' + fora do Super)
+ * → 422 com os ids inválidos.
  */
 
 export { MODULE_SEARCH_CRITERIA }
@@ -36,9 +37,9 @@ export async function fetchModule(schemaName: string, id: number): Promise<Modul
 }
 
 export async function fetchEligibleInterfaces(
-  schemaName: string
+  scope: MenuScope
 ): Promise<ModuleInterfaceLookupRow[]> {
-  return listEligibleInterfaces(schemaName)
+  return listEligibleInterfaces(scope.schemaName, scope.institutionId)
 }
 
 /**
@@ -49,11 +50,11 @@ export async function fetchEligibleInterfaces(
  * devolve a tela ao módulo certo sozinha. O 422 fica só para id NOVO no array.
  */
 async function assertEligible(
-  schemaName: string, interfaceIds: number[], alreadyLinked: number[] = []
+  scope: MenuScope, interfaceIds: number[], alreadyLinked: number[] = []
 ): Promise<void> {
   const grandfathered = new Set(alreadyLinked)
   const candidates = interfaceIds.filter(id => !grandfathered.has(id))
-  const invalid = await findIneligibleInterfaceIds(schemaName, candidates)
+  const invalid = await findIneligibleInterfaceIds(scope.schemaName, scope.institutionId, candidates)
   if (invalid.length > 0) {
     throw new HttpError(422,
       `Interface(s) não elegível(is) ao menu (não contratada, não-tela ou do grupo Super): ${invalid.join(', ')}`,
@@ -63,19 +64,19 @@ async function assertEligible(
 }
 
 export async function createModule(
-  schemaName: string, input: ModuleBodyDto
+  scope: MenuScope, input: ModuleBodyDto
 ): Promise<{ id: number }> {
-  await assertEligible(schemaName, input.interfaceIds)
-  const id = await insertModuleCascade(schemaName, input)
+  await assertEligible(scope, input.interfaceIds)
+  const id = await insertModuleCascade(scope.schemaName, input)
   return { id }
 }
 
 export async function editModule(
-  schemaName: string, id: number, input: ModuleBodyDto
+  scope: MenuScope, id: number, input: ModuleBodyDto
 ): Promise<void> {
-  const current = await fetchModule(schemaName, id)
-  await assertEligible(schemaName, input.interfaceIds, current.interfaceIds)
-  await updateModuleCascade(schemaName, id, input)
+  const current = await fetchModule(scope.schemaName, id)
+  await assertEligible(scope, input.interfaceIds, current.interfaceIds)
+  await updateModuleCascade(scope.schemaName, id, input)
 }
 
 /**
