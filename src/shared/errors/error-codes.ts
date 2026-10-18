@@ -151,6 +151,10 @@ export const ErrorCodes = {
   PRIVILEGE_REQUIRED:  'PRIVILEGE_REQUIRED',
   // F2a A2 (D-F37/D-F13): licença do ramo para todos e 401 do token do produto
   INTERFACE_NOT_ALLOWED: 'INTERFACE_NOT_ALLOWED',
+  // D-PV15 (= Q-PV17 (a)): as telas do Super recusam a mudança que recriaria o C1 (catálogo × o que o código consome)
+  CATALOG_PAIR_IN_USE: 'CATALOG_PAIR_IN_USE',
+  INTERFACE_KEY_IN_USE: 'INTERFACE_KEY_IN_USE',
+  PRIVILEGE_IN_USE:    'PRIVILEGE_IN_USE',
   UNAUTHORIZED:        'UNAUTHORIZED',
   RESOURCE_BUSY:       'RESOURCE_BUSY',
   TITLE_EXCEEDS_BALANCE: 'TITLE_EXCEEDS_BALANCE',
@@ -329,6 +333,9 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   INVOICE_CANCEL_BLOCKED: 'Cancelamento bloqueado — resolva as pendências listadas antes (baixa, boleto liquidado, cheque que avançou, devolução)',
   PRIVILEGE_REQUIRED:  'Privilégio necessário para esta ação',
   INTERFACE_NOT_ALLOWED: 'Interface não contratada para este estabelecimento (licença vale para todos, admin incluído)',
+  CATALOG_PAIR_IN_USE: 'Par interface × privilégio usado pelo código não pode sair do catálogo (o botão sumiria até do admin)',
+  INTERFACE_KEY_IN_USE: 'Chave de interface usada pelo código (ou repetida) — não pode mudar nem ser excluída',
+  PRIVILEGE_IN_USE:    'Privilégio consumido pelo nome — não pode ser renomeado, excluído nem ter o nome repetido em outra linha',
   UNAUTHORIZED:        'Não autenticado — token ausente, inválido ou expirado',
   RESOURCE_BUSY:       'Registro em uso por outra operação — tente novamente',
   TITLE_EXCEEDS_BALANCE: 'Valor da baixa passa do saldo em aberto do título',

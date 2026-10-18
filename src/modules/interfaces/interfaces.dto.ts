@@ -9,7 +9,8 @@ import { z } from 'zod'
  */
 export const interfaceDto = z.object({
   groupDefault: z.string().max(100).nullable().optional(),
-  i18nKey:      z.string().max(100).nullable().optional(),
+  // D-PV15 (gate adversarial do delta): a forma canônica das rotas do app e do boot — minúsculas, dígitos e hífen
+  i18nKey:      z.string().max(100).regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Chave: minúsculas, dígitos e hífen (ex.: bank-slips)').nullable().optional(),
   description:  z.string().min(1).max(100),
   kind:         z.enum(['T', 'R']).nullable().optional(),
   position:     z.string().max(10).nullable().optional(),
