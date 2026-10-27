@@ -15,6 +15,9 @@
  *   7. Rodada MISTA (para cada conta: tentativa errada + código novo + tentativa) em paralelo → zero erro, zero deadlock.
  *   5. Troca de senha pelo "admin" (UPDATE direto da senha) no meio → o código aberto não casa mais (HMAC amarrado à senha).
  *   6. Vencido (created_at recuado) → recusado; usado → recusado na 2ª vez.
+ *   8. D-RS4 (2026-10-21): o AVISO AO DONO — 25 erradas em paralelo esgotam o código e tomam a vaga da hora UMA só vez (1 linha,
+ *      kind E); 10 pedidos calados em paralelo (teto) na mesma hora NÃO tomam outra; passada a hora (created_at recuado), o teto
+ *      calado toma a vaga de novo (seq 2, kind C); o CHECK recusa kind fora de E/C; zero deadlock (tabela irmã sob a MESMA trava).
  *
  * Uso: npx tsx --require tsconfig-paths/register scripts/prove-password-reset-lock.ts
  */
@@ -29,7 +32,7 @@ import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { detectLockWaitSupport } from '@shared/db/counters'
 import { splitStatements } from '../src/migrations/runner'
 import {
-  createPasswordResetCode, consumePasswordResetCode,
+  createPasswordResetCode, consumePasswordResetCode, issuePasswordResetCode, judgePasswordResetCode,
   PASSWORD_RESET_MAX_FAILED_ATTEMPTS, PASSWORD_RESET_MAX_PER_HOUR,
 } from '@modules/auth/auth.service'
 import { AuthUser } from '@modules/auth/auth.repository'
@@ -225,6 +228,43 @@ async function main() {
     ok('7 rodada mista em paralelo (errada + código novo + tentativa, 32 contas): zero erro, zero deadlock, teto respeitado',
       failed7.length === 0 && deadlocksSeen === deadlocksBefore7 && Number(r7m[0].maxFailed) <= PASSWORD_RESET_MAX_FAILED_ATTEMPTS,
       `operações=${ops.length}; vereditos ${tally(settled7.map(e => e.status === 'fulfilled' ? e.value : 'erro'))}; falhas ${failed7.join(',') || 'nenhuma'}; deadlocks vistos = ${deadlocksSeen - deadlocksBefore7}`)
+
+    // ---- 8. D-RS4: o aviso ao dono — vaga da hora tomada UMA vez sob rajada; teto calado não repete na hora; outra hora, outra vaga --
+    const deadlocksBefore8 = deadlocksSeen
+    const u8 = 900043
+    await inTx('emit8', c => issuePasswordResetCode(c, user(u8, `HASH${u8}`), '313131'))
+    const who8 = await asUser(u8)
+    const wrong8 = await Promise.all(Array.from({ length: 25 }, (_, i) =>
+      inTx('wrong8', c => judgePasswordResetCode(c, who8, String(700000 + i), 'NOVA'))))
+    const claimedE = wrong8.filter(o => o.notice === 'E').length
+    const [n8a] = await pool.query<any[]>(`SELECT seq, kind FROM \`${PROBE}\`.tb_user_password_reset_notice WHERE tb_user_id = ? ORDER BY seq`, [u8])
+    // o teto: já há 1 código na hora; mais 2 emitem, os seguintes são calados — a hora JÁ tem aviso (E) → nenhuma vaga nova
+    const capped8 = await Promise.all(Array.from({ length: 10 }, (_, i) =>
+      inTx('cap8', c => issuePasswordResetCode(c, who8, String(800000 + i)))))
+    const [n8b] = await pool.query<any[]>(`SELECT COUNT(*) AS n FROM \`${PROBE}\`.tb_user_password_reset_notice WHERE tb_user_id = ?`, [u8])
+    // passada a hora: o aviso anterior envelhece, os códigos continuam na janela do teto (recuo só do aviso) → o calado toma a vaga C
+    await pool.query(`UPDATE \`${PROBE}\`.tb_user_password_reset_notice SET created_at = NOW() - INTERVAL 61 MINUTE WHERE tb_user_id = ?`, [u8])
+    const late8 = await Promise.all(Array.from({ length: 5 }, (_, i) =>
+      inTx('cap8b', c => issuePasswordResetCode(c, who8, String(810000 + i)))))
+    const [n8c] = await pool.query<any[]>(`SELECT seq, kind FROM \`${PROBE}\`.tb_user_password_reset_notice WHERE tb_user_id = ? ORDER BY seq`, [u8])
+    // o CHECK do kind é BINÁRIO (gate adversarial: sob unicode_ci 'e' passava): 'X' e 'e' recusados
+    const badKinds: string[] = []
+    for (const k of ['X', 'e']) {
+      try {
+        await pool.query(`INSERT INTO \`${PROBE}\`.tb_user_password_reset_notice (tb_user_id, seq, kind, created_at) VALUES (?, 99, ?, NOW())`, [u8, k])
+        await pool.query(`DELETE FROM \`${PROBE}\`.tb_user_password_reset_notice WHERE tb_user_id = ? AND seq = 99`, [u8])   // descartável — §3.1 não se aplica
+        badKinds.push(`${k}:ACEITO`)
+      } catch (e: any) { badKinds.push(`${k}:recusado:${e.errno}`) }
+    }
+    const badKind = badKinds.every(b => /recusado/.test(b)) ? `recusado (${badKinds.join(' ')})` : `ACEITO (${badKinds.join(' ')})`
+    ok('8 aviso ao dono (D-RS4): 25 erradas paralelas = 1 vaga (E); 10 calados na mesma hora = nenhuma; hora seguinte = vaga C (seq 2); CHECK do kind; zero deadlock',
+      claimedE === 1 && n8a.length === 1 && n8a[0].kind === 'E'
+        && capped8.every(o => o.verdict === 'capped' || o.verdict === 'issued') && capped8.every(o => !o.notice) && Number(n8b[0].n) === 1
+        && late8.every(o => o.verdict === 'capped') && late8.filter(o => o.notice === 'C').length === 1 && n8c.length === 2 && n8c[1].kind === 'C'
+        && badKind.startsWith('recusado') && deadlocksSeen === deadlocksBefore8,
+      `vagas E tomadas na rajada=${claimedE}; linhas depois=${n8a.map(r => `${r.seq}${r.kind}`).join(',')}; calados na hora: ${tally(capped8.map(o => o.verdict))} `
+      + `vagas=${capped8.filter(o => o.notice).length} (linhas ${n8b[0].n}); hora seguinte: ${tally(late8.map(o => o.verdict))} vagas C=${late8.filter(o => o.notice === 'C').length} `
+      + `(linhas ${n8c.map(r => `${r.seq}${r.kind}`).join(',')}); kind X ${badKind || 'ACEITO'}; deadlocks vistos = ${deadlocksSeen - deadlocksBefore8}`)
   } finally {
     await admin.query(`DROP SCHEMA IF EXISTS \`${PROBE}\``).catch(e => console.error('limpeza falhou', e))
     fs.rmSync(keyFile, { force: true })

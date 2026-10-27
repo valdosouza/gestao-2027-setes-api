@@ -21,6 +21,7 @@ jest.mock('../shared/db/connection', () => ({
 jest.mock('../shared/logger/logger', () => ({ __esModule: true, default: { error: jest.fn(), warn: jest.fn(), info: jest.fn() } }))
 jest.mock('../shared/mailer/mailer', () => ({
   __esModule: true, sendMail: jest.fn().mockResolvedValue(undefined), isMailerConfigured: jest.fn(() => true),
+  isProduction: jest.fn(() => false),     // D-RS5: a peça do mailer ganhou o predicado de produção (o service o consome)
 }))
 // recordCrash grava no banco (alarme neutro); mocka para o dublê não ter de modelar a tb_crashlytics.
 jest.mock('../shared/errors/crash.repository', () => ({
@@ -55,6 +56,7 @@ let users: Map<number, User>
 let resets: ResetRow[]
 let passwordWrites: Array<{ userId: number; hash: string }>
 let activationKeyWrites: number[]                  // ids cujo activation_key foi limpo no updatePassword
+let notices: Array<{ userId: number; seq: number; kind: string; createdAt: number }>   // D-RS4: aviso ao dono (tabela irmã)
 let deadlockOnce: string | null                   // injeta UM ER_LOCK_DEADLOCK no 1º statement que casar (depois limpa)
 const locks = new Map<number, { owner: object; waiters: Array<() => void> }>()
 // ganchos do re-ataque do DELTA (piso de resposta)
@@ -104,6 +106,28 @@ async function run(sql: string, params: any[], owner: object | null, undo: Array
   if (deadlockOnce && sql.includes(deadlockOnce)) {
     deadlockOnce = null
     throw Object.assign(new Error('Deadlock found when trying to get lock'), { code: 'ER_LOCK_DEADLOCK', errno: 1213 })
+  }
+  // D-RS4 (2026-10-21): a tabela IRMÃ do aviso ao dono — casada ANTES dos handlers do pedido (cujas regexes não param na fronteira
+  // do nome e engoliriam `…_notice`). Vaga da hora lida/tomada só dentro da transação (sob a trava do usuário).
+  if (/tb_user_password_reset_notice/.test(sql)) {
+    if (/AS recent/.test(sql)) {
+      const [userId, windowMinutes] = params
+      if (!owner) throw new Error('coalescência do aviso fora da transação')
+      return [[{ recent: notices.some(n => n.userId === Number(userId) && n.createdAt > now - Number(windowMinutes) * 60_000) ? 1 : 0 }]]
+    }
+    if (/nextSeq/.test(sql)) {
+      const seqs = notices.filter(n => n.userId === Number(params[0])).map(n => n.seq)
+      return [[{ nextSeq: (seqs.length ? Math.max(...seqs) : 0) + 1 }]]
+    }
+    if (/^\s*INSERT INTO/.test(sql)) {
+      const [userId, seq, kind] = params
+      if (!owner) throw new Error('vaga do aviso fora da transação')
+      const row = { userId: Number(userId), seq: Number(seq), kind: String(kind), createdAt: now }
+      notices.push(row)
+      undo.push(() => { notices = notices.filter(n => n !== row) })
+      return [{ affectedRows: 1 }]
+    }
+    return [[]]
   }
   if (/FROM setes_central\.tb_user u\s/.test(sql) && /tb_mailing_group_id = 2/.test(sql)) {
     const [email] = params
@@ -190,7 +214,8 @@ function newConn() {
 }
 
 const lastCode = (to: string): string => {
-  const call = [...mail.mock.calls].reverse().find(c => c[0].to === to)
+  // D-RS4: o aviso ao dono sai pelo mesmo `sendMail` (outro assunto, sem código) — aqui só os e-mails do CÓDIGO contam
+  const call = [...mail.mock.calls].reverse().find(c => c[0].to === to && /código de recuperação é (\d{6})/.test(c[0].text ?? ''))
   if (!call) throw new Error(`nenhum e-mail para ${to}`)
   return /código de recuperação é (\d{6})/.exec(call[0].text)![1]
 }
@@ -207,6 +232,7 @@ beforeEach(() => {
   now = Date.parse('2026-10-18T12:00:00Z')
   seedUsers()
   resets = []
+  notices = []
   passwordWrites = []
   activationKeyWrites = []
   deadlockOnce = null

@@ -18,11 +18,17 @@
  *        continua válida (o ATO da virada recusa virar com tentativa viva na origem, então elas ficam em 0); o que está em voo no
  *        fisco passa a morar no fiscal_api, que nasceu em UTC (sem transição de fuso).
  *
+ * D-RS5 (2026-10-20, recuperação de senha): confere o SMTP do ambiente — configuração completa (`mailerConfigProblems`) e a
+ *        conexão REAL (EHLO/STARTTLS/AUTH, sem enviar nada — `verifyMailerConnection`). Em PRODUÇÃO (NODE_ENV=production)
+ *        SMTP ausente/incompleto/sem resposta é item BLOQUEANTE (o boot do setes-api também recusaria subir); fora de
+ *        produção é só aviso (modo dev: o código vai ao log). A senha nunca é impressa.
+ *
  *   npx tsx --require tsconfig-paths/register scripts/pre-deploy-tz-check.ts
  * Sai com código 1 se houver algo em voo.
  */
 import 'dotenv/config'
 import pool from '../src/shared/db/connection'
+import { isMailerConfigured, isProduction, mailerConfigProblems, verifyMailerConnection, nodeEnvWarning } from '../src/shared/mailer/mailer'
 
 // janela sobre updated_at gravado em hora local × NOW() UTC: ~1h efetiva no dado antigo — cobre o TTL de 15 min das chaves
 const RECENT_MINUTES = 240
@@ -88,11 +94,39 @@ async function main(): Promise<void> {
   inFlight += recentKeys
   console.log(`— Q-TZ5: chaves de ativação/recuperação emitidas nas últimas ${RECENT_MINUTES / 60}h: ${recentKeys}`)
 
+  // D-RS5: o SMTP do ambiente — em produção, OBRIGATÓRIO e respondendo; fora dela, aviso.
+  inFlight += await checkMailer()
+
   console.log(inFlight
     ? `\n✗ ${inFlight} item(ns) em voo — resolva (ou aceite ciente) antes do deploy.`
     : '\n✓ nada em voo — deploy da regra de tempo liberado.')
   await pool.end()
   process.exit(inFlight ? 1 : 0)
+}
+
+/**
+ * D-RS5: devolve 1 quando o SMTP bloqueia o deploy (só em produção: ausente, incompleto ou sem resposta), 0 nos demais casos.
+ * Nunca imprime a senha; não envia e-mail (só abre a conexão e autentica).
+ */
+async function checkMailer(): Promise<number> {
+  const prod = isProduction()
+  console.log(`— D-RS5: SMTP do ambiente (${prod ? 'NODE_ENV=production — OBRIGATÓRIO' : 'fora de produção — aviso'})`)
+  const envWarning = nodeEnvWarning()
+  if (envWarning) console.log(`  ⚠️ ${envWarning}`)
+  if (!isMailerConfigured()) {
+    console.log(prod
+      ? '  ✗ SMTP ausente: o boot do setes-api RECUSARIA subir — preencha SMTP_* no .env vivo (valores do Valdo) antes do deploy.'
+      : '  ⚠️ SMTP ausente — modo dev: o código de recuperação vai ao LOG.')
+    return prod ? 1 : 0
+  }
+  const problems = mailerConfigProblems()
+  if (problems.length) {
+    console.log(`  ${prod ? '✗' : '⚠️'} configuração incompleta: ${problems.join('; ')}`)
+    return prod ? 1 : 0
+  }
+  const verified = await verifyMailerConnection()
+  console.log(verified.ok ? `  ✓ conexão e autenticação ok — ${verified.detail}` : `  ${prod ? '✗' : '⚠️'} SMTP sem resposta: ${verified.detail}`)
+  return verified.ok || !prod ? 0 : 1
 }
 
 main().catch(async err => { console.error(err); await pool.end(); process.exit(2) })

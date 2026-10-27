@@ -188,6 +188,43 @@ export async function markPasswordResetUsed(conn: PoolConnection, userId: number
   )
 }
 
+// ---------------------------------------------------------------------
+// D-RS4 (Valdo, 2026-10-20; parecer do guardião 2026-10-21): o AVISO AO DONO DA CONTA — setes_central.tb_user_password_reset_notice,
+// IRMÃ do pedido sob tb_user (fato da CONTA, não do código: no caso do teto não existe código). Mesmo protocolo de trava (acima): a
+// vaga da hora é lida e tomada (EXISTS + INSERT pela PK, seq MAX+1 por usuário) sob a trava da linha do usuário, na MESMA transação
+// que detectou o gatilho; o e-mail sai depois do COMMIT. `kind` = a CAUSA, forense: 'E' código esgotado por erradas | 'C' teto.
+// ---------------------------------------------------------------------
+
+export type PasswordResetNoticeKind = 'E' | 'C'
+
+/** Janela da coalescência: no máximo UM aviso por conta por hora (D-RS4). */
+export const PASSWORD_RESET_NOTICE_WINDOW_MINUTES = 60
+
+/** Já existe aviso ao dono desta conta dentro da janela? Leitura consistente depois da trava do usuário (protocolo acima). */
+export async function hasRecentPasswordResetNotice(conn: PoolConnection, userId: number, windowMinutes = PASSWORD_RESET_NOTICE_WINDOW_MINUTES): Promise<boolean> {
+  const [rows] = await conn.query<any[]>(
+    `SELECT EXISTS(SELECT 1 FROM setes_central.tb_user_password_reset_notice
+                    WHERE tb_user_id = ? AND created_at > NOW() - INTERVAL ? MINUTE) AS recent`,
+    [userId, windowMinutes]
+  )
+  return Number(rows[0]?.recent ?? 0) === 1
+}
+
+/** Toma a vaga da hora: INSERT pela PK com seq = MAX+1 POR USUÁRIO (sob a trava do usuário — nunca MAX+1 global). */
+export async function insertPasswordResetNotice(conn: PoolConnection, userId: number, kind: PasswordResetNoticeKind): Promise<number> {
+  const [rows] = await conn.query<any[]>(
+    `SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM setes_central.tb_user_password_reset_notice WHERE tb_user_id = ?`,
+    [userId]
+  )
+  const seq = Number(rows[0]?.nextSeq ?? 1)
+  await conn.query(
+    `INSERT INTO setes_central.tb_user_password_reset_notice (tb_user_id, seq, kind, created_at, updated_at, deleted)
+     VALUES (?, ?, ?, NOW(), NOW(), 'N')`,
+    [userId, seq, kind]
+  )
+  return seq
+}
+
 // Senha já chega com hash aplicado pelo service (decisão 2 — nunca na query). O código vive no pedido de troca de senha (marcado
 // como usado na MESMA transação); `activation_key` segue LIMPA aqui como antes — nenhum leitor a aceita mais, e um código antigo
 // em texto puro não pode voltar a valer num rollback para o código anterior (que lia activation_key + updated_at).
@@ -203,17 +240,20 @@ export async function updatePassword(conn: PoolConnection, userId: number, passw
  * senha viraria 500 na 1ª chamada. Aplique sql/67 em setes_central ANTES do deploy.
  */
 export async function assertPasswordResetSchema(): Promise<string> {
-  try {
-    await pool.query(
-      `SELECT tb_user_id, seq, code_hmac, failed_attempts, used_at, created_at, deleted
-         FROM setes_central.tb_user_password_reset LIMIT 0`
-    )
-  } catch (err: any) {
-    if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE' || err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR') {
-      throw new Error('setes_central.tb_user_password_reset ausente ou incompleta — aplique o script sql/67_user_password_reset_ddl.sql '
-        + 'em setes_central ANTES do setes-api (Q-PV38)')
+  // as DUAS tabelas do script 67: o pedido (Q-PV38) e o aviso ao dono (D-RS4)
+  for (const [table, columns, ref] of [
+    ['tb_user_password_reset', 'tb_user_id, seq, code_hmac, failed_attempts, used_at, created_at, deleted', 'Q-PV38'],
+    ['tb_user_password_reset_notice', 'tb_user_id, seq, kind, created_at, deleted', 'D-RS4'],
+  ] as const) {
+    try {
+      await pool.query(`SELECT ${columns} FROM setes_central.${table} LIMIT 0`)
+    } catch (err: any) {
+      if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE' || err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR') {
+        throw new Error(`setes_central.${table} ausente ou incompleta — aplique o script sql/67_user_password_reset_ddl.sql `
+          + `em setes_central ANTES do setes-api (${ref})`)
+      }
+      throw err
     }
-    throw err
   }
   return 'ok'
 }

@@ -14,6 +14,7 @@ jest.mock('../shared/db/connection', () => ({
 jest.mock('../shared/logger/logger', () => ({ __esModule: true, default: { error: jest.fn(), warn: jest.fn(), info: jest.fn() } }))
 jest.mock('../shared/mailer/mailer', () => ({
   __esModule: true, sendMail: jest.fn().mockResolvedValue(undefined), isMailerConfigured: jest.fn(() => true),
+  isProduction: jest.fn(() => false),
 }))
 jest.mock('../shared/errors/crash.repository', () => ({
   __esModule: true, newCrashRef: jest.fn(() => 'REFQPV38'), recordCrash: jest.fn().mockResolvedValue(undefined),
@@ -21,13 +22,13 @@ jest.mock('../shared/errors/crash.repository', () => ({
 
 import pool from '../shared/db/connection'
 import logger from '../shared/logger/logger'
-import { sendMail } from '../shared/mailer/mailer'
+import { sendMail, isMailerConfigured, isProduction } from '../shared/mailer/mailer'
 import { recordCrash } from '../shared/errors/crash.repository'
 import { setLockWaitSupported } from '../shared/db/counters'
 import app from '../app'
 import {
   changePassword, recoveryPassword, waitForPendingPasswordResets, assertPasswordResetReady, INVALID_PASSWORD_RESET_CODE,
-  setPasswordResetResponseFloor, PASSWORD_RESET_RESPONSE_FLOOR_MS,
+  setPasswordResetResponseFloor, PASSWORD_RESET_RESPONSE_FLOOR_MS, OWNER_NOTICE_SUBJECT,
   PASSWORD_RESET_MAX_FAILED_ATTEMPTS, PASSWORD_RESET_MAX_PER_HOUR, PASSWORD_RESET_MAX_PER_DAY, PASSWORD_RESET_TTL_MINUTES,
 } from '../modules/auth/auth.service'
 import { CHANGE_PER_EMAIL, RECOVERY_PER_EMAIL } from '../modules/auth/auth.routes'
@@ -40,10 +41,13 @@ const mail = sendMail as jest.Mock
 // ---- o mundo do dublê ---------------------------------------------------------------------------------------------------
 interface User { id: number; password: string | null; active: string; deleted: string; email: string }
 interface ResetRow { userId: number; seq: number; codeHmac: string; failed: number; usedAt: number | null; createdAt: number; deleted: string }
+/** D-RS4: a linha do aviso ao dono (tb_user_password_reset_notice) */
+interface NoticeRow { userId: number; seq: number; kind: string; createdAt: number }
 
 let now: number                          // relógio do BANCO (NOW()) em ms
 let users: Map<number, User>
 let resets: ResetRow[]
+let notices: NoticeRow[]
 let passwordWrites: Array<{ userId: number; hash: string }>
 /** Injeta um erro no próximo statement que casar (falha do banco depois de achar a conta). */
 let failNext: { match: string; err: any } | null
@@ -62,6 +66,8 @@ function seedUsers(): void {
   for (const email of [
     'valdo@setes.com.br', 'a1@x.com', 'a2@x.com', 'a3@x.com', 'a4@x.com', 'a5@x.com', 'a6@x.com', 'a7@x.com', 'a8@x.com',
     'a9@x.com', 'a10@x.com', 'a11@x.com', 'a12@x.com', 'a13@x.com', 'a14@x.com', 'a15@x.com', 'a16@x.com', 'fulano@gmail.com',
+    // reservados aos testes da D-RS4/D-RS5 (o limite por e-mail em memória é do PROCESSO — e-mails já gastos acima dariam 429)
+    'n1@x.com', 'n2@x.com', 'n3@x.com', 'n4@x.com', 'n5@x.com', 'n6@x.com', 'n7@x.com', 'n8@x.com', 'n9@x.com',
   ]) {
     users.set(id, { id, password: `HASH${id}`, active: 'S', deleted: 'N', email })
     id++
@@ -93,6 +99,8 @@ async function run(sql: string, params: any[], owner: object | null, undo: Array
     failNext = null
     throw err
   }
+  const notice = runNotice(sql, params, owner, undo)
+  if (notice !== undefined) return notice
   if (/FROM setes_central\.tb_user_password_reset LIMIT 0/.test(sql)) return [[]]
   if (/FROM setes_central\.tb_user u\s/.test(sql) && /tb_mailing_group_id = 2/.test(sql)) {
     const [email] = params
@@ -162,6 +170,34 @@ async function run(sql: string, params: any[], owner: object | null, undo: Array
   return [[]]
 }
 
+/** D-RS4 — o aviso ao dono (tabela irmã): vaga da hora, MAX+1 por usuário, INSERT pela PK. Casado ANTES dos handlers do pedido
+ *  (as regexes deles não param na fronteira do nome: `tb_user_password_reset` casa com `…_notice`). */
+function runNotice(sql: string, params: any[], owner: object | null, undo: Array<() => void>): any | undefined {
+  if (!/tb_user_password_reset_notice/.test(sql)) return undefined
+  if (/AS recent/.test(sql)) {
+    const [userId, windowMinutes] = params
+    if (!owner) throw new Error('coalescência do aviso lida fora da transação (fora da trava do usuário)')
+    const recent = notices.some(n => n.userId === Number(userId) && n.createdAt > now - Number(windowMinutes) * 60_000)
+    return [[{ recent: recent ? 1 : 0 }]]
+  }
+  if (/nextSeq/.test(sql)) {
+    const [userId] = params
+    const seqs = notices.filter(n => n.userId === Number(userId)).map(n => n.seq)
+    return [[{ nextSeq: (seqs.length ? Math.max(...seqs) : 0) + 1 }]]
+  }
+  if (/^\s*INSERT INTO/.test(sql)) {
+    const [userId, seq, kind] = params
+    if (!owner) throw new Error('vaga do aviso tomada fora da transação')
+    if (!['E', 'C'].includes(kind)) throw new Error('CHECK ck_user_password_reset_notice_kind')
+    const row: NoticeRow = { userId: Number(userId), seq: Number(seq), kind, createdAt: now }
+    if (notices.some(n => n.userId === row.userId && n.seq === row.seq)) throw Object.assign(new Error('dup'), { code: 'ER_DUP_ENTRY' })
+    notices.push(row)
+    undo.push(() => { notices = notices.filter(n => n !== row) })
+    return [{ affectedRows: 1 }]
+  }
+  return [[]]                                                           // LIMIT 0 do boot e o que mais vier
+}
+
 function newConn() {
   const owner = {}
   let undo: Array<() => void> = []
@@ -174,9 +210,12 @@ function newConn() {
   }
 }
 
+/** E-mails do CÓDIGO (o aviso ao dono — D-RS4 — vai pelo mesmo `sendMail`, com outro assunto; os testes separam os dois). */
+const codeMails = () => mail.mock.calls.filter(c => /código de recuperação é (\d{6})/.test(c[0].text ?? ''))
+const noticeMails = () => mail.mock.calls.filter(c => c[0].subject === OWNER_NOTICE_SUBJECT)
 const lastCode = (to: string): string => {
-  const call = [...mail.mock.calls].reverse().find(c => c[0].to === to)
-  if (!call) throw new Error(`nenhum e-mail para ${to}`)
+  const call = [...codeMails()].reverse().find(c => c[0].to === to)
+  if (!call) throw new Error(`nenhum e-mail de código para ${to}`)
   return /código de recuperação é (\d{6})/.exec(call[0].text)![1]
 }
 const wrongOf = (code: string, i = 0) => String((Number(code) - 100000 + 1 + i) % 900000 + 100000)
@@ -189,6 +228,7 @@ beforeEach(() => {
   now = Date.parse('2026-10-18T12:00:00Z')
   seedUsers()
   resets = []
+  notices = []
   passwordWrites = []
   failNext = null
   seenSql = []
@@ -436,7 +476,7 @@ describe('Q-PV38 — limite por e-mail (durável por conta + memória por e-mail
     for (let i = 0; i < PASSWORD_RESET_MAX_PER_HOUR; i++) await issue(email)
     await issue(email)
     expect(resets).toHaveLength(PASSWORD_RESET_MAX_PER_HOUR)
-    expect(mail).toHaveBeenCalledTimes(PASSWORD_RESET_MAX_PER_HOUR)
+    expect(codeMails()).toHaveLength(PASSWORD_RESET_MAX_PER_HOUR)   // (o 4º pedido, calado, manda o AVISO ao dono — D-RS4, outro assunto)
     // a resposta HTTP do pedido calado é a genérica
     const capped = await recover(email)
     expect([capped.status, capped.body]).toEqual([200, generic])
@@ -502,4 +542,192 @@ describe('Q-PV38 — o 400 do payload não vira oráculo do código', () => {
     expect(resets[0].failed).toBe(0)
     expect((await change('ninguem@x.com', '000000', 'abc')).status).toBe(400)
   })
+})
+
+// =====================================================================================================================
+// D-RS4 (Valdo, 2026-10-20; executada 2026-10-21 — §13.10): AVISO AO DONO DA CONTA quando um código esgota por erradas ou o teto de
+// emissões é atingido. Fato da CONTA em tabela irmã (tb_user_password_reset_notice, sql/67): a vaga da hora é tomada sob a trava do
+// usuário na MESMA transação do gatilho; e-mail NEUTRO ao e-mail GRAVADO, depois do COMMIT, em segundo plano; no máximo 1 por hora;
+// não entra no teto de códigos; a resposta ao cliente não muda.
+// =====================================================================================================================
+describe('D-RS4 — aviso ao dono da conta (código esgotado ou teto atingido), no máximo 1 por hora', () => {
+  const N = PASSWORD_RESET_MAX_FAILED_ATTEMPTS
+
+  it(`a ${N}ª errada ESGOTA o código e manda UM aviso ao e-mail gravado; as erradas seguintes não mandam outro; a resposta é a MESMA 401`, async () => {
+    const email = 'n1@x.com'
+    await recover(email)
+    const code = lastCode(email)
+    for (let i = 0; i < N - 1; i++) await change(email, wrongOf(code, i))
+    await waitForPendingPasswordResets()
+    expect(noticeMails()).toHaveLength(0)                               // ainda não esgotou: nada
+    expect(notices).toEqual([])
+    const last = await change(email, wrongOf(code, N - 1))             // a N-ésima errada
+    await waitForPendingPasswordResets()
+    expect([last.status, last.body]).toEqual([401, { error: INVALID_PASSWORD_RESET_CODE }])
+    expect(notices).toEqual([expect.objectContaining({ userId: userByEmail(email).id, seq: 1, kind: 'E' })])
+    expect(noticeMails()).toHaveLength(1)
+    expect(noticeMails()[0][0].to).toBe(email)
+    for (let i = 0; i < 3; i++) expect((await change(email, wrongOf(code, i))).status).toBe(401)   // esgotado: não soma, não avisa
+    await waitForPendingPasswordResets()
+    expect(noticeMails()).toHaveLength(1)
+    expect(notices).toHaveLength(1)
+    expect(resets[0].failed).toBe(N)
+  })
+
+  it('teto de emissões atingido: o pedido calado toma a vaga e manda UM aviso; os calados seguintes na mesma hora não; o aviso não gera código nem entra no teto', async () => {
+    const email = 'n2@x.com'
+    for (let i = 0; i < PASSWORD_RESET_MAX_PER_HOUR; i++) await issue(email)
+    expect(noticeMails()).toHaveLength(0)
+    await issue(email)                                                  // 4º: calado → aviso C
+    expect(notices).toEqual([expect.objectContaining({ userId: userByEmail(email).id, seq: 1, kind: 'C' })])
+    expect(noticeMails()).toHaveLength(1)
+    await issue(email)
+    await issue(email)
+    expect(noticeMails()).toHaveLength(1)
+    expect(codeMails()).toHaveLength(PASSWORD_RESET_MAX_PER_HOUR)
+    expect(resets).toHaveLength(PASSWORD_RESET_MAX_PER_HOUR)           // o aviso não é emissão
+    expect(logger.warn).toHaveBeenCalledWith('Recuperação de senha: pedido calado', expect.objectContaining({ ownerNotice: 'C' }))
+  })
+
+  it('a coalescência de 1 h vale para as DUAS causas juntas: esgotar e bater o teto na mesma hora = 1 aviso; passada a hora, outro (seq 2)', async () => {
+    const email = 'n3@x.com'
+    await recover(email)
+    const code = lastCode(email)
+    for (let i = 0; i < N; i++) await change(email, wrongOf(code, i))
+    await waitForPendingPasswordResets()
+    expect(notices.map(n => n.kind)).toEqual(['E'])
+    await issue(email); await issue(email)                              // 3 códigos na hora
+    await issue(email)                                                  // 4º: calado — a hora já tem aviso
+    expect(notices.map(n => n.kind)).toEqual(['E'])
+    expect(noticeMails()).toHaveLength(1)
+    now += 3600_000 + 1                                                 // passou a hora
+    await issue(email)                                                  // volta a emitir (lastHour = 0)
+    const fresh = lastCode(email)
+    for (let i = 0; i < N; i++) await change(email, wrongOf(fresh, i))
+    await waitForPendingPasswordResets()
+    expect(notices.map(n => [n.seq, n.kind])).toEqual([[1, 'E'], [2, 'E']])
+    expect(noticeMails()).toHaveLength(2)
+  })
+
+  it('neutralidade: e-mail inexistente "esgotando" e conta inexistente batendo no "teto" respondem IGUAL e não geram aviso nem linha', async () => {
+    const existing = 'n4@x.com', missing = 'ninguem-rs4@x.com'
+    await recover(existing)
+    const code = lastCode(existing)
+    const outcomes: Array<[number, unknown]> = []
+    for (let i = 0; i < N + 1; i++) {
+      const a = await change(existing, wrongOf(code, i))
+      const b = await change(missing, wrongOf(code, i))
+      outcomes.push([a.status, a.body], [b.status, b.body])
+    }
+    for (let i = 0; i < PASSWORD_RESET_MAX_PER_HOUR + 2; i++) await recover(missing)
+    await waitForPendingPasswordResets()
+    expect(new Set(outcomes.map(o => JSON.stringify(o))).size).toBe(1)   // uma só resposta para todos
+    expect(notices.map(n => n.userId)).toEqual([userByEmail(existing).id])
+    expect(noticeMails().map(c => c[0].to)).toEqual([existing])
+  })
+
+  it('a vaga é tomada e COMMITADA na transação da tentativa; o e-mail do aviso sai em segundo plano e não segura a 401', async () => {
+    const email = 'n5@x.com'
+    await recover(email)
+    const code = lastCode(email)
+    for (let i = 0; i < N - 1; i++) await change(email, wrongOf(code, i))
+    let release: () => void = () => undefined
+    mail.mockImplementationOnce(() => new Promise<void>(r => { release = r }))   // SMTP do aviso "pendurado"
+    const conns: any[] = []
+    getConn.mockImplementation(async () => { const c = newConn(); conns.push(c); return c })
+    try {
+      const r = await change(email, wrongOf(code, N - 1))
+      expect(r.status).toBe(401)                                        // respondeu com o e-mail ainda preso
+      expect(notices).toHaveLength(1)
+      expect(conns[0].commit).toHaveBeenCalled()
+      for (let i = 0; i < 20 && noticeMails().length === 0; i++) await new Promise(res => setImmediate(res))
+      expect(noticeMails()).toHaveLength(1)
+    } finally {
+      release()                                                         // nunca deixa um job pendurado para os testes seguintes
+      await waitForPendingPasswordResets()
+    }
+  })
+
+  it('rajada PARALELA de erradas: a vaga é tomada UMA vez (seq 1) e sai UM e-mail (a leitura da vaga é sob a trava do usuário)', async () => {
+    const email = 'n6@x.com'
+    await issue(email)
+    const code = lastCode(email)
+    await Promise.allSettled(Array.from({ length: 25 }, (_, i) => changePassword(email, wrongOf(code, i), 'nova-senha')))
+    await waitForPendingPasswordResets()
+    expect(notices).toEqual([expect.objectContaining({ seq: 1, kind: 'E' })])
+    expect(noticeMails()).toHaveLength(1)
+    // a leitura da vaga nunca sai pelo pool (fora da trava): o dublê lança se vier sem transação — e nenhum teste deste arquivo lançou
+    expect(seenSql.filter(s => /tb_user_password_reset_notice/.test(s) && /AS recent/.test(s)).length).toBeGreaterThan(0)
+  })
+
+  it('falha do SMTP no aviso: 401 igual, sem alarme na crashlytics (log de erro), a vaga da hora fica tomada (limite conhecido)', async () => {
+    const email = 'n7@x.com'
+    await recover(email)
+    const code = lastCode(email)
+    mail.mockImplementation(async (m: any) => { if (m.subject === OWNER_NOTICE_SUBJECT) throw new Error('SMTP down') })
+    try {
+      for (let i = 0; i < N; i++) expect((await change(email, wrongOf(code, i))).status).toBe(401)
+      await waitForPendingPasswordResets()
+      expect(recordCrash).not.toHaveBeenCalled()
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('aviso ao dono'), expect.objectContaining({ kind: 'E' }))
+      expect(notices).toHaveLength(1)
+      const logged = JSON.stringify((logger.error as jest.Mock).mock.calls)
+      expect(logged).not.toContain(code)                                 // o log do aviso não leva o código
+    } finally {
+      mail.mockImplementation(async () => undefined)
+    }
+  })
+
+  it('o texto do aviso é NEUTRO (sem código, contagem, causa ou link de ação) e vai ao e-mail GRAVADO mesmo com pedido por variante', async () => {
+    await recover('fulano@gmaíl.com')
+    const code = lastCode('fulano@gmail.com')
+    for (let i = 0; i < N; i++) await change('FULANO@Gmail.com ', wrongOf(code, i))
+    await waitForPendingPasswordResets()
+    const n = noticeMails()[0][0]
+    expect(n.to).toBe('fulano@gmail.com')
+    expect(n.subject).toBe(OWNER_NOTICE_SUBJECT)
+    expect(n.text).not.toMatch(/\d{6}/)
+    expect(n.text).not.toMatch(/esgot|teto|tentativas erradas|\b5\b|cinco/i)
+    expect(n.html).not.toMatch(/href=/)
+    expect(n.text).toMatch(/Se não foi você, ignore/)
+    expect(n.text).toMatch(/login com a sua senha segue/)
+  })
+
+  it('boot: sem a tabela do aviso a mensagem manda aplicar o sql/67 (as duas tabelas são conferidas)', async () => {
+    q.mockImplementation(async (sql: string) => {
+      if (/tb_user_password_reset_notice LIMIT 0/.test(sql)) throw Object.assign(new Error("Table doesn't exist"), { code: 'ER_NO_SUCH_TABLE', errno: 1146 })
+      return [[]]
+    })
+    await expect(assertPasswordResetReady()).rejects.toThrow(/tb_user_password_reset_notice[\s\S]*sql\/67_user_password_reset_ddl\.sql[\s\S]*D-RS4/)
+  })
+})
+
+// =====================================================================================================================
+// D-RS5 (código): em dev sem SMTP o código vai ao LOG; em PRODUÇÃO nunca — o boot já recusou subir sem SMTP (`assertMailerReady`,
+// provado em mailer-d-rs5.test.ts com a peça real); aqui o cinto do service com o ambiente degradado em execução.
+// =====================================================================================================================
+describe('D-RS5 — o código vai ao log só em dev', () => {
+  const prod = isProduction as jest.Mock
+  const configured = isMailerConfigured as jest.Mock
+  afterEach(() => { prod.mockImplementation(() => false); configured.mockImplementation(() => true) })
+
+  it('dev sem SMTP: o código de recuperação vai ao LOG (info), com o e-mail gravado', async () => {
+    configured.mockImplementation(() => false)
+    await recover('n8@x.com')
+    const logged = (logger.info as jest.Mock).mock.calls.find(c => /modo dev, SMTP ausente/.test(c[0]))
+    expect(logged).toBeDefined()
+    expect(logged![1]).toEqual(expect.objectContaining({ email: 'n8@x.com', code: expect.stringMatching(/^\d{6}$/) }))
+  })
+
+  it('PRODUÇÃO com SMTP ausente em execução: o código NUNCA vai ao log (nem o aviso em claro)', async () => {
+    configured.mockImplementation(() => false)
+    prod.mockImplementation(() => true)
+    await recover('n9@x.com')
+    const code = lastCodeFromDb()
+    expect(resets).toHaveLength(1)                                      // emitido (entregá-lo é do SMTP real)
+    expect(JSON.stringify((logger.info as jest.Mock).mock.calls)).not.toMatch(/"code"/)
+    expect(code).toBeUndefined()
+  })
+  /** em produção o código só existe no HMAC — nenhum caminho de leitura o devolve */
+  const lastCodeFromDb = () => undefined
 })
