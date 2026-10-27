@@ -2,9 +2,11 @@ import { Request, Response } from 'express'
 import { z } from 'zod'
 import logger from '@shared/logger/logger'
 import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { denyPrivilege } from '@shared/auth/require-privilege'
+import { reapplyEffectVerdict } from './bank-slips.reapply-policy'
 import { BankSlipScope } from './bank-slips.service'
 import {
-  registerSlip, refreshSlip, refreshAll, fetchSlipPdf, paySandbox, reapplyEffect,
+  registerSlip, refreshSlip, refreshAll, fetchSlipPdf, paySandbox, reapplyEffect, peekReapplyEvent,
 } from './bank-slips.registration.service'
 
 function scopeOf(req: Request): BankSlipScope {
@@ -65,6 +67,10 @@ export async function reapply(req: Request, res: Response): Promise<void> {
   const id = parseId(req, res); if (id === null) return
   const body = parseBody(reapplyDto, req, res); if (body === null) return
   try {
+    // D-PV27: o privilégio é o do EFEITO — lido da voz do evento ANTES de executar (a rota é aberta por nome na guarda)
+    const event = await peekReapplyEvent(id, body.attempt, body.event, scopeOf(req))
+    const policy = await reapplyEffectVerdict(req.institution!, event)
+    if (policy.verdict !== 'ok') { denyPrivilege(res, policy.verdict, policy.interfaces); return }
     const r = await reapplyEffect(id, body.attempt, body.event, scopeOf(req))
     logger.info('Efeito da voz do banco reaplicado', { institutionId: req.institution!.institutionId, ...r })
     res.status(201).json({ ok: true, data: r })

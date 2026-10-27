@@ -8,7 +8,7 @@ import router from '../gateway/router'
 import { listGatedRoutes, listGatedModules } from '../shared/auth/module-privilege-gate'
 import {
   PRIVILEGE_INSERIR as I, PRIVILEGE_ALTERAR as A, PRIVILEGE_EXCLUIR as E, PRIVILEGE_IMPRIMIR as P, PRIVILEGE_FATURAR as F,
-  PRIVILEGE_VISUALIZAR as V, PRIVILEGE_CANCELAR as C, PRIVILEGE_TRANSMITIR as T,
+  PRIVILEGE_VISUALIZAR as V, PRIVILEGE_CANCELAR as C, PRIVILEGE_TRANSMITIR as T, PRIVILEGE_CONFIGURAR as CF, PRIVILEGE_CONSULTAR as CS,
 } from '../shared/auth/privileges'
 
 void router                                                     // montar o gateway registra as guardas
@@ -67,7 +67,7 @@ describe('cerca do gateway: tudo que está MONTADO é guardado OU exceção nome
     const delegated = [...new Set(rows.filter(r => r.delegatedSuper).map(r => r.moduleKey))]
     expect(delegated).toEqual(['institution-interfaces'])
     expect(rows.filter(r => r.moduleKey === 'institution-interfaces').map(r => `${r.method} ${r.path} ${r.privilegeId}`).sort())
-      .toEqual(['GET / 6', 'GET /:id 6', 'PUT /:id 2'])
+      .toEqual(['GET / 6', 'GET /:id 6', 'PUT /:id/interfaces/:interfaceId 2'])      // D-PV34: uma marca por vez
   })
   it('exceção nomeada nunca é guardada por engano (as duas listas não se cruzam)', () => {
     expect(listGatedModules().filter(k => EXCEPTIONS.has(k))).toEqual([])
@@ -79,8 +79,7 @@ describe('atos de processo (D-PV7) e rotina mensal/excluir OS (D-PV8)', () => {
     ['settlements', 'POST', '/', I], ['settlements', 'POST', '/reversal', E], ['settlements', 'PUT', '/bills/:orderId/:parcel/charge', A],
     ['bank-slips', 'POST', '/', I], ['bank-slips', 'POST', '/:id/settle', A], ['bank-slips', 'POST', '/:id/cancel', C],
     ['bank-slips', 'POST', '/:id/reverse', C], ['bank-slips', 'POST', '/:id/register', T], ['bank-slips', 'GET', '/:id/pdf', P],
-    ['bank-slips', 'POST', '/refresh', T], ['bank-slips', 'POST', '/:id/refresh', T], ['bank-slips', 'POST', '/:id/pay-sandbox', T],
-    ['bank-slips', 'POST', '/:id/reapply', T],
+    ['bank-slips', 'POST', '/refresh', CS], ['bank-slips', 'POST', '/:id/refresh', CS], ['bank-slips', 'POST', '/:id/pay-sandbox', T],   // D-PV40
     ['checks', 'POST', '/:id/deposit', A], ['checks', 'POST', '/:id/discount', A], ['checks', 'POST', '/:id/return-refund', A],
     ['checks', 'POST', '/:id/return-good', A], ['checks', 'POST', '/:id/pay', A], ['checks', 'POST', '/:id/return', A],
     ['checks', 'POST', '/:id/reverse', C],
@@ -88,6 +87,11 @@ describe('atos de processo (D-PV7) e rotina mensal/excluir OS (D-PV8)', () => {
     ['service-orders', 'POST', '/monthly-run', F], ['service-orders', 'DELETE', '/:id', E],
     ['service-orders', 'POST', '/:id/invoice', F], ['service-orders', 'POST', '/batch-invoice', F],
     ['orders', 'DELETE', '/:id', E], ['order-returns', 'DELETE', '/:id', E],
+    // D-PV21: todo ato sobre o DOCUMENTO ABERTO é ALTERAR (itens e negociação); INSERIR = abrir; EXCLUIR = apagar o documento
+    ['orders', 'POST', '/:id/items', A], ['orders', 'PUT', '/:id/items/:itemId', A], ['orders', 'DELETE', '/:id/items/:itemId', A],
+    ['orders', 'PUT', '/:id/negotiation', A], ['orders', 'GET', '/:id/negotiation', V],
+    ['service-orders', 'POST', '/:id/items', A], ['service-orders', 'PUT', '/:id/items/:itemId', A], ['service-orders', 'DELETE', '/:id/items/:itemId', A],
+    ['order-returns', 'PUT', '/:id/items/:itemId', A], ['order-returns', 'DELETE', '/:id/items/:itemId', A],
   ] as const)('%s %s %s → privilégio %i da própria tela', (m, method, path, pid) => {
     expect(at(m, method, path)).toEqual([pid, m])
   })
@@ -109,21 +113,25 @@ describe('outra interface e exceções nomeadas', () => {
     expect(at('customers', 'PUT', '/:id/partnership')).toEqual([A, 'partnerships'])
     expect(at('customers', 'GET', '/collaborator-lookup')).toEqual([V, 'partnerships'])
   })
-  it('A-PV8: o painel de configs aceita o privilégio da "Configurações Gerais" (dinâmico no painel dela)', () => {
+  it('A-PV8 → D-PV25: o VISUALIZAR do painel (ou da "Configurações Gerais" no painel dela) só deixa NAVEGAR — o PUT do valor é V na rota e CONFIGURAR na interface ALVO no service', () => {
     expect(at('interface-configs', 'GET', '/')).toEqual([V, 'interface-configs|general-configs'])
     const panel = rows.filter(r => r.moduleKey === 'interface-configs' && ['/:id', '/:id/:name'].includes(r.path))
     expect(panel.map(r => [r.method, r.privilegeId, r.dynamic, r.interfaces.join('|')])).toEqual([
-      ['GET', V, true, 'interface-configs|general-configs'], ['PUT', A, true, 'interface-configs|general-configs'],
+      ['GET', V, true, 'interface-configs|general-configs'], ['PUT', V, true, 'interface-configs|general-configs'],
     ])
+    // o ALTERAR dos painéis perdeu o consumidor (C1 — sai do catálogo no seed 68)
+    expect(rows.filter(r => ['interface-configs', 'interface-fields'].includes(r.moduleKey) && r.privilegeId === A)).toEqual([])
   })
   it('D-PV2/A-PV6: as leituras de motor por chave e o override pessoal por chave são ABERTOS — e só elas', () => {
     const open = rows.filter(r => r.privilegeId === null).map(r => `${r.moduleKey} ${r.method} ${r.path}`).sort()
     expect(open).toEqual([
       'interface-configs GET /key/:moduleKey', 'interface-configs PUT /key/:moduleKey/:name', 'interface-fields GET /key/:moduleKey',
     ])
+    // D-PV27: o reaplicar pede VISUALIZAR na guarda (chegar ao boleto); o privilégio do EFEITO é da política do controller
+    expect(at('bank-slips', 'POST', '/:id/reapply')).toEqual([V, 'bank-slips'])
   })
-  it('D-PV6: salvar o campo configurável = ALTERAR do painel de campos', () => {
-    expect(at('interface-fields', 'PUT', '/:id/:fieldName')).toEqual([A, 'interface-fields'])
+  it('D-PV6 → D-PV25: salvar o campo configurável passa pela guarda com o VISUALIZAR do painel (navegar); o CONFIGURAR da interface ALVO é do service', () => {
+    expect(at('interface-fields', 'PUT', '/:id/:fieldName')).toEqual([V, 'interface-fields'])
   })
 })
 
@@ -132,15 +140,15 @@ describe('cerca: POST sem marcador = CRIAÇÃO (INSERIR pelo verbo) — rota nov
     const creation = rows.filter(r => r.method === 'POST' && r.privilegeId === I).map(r => `${r.moduleKey} ${r.path}`).sort()
     expect(creation).toEqual([
       'bank-accounts /', 'bank-charge-agreements /', 'bank-slips /', 'carriers /', 'cashier /open', 'categories /',
-      'collaborators /', 'contracts /', 'customers /', 'financial-plans /', 'order-returns /', 'orders /', 'orders /:id/items',
-      'payment-types /', 'price-lists /', 'providers /', 'salesmen /', 'service-orders /', 'service-orders /:id/items',
+      'collaborators /', 'contracts /', 'customers /', 'financial-plans /', 'order-returns /', 'orders /',
+      'payment-types /', 'price-lists /', 'providers /', 'salesmen /', 'service-orders /',
       'service-tax-rules /', 'services /', 'settlement-rules /', 'settlements /', 'tax-rules /',
     ])
   })
-  it('todo privilégio exigido existe no catálogo de privilégios (1..9) e toda rota guardada tem um (exceto as abertas)', () => {
+  it('todo privilégio exigido existe no catálogo de privilégios (1..12 — CONFIGURAR 11 e CONSULTAR 12 nascem no seed 68) e toda rota guardada tem um (exceto as abertas)', () => {
     for (const r of rows) {
       if (r.privilegeId === null) continue
-      expect([r.moduleKey, r.method, r.path, [I, A, E, P, F, V, C, 8, T].includes(r.privilegeId)])
+      expect([r.moduleKey, r.method, r.path, [I, A, E, P, F, V, C, 8, T, CF, CS].includes(r.privilegeId)])
         .toEqual([r.moduleKey, r.method, r.path, true])
     }
   })

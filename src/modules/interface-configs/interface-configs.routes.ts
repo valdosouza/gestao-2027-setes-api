@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { privilegeAct, openRoute } from '@shared/auth/module-privilege-gate'
-import { PRIVILEGE_VISUALIZAR, PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
+import { PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 import { CONFIGS_PANEL, CONFIGS_VITRINE } from './interface-configs.privilege-policy'
 import * as controller from './interface-configs.controller'
 
@@ -47,8 +47,9 @@ const router = Router()
  *       200:
  *         description: 'Envelope paginado { ok, data, page, pageSize, total } — data lista { id, description, i18nKey, acquired, moduleNames }'
  */
-// A-PV8: a vitrine e o painel de UMA interface também abrem pela "Configurações Gerais" (general-configs — sem módulo
-// próprio: o clique no menu abre este painel filtrado nela) — o privilégio dela vale para o painel filtrado nela.
+// A-PV8 (superada em parte pela D-PV25): a vitrine e o painel de UMA interface também abrem pela "Configurações Gerais"
+// (general-configs — sem módulo próprio: o clique no menu abre este painel filtrado nela) — o VISUALIZAR dela deixa NAVEGAR
+// até o painel dela; a gravação do valor 'I' é CONFIGURAR em general-configs (a interface alvo é ela mesma).
 router.get('/', privilegeAct(PRIVILEGE_VISUALIZAR, CONFIGS_VITRINE), controller.list)
 
 /**
@@ -136,7 +137,7 @@ router.put('/key/:moduleKey/:name', openRoute('override pessoal (page_size) grav
  *         schema: { type: integer }
  *     responses:
  *       200:
- *         description: '{ ok, data: [{ name, description, kind, options, defaultContent, scope, institutionContent, userContent, content }] }'
+ *         description: '{ ok, data: [{ name, description, kind, options, defaultContent, scope, institutionContent, userContent, content, canConfigure }] } — canConfigure (D-PV25): quem pede tem CONFIGURAR na interface alvo (decide o alvo I × U do salvar)'
  *       404:
  *         description: Interface não encontrada
  */
@@ -146,7 +147,7 @@ router.get('/:id', privilegeAct(PRIVILEGE_VISUALIZAR, CONFIGS_PANEL), controller
  * @swagger
  * /api/interface-configs/{id}/{name}:
  *   put:
- *     summary: Salva o valor de uma configuração (admin=institution; usuário=override scope U)
+ *     summary: Salva o valor de uma configuração (target I = quem tem CONFIGURAR na interface ALVO — D-PV25/D-PV26; U = override pessoal)
  *     tags: [InterfaceConfigs]
  *     parameters:
  *       - in: path
@@ -165,13 +166,15 @@ router.get('/:id', privilegeAct(PRIVILEGE_VISUALIZAR, CONFIGS_PANEL), controller
  *             required: [content, target]
  *             properties:
  *               content: { type: string, nullable: true, description: 'null volta a herdar (institution → default)' }
- *               target: { type: string, enum: [I, U], description: 'I = valor da institution (admin); U = override do usuário' }
+ *               target: { type: string, enum: [I, U], description: 'I = valor da institution (exige CONFIGURAR na interface alvo — admin passa, super escapa); U = override do usuário' }
  *     responses:
  *       200: { description: 'Valor salvo (só grava o que diverge do herdado)' }
  *       400: { description: 'Valor incompatível com o kind do catálogo' }
- *       403: { description: 'Interface não adquirida / sem permissão para o target' }
+ *       403: { description: 'Interface não adquirida (INTERFACE_NOT_ALLOWED) / sem CONFIGURAR na interface alvo (PRIVILEGE_REQUIRED) / config sem override por usuário' }
  *       404: { description: 'Interface ou configuração inexistente' }
  */
-router.put('/:id/:name', privilegeAct(PRIVILEGE_ALTERAR, CONFIGS_PANEL), controller.putValue)
+// D-PV25 (1): o VISUALIZAR do painel só deixa NAVEGAR — quem decide a gravação do valor 'I' é o service, pelo veredito CONFIGURAR
+// da interface ALVO (`@shared/auth/configure-privilege`). O ALTERAR do painel perdeu o consumidor (sai do catálogo — seed 68, C1).
+router.put('/:id/:name', privilegeAct(PRIVILEGE_VISUALIZAR, CONFIGS_PANEL), controller.putValue)
 
 export default router

@@ -8,6 +8,7 @@ import {
 } from './core.service'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
+import { adminGuard } from '@gateway/admin.guard'
 
 const router = Router()
 
@@ -147,10 +148,14 @@ const themeSchema = z.object({
  * @swagger
  * /api/core/theme:
  *   put:
- *     summary: Atualiza tema/logomarca da institution (o próprio cliente edita)
+ *     summary: Atualiza tema/logomarca da institution — só o perfil ADMIN (D-PV31; o super passa)
  *     tags: [Core]
+ *     responses:
+ *       403: { description: 'Acesso restrito a administradores' }
  */
-router.put('/theme', async (req: Request, res: Response) => {
+// D-PV31 (Valdo 2026-10-20, fecha a Q-PV26 = (a)): o tema é a MARCA da empresa — exige admin (LOW do gate adversarial da
+// D-PV2: qualquer regular trocava cores e logo). Se o tema ganhar tela própria, o verbo natural é CONFIGURAR em `establishment`.
+router.put('/theme', adminGuard, async (req: Request, res: Response) => {
   const parsed = themeSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Body inválido', details: parsed.error.flatten().fieldErrors })

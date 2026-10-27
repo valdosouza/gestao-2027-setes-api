@@ -28,10 +28,6 @@ jest.mock('../modules/interface-configs/interface-configs.service', () => {
     fetchResolvedConfigs: jest.fn(async () => []),
   }
 })
-jest.mock('../modules/entities/entities.service', () => {
-  const actual = jest.requireActual('../modules/entities/entities.service')
-  return { __esModule: true, ...actual, saveEntityTax: jest.fn(async () => undefined) }
-})
 jest.mock('../modules/state-tax-rates/state-tax-rates.service', () => {
   const actual = jest.requireActual('../modules/state-tax-rates/state-tax-rates.service')
   return { __esModule: true, ...actual, createMva: jest.fn(async () => ({ id: 1 })) }
@@ -57,18 +53,32 @@ jest.mock('../modules/users/users.repository', () => {
   }
 })
 
-// Re-prova (2026-10-18): a cadeia da entidade é substituída SÓ no saveEntityFiscalChain — simula o reuso pelo documento
-// (o CNPJ do próprio estabelecimento resolve para a entity da institution — analisado em shared/entity/entity-fiscal.ts:233-238)
-jest.mock('../shared/entity', () => {
-  const actual = jest.requireActual('../shared/entity')
-  return { __esModule: true, ...actual, saveEntityFiscalChain: jest.fn(async (_c: any, id: number | null) => ({ id: id ?? 2, reused: true })) }
+// Re-prova (2026-10-18, revista 2026-10-21 — D-PV32): a cadeia da entidade é dublada em entity-fiscal (o barrel re-exporta): o
+// salvar devolve o id pedido (ou 2 = a entity da INSTITUTION 2, simulando o reuso pelo documento); a leitura devolve a cadeia GRAVADA
+// do emitente para a conferência "mudou?" da D-PV32. O documento do próprio estabelecimento resolve pelo CNPJ (fiscal.repository).
+const OWN_CNPJ = '11222333000181', OTHER_CNPJ = '11444777000161'
+const OWN_CHAIN = {
+  id: 2, entity: { nameCompany: 'Emitente', nickTrade: 'Eu', aniversary: null }, personType: 'J', person: null,
+  company: { cnpj: OWN_CNPJ, ie: null, im: null, dtFoundation: null }, noDoc: null, addresses: [], phones: [], socialMedia: [],
+}
+jest.mock('../shared/entity/entity-fiscal', () => {
+  const actual = jest.requireActual('../shared/entity/entity-fiscal')
+  return {
+    __esModule: true, ...actual,
+    saveEntityFiscalChain: jest.fn(async (_c: any, id: number | null) => ({ id: id ?? 2, reused: true })),
+    getEntityFiscalFull: jest.fn(async () => OWN_CHAIN),
+  }
+})
+jest.mock('../shared/fiscal/fiscal.repository', () => {
+  const actual = jest.requireActual('../shared/fiscal/fiscal.repository')
+  return { __esModule: true, ...actual, findEntityIdByCnpj: jest.fn(async (cnpj: string) => (cnpj === OWN_CNPJ ? 2 : cnpj === OTHER_CNPJ ? 3 : null)) }
 })
 
 import pool from '../shared/db/connection'
 import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import { matchModuleRoute, listGatedModules } from '../shared/auth/module-privilege-gate'
 import * as configsService from '../modules/interface-configs/interface-configs.service'
-import * as entitiesService from '../modules/entities/entities.service'
+import * as entityFiscal from '../shared/entity/entity-fiscal'
 import * as stateTaxService from '../modules/state-tax-rates/state-tax-rates.service'
 import * as coreService from '../modules/core/core.service'
 import * as billingService from '../modules/billing/billing.service'
@@ -78,7 +88,7 @@ import app from '../app'
 const q = (pool as any).query as jest.Mock
 const CATALOG: Record<string, number> = {
   customers: 9, 'interface-configs': 10, 'general-configs': 11, partnerships: 18, settlements: 21,
-  'service-orders': 20, 'bank-slips': 38, billing: 40, 'payment-types': 16,
+  'service-orders': 20, orders: 29, 'bank-slips': 38, billing: 40, 'payment-types': 16,
   collaborators: 12, carriers: 23, providers: 24, salesmen: 22,
 }
 let contracted: Set<number>                                    // interfaces contratadas (qualquer institution do teste)
@@ -234,186 +244,166 @@ describe('rota aberta do override por chave × rota guardada do painel', () => {
 // ---------------------------------------------------------------------------------------------------------------------
 // 4. Escritas FORA da guarda (módulos excluídos por nome) — regular SEM privilégio algum
 // ---------------------------------------------------------------------------------------------------------------------
-describe('escritas fora da guarda por roteador', () => {
-  // CORRIGIDO na sessão (interino da Q-PV25: adminGuard nas rotas avulsas de tributação — sem consumidor no app)
-  it('[CORRIGIDO] PUT /api/entities/:id/tax NÃO grava a aba Tributação de qualquer entidade sem ALTERAR em Clientes/Fornecedores/Transportadoras', async () => {
-    const res = await request(app).put('/api/entities/5/tax').set('Authorization', USER).send({ byPassSt: 'S', consumer: 'N' })
-    // UMA asserção só, no EFEITO (o negócio executou?) — o it.failing passa pelo motivo certo, nunca por 400/404 do dublê
-    void res
-    expect((entitiesService.saveEntityTax as jest.Mock).mock.calls.length).toBe(0)
+describe('escritas fora da guarda por roteador — as sondas do gate (2026-10-18) viraram CERCAS (D-PV23/D-PV30/D-PV31, 2026-10-20)', () => {
+  it('[CORRIGIDO → CERCA D-PV23/D-PV30] GET/PUT /api/entities/:id/tax NÃO EXISTEM mais: 404 para regular, admin e super, em toda grafia; nada toca tb_entity_tax', async () => {
+    for (const who of [USER, ADMIN, SUPER, FAKE_SUPER]) {
+      for (const [m, url] of [['get', '/api/entities/2/tax'], ['put', '/api/entities/2/tax'], ['put', '/api/Entities/2/TAX'], ['put', '/api/entities/2/tax/'],
+        ['put', '/api/entities/%32/tax'], ['patch', '/api/entities/2/tax'], ['put', '/api/entities/5/tax']] as const) {
+        const res = await (request(app) as any)[m](url).set('Authorization', who).send({ simplesRegime: '2', byPassSt: 'S' })
+        expect([m, url, res.status]).toEqual([m, url, 404])
+      }
+    }
+    expect(businessSql.filter(sql => /tb_entity_tax/.test(sql))).toEqual([])
+    expect(q.mock.calls.filter(c => /ON DUPLICATE KEY UPDATE/.test(String(c[0])) && /tb_entity_tax/.test(String(c[1]?.[0])))).toEqual([])
   })
 
-  it('[CORRIGIDO — era HIGH] regular SEM privilégio NÃO reescreve a TRIBUTAÇÃO DO EMITENTE (tb_entity_tax id = institution) — D-PV5/D41 do Meu Estabelecimento', async () => {
-    // (a MESMA pessoa não entra no Meu Estabelecimento — adminGuard, D-PV5: provado no teste [RESISTIU] logo abaixo)
-    // pela porta avulsa da entidade grava o enquadramento do EMITENTE (entity = institution 2) com o service REAL:
-    ;(entitiesService.saveEntityTax as jest.Mock).mockImplementationOnce(
-      jest.requireActual('../modules/entities/entities.service').saveEntityTax)
-    business = (sql) => (/FROM setes_central\.tb_entity e/.test(sql) ? [[{ nameCompany: 'Emitente' }]] : [[]])
-    const res = await request(app).put('/api/entities/2/tax').set('Authorization', USER)
-      .send({ simplesRegime: '2', taxRegime: null })   // MEI no DPS de produção; apuração/pTotTribSN zerados (Q-N36/Q-N37 sem conferência)
-    void res
-    const upsert = q.mock.calls.filter(c => /ON DUPLICATE KEY UPDATE/.test(String(c[0])) && /tb_entity_tax$/.test(String(c[1]?.[0])))
-    // UMA asserção, no efeito: nenhum UPSERT da linha do emitente por quem não é admin
-    expect(upsert.map(c => [c[1][0], c[1][1], c[1][2], c[1][5]])).toEqual([])
-  })
-
-  it('[RESISTIU] (contraprova do HIGH acima) o mesmo regular NÃO entra no Meu Estabelecimento — a porta "oficial" é só do admin', async () => {
+  it('[RESISTIU] (contraprova) o regular NÃO entra no Meu Estabelecimento — a porta "oficial" do emitente é só do admin', async () => {
     expect((await request(app).put('/api/establishment').set('Authorization', USER).send({ simplesRegime: '2' })).status).toBe(403)
     expect((await request(app).get('/api/establishment').set('Authorization', USER)).status).toBe(403)
   })
 
-  it.failing('[ACHADO conhecido F7/Q-PV14] POST /api/state-tax-rates/mva grava MVA (dado fiscal) por qualquer autenticado', async () => {
-    const res = await request(app).post('/api/state-tax-rates/mva').set('Authorization', USER)
-      .send({ stateId: 41, ncm: '22030000', internalAliq: 19, mvaOriginal: 140 })
-    // UMA asserção só, no EFEITO (o negócio executou?) — o it.failing passa pelo motivo certo, nunca por 400/404 do dublê
-    void res
-    expect((stateTaxService.createMva as jest.Mock).mock.calls.length).toBe(0)
-  })
-
-  it.failing('[ACHADO LOW] PUT /api/core/theme troca a marca (cores/logo) da institution por qualquer regular', async () => {
-    const res = await request(app).put('/api/core/theme').set('Authorization', USER).send({ primaryColor: '#FF0000' })
-    // UMA asserção só, no EFEITO (o negócio executou?) — o it.failing passa pelo motivo certo, nunca por 400/404 do dublê
-    void res
-    expect((coreService.setInstitutionTheme as jest.Mock).mock.calls.length).toBe(0)
-  })
-
-  it.failing('[ACHADO LOW] POST /api/billing/validate (grava a regra por item origin A) sem privilégio algum do ramo', async () => {
-    const res = await request(app).post('/api/billing/validate').set('Authorization', USER).send({ orderId: 5 })
-    // UMA asserção só, no EFEITO (o negócio executou?) — o it.failing passa pelo motivo certo, nunca por 400/404 do dublê
-    void res
-    expect((billingService.validateOrder as jest.Mock).mock.calls.length).toBe(0)
-  })
-})
-
-// ---------------------------------------------------------------------------------------------------------------------
-// 4b. RE-PROVA da correção do HIGH (adminGuard em GET/PUT /api/entities/:id/tax — interino da Q-PV25)
-// ---------------------------------------------------------------------------------------------------------------------
-const taxUpserts = () => q.mock.calls
-  .filter(c => /ON DUPLICATE KEY UPDATE/.test(String(c[0])) && /tb_entity_tax$/.test(String(c[1]?.[0])))
-  .map(c => [c[1][0], c[1][1], c[1][2], c[1][5]])                // [tabela, entity, institution, simplesRegime]
-const realEntityTax = () => {
-  ;(entitiesService.saveEntityTax as jest.Mock).mockImplementationOnce(
-    jest.requireActual('../modules/entities/entities.service').saveEntityTax)
-  business = (sql) => (/FROM setes_central\.tb_entity e/.test(sql) ? [[{ nameCompany: 'Entidade' }]] : [[]])
-}
-const fakeConn = () => ({ query: q, beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn() })
-
-describe('re-prova da correção do HIGH', () => {
-  it('[RESISTIU] (1) admin de OUTRA institution: o escopo é o do JWT — grava só a relação (entity 2 × institution 3) no PRÓPRIO schema, nunca a linha do emitente 2', async () => {
-    realEntityTax()
-    await request(app).put('/api/entities/2/tax?institutionId=2&schemaName=setes_x').set('Authorization', ADMIN)
-      .send({ simplesRegime: '2', institutionId: 2, schemaName: 'setes_x' })
-    expect(taxUpserts()).toEqual([['setes_y.tb_entity_tax', 2, 3, '2']])
-  })
-
-  it('[RESISTIU] (1) GET/PUT /:id/tax recusam regular e super FALSO (403) em toda grafia da rota', async () => {
-    for (const [m, url] of [['get', '/api/entities/2/tax'], ['put', '/api/entities/2/tax'], ['put', '/api/Entities/2/TAX'],
-      ['put', '/api/entities/2/tax/'], ['put', '/api/entities/%32/tax'], ['patch', '/api/entities/2/tax']] as const) {
-      for (const who of [USER, FAKE_SUPER]) {
-        const res = await (request(app) as any)[m](url).set('Authorization', who).send({ simplesRegime: '2' })
-        expect([m, url, res.status === 403 || res.status === 404]).toEqual([m, url, true])
-      }
-    }
-    expect(entitiesService.saveEntityTax).not.toHaveBeenCalled()
-  })
-
-  it.failing('[ACHADO LOW — integridade] o ADMIN grava a tributação do PRÓPRIO emitente por /entities/:id/tax sem as regras do Meu Estabelecimento (Q-N36: ME/EPP sem apuração)', async () => {
-    realEntityTax()
-    await request(app).put('/api/entities/3/tax').set('Authorization', ADMIN).send({ simplesRegime: '3' })   // sem simplesAssessment/pTotTribSN
-    expect(taxUpserts()).toEqual([])
-  })
-
-  // CORRIGIDO na sessão (interino da Q-PV28: `assertNotOwnEstablishment` nos 4 papéis com cadeia — 409 ROLE_IS_OWN_ESTABLISHMENT)
-  it('[CORRIGIDO — era HIGH] (2) regular com INSERIR em Clientes NÃO cadastra o PRÓPRIO estabelecimento como cliente (a aba Tributação não alcança a linha do EMITENTE)', async () => {
-    grant(9, 'customers', 1)                                       // só INSERIR (nada de admin, nada de Meu Estabelecimento)
-    ;(pool as any).getConnection.mockResolvedValue(fakeConn())
-    await request(app).post('/api/customers').set('Authorization', USER).send({
-      entity: { nameCompany: 'Próprio estabelecimento', nickTrade: 'Eu' }, personType: 'N',   // a cadeia é dublê: reuso → id 2
-      tax: { simplesRegime: '2', taxRegime: null },
-    })
-    expect(taxUpserts()).toEqual([])                               // hoje: [['setes_x.tb_entity_tax', 2, 2, '2']]
-  })
-
-  it('[CORRIGIDO — era HIGH] (2) idem pelo PUT: regular com ALTERAR em Clientes NÃO edita o "cliente" = estabelecimento nem troca o regime do emitente', async () => {
-    grant(9, 'customers', 2)
-    ;(pool as any).getConnection.mockResolvedValue(fakeConn())
-    business = (sql) => (/SELECT 1 FROM \?\? WHERE id = \? AND tb_institution_id = \? AND deleted = 'N'/.test(sql) ? [[{ 1: 1 }]] : [[]])
-    await request(app).put('/api/customers/2').set('Authorization', USER).send({
-      entity: { nameCompany: 'Próprio estabelecimento', nickTrade: 'Eu' }, personType: 'N',
-      tax: { simplesRegime: '1' },                                   // "não optante" → DPS de produção recusado (422 não suportado)
-    })
-    expect(taxUpserts()).toEqual([])                               // hoje: [['setes_x.tb_entity_tax', 2, 2, '1']]
-  })
-
-  it('[RESISTIU] (3) GET /api/entities/by-document segue ABERTO ao regular sem privilégio (D-PV2: prefill de toda tela)', async () => {
+  it('[RESISTIU] GET /api/entities/by-document segue ABERTO ao regular sem privilégio (D-PV2: prefill de toda tela)', async () => {
     const res = await request(app).get('/api/entities/by-document?personType=J&doc=11222333000181').set('Authorization', USER)
     expect(denied(res)).toBe(false)
     expect(res.status).not.toBe(403)
   })
+
+  it('[CORRIGIDO — era MEDIUM F7/Q-PV14 → D-PV23] POST /api/state-tax-rates/mva: regular → 403 e createMva NÃO roda; o admin passa (adminGuard até a tela nascer)', async () => {
+    const body = { stateId: 41, ncm: '22030000', internalAliq: 19, mvaOriginal: 140 }
+    for (const who of [USER, FAKE_SUPER]) {
+      const res = await request(app).post('/api/state-tax-rates/mva').set('Authorization', who).send(body)
+      expect(res.status).toBe(403)
+    }
+    expect((stateTaxService.createMva as jest.Mock).mock.calls.length).toBe(0)
+    const ok = await request(app).post('/api/state-tax-rates/mva').set('Authorization', ADMIN).send(body)
+    expect(ok.status).toBe(201)
+    expect((stateTaxService.createMva as jest.Mock).mock.calls.length).toBe(1)
+  })
+
+  it('[CORRIGIDO — era LOW → D-PV31] PUT /api/core/theme: regular → 403 e a marca não muda; o admin grava', async () => {
+    const res = await request(app).put('/api/core/theme').set('Authorization', USER).send({ primaryColor: '#FF0000' })
+    expect(res.status).toBe(403)
+    expect((coreService.setInstitutionTheme as jest.Mock).mock.calls.length).toBe(0)
+    expect((await request(app).put('/api/core/theme').set('Authorization', ADMIN).send({ primaryColor: '#FF0000' })).status).toBe(200)
+    expect((coreService.setInstitutionTheme as jest.Mock).mock.calls.length).toBe(1)
+  })
+
+  it('[CORRIGIDO — era LOW → D-PV23] POST /api/billing/validate exige FATURAR pela interface do RAMO (o mesmo resolvedor do /invoice): sem → 403 e validateOrder NÃO roda; com FATURAR em orders → roda', async () => {
+    const res = await request(app).post('/api/billing/validate').set('Authorization', USER).send({ orderId: 5 })
+    expect([res.status, res.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
+    expect((billingService.validateOrder as jest.Mock).mock.calls.length).toBe(0)
+    grant(9, 'orders', 5)
+    const ok = await request(app).post('/api/billing/validate').set('Authorization', USER).send({ orderId: 5 })
+    expect(ok.status).toBe(200)
+    expect((billingService.validateOrder as jest.Mock).mock.calls.length).toBe(1)
+  })
 })
 
 // ---------------------------------------------------------------------------------------------------------------------
-// 4c. RE-PROVA da barreira interina da Q-PV28 (`assertNotOwnEstablishment` nos 4 papéis com cadeia fiscal)
+// 4c. D-PV32 (2026-10-20, fecha a Q-PV28 = (b)) — o PRÓPRIO estabelecimento como papel: PODE existir; a cadeia e a tributação dele
+//     ficam SOMENTE LEITURA pela API (409 OWN_ESTABLISHMENT_READ_ONLY se o corpo tenta mudar). Era a barreira interina (409 na criação).
 // ---------------------------------------------------------------------------------------------------------------------
-describe('re-prova da barreira do próprio estabelecimento (Q-PV28 interino)', () => {
+const taxUpserts = () => q.mock.calls
+  .filter(c => /ON DUPLICATE KEY UPDATE/.test(String(c[0])) && /tb_entity_tax$/.test(String(c[1]?.[0])))
+  .map(c => [c[1][0], c[1][1], c[1][2], c[1][5]])                // [tabela, entity, institution, simplesRegime]
+const fakeConn = () => ({ query: q, beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn() })
+
+describe('D-PV32 — o próprio estabelecimento como papel (cadeia/tributação somente leitura pela API)', () => {
   const ROLES = ['customers', 'providers', 'carriers', 'collaborators'] as const
+  const TABLE: Record<string, string> = { customers: 'tb_customer', providers: 'tb_provider', carriers: 'tb_carrier', collaborators: 'tb_collaborator' }
   const roleWrites = () => q.mock.calls.filter(c =>
     /^\s*(INSERT|UPDATE)\b/i.test(String(c[0])) && /\.tb_(customer|provider|carrier|collaborator)$/.test(String(c[1]?.[0])))
-  const body = { entity: { nameCompany: 'Próprio estabelecimento', nickTrade: 'Eu' }, personType: 'N', tax: { simplesRegime: '2' } }
+  const chainSaves = () => (entityFiscal.saveEntityFiscalChain as jest.Mock).mock.calls.length
+  /** o corpo que o app devolve do GET do emitente — igual ao gravado */
+  const sameBody = () => ({ entity: { nameCompany: 'Emitente', nickTrade: 'Eu' }, personType: 'J', company: { cnpj: OWN_CNPJ } })
+  const taxBody = () => ({ ...sameBody(), tax: { simplesRegime: '1' } })      // "não optante" → mudaria o DPS de produção
   let conn: ReturnType<typeof fakeConn>
   beforeEach(() => {
     for (const r of ROLES) grant(9, r, 1, 2)
     conn = fakeConn()
     ;(pool as any).getConnection.mockResolvedValue(conn)
+    // o papel 2 "existe" para o PUT; a tributação gravada do emitente não existe no dublê (→ toda chave não nula do corpo é mudança)
+    business = (sql) => (/SELECT 1 FROM \?\? WHERE id = \? AND tb_institution_id = \? AND deleted = 'N'/.test(sql) ? [[{ 1: 1 }]] : [[]])
   })
   const nothingWritten = () => {
     expect(taxUpserts()).toEqual([])
     expect(roleWrites()).toEqual([])
-    expect(conn.commit).not.toHaveBeenCalled()
+    expect(chainSaves()).toBe(0)
+    expect(conn.beginTransaction).not.toHaveBeenCalled()
   }
 
-  it.each(ROLES)('[RESISTIU] POST /api/%s com o documento do próprio estabelecimento → 409 sem gravar nada (rollback)', async (role) => {
-    const res = await request(app).post(`/api/${role}`).set('Authorization', USER).send(body)
-    expect([res.status, res.body.code]).toEqual([409, 'ROLE_IS_OWN_ESTABLISHMENT'])
-    expect(conn.rollback).toHaveBeenCalled()
+  it.each(['customers', 'providers', 'carriers'] as const)('[CORRIGIDO — era HIGH] POST /api/%s com o CNPJ do próprio estabelecimento e TRIBUTAÇÃO diferente → 409 OWN_ESTABLISHMENT_READ_ONLY ANTES da transação, nada gravado', async (role) => {
+    const res = await request(app).post(`/api/${role}`).set('Authorization', USER).send(taxBody())
+    expect([res.status, res.body.code]).toEqual([409, 'OWN_ESTABLISHMENT_READ_ONLY'])
+    expect(res.body.fields).toEqual([{ field: 'tax.simplesRegime', message: expect.any(String) }])
     nothingWritten()
   })
 
-  it.each(ROLES)('[RESISTIU] PUT /api/%s/<id do estabelecimento> em toda grafia numérica (2, 02, 2.0, +2, %%202, 0x2) → 409, nada gravado', async (role) => {
-    business = (sql) => (/SELECT 1 FROM \?\? WHERE id = \? AND tb_institution_id = \? AND deleted = 'N'/.test(sql) ? [[{ 1: 1 }]] : [[]])
+  it.each(ROLES)('[RESISTIU] POST /api/%s igual à cadeia gravada e sem tributação → 201: grava SÓ a linha do PAPEL (id = a institution), nunca a cadeia nem tb_entity_tax', async (role) => {
+    const res = await request(app).post(`/api/${role}`).set('Authorization', USER).send(sameBody())
+    expect([role, res.status]).toEqual([role, 201])
+    expect(chainSaves()).toBe(0)                                       // a cadeia do emitente não se escreve por aqui
+    expect(taxUpserts()).toEqual([])
+    const writes = roleWrites()
+    expect(writes.length).toBeGreaterThan(0)
+    for (const w of writes) {
+      expect(String(w[1][0])).toBe(`setes_x.${TABLE[role]}`)
+      expect(w[1]).toContain(2)                                        // o id do papel é o da institution
+    }
+    expect(conn.commit).toHaveBeenCalled()
+  })
+
+  it('[CORRIGIDO — era HIGH] PUT /api/customers/2 mudando a RAZÃO SOCIAL do emitente → 409 (campo nomeado), nada gravado; mudando só campos do PAPEL → 200 sem tocar cadeia/tributação', async () => {
+    const changed = await request(app).put('/api/customers/2').set('Authorization', USER)
+      .send({ ...sameBody(), entity: { nameCompany: 'Outro nome', nickTrade: 'Eu' } })
+    expect([changed.status, changed.body.code]).toEqual([409, 'OWN_ESTABLISHMENT_READ_ONLY'])
+    expect(changed.body.fields).toEqual([{ field: 'entity.nameCompany', message: expect.any(String) }])
+    nothingWritten()
+    const ok = await request(app).put('/api/customers/2').set('Authorization', USER).send({ ...sameBody(), creditValue: 1000, active: 'S' })
+    expect(ok.status).toBe(200)
+    expect(chainSaves()).toBe(0)
+    expect(taxUpserts()).toEqual([])
+    expect(roleWrites().map(w => String(w[1][0]))).toEqual(['setes_x.tb_customer'])
+  })
+
+  it('[RESISTIU] grafias do id (2, 02, 2.0, +2, %202, 0x2) no PUT com tributação diferente → 409 em todas, nada gravado', async () => {
     for (const id of ['2', '02', '2.0', '+2', '%202', '0x2']) {
-      const res = await request(app).put(`/api/${role}/${id}`).set('Authorization', USER).send(body)
-      expect([role, id, res.status, res.body.code]).toEqual([role, id, 409, 'ROLE_IS_OWN_ESTABLISHMENT'])
+      const res = await request(app).put(`/api/providers/${id}`).set('Authorization', USER).send(taxBody())
+      expect([id, res.status, res.body.code]).toEqual([id, 409, 'OWN_ESTABLISHMENT_READ_ONLY'])
     }
     nothingWritten()
   })
 
-  it('[RESISTIU] REVIVE: papel do estabelecimento soft-deletado (deleted=S) não ressuscita — a barreira vem ANTES da linha do papel', async () => {
-    business = (sql) => (/SELECT deleted FROM \?\? WHERE id = \? AND tb_institution_id = \? FOR UPDATE/.test(sql) ? [[{ deleted: 'S' }]] : [[]])
-    for (const role of ROLES) {
-      const res = await request(app).post(`/api/${role}`).set('Authorization', USER).send(body)
-      expect([role, res.status]).toEqual([role, 409])
-    }
-    expect(q.mock.calls.some(c => /SELECT deleted FROM/.test(String(c[0])))).toBe(false)   // nem chegou a olhar o papel
-    nothingWritten()
-  })
-
-  it('[RESISTIU] o 409 não vaza nada: sem id da entity, sem CNPJ, sem schema; o campo é o cnpj', async () => {
-    const res = await request(app).post('/api/customers').set('Authorization', USER).send(body)
+  it('[RESISTIU] o 409 não vaza id/CNPJ/schema; os campos vêm nomeados pelo caminho (tax.*, entity.*, company.*)', async () => {
+    const res = await request(app).post('/api/customers').set('Authorization', USER)
+      .send({ ...taxBody(), company: { cnpj: OWN_CNPJ, ie: '123' } })
     const text = JSON.stringify(res.body)
-    expect(text).not.toMatch(/setes_|"id"|\b2\b|tb_/)
-    expect(res.body.fields).toEqual([{ field: 'cnpj', message: expect.any(String) }])
+    expect(text).not.toMatch(/setes_|"id"|11222333000181|tb_/)
+    expect(res.body.fields.map((f: any) => f.field).sort()).toEqual(['company.ie', 'tax.simplesRegime'])
   })
 
-  it('[RESISTIU] a barreira não é oráculo de OUTRO tenant: o CNPJ do emitente da institution 3 cadastra cliente normal na 2 e a linha do emitente 3 (setes_y, 3×3) não é tocada', async () => {
-    const chain = jest.requireMock('../shared/entity').saveEntityFiscalChain as jest.Mock
-    chain.mockImplementationOnce(async () => ({ id: 3, reused: true }))
-    const res = await request(app).post('/api/customers').set('Authorization', USER).send(body)
+  it('[RESISTIU] a regra não é oráculo de OUTRO tenant: o CNPJ do emitente da institution 3 cadastra cliente normal na 2 — a RELAÇÃO 3 × 2 no schema do pedinte, nunca 3 × 3', async () => {
+    ;(entityFiscal.saveEntityFiscalChain as jest.Mock).mockImplementationOnce(async () => ({ id: 3, reused: true }))
+    const res = await request(app).post('/api/customers').set('Authorization', USER)
+      .send({ entity: { nameCompany: 'Outra empresa', nickTrade: 'X' }, personType: 'J', company: { cnpj: OTHER_CNPJ }, tax: { simplesRegime: '2' } })
     expect(res.status).toBe(201)
-    expect(taxUpserts()).toEqual([['setes_x.tb_entity_tax', 3, 2, '2']])   // a RELAÇÃO 3 × 2 no schema do pedinte, nunca 3 × 3
+    expect(chainSaves()).toBe(1)
+    expect(taxUpserts()).toEqual([['setes_x.tb_entity_tax', 3, 2, '2']])
   })
 
-  it('[RESISTIU] vendedor (promoção sem cadeia) e o restante dos módulos guardados não escrevem tb_entity_tax nem a cadeia (varredura do código)', () => {
+  it('[RESISTIU] o GET do papel devolve ownEstablishment (o app congela os blocos — a regra é da API)', async () => {
+    grant(9, 'customers', 6)
+    business = (sql) => {
+      if (/FROM \?\? c\s+LEFT JOIN setes_central\.tb_entity es/.test(sql)) return [[{ tbSalesmanId: null, tbCarrierId: null, creditStatus: 'L', creditValue: 0, tbPaymentTypesId: 0, multiplier: null, active: 'S' }]]
+      return [[]]
+    }
+    const own = await request(app).get('/api/customers/2').set('Authorization', USER)
+    expect([own.status, own.body.data?.ownEstablishment]).toEqual([200, true])
+    const other = await request(app).get('/api/customers/5').set('Authorization', USER)
+    expect([other.status, other.body.data?.ownEstablishment]).toEqual([200, false])
+  })
+
+  it('[RESISTIU] varredura: só os 4 papéis (pela peça), o Meu Estabelecimento e o onboarding escrevem a cadeia/tributação — a porta avulsa saiu', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fs = require('fs'), path = require('path')
     const root = path.join(__dirname, '..')
@@ -429,14 +419,13 @@ describe('re-prova da barreira do próprio estabelecimento (Q-PV28 interino)', (
     } }
     walk(root)
     expect(writers.sort()).toEqual([
-      'modules/carriers/carriers.repository.ts',             // barreira (Q-PV28)
-      'modules/collaborators/collaborators.repository.ts',   // barreira (Q-PV28)
-      'modules/customers/customers.repository.ts',           // barreira (Q-PV28)
-      'modules/entities/entities.service.ts',                // adminGuard (Q-PV25)
+      'modules/carriers/carriers.repository.ts',             // D-PV32 (peça own-establishment)
+      'modules/collaborators/collaborators.repository.ts',   // D-PV32
+      'modules/customers/customers.repository.ts',           // D-PV32
       'modules/establishment/establishment.repository.ts',   // a porta oficial (adminGuard)
       'modules/establishment/establishment.service.ts',      // a porta oficial (adminGuard)
       'modules/institutions/institutions.repository.ts',     // superGuard
-      'modules/providers/providers.repository.ts',           // barreira (Q-PV28)
+      'modules/providers/providers.repository.ts',           // D-PV32
     ])
   })
 })

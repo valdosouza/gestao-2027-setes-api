@@ -267,3 +267,12 @@ export function listGatedRoutes(): GatedRoute[] {
 export function listGatedModules(): string[] {
   return gates.map(g => g.moduleKey)
 }
+
+/**
+ * D-PV36 (Valdo 2026-10-20): o módulo passa pela guarda por roteador? Para ele a flag técnica (`tb_feature_flag`) MORREU — o
+ * vínculo `tb_institution_has_interface` é a ÚNICA licença (D-F37/D-PV2); o `featureFlagMiddleware` não o consulta e o
+ * onboarding não cria flag para ele. Lê o MESMO registro das guardas (montado quando o gateway é importado).
+ */
+export function isGatedModule(moduleKey: string): boolean {
+  return gates.some(g => g.moduleKey === moduleKey)
+}

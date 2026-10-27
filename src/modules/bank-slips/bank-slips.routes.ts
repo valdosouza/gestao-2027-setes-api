@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { privilegeAct } from '@shared/auth/module-privilege-gate'
-import { PRIVILEGE_ALTERAR, PRIVILEGE_CANCELAR, PRIVILEGE_IMPRIMIR, PRIVILEGE_TRANSMITIR } from '@shared/auth/privileges'
+import { PRIVILEGE_ALTERAR, PRIVILEGE_CANCELAR, PRIVILEGE_CONSULTAR, PRIVILEGE_IMPRIMIR, PRIVILEGE_TRANSMITIR, PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 import * as controller from './bank-slips.controller'
 import * as registration from './bank-slips.registration.controller'
 
@@ -204,9 +204,10 @@ router.get('/open-titles', controller.openTitlesLookup)
  *     responses:
  *       200: { description: 'Envelope { ok, data: { checked, changed, reconciled, errors[], stoppedEarly } }' }
  */
-// A-PV7: falar com o BANCO (registrar, consultar, simular no sandbox, reaplicar a voz dele) = TRANSMITIR — simétrico ao
-// fisco, onde consultar também é TRANSMITIR (nfse-api `refresh`/rodízio)
-router.post('/refresh', privilegeAct(PRIVILEGE_TRANSMITIR), registration.refreshOpen)
+// D-PV40 (Valdo 2026-10-20 — "transmitir e consultar são dois verbos independentes"): perguntar ao banco a situação dos boletos
+// sem mudar estado nele = CONSULTAR (12); TRANSMITIR (9) fica para o que MUDA estado no terceiro (registrar, simular no sandbox).
+// Simétrico ao fisco (nfse-api `refresh`/rodízio = CONSULTAR). Princípio D-PV27: o verbo nomeia a finalidade, nunca o transporte.
+router.post('/refresh', privilegeAct(PRIVILEGE_CONSULTAR), registration.refreshOpen)
 
 router.get('/:id', controller.getOne)
 
@@ -363,9 +364,9 @@ router.post('/:id/reverse', privilegeAct(PRIVILEGE_CANCELAR), controller.reverse
  *       409: { description: Fora do sandbox / sem apresentação }
  */
 router.post('/:id/register', privilegeAct(PRIVILEGE_TRANSMITIR), registration.register)       // D-PV7: registrar no banco = 9
-router.post('/:id/refresh', privilegeAct(PRIVILEGE_TRANSMITIR), registration.refresh)         // A-PV7
+router.post('/:id/refresh', privilegeAct(PRIVILEGE_CONSULTAR), registration.refresh)          // D-PV40: consultar o banco = CONSULTAR
 router.get('/:id/pdf', privilegeAct(PRIVILEGE_IMPRIMIR), registration.pdf)                    // D-PV7: PDF = 4
-router.post('/:id/pay-sandbox', privilegeAct(PRIVILEGE_TRANSMITIR), registration.paySandboxHandler)   // A-PV7
+router.post('/:id/pay-sandbox', privilegeAct(PRIVILEGE_TRANSMITIR), registration.paySandboxHandler)   // D-PV40: simular o pagamento MUDA estado no banco de testes = TRANSMITIR
 
 /**
  * @swagger
@@ -388,10 +389,16 @@ router.post('/:id/pay-sandbox', privilegeAct(PRIVILEGE_TRANSMITIR), registration
  *               event: { type: integer, description: Nº do evento R/C/V com slip_event nulo }
  *     responses:
  *       201: { description: 'Envelope { ok, data: { slipId, attempt, event, reapplyEvent, slipEvent } }' }
+ *       403: { description: 'Sem o privilégio do EFEITO reaplicado — ALTERAR (voz R → liquidação) ou CANCELAR (voz C/V → cancelamento) na tela de boletos (D-PV27)' }
  *       404: { description: BANK_SLIP_REGISTRATION_EVENT_NOT_FOUND }
  *       409: { description: 'BANK_SLIP_EFFECT_NOT_PENDING (sem efeito / já aplicado) ou a recusa da regra (ex.: BANK_SLIP_NOT_OPEN, caixa fechado)' }
  */
-router.post('/:id/reapply', privilegeAct(PRIVILEGE_TRANSMITIR), registration.reapply)        // A-PV7
+// D-PV27 (Valdo 2026-10-20, fecha a Q-PV22 = (b)): reaplicar NÃO fala com o banco — aplica no ERP o efeito que o banco já disse.
+// O privilégio é o do EFEITO reaplicado, decidido pela VOZ do evento ANTES de executar: ALTERAR quando reaplica a liquidação (R → L),
+// CANCELAR quando reaplica o cancelamento/expiração (C/V → C). A guarda do roteador não sabe a voz → na guarda vale o VISUALIZAR da
+// tela (chegar ao boleto; gate adversarial: rota aberta deixava quem não tem a tela sondar a existência do evento) e a POLÍTICA do
+// controller decide o EFEITO (`bank-slips.reapply-policy.ts` — mesmo molde da política do desconto, ARQUITETURA_MODULOS_API).
+router.post('/:id/reapply', privilegeAct(PRIVILEGE_VISUALIZAR), registration.reapply)
 // Nota: POST /:id/register devolve 409 BANK_SLIP_EFFECT_PENDING enquanto houver voz R/C/V
 // com efeito recusado — a pendência se resolve pelo reapply, nunca por nova apresentação.
 

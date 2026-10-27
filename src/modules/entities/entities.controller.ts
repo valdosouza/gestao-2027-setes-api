@@ -1,8 +1,7 @@
 import { Request, Response } from 'express'
-import { handleError, parseBody, parseId } from '@shared/http/controller-utils'
+import { handleError } from '@shared/http/controller-utils'
 import { isValidCpf, isValidCnpj, normalizeCpf, normalizeCnpj } from '@shared/validation'
-import { entityTaxBody } from '@shared/entity-tax/entity-tax.dto'
-import { findEntityByDocument, fetchEntityTax, saveEntityTax } from './entities.service'
+import { findEntityByDocument } from './entities.service'
 
 /**
  * GET /api/entities/by-document?personType=F|J&doc=<CPF/CNPJ>
@@ -35,32 +34,5 @@ export async function byDocument(req: Request, res: Response): Promise<void> {
     res.json({ ok: true, data })
   } catch (err) {
     handleError(res, err, 'entities/by-document GET')
-  }
-}
-
-/** GET /api/entities/:id/tax — tributação da relação entity × institution. */
-export async function getTax(req: Request, res: Response): Promise<void> {
-  const id = parseId(req, res)
-  if (id === null) return
-  try {
-    const { schemaName, institutionId } = req.institution!
-    res.json({ ok: true, data: await fetchEntityTax(id, schemaName, institutionId) })
-  } catch (err) {
-    handleError(res, err, 'entities/:id/tax GET')
-  }
-}
-
-/** PUT /api/entities/:id/tax — upsert avulso da tributação. */
-export async function putTax(req: Request, res: Response): Promise<void> {
-  const id = parseId(req, res)
-  if (id === null) return
-  const body = parseBody(entityTaxBody, req, res)
-  if (body === null) return
-  try {
-    const { schemaName, institutionId } = req.institution!
-    await saveEntityTax(id, body, schemaName, institutionId)
-    res.json({ ok: true })
-  } catch (err) {
-    handleError(res, err, 'entities/:id/tax PUT')
   }
 }

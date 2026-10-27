@@ -15,7 +15,7 @@ import pool from '@shared/db/connection'
 // O vínculo estabelecimento × interfaces (leitura e escrita) virou peça ÚNICA em 2026-10-18 (D-PV11 — duas telas, a aba do Super e
 // a "Interfaces dos clientes" delegável): `@shared/institution-interfaces`, já na forma escopada pela institution (D-GE4).
 export {
-  getInstitutionSchemaName, listInterfacesWithGrant, setInstitutionInterfaces,
+  getInstitutionSchemaName, listInterfacesWithGrant, setInstitutionInterfaceLink,
 } from '@shared/institution-interfaces'
 export type { InterfaceGrantRow } from '@shared/institution-interfaces'
 

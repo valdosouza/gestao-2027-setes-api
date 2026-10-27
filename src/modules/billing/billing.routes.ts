@@ -57,7 +57,9 @@ const router = Router()
  *       422: { description: Ordem sem ramo identificado }
  *       500: { description: Erro interno }
  */
-router.post('/validate', controller.validate)
+// D-PV23 (Valdo 2026-10-20, Q-PV14 (a)): /validate GRAVA a regra por item (origin 'A') — FATURAR pela interface do RAMO,
+// o mesmo resolvedor do /invoice (antes: sem guarda nenhuma — LOW do gate adversarial da D-PV2).
+router.post('/validate', requirePrivilegeFor(PRIVILEGE_FATURAR, resolveFromBody), controller.validate)
 
 /**
  * @swagger

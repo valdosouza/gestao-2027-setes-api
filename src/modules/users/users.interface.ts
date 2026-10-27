@@ -22,16 +22,27 @@ export interface UserRow {
   nameCompany: string | null
   nickTrade:   string | null
   email:       string | null
-  active:      'S' | 'N'
+  /**
+   * D-PV19/D-UC2 (2026-10-20): "ativo" é do VÍNCULO `tb_institution_has_user.active` com o estabelecimento em FOCO (admin = o do
+   * JWT; super = `?institutionId`). Sem foco (super na tela global) vem `null` — a credencial em si nunca se inativa pelo cadastro.
+   */
+  active:      'S' | 'N' | null
 }
 
 export interface UserInput {
   nameCompany: string
   nickTrade:   string
+  /** D-PV19/D-UC1: o e-mail de LOGIN é imutável — no PUT tem de ser o atual (409 LOGIN_EMAIL_IMMUTABLE se diferir). */
   email:       string
   /** null/ausente no PUT = mantém a senha atual. */
   password?:   string | null
-  active:      'S' | 'N'
+  /** D-PV19/D-UC2: ativo do VÍNCULO com o estabelecimento alvo; ausente no PUT = não mexe. */
+  active?:     'S' | 'N'
+}
+
+/** PUT: o alvo do "ativo" — super informa `institutionId`; admin tem o alvo forçado ao JWT. */
+export interface UserUpdateInput extends UserInput {
+  institutionId?: number | null
 }
 
 /**
@@ -40,6 +51,8 @@ export interface UserInput {
  * admin do cliente → SEMPRE a institution do JWT (o service força).
  */
 export interface UserCreateInput extends UserInput {
+  /** Na criação o ativo da credencial é obrigatório (o DTO dá 'S' por padrão); o vínculo nasce vivo. */
+  active:         'S' | 'N'
   institutionId?: number | null
   kind?:          string | null   // perfil do vínculo (default 'user')
 }

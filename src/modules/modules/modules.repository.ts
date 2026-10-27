@@ -82,40 +82,57 @@ export async function getModule(schemaName: string, id: number): Promise<ModuleR
  * Interfaces ELEGÍVEIS ao vínculo: contratadas (tb_institution_has_interface
  * viva), tela vendável kind='T' e FORA do grupo Super (regra do menu de
  * não-super — core.repository NOT_SUPER_GROUP).
+ * D-PV24 (Valdo 2026-10-20): para o SUPER a licença não conta — `ignoreLicense` troca o INNER JOIN com o contrato pelo
+ * catálogo inteiro de kind 'T' (o grupo Super segue fora: o menu do cliente nunca o renderiza — regra do menu, não licença).
  */
 export async function listEligibleInterfaces(
-  schemaName: string
+  schemaName: string, ignoreLicense = false
 ): Promise<ModuleInterfaceLookupRow[]> {
   const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
-    `SELECT i.id, i.description, i.i18n_key AS i18nKey,
-            i.group_default AS groupDefault
-       FROM \`${s}\`.tb_institution_has_interface ihi
-      INNER JOIN setes_central.tb_interface i
-         ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-      WHERE ihi.active = 'S' AND ihi.deleted = 'N'
-        AND i.kind = 'T'
-        AND (i.group_default IS NULL OR i.group_default <> 'Super')
-      ORDER BY i.group_default, i.description`
+    ignoreLicense
+      ? `SELECT i.id, i.description, i.i18n_key AS i18nKey,
+                i.group_default AS groupDefault
+           FROM setes_central.tb_interface i
+          WHERE i.deleted = 'N'
+            AND i.kind = 'T'
+            AND (i.group_default IS NULL OR i.group_default <> 'Super')
+          ORDER BY i.group_default, i.description`
+      : `SELECT i.id, i.description, i.i18n_key AS i18nKey,
+                i.group_default AS groupDefault
+           FROM \`${s}\`.tb_institution_has_interface ihi
+          INNER JOIN setes_central.tb_interface i
+             ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
+          WHERE ihi.active = 'S' AND ihi.deleted = 'N'
+            AND i.kind = 'T'
+            AND (i.group_default IS NULL OR i.group_default <> 'Super')
+          ORDER BY i.group_default, i.description`
   )
   return rows
 }
 
-/** Ids do input que NÃO são elegíveis (base do 422 do service). */
+/** Ids do input que NÃO são elegíveis (base do 422 do service). D-PV24: `ignoreLicense` para o super. */
 export async function findIneligibleInterfaceIds(
-  schemaName: string, interfaceIds: number[]
+  schemaName: string, interfaceIds: number[], ignoreLicense = false
 ): Promise<number[]> {
   if (interfaceIds.length === 0) return []
   const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
-    `SELECT i.id
-       FROM \`${s}\`.tb_institution_has_interface ihi
-      INNER JOIN setes_central.tb_interface i
-         ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-      WHERE ihi.active = 'S' AND ihi.deleted = 'N'
-        AND i.kind = 'T'
-        AND (i.group_default IS NULL OR i.group_default <> 'Super')
-        AND i.id IN (?)`,
+    ignoreLicense
+      ? `SELECT i.id
+           FROM setes_central.tb_interface i
+          WHERE i.deleted = 'N'
+            AND i.kind = 'T'
+            AND (i.group_default IS NULL OR i.group_default <> 'Super')
+            AND i.id IN (?)`
+      : `SELECT i.id
+           FROM \`${s}\`.tb_institution_has_interface ihi
+          INNER JOIN setes_central.tb_interface i
+             ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
+          WHERE ihi.active = 'S' AND ihi.deleted = 'N'
+            AND i.kind = 'T'
+            AND (i.group_default IS NULL OR i.group_default <> 'Super')
+            AND i.id IN (?)`,
     [interfaceIds]
   )
   const eligible = new Set(rows.map((r: any) => r.id))

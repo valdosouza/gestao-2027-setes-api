@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 import * as controller from './order-returns.controller'
 
 /**
@@ -202,6 +204,7 @@ router.delete('/:id', controller.remove)
  *       500: { description: Erro interno }
  */
 router.put('/:id/items/:itemId', controller.updateItem)
-router.delete('/:id/items/:itemId', controller.removeOrderItem)
+// D-PV21: ato sobre a devolução ABERTA = ALTERAR (tirar item); INSERIR = abrir a devolução; EXCLUIR = apagá-la (D-PV7)
+router.delete('/:id/items/:itemId', privilegeAct(PRIVILEGE_ALTERAR), controller.removeOrderItem)
 
 export default router

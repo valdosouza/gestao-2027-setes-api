@@ -1,15 +1,17 @@
 import { invalidateInstitutionZone } from '@shared/time-zone'
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
+import { ErrorCodes } from '@shared/errors/error-codes'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
-import { isAdmin } from '@shared/auth/roles'
+import { assertCanConfigure, canConfigure } from '@shared/auth/configure-privilege'
+import { interfaceAcquiredFor } from '@shared/auth/require-privilege'
 import { findInterfaceIdByKey } from '@shared/field-config'
 import {
   ResolvedConfig, getResolvedConfigs, getResolvedConfigsByKey,
   invalidateInterfaceConfig, validateConfigContent, listCatalogConfigs,
 } from '@shared/interface-config'
 import {
-  InterfaceVitrineRow, listVitrine, interfaceExists, isInterfaceAcquired, vitrineSearchCriteria,
+  InterfaceVitrineRow, listVitrine, interfaceExists, vitrineSearchCriteria,
 } from '@shared/interface-vitrine'
 import { ConfigValueInput } from './interface-configs.interface'
 import {
@@ -19,9 +21,12 @@ import {
 /**
  * Regra do painel de configurações (decisões 4, 7 e 9 do Framework de
  * Configurações): vitrine com todas as interfaces; configs resolvidas
- * (usuário → institution → default); gravação só em interface adquirida —
- * admin edita o valor da institution, usuário comum só o próprio override
- * de configs scope 'U'. Só grava o que DIVERGE do herdado (nota b).
+ * (usuário → institution → default); gravação só em interface adquirida
+ * (D-PV24: o super escapa; D-PV39: a tela do Super delegável conta como adquirida pela Setes).
+ * D-PV25/D-PV26 (Valdo 2026-10-20): o valor da INSTITUTION ('I') é de quem tem CONFIGURAR na interface ALVO (regular
+ * incluído; admin passa; o super escapa) — a decisão 4 do Framework ("só o admin") foi SUPERADA nessa parte. O override
+ * PESSOAL ('U') segue de qualquer usuário quando o catálogo autoriza (A-PV6). Só grava o que DIVERGE do herdado (nota b).
+ * `canConfigure` sai em cada config resolvida (aditivo) para a tela decidir o alvo do salvar.
  */
 
 /** Lista branca da vitrine deste painel (peça @shared/interface-vitrine — D-BA20). */
@@ -38,15 +43,27 @@ export async function fetchVitrine(
   return listVitrine(query, institution.schemaName, institution.institutionId)
 }
 
+/** Config resolvida + `canConfigure` (D-PV25): a tela decide o alvo ('I' × 'U') pelo que a API diz, não pelo perfil. */
+export type ResolvedConfigForUser = ResolvedConfig & { canConfigure: boolean }
+
+async function withCanConfigure(
+  institution: InstitutionPayload, interfaceId: number, configs: ResolvedConfig[]
+): Promise<ResolvedConfigForUser[]> {
+  if (configs.length === 0) return []
+  const allowed = await canConfigure(institution, interfaceId)
+  return configs.map(c => ({ ...c, canConfigure: allowed }))
+}
+
 export async function fetchResolvedConfigs(
   institution: InstitutionPayload, interfaceId: number
-): Promise<ResolvedConfig[]> {
+): Promise<ResolvedConfigForUser[]> {
   if (!(await interfaceExists(interfaceId))) {
     throw new HttpError(404, 'Interface não encontrada')
   }
-  return getResolvedConfigs(
+  const configs = await getResolvedConfigs(
     institution.schemaName, institution.institutionId, interfaceId, institution.userId
   )
+  return withCanConfigure(institution, interfaceId, configs)
 }
 
 /**
@@ -55,8 +72,12 @@ export async function fetchResolvedConfigs(
  */
 export async function fetchResolvedConfigsByKey(
   institution: InstitutionPayload, moduleKey: string
-): Promise<ResolvedConfig[]> {
-  return getResolvedConfigsByKey(institution, moduleKey)
+): Promise<ResolvedConfigForUser[]> {
+  const configs = await getResolvedConfigsByKey(institution, moduleKey)
+  if (configs.length === 0) return []
+  const interfaceId = await findInterfaceIdByKey(moduleKey)
+  if (interfaceId === null) return []
+  return withCanConfigure(institution, interfaceId, configs)
 }
 
 /**
@@ -82,10 +103,9 @@ export async function saveConfigValue(
   if (!(await interfaceExists(interfaceId))) {
     throw new HttpError(404, 'Interface não encontrada')
   }
-  if (!(await isInterfaceAcquired(
-    institution.schemaName, institution.institutionId, interfaceId
-  ))) {
-    throw new HttpError(403, 'Interface não adquirida — configuração indisponível')
+  // D-PV24/D-PV39: o super escapa do "adquirida"; a tela delegável conta como adquirida pela Setes
+  if (!(await interfaceAcquiredFor(institution, interfaceId))) {
+    throw new HttpError(403, 'Interface não adquirida — configuração indisponível', [], ErrorCodes.INTERFACE_NOT_ALLOWED)
   }
 
   const catalog = await listCatalogConfigs(interfaceId)
@@ -94,11 +114,9 @@ export async function saveConfigValue(
     throw new HttpError(404, 'Configuração não existe no catálogo desta interface')
   }
 
-  // Decisão 4: valor da institution é do admin; override é pessoal e só
-  // existe quando o catálogo autoriza (scope 'U').
-  if (input.target === 'I' && !isAdmin(institution)) {
-    throw new HttpError(403, 'Apenas administradores alteram o valor da institution')
-  }
+  // D-PV25/D-PV26 (supera a decisão 4 nesta parte): o valor da institution é de quem tem CONFIGURAR na interface ALVO
+  // (regular incluído; admin passa; super escapa); o override é pessoal e só existe quando o catálogo autoriza (scope 'U').
+  if (input.target === 'I') await assertCanConfigure(institution, interfaceId)
   if (input.target === 'U' && config.scope !== 'U') {
     throw new HttpError(403, 'Configuração não admite override por usuário')
   }

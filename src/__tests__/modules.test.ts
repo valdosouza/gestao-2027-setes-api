@@ -183,7 +183,7 @@ describe('modules service', () => {
     // 4 = vinculada e hoje inelegível (contrato revogado); 7 = tela nova
     await editModule(SCHEMA, 3, { description: 'R', interfaceIds: [4, 12, 7] } as any)
 
-    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [7])
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [7], false)     // D-PV24: 3º arg = o super escapa da licença (aqui não é super)
     expect(spyUpdate).toHaveBeenCalledWith(SCHEMA, 3,
       expect.objectContaining({ interfaceIds: [4, 12, 7] }))
     spyGet.mockRestore(); spyInvalid.mockRestore(); spyUpdate.mockRestore()
@@ -207,7 +207,7 @@ describe('modules service', () => {
 
     await createModule(SCHEMA, { description: 'N', interfaceIds: [4, 12] } as any)
 
-    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [4, 12])
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [4, 12], false)
     spyInvalid.mockRestore(); spyInsert.mockRestore()
   })
 

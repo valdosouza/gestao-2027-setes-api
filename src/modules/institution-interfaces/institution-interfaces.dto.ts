@@ -1,8 +1,8 @@
 import { z } from 'zod'
 
-/** PUT /:id — a lista COMPLETA das interfaces do estabelecimento (concede a lista, revoga as demais). */
-export const institutionInterfacesDto = z.object({
-  interfaceIds: z.array(z.number().int().positive()).max(1000),
+/** PUT /:id/interfaces/:interfaceId — UMA marca (D-PV34): concede (`linked: true`) ou revoga (`linked: false`). */
+export const institutionInterfaceLinkDto = z.object({
+  linked: z.boolean(),
 })
 
-export type InstitutionInterfacesDto = z.infer<typeof institutionInterfacesDto>
+export type InstitutionInterfaceLinkDto = z.infer<typeof institutionInterfaceLinkDto>

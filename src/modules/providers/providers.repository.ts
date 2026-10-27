@@ -4,7 +4,9 @@ import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { entityRoleSearchCriteria, roleStatusSearchCriteria, saveEntityFiscalChain, getEntityFiscalFull } from '@shared/entity'
 import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
 import { ProviderInput, ProviderListRow, ProviderFull } from './providers.interface'
-import { assertNotOwnEstablishment } from '@shared/entity/own-establishment'
+import {
+  isOwnEstablishment, isOwnEstablishmentDocument, assertOwnEstablishmentChainUnchanged,
+} from '@shared/entity/own-establishment'
 
 /**
  * Repositório do CONCRETO Provider — CONSUMIDOR da cadeia de entidade fiscal
@@ -77,7 +79,7 @@ export async function getProvider(
   if (!chain) return null
 
   const tax = await getEntityTax(schemaName, institutionId, id)
-  return { ...chain, ...rows[0], tax }
+  return { ...chain, ...rows[0], tax, ownEstablishment: isOwnEstablishment(id, institutionId) }   // D-PV32
 }
 
 export async function providerExists(
@@ -105,13 +107,15 @@ export async function insertProviderCascade(
   input: ProviderInput, schemaName: string, institutionId: number,
   updatedBy: number | null = null
 ): Promise<{ id: number; reused: boolean }> {
+  const own = await isOwnEstablishmentDocument(input, institutionId)
+  if (own) await assertOwnEstablishmentChainUnchanged(schemaName, institutionId, input)
   const table = `${schemaName}.tb_provider`
   const conn  = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    const { id, reused } = await saveEntityFiscalChain(conn, null, input, updatedBy)
-    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino): o emitente se edita em Meu Estabelecimento
+    // D-PV32: o próprio estabelecimento PODE ser papel — a cadeia e a tributação dele não se escrevem por aqui (conferido ANTES da transação)
+    const { id, reused } = own ? { id: institutionId, reused: true } : await saveEntityFiscalChain(conn, null, input, updatedBy)
 
     const [existing] = await conn.query<any[]>(
       `SELECT deleted FROM ?? WHERE id = ? AND tb_institution_id = ? FOR UPDATE`,
@@ -139,7 +143,7 @@ export async function insertProviderCascade(
 
     // Aba Tributação (D1): salva JUNTO, na mesma transação;
     // undefined/null = não tocar (mesma proteção das listas da cadeia)
-    if (input.tax != null) {
+    if (!own && input.tax != null) {   // D-PV32: a tributação do emitente só pelo Meu Estabelecimento
       await upsertEntityTax(conn, schemaName, institutionId, id, input.tax)
     }
 
@@ -158,12 +162,13 @@ export async function updateProviderCascade(
   id: number, input: ProviderInput, schemaName: string, institutionId: number,
   updatedBy: number | null = null
 ): Promise<void> {
+  const own = isOwnEstablishment(id, institutionId)
+  if (own) await assertOwnEstablishmentChainUnchanged(schemaName, institutionId, input)
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    assertNotOwnEstablishment(id, institutionId)   // Q-PV28 (interino)
-    await saveEntityFiscalChain(conn, id, input, updatedBy)
+    if (!own) await saveEntityFiscalChain(conn, id, input, updatedBy)   // D-PV32: emitente = cadeia só pelo Meu Estabelecimento
 
     await conn.query(
       `UPDATE ?? SET active = ?, updated_at = NOW()
@@ -171,7 +176,7 @@ export async function updateProviderCascade(
       [`${schemaName}.tb_provider`, input.active ?? 'S', id, institutionId]
     )
 
-    if (input.tax != null) {
+    if (!own && input.tax != null) {   // D-PV32: a tributação do emitente só pelo Meu Estabelecimento
       await upsertEntityTax(conn, schemaName, institutionId, id, input.tax)
     }
 

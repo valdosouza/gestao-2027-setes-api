@@ -35,7 +35,7 @@ export async function searchCriteria(req: Request, res: Response): Promise<void>
 
 export async function interfaceLookup(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ ok: true, data: await fetchEligibleInterfaces(req.institution!.schemaName) })
+    res.json({ ok: true, data: await fetchEligibleInterfaces(req.institution!.schemaName, req.institution!) })   // D-PV24
   } catch (err) {
     handleError(res, err, 'modules/interface-lookup GET')
   }
@@ -56,7 +56,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   if (body === null) return
   try {
     await assertClientRequired(req.institution!, 'modules', body)
-    const result = await createModule(req.institution!.schemaName, body)
+    const result = await createModule(req.institution!.schemaName, body, req.institution!)
     logger.info('Módulo de menu criado', { ...result, schema: req.institution!.schemaName })
     res.status(201).json({ ok: true, data: result })
   } catch (err) {
@@ -71,7 +71,7 @@ export async function update(req: Request, res: Response): Promise<void> {
   if (body === null) return
   try {
     await assertClientRequired(req.institution!, 'modules', body)
-    await editModule(req.institution!.schemaName, id, body)
+    await editModule(req.institution!.schemaName, id, body, req.institution!)
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'modules/:id PUT')

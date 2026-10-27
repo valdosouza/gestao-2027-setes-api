@@ -10,7 +10,8 @@ import {
   MenuInterfaceRow,
 } from './core.repository'
 import { InstitutionPayload } from '@shared/types/express'
-import { isSuper, SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { isSuper } from '@shared/auth/roles'
+import { isOwnVendorInstitution } from '@shared/institution-interfaces'
 import { DELEGABLE_SUPER_INTERFACES } from '@shared/auth/super-delegation'
 import { getDelegatedSuperInterfaces, getUserPrivileges as userPrivilegesOf } from './core.repository'
 import { SessionContext, getSessionContext } from '@shared/session-context'
@@ -198,7 +199,7 @@ export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[
 
   // D-PV11: tela do Super DELEGADA ao usuário da Setes — só com o vínculo explícito (até o admin); os botões dela são os
   // privilégios que o SUPER marcou para ele, nunca o catálogo (o admin não "passa" o privilégio de tela delegada).
-  if (!superUser && payload.institutionId === SETES_INSTITUTION_ID) {
+  if (!superUser && isOwnVendorInstitution(payload.institutionId)) {   // D-PV37: predicado único
     const delegated = await getDelegatedSuperInterfaces(schemaName, userId, DELEGABLE_SUPER_INTERFACES)
     if (delegated.length > 0) {
       const own = adminUser ? await userPrivilegesOf(schemaName, userId) : privileges

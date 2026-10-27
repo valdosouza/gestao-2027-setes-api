@@ -40,6 +40,8 @@ export interface CustomerListRow {
 /** Objeto COMPLETO devolvido no GET /api/customers/:id.
  *  wallet é DERIVADO (tb_payment_types_id > 0); tax = aba Tributação. */
 export interface CustomerFull extends EntityFiscalFull {
+  /** D-PV32: a entity é o próprio estabelecimento — cadeia e tributação SOMENTE LEITURA (edite em Meu Estabelecimento). */
+  ownEstablishment: boolean
   tbSalesmanId:      number | null
   salesmanName:      string | null
   tbCarrierId:       number | null

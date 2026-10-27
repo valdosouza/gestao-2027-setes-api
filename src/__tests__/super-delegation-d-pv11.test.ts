@@ -29,7 +29,7 @@ let saved: Array<{ institutionId: number; ids: number[] }>
 const conn = {
   beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
   query: jest.fn(async (sql: string, params: any[]) => {
-    if (/INSERT INTO `setes_\w+`\.tb_institution_has_interface/.test(sql)) saved.push({ institutionId: params[0][0][0], ids: params[0].map((v: any[]) => v[1]) })
+    if (/INSERT INTO `setes_\w+`\.tb_institution_has_interface/.test(sql)) saved.push({ institutionId: params[0], ids: [params[1]] })   // D-PV34: uma marca
     return [[]]
   }),
 }
@@ -48,7 +48,9 @@ beforeEach(() => {
     if (/FROM setes_central\.tb_institution i\s+INNER JOIN setes_central\.tb_entity/.test(sql)) return [[{ id: 7, name: 'Cliente X', active: 'S' }]]
     if (/COUNT\(\*\) AS total/.test(sql)) return [[{ total: 1 }]]
     if (/SELECT schema_name AS schemaName/.test(sql)) return [[{ schemaName: params[0] === 1 ? 'setes_setes' : 'setes_cliente' }]]
-    if (/SELECT id FROM setes_central\.tb_interface WHERE deleted = 'N' AND id IN/.test(sql)) return [params[0].filter((id: number) => id < 100).map((id: number) => ({ id }))]
+    if (/SELECT id, i18n_key AS k, kind, group_default AS groupDefault\s+FROM setes_central\.tb_interface WHERE id = \?/.test(sql)) {
+      const id = Number(params[0]); return [id < 100 ? [{ id, k: id === 9 ? 'customers' : `iface-${id}`, kind: 'T', groupDefault: 'Registers' }] : []]
+    }
     if (/LEFT JOIN `setes_\w+`\.tb_institution_has_interface/.test(sql)) return [[{ id: 9, description: 'Clientes', groupDefault: 'Cadastros', kind: 'T', granted: 1 }]]
     return [[]]
   })
@@ -63,7 +65,7 @@ const FAKE_SUPER = bearer({ institutionId: 7, userId: 31, role: 'super', schemaN
 describe('guarda DELEGADA da tela "Interfaces dos clientes"', () => {
   it('o super passa sempre — sem consultar contrato nem vínculo', async () => {
     expect((await request(app).get('/api/institution-interfaces').set('Authorization', SUPER)).status).toBe(200)
-    expect((await request(app).put('/api/institution-interfaces/7').set('Authorization', SUPER).send({ interfaceIds: [9] })).status).toBe(200)
+    expect((await request(app).put('/api/institution-interfaces/7/interfaces/9').set('Authorization', SUPER).send({ linked: true })).status).toBe(200)
     expect(contractQueries).toBe(0)
   })
 
@@ -77,24 +79,26 @@ describe('guarda DELEGADA da tela "Interfaces dos clientes"', () => {
       granted = new Set([`setes_setes:${userId}:6`])
       expect((await request(app).get('/api/institution-interfaces').set('Authorization', token)).status).toBe(200)
       expect((await request(app).get('/api/institution-interfaces/7').set('Authorization', token)).status).toBe(200)
-      expect((await request(app).put('/api/institution-interfaces/7').set('Authorization', token).send({ interfaceIds: [9] })).body.code)
+      expect((await request(app).put('/api/institution-interfaces/7/interfaces/9').set('Authorization', token).send({ linked: true })).body.code)
         .toBe('PRIVILEGE_REQUIRED')
       granted.add(`setes_setes:${userId}:2`)
-      expect((await request(app).put('/api/institution-interfaces/7').set('Authorization', token).send({ interfaceIds: [9, 9] })).status).toBe(200)
+      expect((await request(app).put('/api/institution-interfaces/7/interfaces/9').set('Authorization', token).send({ linked: true })).status).toBe(200)
     }
-    expect(saved).toEqual([{ institutionId: 7, ids: [9] }, { institutionId: 7, ids: [9] }])   // repetidos tirados
+    expect(saved).toEqual([{ institutionId: 7, ids: [9] }, { institutionId: 7, ids: [9] }])   // D-PV34: uma marca por chamada
     expect(contractQueries).toBe(0)                                                            // a licença não entra
   })
 
   it('D-PV11 (c): o usuário liberado NÃO mexe nas interfaces da PRÓPRIA Setes (só o Super) e nem a vê na lista', async () => {
     granted = new Set(['setes_setes:2:6', 'setes_setes:2:2'])
-    const r = await request(app).put('/api/institution-interfaces/1').set('Authorization', SETES_ADMIN).send({ interfaceIds: [9] })
+    const r = await request(app).put('/api/institution-interfaces/1/interfaces/9').set('Authorization', SETES_ADMIN).send({ linked: true })
     expect([r.status, r.body.code]).toEqual([403, 'SETES_INTERFACES_SUPER_ONLY'])
+    // D-PV38: nem LER
+    expect((await request(app).get('/api/institution-interfaces/1').set('Authorization', SETES_ADMIN)).body.code).toBe('SETES_INTERFACES_SUPER_ONLY')
     expect(saved).toEqual([])
     await request(app).get('/api/institution-interfaces').set('Authorization', SETES_ADMIN)
     const listSql = q.mock.calls.find(c => /FROM setes_central\.tb_institution i\s+INNER JOIN/.test(String(c[0])) && /LIMIT/.test(String(c[0])))!
     expect(listSql[1].slice(0, 2)).toEqual([1, 1])                                             // exclui a institution 1
-    expect((await request(app).put('/api/institution-interfaces/1').set('Authorization', SUPER).send({ interfaceIds: [9] })).status).toBe(200)
+    expect((await request(app).put('/api/institution-interfaces/1/interfaces/9').set('Authorization', SUPER).send({ linked: true })).status).toBe(200)
   })
 
   it('a tela não existe para os clientes: admin de outra institution (mesmo com vínculo no schema dele) e "super" fora da Setes → 403', async () => {
@@ -105,9 +109,9 @@ describe('guarda DELEGADA da tela "Interfaces dos clientes"', () => {
     }
   })
 
-  it('interface fora do catálogo → 400 no campo interfaceIds, nada gravado', async () => {
-    const r = await request(app).put('/api/institution-interfaces/7').set('Authorization', SUPER).send({ interfaceIds: [9, 500] })
-    expect([r.status, r.body.code, r.body.fields?.[0]?.field]).toEqual([400, 'VALIDATION_FAILED', 'interfaceIds'])
+  it('interface fora do catálogo → 400 no campo interfaceId, nada gravado (D-PV34)', async () => {
+    const r = await request(app).put('/api/institution-interfaces/7/interfaces/500').set('Authorization', SUPER).send({ linked: true })
+    expect([r.status, r.body.code, r.body.fields?.[0]?.field]).toEqual([400, 'VALIDATION_FAILED', 'interfaceId'])
     expect(saved).toEqual([])
   })
 

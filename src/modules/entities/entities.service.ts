@@ -1,10 +1,5 @@
-import { HttpError } from '@shared/errors/http-error'
 import { getEntityFiscalFull, EntityFiscalFull } from '@shared/entity'
 import { findEntityIdByCpf, findEntityIdByCnpj } from '@shared/fiscal/fiscal.repository'
-import { getEntityBase } from '@shared/entity/entity.repository'
-import { upsertEntityTax, getEntityTax } from '@shared/entity-tax/entity-tax.repository'
-import { EntityTaxInput, EntityTaxRow } from '@shared/entity-tax/entity-tax.types'
-import pool from '@shared/db/connection'
 import { listEntityRoles } from './entities.repository'
 
 /**
@@ -36,26 +31,5 @@ export async function findEntityByDocument(
   return { found: true, entity, roles }
 }
 
-/**
- * Tributação AVULSA da relação entity × institution (Fase 3 Rodada 4,
- * decisão 17): qualquer entidade pode precisar de tributação para receber
- * notas — os papéis (customer hoje) salvam a aba junto no próprio POST/PUT;
- * estes endpoints servem papéis futuros e ajustes diretos.
- */
-export async function fetchEntityTax(
-  entityId: number, schemaName: string, institutionId: number
-): Promise<EntityTaxRow | null> {
-  if (!(await getEntityBase(entityId))) {
-    throw new HttpError(404, `Entidade ${entityId} não encontrada`)
-  }
-  return getEntityTax(schemaName, institutionId, entityId)
-}
-
-export async function saveEntityTax(
-  entityId: number, input: EntityTaxInput, schemaName: string, institutionId: number
-): Promise<void> {
-  if (!(await getEntityBase(entityId))) {
-    throw new HttpError(404, `Entidade ${entityId} não encontrada`)
-  }
-  await upsertEntityTax(pool, schemaName, institutionId, entityId, input)
-}
+// D-PV23/D-PV30 (2026-10-20): `fetchEntityTax`/`saveEntityTax` (tributação AVULSA — Fase 3 Rodada 4, decisão 17) SAÍRAM com as rotas:
+// a tributação da relação se grava na transação do PAPEL (aba Tributação) e a do emitente pelo Meu Estabelecimento.

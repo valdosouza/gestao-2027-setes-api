@@ -9,7 +9,7 @@ import {
   userCreateDto, userUpdateDto, userInstitutionsDto, userPrivilegesDto,
 } from './users.dto'
 import {
-  fetchUsers, fetchUser, createUser, editUser, removeUser,
+  fetchUsers, fetchUser, createUser, editUser,
   fetchInstitutionLinks, saveInstitutionLinks,
   fetchUserPrivileges, saveUserPrivileges,
   userSearchCriteriaFor, fetchUserSearchCriteria, fetchInstitutionLookup,
@@ -64,7 +64,8 @@ export async function getById(req: Request, res: Response): Promise<void> {
   const id = parseId(req, res)
   if (id === null) return
   try {
-    res.json({ ok: true, data: await fetchUser(scopeOf(req), id) })
+    // D-PV19/D-UC2: `?institutionId=` = o vínculo em foco para o "ativo" (super); o admin tem o alvo forçado ao JWT
+    res.json({ ok: true, data: await fetchUser(scopeOf(req), id, focusOf(req)) })
   } catch (err) {
     handleError(res, err, 'users/:id GET')
   }
@@ -94,17 +95,6 @@ export async function update(req: Request, res: Response): Promise<void> {
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'users/:id PUT')
-  }
-}
-
-export async function remove(req: Request, res: Response): Promise<void> {
-  const id = parseId(req, res)
-  if (id === null) return
-  try {
-    await removeUser(scopeOf(req), id)
-    res.json({ ok: true })
-  } catch (err) {
-    handleError(res, err, 'users/:id DELETE')
   }
 }
 

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { privilegeAct } from '@shared/auth/module-privilege-gate'
 import * as controller from './service-orders.controller'
-import { PRIVILEGE_FATURAR } from '@shared/auth/privileges'
+import { PRIVILEGE_FATURAR, PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 
 /**
  * Rotas do módulo service-orders — montadas em /api/service-orders.
@@ -281,7 +281,8 @@ router.delete('/:id', controller.remove)
  *       404: { description: OS não encontrada }
  *       409: { description: Ordem já faturada }
  */
-router.post('/:id/items', controller.addOrderItem)
+// D-PV21: ato sobre a OS ABERTA = ALTERAR (item novo/mudado/tirado); INSERIR = abrir a OS; EXCLUIR = apagá-la (D-PV8)
+router.post('/:id/items', privilegeAct(PRIVILEGE_ALTERAR), controller.addOrderItem)
 
 /**
  * @swagger
@@ -337,7 +338,7 @@ router.post('/:id/items', controller.addOrderItem)
  *       409: { description: Ordem já faturada }
  */
 router.put('/:id/items/:itemId', controller.updateOrderItem)
-router.delete('/:id/items/:itemId', controller.removeOrderItem)
+router.delete('/:id/items/:itemId', privilegeAct(PRIVILEGE_ALTERAR), controller.removeOrderItem)     // D-PV21
 
 /**
  * @swagger

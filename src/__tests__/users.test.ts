@@ -7,7 +7,7 @@
 import { NO_CRITERIA } from '../shared/list'
 import * as repo from '../modules/users/users.repository'
 import {
-  fetchUsers, createUser, editUser, removeUser, saveInstitutionLinks,
+  fetchUsers, fetchUser, createUser, editUser, saveInstitutionLinks,
   fetchUserPrivileges, saveUserPrivileges,
 } from '../modules/users/users.service'
 import { UserCreateInput, UserScope } from '../modules/users/users.interface'
@@ -28,6 +28,7 @@ const mockCatalogIds = repo.listInterfaceCatalogPrivilegeIds as jest.Mock
 const mockIfaceKey   = repo.findInterfaceKey                 as jest.Mock
 const mockDelegable  = repo.listDelegableSuperPrivileges     as jest.Mock
 const mockLinks      = repo.listActiveUserLinks              as jest.Mock
+const mockGetUser    = repo.getUser                          as jest.Mock
 
 const superScope: UserScope =
   { isSuper: true,  institutionId: 1, schemaName: 'setes_setes' }
@@ -52,6 +53,8 @@ beforeEach(() => {
   mockInsert.mockResolvedValue(9)
   mockExists.mockResolvedValue(true)
   mockLinked.mockResolvedValue(true)
+  mockGetUser.mockResolvedValue({ id: 9, nameCompany: 'Valdo de Souza', nickTrade: 'Valdo', email: 'valdo@setes.com.br', active: 'S' })
+  mockLinks.mockResolvedValue([{ institutionId: 5, kind: 'user', alive: true }])
 })
 
 describe('createUser', () => {
@@ -111,38 +114,67 @@ describe('fetchUsers (escopo)', () => {
   })
 })
 
-describe('editUser', () => {
-  it('senha null/ausente mantém a atual (hash null no repository)', async () => {
-    await editUser(superScope, 9, { ...input, password: null })
-
-    expect(mockUpdate).toHaveBeenCalledWith(9, expect.anything(), null)
+describe('editUser — D-PV19 (D-UC1…D-UC3): e-mail imutável, ativo = vínculo, sem exclusão, A-PV13 morta', () => {
+  it('senha null/ausente mantém a atual (hash null no repository); o ativo vai ao vínculo do estabelecimento alvo', async () => {
+    await editUser(adminScope, 9, { ...input, password: null })
+    expect(mockUpdate).toHaveBeenCalledWith(9, expect.anything(), null, 5)
   })
 
-  it('o PRÓPRIO email do usuário não conta como duplicado', async () => {
-    mockFindOwner.mockResolvedValue(9)
+  it('o e-mail IGUAL ao de login passa (comparação sem caixa/espaços); e-mail DIFERENTE → 409 LOGIN_EMAIL_IMMUTABLE no campo, nada gravado', async () => {
+    await expect(editUser(adminScope, 9, { ...input, email: ' VALDO@setes.com.br ' })).resolves.toBeUndefined()
+    await expect(editUser(adminScope, 9, { ...input, email: 'outro@setes.com.br' })).rejects.toMatchObject({
+      statusCode: 409, code: 'LOGIN_EMAIL_IMMUTABLE', fields: [{ field: 'email', message: expect.any(String) }],
+    })
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+  })
 
-    await expect(editUser(superScope, 9, input)).resolves.toBeUndefined()
+  it('super: o alvo do "ativo" é o institutionId do corpo; sem ele com `active` presente → 400; sem `active` o PUT nem precisa de alvo', async () => {
+    await expect(editUser(superScope, 9, { ...input, institutionId: null })).rejects.toMatchObject({ statusCode: 400, code: 'VALIDATION_FAILED' })
+    mockLinks.mockResolvedValue([{ institutionId: 7, kind: 'user', alive: true }])
+    await editUser(superScope, 9, { ...input, institutionId: 7, active: 'N' })
+    expect(mockUpdate).toHaveBeenLastCalledWith(9, expect.objectContaining({ active: 'N' }), expect.anything(), 7)
+    const { active: _a, ...noActive } = input
+    void _a
+    await editUser(superScope, 9, noActive as any)
+    expect(mockUpdate).toHaveBeenLastCalledWith(9, expect.not.objectContaining({ active: expect.anything() }), expect.anything(), null)
+  })
+
+  it('ativar/inativar um estabelecimento com que o usuário NÃO tem vínculo → 400 (vincule antes)', async () => {
+    mockLinks.mockResolvedValue([{ institutionId: 1, kind: 'user', alive: true }])
+    await expect(editUser(superScope, 9, { ...input, institutionId: 7, active: 'S' })).rejects.toMatchObject({ statusCode: 400 })
   })
 
   it('admin NÃO edita usuário de outra institution (404 — sem vazar existência)', async () => {
     mockLinks.mockResolvedValue([{ institutionId: 77, kind: 'user', alive: true }])
-
-    await expect(editUser(adminScope, 9, input))
-      .rejects.toMatchObject({ statusCode: 404 })
+    await expect(editUser(adminScope, 9, input)).rejects.toMatchObject({ statusCode: 404 })
     expect(mockUpdate).not.toHaveBeenCalled()
   })
 
-  it('gate adversarial da D-PV11 (HIGH): admin NÃO mexe na conta com vínculo SUPER nem na que tem vínculo com OUTRO estabelecimento', async () => {
-    for (const links of [[{ institutionId: 5, kind: 'super', alive: true }], [{ institutionId: 5, kind: 'user', alive: true }, { institutionId: 1, kind: 'admin', alive: true }],
-      [{ institutionId: 5, kind: 'user', alive: true }, { institutionId: 1, kind: 'super', alive: false }]]) {   // adormecido também conta
+  it('D-PV12: a conta com vínculo SUPER (vivo ou adormecido) só o Super altera; D-PV19: vínculo com OUTRO estabelecimento NÃO barra mais (A-PV13 morreu)', async () => {
+    for (const links of [[{ institutionId: 5, kind: 'super', alive: true }], [{ institutionId: 5, kind: 'user', alive: true }, { institutionId: 1, kind: 'super', alive: false }]]) {
       mockLinks.mockResolvedValue(links)
       await expect(editUser(adminScope, 9, input)).rejects.toMatchObject({ statusCode: 403, code: 'USER_MANAGED_BY_SUPER' })
-      await expect(removeUser(adminScope, 9)).rejects.toMatchObject({ statusCode: 403, code: 'USER_MANAGED_BY_SUPER' })
     }
     expect(mockUpdate).not.toHaveBeenCalled()
-    mockLinks.mockResolvedValue([{ institutionId: 5, kind: 'user', alive: true }])        // só o próprio estabelecimento: segue editável
+    mockLinks.mockResolvedValue([{ institutionId: 5, kind: 'user', alive: true }, { institutionId: 1, kind: 'admin', alive: true }])
     await editUser(adminScope, 9, input)
     expect(mockUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('a exclusão de usuário não existe mais no service (D-UC1: a credencial nunca é excluída)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const svc = require('../modules/users/users.service')
+    expect(svc.removeUser).toBeUndefined()
+    expect((repo as any).deleteUser).toBeUndefined()
+  })
+
+  it('fetchUser: o ativo é o do vínculo em foco — admin forçado ao JWT; super escolhe (ou nenhum)', async () => {
+    await fetchUser(adminScope, 9, 999)
+    expect(mockGetUser).toHaveBeenLastCalledWith(9, 5)
+    await fetchUser(superScope, 9, 7)
+    expect(mockGetUser).toHaveBeenLastCalledWith(9, 7)
+    await fetchUser(superScope, 9)
+    expect(mockGetUser).toHaveBeenLastCalledWith(9, null)
   })
 })
 

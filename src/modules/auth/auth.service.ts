@@ -4,7 +4,7 @@ import {
   setActivationKey, getActivationInfo, updatePassword,
 } from './auth.repository'
 import { InstitutionPayload } from '@shared/types/express'
-import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { isOwnVendorInstitution } from '@shared/auth/roles'
 import { signFinalToken as signProductToken, signSelectionToken, verifySelectionToken } from '@shared/auth/product-token'
 import { SessionContext, getSessionContext } from '@shared/session-context'
 import { md5Password } from '@shared/auth/password'
@@ -37,7 +37,7 @@ const md5 = md5Password
 // 'super' fora da institution da Setes é ignorado (decisão 14)
 function resolveRole(link: UserInstitution): string {
   const kind = link.profile ?? 'user'
-  if (kind === 'super' && link.institutionId !== SETES_INSTITUTION_ID) return 'user'
+  if (kind === 'super' && !isOwnVendorInstitution(link.institutionId)) return 'user'   // D-PV37: predicado único
   return kind
 }
 

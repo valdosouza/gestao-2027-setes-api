@@ -7,6 +7,7 @@ import {
   UserListRow, InstitutionLookupRow, UserRow, UserInput, UserInstitutionGrant, UserInstitutionLink,
   UserInterfacePrivileges, UserPrivilegeGrant,
 } from './users.interface'
+import { invalidatePrivilegeVerdicts } from '@shared/auth/require-privilege'
 
 // Peça centralizada em @shared/db/schema (2026-08-04).
 import { assertSchema } from '@shared/db/schema'
@@ -41,7 +42,8 @@ export const USER_SEARCH_CRITERIA: readonly SearchCriterion[] = [
   { key: 'kind', kind: 'options', labelKey: 'search.users.kind', expr: 'ihu.kind', options: USER_KINDS },
   { key: 'institution', kind: 'lookup', labelKey: 'search.users.institution', shape: 'set',
     expr: USER_INSTITUTION_IDS, lookup: '/api/users/institution-lookup' },
-  { key: 'active', kind: 'bool', labelKey: 'search.users.active', expr: 'u.active', boolValues: ['S', 'N'] },
+  // D-PV19/D-UC2: "ativo" é do VÍNCULO em foco (alias ihu da query base); sem foco (Super global) cai na credencial
+  { key: 'active', kind: 'bool', labelKey: 'search.users.active', expr: "COALESCE(ihu.active, u.active)", boolValues: ['S', 'N'] },
   { key: 'createdAt', kind: 'date', labelKey: 'search.users.createdAt', expr: 'u.created_at', storage: 'datetime' },
 ]
 
@@ -70,7 +72,7 @@ export async function listUsers(
          ON m.id = ehm.tb_mailing_id AND m.deleted = 'N'
        LEFT JOIN setes_central.tb_institution_has_user ihu
          ON ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
-        AND ihu.active = 'S' AND ihu.deleted = 'N'
+        AND ihu.deleted = 'N'
      WHERE u.deleted = 'N'
        AND (? = '' OR e.nick_trade LIKE ? OR e.name_company LIKE ? OR m.email LIKE ?)
        AND (? IS NULL OR ihu.tb_user_id IS NOT NULL)${query.criteria.sql}`
@@ -81,7 +83,7 @@ export async function listUsers(
     `SELECT u.id,
             COALESCE(e.nick_trade, e.name_company) AS name,
             m.email,
-            u.active,
+            COALESCE(ihu.active, u.active) AS active,
             ihu.kind
      ${where}
      ORDER BY name, u.id
@@ -115,14 +117,14 @@ export async function listInstitutionLookup(filter: string): Promise<Institution
  * (`setes_central.tb_user`). Re-prova do gate adversarial da D-PV11: contar só os vivos deixava o admin de um cliente trocar a senha
  * de quem tinha um vínculo SUPER revogado — e o Super, ao reativá-lo, entregava a conta (o `setInstitutionLinks` revive a linha).
  */
-export async function listActiveUserLinks(userId: number): Promise<Array<{ institutionId: number; kind: string; alive: boolean }>> {
+export async function listActiveUserLinks(userId: number): Promise<Array<{ institutionId: number; kind: string; alive: boolean; deleted: boolean }>> {
   const [rows] = await pool.query<any[]>(
-    `SELECT tb_institution_id AS institutionId, kind, (active = 'S' AND deleted = 'N') AS alive
+    `SELECT tb_institution_id AS institutionId, kind, (active = 'S' AND deleted = 'N') AS alive, (deleted = 'S') AS deleted
        FROM setes_central.tb_institution_has_user
       WHERE tb_user_id = ?`,
     [userId]
   )
-  return rows.map(r => ({ institutionId: Number(r.institutionId), kind: String(r.kind ?? ''), alive: Boolean(Number(r.alive)) }))
+  return rows.map(r => ({ institutionId: Number(r.institutionId), kind: String(r.kind ?? ''), alive: Boolean(Number(r.alive)), deleted: Boolean(Number(r.deleted ?? 0)) }))
 }
 
 /** Usuário tem vínculo ATIVO com a institution? (escopo do admin) */
@@ -138,13 +140,19 @@ export async function userLinkedToInstitution(
   return rows.length > 0
 }
 
-export async function getUser(id: number): Promise<UserRow | null> {
+/**
+ * Usuário completo. D-PV19/D-UC2: `active` é o do VÍNCULO com `institutionId` (null = sem foco → `active` null; o vínculo
+ * soft-deletado também conta como inativo — a linha deleted='S' não é "vivo").
+ */
+export async function getUser(id: number, institutionId: number | null = null): Promise<UserRow | null> {
   const [rows] = await pool.query<any[]>(
     `SELECT u.id,
             e.name_company AS nameCompany,
             e.nick_trade   AS nickTrade,
             m.email,
-            u.active
+            CASE WHEN ? IS NULL THEN NULL
+                 WHEN ihu.tb_user_id IS NULL THEN 'N'
+                 WHEN ihu.active = 'S' AND ihu.deleted = 'N' THEN 'S' ELSE 'N' END AS active
      FROM setes_central.tb_user u
        INNER JOIN setes_central.tb_entity e ON e.id = u.id
        LEFT JOIN setes_central.tb_entity_has_mailing ehm
@@ -153,16 +161,22 @@ export async function getUser(id: number): Promise<UserRow | null> {
         AND ehm.deleted = 'N'
        LEFT JOIN setes_central.tb_mailing m
          ON m.id = ehm.tb_mailing_id AND m.deleted = 'N'
+       LEFT JOIN setes_central.tb_institution_has_user ihu
+         ON ihu.tb_user_id = u.id AND ihu.tb_institution_id = ?
      WHERE u.id = ? AND u.deleted = 'N'`,
-    [id]
+    [institutionId, institutionId, id]
   )
   return (rows[0] as UserRow | undefined) ?? null
 }
 
 
-/** PUT: senha só muda quando [passwordHash] vier (null mantém). */
+/**
+ * PUT: senha só muda quando [passwordHash] vier (null mantém). D-PV19 (D-UC1/D-UC2): o e-mail de login NÃO se regrava (o
+ * service já recusou qualquer troca — a credencial é do titular) e "ativo" é o VÍNCULO com [linkInstitutionId] (null = não mexe);
+ * `tb_user.active` (a credencial) fica como está. Inativar o vínculo derruba o cache do veredito do usuário (D-PV29).
+ */
 export async function updateUserCascade(
-  id: number, input: UserInput, passwordHash: string | null
+  id: number, input: UserInput, passwordHash: string | null, linkInstitutionId: number | null = null
 ): Promise<void> {
   const conn = await pool.getConnection()
   try {
@@ -172,17 +186,20 @@ export async function updateUserCascade(
     })
     if (passwordHash !== null) {
       await conn.query(
-        `UPDATE setes_central.tb_user
-         SET password = ?, active = ?, updated_at = NOW() WHERE id = ?`,
-        [passwordHash, input.active, id]
+        `UPDATE setes_central.tb_user SET password = ?, updated_at = NOW() WHERE id = ?`,
+        [passwordHash, id]
       )
     } else {
+      await conn.query(`UPDATE setes_central.tb_user SET updated_at = NOW() WHERE id = ?`, [id])
+    }
+    if (input.active !== undefined && linkInstitutionId !== null) {
       await conn.query(
-        `UPDATE setes_central.tb_user SET active = ?, updated_at = NOW() WHERE id = ?`,
-        [input.active, id]
+        `UPDATE setes_central.tb_institution_has_user
+            SET active = ?, updated_at = NOW()
+          WHERE tb_user_id = ? AND tb_institution_id = ? AND deleted = 'N'`,
+        [input.active, id, linkInstitutionId]
       )
     }
-    await syncLoginEmail(conn, id, input.email)
     await conn.commit()
   } catch (err) {
     await conn.rollback()
@@ -190,6 +207,7 @@ export async function updateUserCascade(
   } finally {
     conn.release()
   }
+  if (input.active !== undefined && linkInstitutionId !== null) invalidatePrivilegeVerdicts({ userId: id })
 }
 
 export async function userExists(id: number): Promise<boolean> {
@@ -200,13 +218,7 @@ export async function userExists(id: number): Promise<boolean> {
   return rows.length > 0
 }
 
-/** Soft delete (a entity permanece — padrão da casa). */
-export async function deleteUser(id: number): Promise<void> {
-  await pool.query(
-    `UPDATE setes_central.tb_user SET deleted = 'S', updated_at = NOW() WHERE id = ?`,
-    [id]
-  )
-}
+// D-PV19/D-UC1 (2026-10-20): a credencial NUNCA é excluída (nem soft delete) — `deleteUser` saiu; inativa-se o vínculo.
 
 /** Todas as institutions vivas + situação do vínculo do usuário. */
 export async function listInstitutionLinks(
@@ -410,6 +422,7 @@ export async function setUserPrivileges(
   } finally {
     conn.release()
   }
+  invalidatePrivilegeVerdicts({ userId })      // D-PV29: privilégio salvo — revogação imediata no processo
 }
 
 /** Sincroniza vínculos: concede a lista (com kind), revoga (soft) as demais. */
@@ -451,4 +464,5 @@ export async function setInstitutionLinks(
   } finally {
     conn.release()
   }
+  invalidatePrivilegeVerdicts({ userId })      // D-PV29: vínculo de usuário mudou
 }

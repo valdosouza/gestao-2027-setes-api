@@ -22,3 +22,15 @@ export const PRIVILEGE_DESCONTO   = 8
  *  `POST /api/billing/transmit` pelo ramo do pedido). Separado de FATURAR, como o
  *  legado separava AUTORIZAR. */
 export const PRIVILEGE_TRANSMITIR = 9
+/** Criar marca/unidade/embalagem no catálogo CENTRAL (D-PR33, branch `merchandise` — seed 66). Reservado aqui para a
+ *  numeração dos verbos seguintes; o consumidor vive naquela branch. */
+export const PRIVILEGE_CATALOGAR  = 10
+/** CONFIGURAR (D-PV25, Valdo 2026-10-20 — seed 68): "pode ajustar o comportamento desta tela" — gravar o valor da
+ *  INSTITUTION ('I') de uma config e o required/caption/mask de um campo da tela X exige CONFIGURAR em X, por qualquer
+ *  caminho (engrenagem ou painel solto). O override PESSOAL ('U') segue aberto (A-PV6). O par existe para toda interface
+ *  com config ou campo no catálogo; "Configurações Gerais" = CONFIGURAR em `general-configs`. */
+export const PRIVILEGE_CONFIGURAR = 11
+/** CONSULTAR (D-PV40, Valdo 2026-10-20 — seed 68): perguntar ao TERCEIRO (banco, fisco) a situação de um documento sem
+ *  mudar estado nele (boleto `refresh`; nfse-api `refresh`; passada do rodízio). TRANSMITIR fica para o que MUDA estado no
+ *  terceiro (registrar, transmitir, simular no sandbox). Princípio D-PV27: o verbo nomeia a FINALIDADE, nunca o transporte. */
+export const PRIVILEGE_CONSULTAR  = 12

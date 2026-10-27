@@ -1,9 +1,9 @@
 import {
-  getInstitutionSchemaName, listInterfacesWithGrant, setInstitutionInterfaces,
+  getInstitutionSchemaName, listInterfacesWithGrant, setInstitutionInterfaceLink,
   upsertFeatureFlag, InterfaceGrantRow,
 } from './admin.repository'
 import { HttpError } from '@shared/errors/http-error'
-import type { InterfaceGrantChange } from '@shared/institution-interfaces'
+import type { InterfaceLinkChange } from '@shared/institution-interfaces'
 
 // O onboarding de institution foi ABSORVIDO pelo cadastro de Estabelecimento
 // (POST /api/institutions — módulo institutions, decisão do Valdo 2026-07-11).
@@ -25,11 +25,12 @@ export async function getInstitutionInterfaces(institutionId: number): Promise<I
   return listInterfacesWithGrant(schemaName, institutionId)
 }
 
-export async function updateInstitutionInterfaces(
-  institutionId: number, interfaceIds: number[]
-): Promise<InterfaceGrantChange> {
+/** D-PV34 (2026-10-20): UMA marca por vez — a aba do Super grava a diferença de cada clique pela peça única. */
+export async function setInstitutionInterface(
+  institutionId: number, interfaceId: number, linked: boolean
+): Promise<InterfaceLinkChange> {
   const schemaName = await resolveTargetSchema(institutionId)
-  return setInstitutionInterfaces(schemaName, institutionId, interfaceIds)
+  return setInstitutionInterfaceLink(schemaName, institutionId, interfaceId, linked)
 }
 
 // Gate técnico (decisão 17): a tela de cliente do Super chama este endpoint

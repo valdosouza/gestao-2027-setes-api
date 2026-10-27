@@ -55,7 +55,8 @@ const router = Router()
 // (D-F37); o super passa as duas (A-PV1); admin passa o privilégio. FORA da guarda, por nome: core, erp, admin,
 // entities (prefill de qualquer cadastro), billing/* (guardas de AÇÃO pela interface do RAMO — Q-G22), os geográficos
 // (leitura aberta — referência dos endereços), os do Super (superGuard), users/establishment (perfil admin — D-PV5),
-// modules (adminGuard até a onda 0 do grupo — D-GE20) e state-tax-rates (sem interface no catálogo).
+// modules (adminGuard até a onda 0 do grupo — D-GE20) e state-tax-rates (sem interface no catálogo — adminGuard, D-PV23).
+// D-PV36: módulo sob `gatedModule` NÃO consulta mais a flag técnica (o vínculo de interfaces é a única licença).
 
 router.use('/core',  coreRoutes)
 router.use('/erp',   erpRoutes)
@@ -116,6 +117,9 @@ router.use('/interface-configs', ...gatedModule('interface-configs', interfaceCo
 // Busca por documento (Fase 3 Entidade Única, decisões 3 e 10): aberta a
 // QUALQUER usuário autenticado — o prefill compartilhado é a feature; isenta
 // do gate de flags (infraestrutura dos cadastros da cadeia fiscal).
+// D-PV23/D-PV30 (2026-10-20): as rotas AVULSAS de tributação (GET/PUT /:id/tax)
+// SAÍRAM — a tributação se grava na transação do PAPEL (aba Tributação) e a
+// do emitente pelo Meu Estabelecimento; sobrou só o prefill.
 router.use('/entities', entitiesRoutes)
 
 // Clientes (Fase 3, decisão 8 — 1º cadastro do CLIENTE com a cadeia fiscal):
@@ -151,12 +155,15 @@ router.use('/tax-rules', ...gatedModule('tax-rules', taxRulesRoutes))
 // institutions). Fonte do ICMS-ST/FCP que o motor @shared/tax-rule/calc.ts
 // consome via resolveMvaAliq/resolveFcpAliq. Sem tela no app ainda (Q22 —
 // onda do app desta fase); flag 'state-tax-rates'.
-router.use('/state-tax-rates', stateTaxRatesRoutes)
+// D-PV23 (Valdo 2026-10-20, fecha a Q-PV14 = (a)): sem interface no catálogo a guarda por roteador não a alcança — até a
+// tela nascer, escrita de dado fiscal só pelo perfil ADMIN (adminGuard); o super passa (A-PV1).
+router.use('/state-tax-rates', adminGuard, stateTaxRatesRoutes)
 
 // Faturamento de ordens (W2 Onda 3, rodada R4): /validate (lote completo de
 // pendências + grava regra por item origin 'A') e /invoice (fatura consumindo
 // as regras gravadas — impostos por item + nota + financeiro em UMA
-// transação). Flag 'billing'.
+// transação). Flag 'billing'. D-PV23: /validate também sob FATURAR pela
+// interface do RAMO (mesmo resolvedor do /invoice) — grava regra por item.
 router.use('/billing', billingRoutes)
 
 // Categorias de produtos/serviços (2026-07-18): cadastro de CLIENTE — sem

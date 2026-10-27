@@ -1,17 +1,17 @@
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
-import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { isOwnVendorInstitution } from '@shared/institution-interfaces'
 import { DELEGABLE_SUPER_INTERFACES, isDelegableSuperInterface } from '@shared/auth/super-delegation'
 import { ListQuery, PagedRows, PublicSearchCriterion, SearchCriterion, publicCriteria } from '@shared/list'
 import { md5Password } from '@shared/auth/password'
 import {
-  UserListRow, UserRow, UserInput, UserCreateInput, UserScope,
+  UserListRow, UserRow, UserCreateInput, UserUpdateInput, UserScope,
   UserInstitutionGrant, UserInstitutionLink, UserInterfacePrivileges,
   InstitutionLookupRow,
 } from './users.interface'
 import {
   listUsers, getUser, findLoginEmailOwner, insertUserCascade,
-  updateUserCascade, userExists, deleteUser, userLinkedToInstitution,
+  updateUserCascade, userExists, userLinkedToInstitution,
   listInstitutionLinks, setInstitutionLinks,
   findInstitutionSchema, listUserPrivileges, setUserPrivileges,
   listInterfaceCatalogPrivilegeIds, findInterfaceKey, listDelegableSuperPrivileges, listActiveUserLinks,
@@ -37,31 +37,32 @@ function scopeInstitution(scope: UserScope, requested: number | null): number | 
 async function assertInScope(scope: UserScope, userId: number): Promise<void> {
   if (scope.isSuper) return
   // 404 (não 403) para não vazar a existência de usuários de outros clientes.
-  if (!(await userLinkedToInstitution(userId, scope.institutionId))) {
+  // D-PV19/D-UC2: o vínculo INATIVO com o próprio estabelecimento ainda é do admin — é exatamente o que ele reativa.
+  if (!(await userLinkedToInstitutionAny(userId, scope.institutionId))) {
     throw new HttpError(404, 'Usuário não encontrado')
   }
 }
 
 /**
- * Editar/desativar/excluir a CONTA (login global): gate adversarial da D-PV11 (HIGH, 2026-10-18 — prompt_privilegios_interfaces.md
- * §11.9). O admin da Setes editava a conta do SUPER (senha, e-mail, exclusão) e, com ela, concedia a si a delegação — furando a
- * D-PV10 ("só o super tem tudo") e a D-PV11 (b); o admin de OUTRO cliente trocava a senha de usuário vinculado também à Setes.
- * D-PV12 (Valdo, fecha a Q-PV37): trocar senha é ROTINA do admin — ele mexe na conta de todos do próprio estabelecimento, MENOS a do
- * super (o super é um só; o usuário liberado pelo Super segue editável pelo admin da Setes — a liberação não muda quem gere a conta).
- * Quem não é super só mexe na conta cujos vínculos — TODOS, vivos ou adormecidos — são com o próprio estabelecimento e nenhum de perfil
- * super; A-PV13 (a ratificar): a conta com vínculo com OUTRO estabelecimento também fica com o Super (o HIGH 2 do gate — o admin de um
- * cliente tomaria a conta que outro cliente, ou a Setes, usa; vínculo com vários estabelecimentos já é ato exclusivo do super —
- * `saveInstitutionLinks`).
+ * Editar a CONTA (login global): gate adversarial da D-PV11 (HIGH, 2026-10-18 — prompt_privilegios_interfaces.md §11.9). O admin
+ * da Setes editava a conta do SUPER (senha, exclusão) e, com ela, concedia a si a delegação — furando a D-PV10 ("só o super tem
+ * tudo") e a D-PV11 (b). D-PV12 (Valdo, fecha a Q-PV37): trocar senha é ROTINA do admin — ele mexe na conta de todos do próprio
+ * estabelecimento, MENOS a do super (vínculo super vivo ou adormecido — re-prova do gate).
+ * D-PV19 (Valdo 2026-10-20): a **A-PV13 MORREU** — a conta com vínculo com OUTRO estabelecimento deixa de ser só do Super (o dono
+ * da credencial é o TITULAR do e-mail — D-UC3; cada estabelecimento gere o SEU vínculo e os privilégios no SEU schema). Sobra o
+ * que a D-PV12 protege: o super. Limite registrado (Q-PV55): até a onda 0 do convidado (D-UC6 — o admin define só a senha INICIAL),
+ * o admin de X troca a senha de um login que o Super também vinculou a Y — vínculo cruzado só o Super cria (`saveInstitutionLinks`).
  */
 async function assertAccountManageable(scope: UserScope, userId: number): Promise<void> {
   if (scope.isSuper) return
   const links = await listActiveUserLinks(userId)
-  // escopo: vínculo VIVO com o próprio estabelecimento; a barreira conta TODO vínculo (vivo ou adormecido — re-prova do gate)
-  if (!links.some(l => l.alive && l.institutionId === scope.institutionId)) {
+  // escopo: vínculo (vivo OU inativo — D-UC2: reativar é mexer no vínculo) com o próprio estabelecimento; 404 sem vazar existência
+  if (!links.some(l => !l.deleted && l.institutionId === scope.institutionId)) {
     throw new HttpError(404, 'Usuário não encontrado')
   }
-  if (links.some(l => l.kind === 'super' || l.institutionId !== scope.institutionId)) {
-    throw new HttpError(403, 'Esta conta tem vínculo de super ou com outro estabelecimento — só o Super altera', [],
+  // a conta do super (vínculo super vivo ou adormecido) só o Super altera — D-PV12
+  if (links.some(l => l.kind === 'super')) {
+    throw new HttpError(403, 'Esta conta tem vínculo de super — só o Super altera', [],
       ErrorCodes.USER_MANAGED_BY_SUPER)
   }
 }
@@ -105,9 +106,10 @@ export async function fetchUsers(
   return listUsers(query, scopeInstitution(scope, institutionId))
 }
 
-export async function fetchUser(scope: UserScope, id: number): Promise<UserRow> {
+/** `institutionId` = o vínculo em FOCO para o "ativo" (D-UC2): o admin tem o alvo forçado ao JWT; o super escolhe (ou nenhum). */
+export async function fetchUser(scope: UserScope, id: number, institutionId: number | null = null): Promise<UserRow> {
   await assertInScope(scope, id)
-  const user = await getUser(id)
+  const user = await getUser(id, scopeInstitution(scope, institutionId))
   if (!user) throw new HttpError(404, 'Usuário não encontrado')
   return user
 }
@@ -137,20 +139,46 @@ export async function createUser(
   return { id }
 }
 
+/**
+ * D-PV19 (Valdo 2026-10-20; D-UC1…D-UC3 da frente do usuário convidado): o e-mail de LOGIN é imutável (a credencial é do
+ * titular — trocar o e-mail é trocar o dono: 409 LOGIN_EMAIL_IMMUTABLE), a exclusão de usuário SAIU (nem soft delete), e
+ * "ativo" é o VÍNCULO `tb_institution_has_user.active` com o estabelecimento alvo (admin = o do JWT; super = `institutionId`
+ * do corpo — sem ele, com `active` presente, 400: não há vínculo a inativar).
+ */
 export async function editUser(
-  scope: UserScope, id: number, input: UserInput
+  scope: UserScope, id: number, input: UserUpdateInput
 ): Promise<void> {
-  if (!(await userExists(id))) throw new HttpError(404, 'Usuário não encontrado')
+  const current = await getUser(id)
+  if (!current) throw new HttpError(404, 'Usuário não encontrado')
   await assertAccountManageable(scope, id)
-  await assertLoginEmailFree(input.email, id)
+  if (normalizeEmail(input.email) !== normalizeEmail(current.email ?? '')) {
+    throw new HttpError(409, 'O e-mail de login não muda — a credencial é do titular (inative o vínculo e crie outro usuário)',
+      [{ field: 'email', message: 'E-mail de login imutável' }], ErrorCodes.LOGIN_EMAIL_IMMUTABLE)
+  }
+  let linkInstitutionId: number | null = null
+  if (input.active !== undefined) {
+    linkInstitutionId = scopeInstitution(scope, input.institutionId ?? null)
+    if (linkInstitutionId === null) {
+      throw new HttpError(400, 'Informe o estabelecimento (institutionId) — "ativo" é do vínculo com o estabelecimento',
+        [{ field: 'institutionId', message: 'Obrigatório para o super ao mexer no ativo' }], ErrorCodes.VALIDATION_FAILED)
+    }
+    if (!(await userLinkedToInstitutionAny(id, linkInstitutionId))) {
+      throw new HttpError(400, 'Usuário sem vínculo com este estabelecimento — vincule antes de ativar/inativar',
+        [{ field: 'institutionId', message: 'Sem vínculo' }], ErrorCodes.VALIDATION_FAILED)
+    }
+  }
   const hash = input.password ? md5Password(input.password) : null
-  await updateUserCascade(id, input, hash)
+  await updateUserCascade(id, input, hash, linkInstitutionId)
 }
 
-export async function removeUser(scope: UserScope, id: number): Promise<void> {
-  if (!(await userExists(id))) throw new HttpError(404, 'Usuário não encontrado')
-  await assertAccountManageable(scope, id)
-  await deleteUser(id)
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase()
+}
+
+/** Vínculo EXISTENTE (vivo ou inativo, não excluído) — o alvo do "ativo" pode estar inativo (é exatamente o que se reativa). */
+async function userLinkedToInstitutionAny(userId: number, institutionId: number): Promise<boolean> {
+  const links = await listActiveUserLinks(userId)
+  return links.some(l => l.institutionId === institutionId && !l.deleted)
 }
 
 // ---------------------------------------------------------------------
@@ -229,8 +257,8 @@ export async function fetchUserPrivileges(
   await assertUserLinkedTo(userId, target)
   const rows = await listUserPrivileges(target.schemaName, target.institutionId, userId,
     [...ADMIN_PROFILE_INTERFACE_KEYS, ...DELEGABLE_SUPER_INTERFACES])
-  // D-PV11 (b): a tela do Super delegável só aparece quando quem edita é o SUPER e o usuário é da Setes
-  if (!scope.isSuper || target.institutionId !== SETES_INSTITUTION_ID) return rows
+  // D-PV11 (b): a tela do Super delegável só aparece quando quem edita é o SUPER e o usuário é da Setes (D-PV37: predicado único)
+  if (!scope.isSuper || !isOwnVendorInstitution(target.institutionId)) return rows
   return rows.concat(await listDelegableSuperPrivileges(target.schemaName, userId, DELEGABLE_SUPER_INTERFACES))
 }
 
@@ -258,7 +286,7 @@ export async function saveUserPrivileges(
   }
 
   // D-PV11 (b)/(c): tela do Super delegável — SÓ o Super libera, e só para usuário da Setes (o admin nunca concede, nem a si)
-  if (isDelegableSuperInterface(key) && (!scope.isSuper || target.institutionId !== SETES_INSTITUTION_ID)) {
+  if (isDelegableSuperInterface(key) && (!scope.isSuper || !isOwnVendorInstitution(target.institutionId))) {
     throw new HttpError(403, 'Esta tela do Super só o Super libera, e só para usuário da Setes',
       [{ field: 'privilegeIds', message: `A tela ${key} é delegável só pelo Super` }], ErrorCodes.SUPER_DELEGATION_SUPER_ONLY)
   }

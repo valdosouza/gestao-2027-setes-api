@@ -3,8 +3,8 @@ import { HttpError } from '@shared/errors/http-error'
 import { openBankChannel } from '@shared/bank-channel'
 import {
   registerBankSlip, refreshRegistration, refreshOpenRegistrations, cancelRegisteredBankSlip,
-  reapplyRegistrationEffect, latestRegistration, isLive, listSlipRegistrations,
-  RegisterResult, RefreshResult, RefreshRunReport, CancelRegisteredResult, ReapplyEffectResult,
+  reapplyRegistrationEffect, latestRegistration, isLive, listSlipRegistrations, getRegistrationEvent,
+  RegisterResult, RefreshResult, RefreshRunReport, CancelRegisteredResult, ReapplyEffectResult, RegistrationEventRow,
 } from '@shared/bank-slip-registration'
 import { BankSlipScope } from './bank-slips.service'
 
@@ -26,6 +26,16 @@ export async function refreshAll(scope: BankSlipScope, opts: { minMinutes?: numb
 }
 
 /** D-I25: ato manual — reaplica o efeito de uma voz R/C/V recusada na hora (nunca automático). */
+/**
+ * D-PV27: a VOZ do evento a reaplicar (sem travar e sem executar) — a política do privilégio do EFEITO precisa dela antes do ato.
+ * Evento inexistente = 404 (o mesmo que a reaplicação daria), para a política nunca decidir sobre nada.
+ */
+export async function peekReapplyEvent(id: number, attempt: number, event: number, scope: BankSlipScope): Promise<RegistrationEventRow> {
+  const ev = await getRegistrationEvent(pool, scope.schemaName, scope.institutionId, id, attempt, event)
+  if (!ev) throw new HttpError(404, `Evento ${event} da apresentação ${attempt} não encontrado`, undefined, 'BANK_SLIP_REGISTRATION_EVENT_NOT_FOUND')
+  return ev
+}
+
 export async function reapplyEffect(id: number, attempt: number, event: number, scope: BankSlipScope): Promise<ReapplyEffectResult> {
   return reapplyRegistrationEffect(scope.schemaName, scope.institutionId, scope.userId, id, attempt, event)
 }
