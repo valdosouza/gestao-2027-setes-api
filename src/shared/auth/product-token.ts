@@ -1,5 +1,5 @@
 import fs from 'fs'
-import { createPrivateKey, createPublicKey, KeyObject } from 'crypto'
+import { createPrivateKey, createPublicKey, hkdfSync, KeyObject } from 'crypto'
 import jwt, { JwtHeader } from 'jsonwebtoken'
 import { InstitutionPayload } from '@shared/types/express'
 import { HttpError } from '@shared/errors/http-error'
@@ -90,6 +90,24 @@ function keyRing(): JwtKeyRing {
 /** Testes / troca de chave em runtime. */
 export function resetJwtKeyRing(): void {
   ring = null
+  derived.clear()
+}
+
+const derived = new Map<string, Buffer>()
+/**
+ * Segredo SIMÉTRICO derivado da chave PRIVADA de assinatura (HKDF-SHA256, `purpose` = separação de domínio) — para HMAC de
+ * valores que o banco guarda e que não podem ser revertidos por quem só LÊ o banco (Q-PV38: o código do pedido de troca de
+ * senha). Mesma guarda da chave JWT: fora do banco e do repositório, o boot não sobe sem ela; trocar a chave (rotação do
+ * `JWT_KID`, PADROES §7) invalida o que foi derivado da anterior — limite aceito para valores de vida curta (≤ 15 min).
+ */
+export function deriveProductSecret(purpose: string): Buffer {
+  let key = derived.get(purpose)
+  if (!key) {
+    const ikm = keyRing().privateKey.export({ type: 'pkcs8', format: 'der' })
+    key = Buffer.from(hkdfSync('sha256', ikm, 'setes-api/product-secret', purpose, 32))
+    derived.set(purpose, key)
+  }
+  return key
 }
 /** Boot: carrega e confere as chaves — o servidor NÃO sobe sem elas. Devolve o resumo para o log (nunca a chave). */
 export function assertJwtKeys(): string {

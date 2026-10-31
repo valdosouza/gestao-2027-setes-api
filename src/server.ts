@@ -6,6 +6,8 @@ import {
 import { detectLockWaitSupport } from '@shared/db/counters'
 import { assertIbscbsCatalogSchema } from '@shared/ibscbs-classification'
 import { assertJwtKeys } from '@shared/auth/product-token'
+import { assertPasswordResetReady } from '@modules/auth/auth.service'
+import { assertMailerReady, nodeEnvWarning } from '@shared/mailer/mailer'
 import { assertFiscalVoiceReadable } from '@shared/fiscal-voice'
 import pool from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
@@ -24,6 +26,12 @@ async function bootstrap() {
     logger.info(`Fuso da sessão do banco: ${await assertSessionTimeZoneUtc()}`)          // Q-TZ1
     logger.info(`CHECK do banco: ${await assertCheckConstraintsEnforced()}`)           // D-IB26
     logger.info(`Catálogo IBS/CBS (script 63): ${await assertIbscbsCatalogSchema()}`)   // D-IB36
+    logger.info(`Pedido de troca de senha (script 67): ${await assertPasswordResetReady()}`)   // Q-PV38
+    // D-RS5: em produção (NODE_ENV=production) o SMTP é OBRIGATÓRIO — sem ele o setes-api NÃO sobe (o código de recuperação
+    // nunca vai ao log de produção e o aviso ao dono da conta — D-RS4 — não pode morrer em silêncio). Em dev: só o resumo.
+    const envWarning = nodeEnvWarning()
+    if (envWarning) logger.warn(envWarning)
+    logger.info(`E-mail (SMTP): ${assertMailerReady()}`)
     // D-F113/D-F127 (F2a A3): a voz do fisco é LIDA no fiscal_api — sem a view de cada família (ou sem o GRANT) o setes-api NÃO sobe
     // (nunca 500 na 1ª leitura da lista de OS). Ordem de deploy: nfse-api (as migrations das views) ANTES do setes-api.
     logger.info(`Voz do fisco (views): ${await assertFiscalVoiceReadable(pool)}`)
