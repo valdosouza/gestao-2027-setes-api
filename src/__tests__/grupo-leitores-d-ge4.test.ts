@@ -15,7 +15,7 @@ import { bearer } from '../test-setup/test-token'
 import {
   GROUP_SCHEMA, MATRIZ, FILIAL, normalizeSql, paramOf, scopedByInstitution, joinsByInstitution,
 } from '../test-setup/two-institutions'
-import { getInstitutionInterfaces, updateInstitutionInterfaces } from '../modules/admin/admin.service'
+import { getInstitutionInterfaces, setInstitutionInterface } from '../modules/admin/admin.service'
 import { getMenus, getSessionInfo } from '../modules/core/core.service'
 import { getRuleObservationNotes } from '../modules/billing/billing.repository'
 import { setWebhookProcessor } from '../modules/bank-channel-webhook/bank-channel-webhook.routes'
@@ -124,6 +124,15 @@ async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown
       return { id: i.id, description: i.description, i18nKey: i.i18nKey, groupDefault: i.groupDefault }
     }), null]
   }
+  // D-PV34 — a marca única confere a interface viva e trava a linha do par (aqui inexistente)
+  if (/FROM setes_central\.tb_interface WHERE id = \? AND deleted = 'N'/.test(t)) {
+    const i = CATALOG.find(c => c.id === Number(params[0]))
+    return [i ? [{ id: i.id, k: i.i18nKey, kind: i.kind, groupDefault: i.groupDefault }] : [], null]
+  }
+  if (/FROM \w+\.tb_institution_has_interface WHERE tb_institution_id = \? AND tb_interface_id = \? FOR UPDATE/.test(t)) {
+    return [CONTRACT.filter(c => c.tb_institution_id === Number(params[0]) && c.tb_interface_id === Number(params[1]))
+      .map(() => ({ active: 'S', deleted: 'N' })), null]
+  }
   if (/AS nextId/.test(t)) return [[{ nextId: 2 }], null]
   if (/AS nextPos/.test(t)) return [[{ nextPos: 1 }], null]
 
@@ -187,12 +196,14 @@ describe('A3 — contrato de interfaces lido pela institution do escopo', () => 
     expect(Object.fromEntries(filial.map(g => [g.id, g.granted]))).toEqual({ 10: false, 20: true, 30: true })
   })
 
-  it('salvar o que a tela mostrou NÃO copia o contrato da filial para a matriz', async () => {
-    const shown = await getInstitutionInterfaces(MATRIZ)
-    await updateInstitutionInterfaces(MATRIZ, shown.filter(g => g.granted).map(g => g.id))
+  it('marcar uma tela na matriz grava SÓ a linha da matriz (D-PV34: uma marca por vez — a lista inteira saiu)', async () => {
+    const change = await setInstitutionInterface(MATRIZ, 20, true)
+    expect(change).toEqual({ interfaceId: 20, linked: true, changed: true })
 
+    const lock = conn.query.mock.calls.find(c => /FOR UPDATE/.test(String(c[0]))) as any[]
+    expect(lock[1]).toEqual([MATRIZ, 20])
     const insert = conn.query.mock.calls.find(c => /INSERT INTO/.test(String(c[0]))) as any[]
-    expect(insert[1][0].map((v: any[]) => [v[0], v[1]])).toEqual([[MATRIZ, 10], [MATRIZ, 30]])
+    expect(insert[1]).toEqual([MATRIZ, 20])
   })
 
   it('menu do admin: o menu do GRUPO filtrado pelo contrato lido pela CHAVE da sessão (D-GE5/D-GE4)', async () => {

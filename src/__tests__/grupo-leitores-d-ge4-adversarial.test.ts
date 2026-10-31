@@ -103,6 +103,15 @@ async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown
   if (/SELECT schema_name AS schemaName FROM setes_central\.tb_institution WHERE id = \?/.test(t)) {
     return [INSTITUTIONS.filter(i => i.id === Number(params[0])).map(i => ({ schemaName: i.schemaName })), null]
   }
+  // D-PV34 — a marca única confere a interface viva e trava a linha do par
+  if (/FROM setes_central\.tb_interface WHERE id = \? AND deleted = 'N'/.test(t)) {
+    const i = CATALOG.find(c => c.id === Number(params[0]))
+    return [i ? [{ id: i.id, k: i.i18nKey, kind: i.kind, groupDefault: i.groupDefault }] : [], null]
+  }
+  if (/FROM \w+\.tb_institution_has_interface WHERE tb_institution_id = \? AND tb_interface_id = \? FOR UPDATE/.test(t)) {
+    return [CONTRACT.filter(c => c.tb_institution_id === Number(params[0]) && c.tb_interface_id === Number(params[1]))
+      .map(() => ({ active: 'S', deleted: 'N' })), null]
+  }
   if (/FROM setes_central\.tb_feature_flag/.test(t)) {
     return [[{ institutionId: Number(params[0]), moduleKey: 'modules', enabled: 1 }], null]
   }
@@ -369,14 +378,14 @@ describe('A — tela do Super num schema com duas institutions', () => {
     expect(res.body.data.map((r: any) => [r.id, r.granted])).toEqual([[10, false], [20, true], [30, true]])
   })
 
-  it('PUT /api/admin/institutions/8/interfaces [] revoga SÓ a filial (a matriz fica intacta)', async () => {
-    const res = await request(app).put(`/api/admin/institutions/${FILIAL}/interfaces`).set('Authorization', superToken())
-      .send({ interfaceIds: [] })
+  it('PUT /api/admin/institutions/8/interfaces/30 {linked:false} revoga SÓ a linha da filial (D-PV34 — a matriz fica intacta)', async () => {
+    const res = await request(app).put(`/api/admin/institutions/${FILIAL}/interfaces/30`).set('Authorization', superToken())
+      .send({ linked: false })
     expect(res.status).toBe(200)
     const writes = conn.query.mock.calls.filter(c => /^UPDATE/.test(normalizeSql(String(c[0]))))
     expect(writes).toHaveLength(1)
-    expect(normalizeSql(String(writes[0][0]))).toMatch(/WHERE tb_institution_id = \?$/)
-    expect(writes[0][1]).toEqual([FILIAL])
+    expect(normalizeSql(String(writes[0][0]))).toMatch(/WHERE tb_institution_id = \? AND tb_interface_id = \?$/)
+    expect(writes[0][1]).toEqual([FILIAL, 30])
   })
 })
 
