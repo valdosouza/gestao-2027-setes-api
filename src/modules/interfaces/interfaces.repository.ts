@@ -199,6 +199,18 @@ export async function softDeleteInterfaceConfig(
   )
 }
 
+/**
+ * Ids das interfaces VIVAS com a chave — pela colação da coluna (sem caixa, sem acento, sem espaço no fim), a MESMA comparação
+ * da guarda `require-privilege` (D-PV15: chave repetida torna ambígua a resolução por `LIMIT 1`).
+ */
+export async function liveInterfaceIdsWithKey(i18nKey: string): Promise<number[]> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT id FROM setes_central.tb_interface WHERE deleted = 'N' AND i18n_key = ?`,
+    [i18nKey]
+  )
+  return rows.map(r => Number(r.id))
+}
+
 export async function deleteInterface(id: number): Promise<void> {
   await pool.query(
     `UPDATE setes_central.tb_interface SET deleted = 'S', updated_at = NOW() WHERE id = ?`,

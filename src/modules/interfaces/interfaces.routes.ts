@@ -75,6 +75,12 @@ router.get('/:id', controller.getById)
  *   post:
  *     summary: Cria uma interface (id gerado MAX+1 no backend) e grava os privilégios
  *     tags: [Interfaces]
+ *     responses:
+ *       409:
+ *         description: >-
+ *           D-PV15 (Q-PV17): a mudança recriaria o C1 — INTERFACE_KEY_IN_USE (chave usada pelo código ou repetida em outra
+ *           interface viva) ou CATALOG_PAIR_IN_USE (par usado pelo código, ou VISUALIZAR de tela do menu, sairia do catálogo;
+ *           inclusive o PUT sem privilegeIds); fields[] nomeia cada consumidor
  */
 router.post('/', controller.create)
 
@@ -84,6 +90,12 @@ router.post('/', controller.create)
  *   put:
  *     summary: Atualiza uma interface (o id nunca muda) e sincroniza os privilégios
  *     tags: [Interfaces]
+ *     responses:
+ *       409:
+ *         description: >-
+ *           D-PV15 (Q-PV17): a mudança recriaria o C1 — INTERFACE_KEY_IN_USE (chave usada pelo código ou repetida em outra
+ *           interface viva) ou CATALOG_PAIR_IN_USE (par usado pelo código, ou VISUALIZAR de tela do menu, sairia do catálogo;
+ *           inclusive o PUT sem privilegeIds); fields[] nomeia cada consumidor
  */
 router.put('/:id', controller.update)
 
@@ -93,6 +105,8 @@ router.put('/:id', controller.update)
  *   delete:
  *     summary: Exclui logicamente uma interface (deleted='S')
  *     tags: [Interfaces]
+ *     responses:
+ *       409: { description: 'D-PV15 (Q-PV17): INTERFACE_KEY_IN_USE — interface usada pelo código não pode ser excluída' }
  */
 router.delete('/:id', controller.remove)
 
