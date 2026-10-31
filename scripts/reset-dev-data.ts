@@ -73,6 +73,13 @@ async function main() {
     await run(`DELETE FROM setes_central.tb_sync_conflict`)
     // usuários criados pelo SYNC (sem credencial) e seus vínculos
     await run(`DELETE FROM setes_central.tb_institution_has_user WHERE kind = 'SYNC'`)
+    // Q-PV38/D-RS4: o pedido de troca de senha e o aviso ao dono são filhos do usuário (FK NO ACTION) — caem antes dele (ferramenta de reset de DEV)
+    for (const child of ['tb_user_password_reset', 'tb_user_password_reset_notice']) {
+      await run(`DELETE FROM setes_central.${child}
+                 WHERE tb_user_id IN (SELECT id FROM setes_central.tb_user
+                                       WHERE password IS NULL
+                                         AND id NOT IN (SELECT tb_user_id FROM setes_central.tb_institution_has_user))`)
+    }
     await run(`DELETE FROM setes_central.tb_user
                WHERE password IS NULL
                  AND id NOT IN (SELECT tb_user_id FROM setes_central.tb_institution_has_user)`)

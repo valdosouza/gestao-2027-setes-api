@@ -31,6 +31,8 @@ function fakeConn() {
 beforeEach(() => jest.clearAllMocks())
 
 const SCHEMA = 'setes_acme'
+// escopo da escrita do menu: schema (módulos do GRUPO — D-GE5) + estabelecimento (contrato — D-GE4)
+const SCOPE = { schemaName: SCHEMA, institutionId: 70, userId: 1, role: 'admin' } // id que não colide com nenhuma interface dos casos
 
 // ---------------------------------------------------------------------
 // DTO
@@ -142,9 +144,12 @@ describe('modules repository', () => {
   it('findIneligibleInterfaceIds aponta só os ids fora da elegibilidade', async () => {
     mockQuery.mockResolvedValueOnce([[{ id: 12 }]]) // só a 12 é elegível
 
-    const invalid = await repo.findIneligibleInterfaceIds(SCHEMA, [12, 4, 99])
+    const invalid = await repo.findIneligibleInterfaceIds(SCHEMA, 70, [12, 4, 99])
 
     expect(invalid).toEqual([4, 99])
+    // o contrato lido é o do ESTABELECIMENTO da sessão (D-GE4), não o do schema inteiro
+    expect(mockQuery.mock.calls[0][0]).toContain('ihi.tb_institution_id = ?')
+    expect(mockQuery.mock.calls[0][1]).toEqual([70, [12, 4, 99]])
   })
 
   it('schemaName inválido é barrado antes de qualquer SQL', async () => {
@@ -161,7 +166,7 @@ describe('modules service', () => {
   it('vínculo com interface não elegível → 422 com os ids em fields[]', async () => {
     const spy = jest.spyOn(repo, 'findIneligibleInterfaceIds').mockResolvedValue([4, 99])
 
-    await expect(createModule(SCHEMA, { description: 'X', interfaceIds: [12, 4, 99] } as any))
+    await expect(createModule(SCOPE, { description: 'X', interfaceIds: [12, 4, 99] } as any))
       .rejects.toMatchObject({
         statusCode: 422,
         fields: [
@@ -181,9 +186,9 @@ describe('modules service', () => {
     const spyUpdate = jest.spyOn(repo, 'updateModuleCascade').mockResolvedValue()
 
     // 4 = vinculada e hoje inelegível (contrato revogado); 7 = tela nova
-    await editModule(SCHEMA, 3, { description: 'R', interfaceIds: [4, 12, 7] } as any)
+    await editModule(SCOPE, 3, { description: 'R', interfaceIds: [4, 12, 7] } as any)
 
-    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [7], false)     // D-PV24: 3º arg = o super escapa da licença (aqui não é super)
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, 70, [7], false)     // D-PV24: 4º arg = o super escapa da licença (aqui não é super)
     expect(spyUpdate).toHaveBeenCalledWith(SCHEMA, 3,
       expect.objectContaining({ interfaceIds: [4, 12, 7] }))
     spyGet.mockRestore(); spyInvalid.mockRestore(); spyUpdate.mockRestore()
@@ -195,7 +200,7 @@ describe('modules service', () => {
     const spyInvalid = jest.spyOn(repo, 'findIneligibleInterfaceIds').mockResolvedValue([7])
     const spyUpdate = jest.spyOn(repo, 'updateModuleCascade').mockResolvedValue()
 
-    await expect(editModule(SCHEMA, 3, { description: 'R', interfaceIds: [4, 7] } as any))
+    await expect(editModule(SCOPE, 3, { description: 'R', interfaceIds: [4, 7] } as any))
       .rejects.toMatchObject({ statusCode: 422, fields: [{ field: 'interfaceIds', message: '7' }] })
     expect(spyUpdate).not.toHaveBeenCalled()
     spyGet.mockRestore(); spyInvalid.mockRestore(); spyUpdate.mockRestore()
@@ -205,9 +210,9 @@ describe('modules service', () => {
     const spyInvalid = jest.spyOn(repo, 'findIneligibleInterfaceIds').mockResolvedValue([])
     const spyInsert = jest.spyOn(repo, 'insertModuleCascade').mockResolvedValue(9)
 
-    await createModule(SCHEMA, { description: 'N', interfaceIds: [4, 12] } as any)
+    await createModule(SCOPE, { description: 'N', interfaceIds: [4, 12] } as any)
 
-    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, [4, 12], false)
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, 70, [4, 12], false)
     spyInvalid.mockRestore(); spyInsert.mockRestore()
   })
 
@@ -223,7 +228,7 @@ describe('modules service', () => {
     const spyInvalid = jest.spyOn(repo, 'findIneligibleInterfaceIds').mockResolvedValue([])
     const spyUpdate = jest.spyOn(repo, 'updateModuleCascade').mockResolvedValue()
 
-    await editModule(SCHEMA, 3, { description: 'R2', interfaceIds: [12] } as any)
+    await editModule(SCOPE, 3, { description: 'R2', interfaceIds: [12] } as any)
 
     expect(spyUpdate).toHaveBeenCalledWith(SCHEMA, 3,
       expect.objectContaining({ description: 'R2' }))

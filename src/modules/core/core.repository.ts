@@ -1,15 +1,17 @@
 import pool from '@shared/db/connection'
 import { PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 
-export async function getInstitutionInfo(schemaName: string) {
+// A institution vem do JWT: o schema NÃO a identifica — matriz e filial podem dividir o schema
+// (frente do grupo, D-GE4); o schema fica como conferência (os dois saem do MESMO vínculo no login).
+export async function getInstitutionInfo(institutionId: number, schemaName: string) {
   const conn = await pool.getConnection()
   try {
     const [rows] = await conn.query<any[]>(
       `SELECT i.id, e.nick_trade AS name, e.name_company AS companyName, i.active
        FROM setes_central.tb_institution i
        INNER JOIN setes_central.tb_entity e ON (e.id = i.id)
-       WHERE i.schema_name = ? AND i.deleted = 'N'`,
-      [schemaName]
+       WHERE i.id = ? AND i.schema_name = ? AND i.deleted = 'N'`,
+      [institutionId, schemaName]
     )
     return rows[0] ?? null
   } finally {
@@ -135,8 +137,11 @@ export interface MenuInterfaceRow {
 // Usuário REGULAR só enxerga o que tem privilégio VISUALIZAR (opção 1 do
 // workflow de privilégios — decisão do Valdo 2026-07-12); ADMIN pula o
 // filtro (contrato completo, exceto módulo Super — que nem está no schema).
+// Os módulos são do GRUPO (o schema — D-GE5) e o contrato também (D-GE22): o
+// filtro pela chave evita a UNIÃO das linhas do schema (D-GE4); na onda 1 a
+// chave passa a ser a do grupo — hoje = a institution da sessão.
 export async function getModuleInterfaces(
-  schemaName: string, userId: number, skipPrivilegeFilter: boolean
+  schemaName: string, institutionId: number, userId: number, skipPrivilegeFilter: boolean
 ): Promise<MenuInterfaceRow[]> {
   const s = assertSchema(schemaName)
   const privilegeFilter = skipPrivilegeFilter ? '' : `
@@ -144,7 +149,8 @@ export async function getModuleInterfaces(
                 WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id
                   AND uhp.tb_privilege_id = ${PRIVILEGE_VISUALIZAR}
                   AND uhp.active = 'S' AND uhp.deleted = 'N')`
-  const params = skipPrivilegeFilter ? [] : [userId]
+  // ordem dos `?` no SQL: o contrato (no JOIN) antes do privilégio (no WHERE)
+  const params = skipPrivilegeFilter ? [institutionId] : [institutionId, userId]
 
   const [rows] = await pool.query<any[]>(
     `SELECT m.id            AS moduleId,
@@ -157,7 +163,8 @@ export async function getModuleInterfaces(
      INNER JOIN \`${s}\`.tb_module_has_interface mhi
        ON (mhi.tb_module_id = m.id AND mhi.active = 'S' AND mhi.deleted = 'N')
      INNER JOIN \`${s}\`.tb_institution_has_interface ihi
-       ON (ihi.tb_interface_id = mhi.tb_interface_id AND ihi.active = 'S' AND ihi.deleted = 'N')
+       ON (ihi.tb_interface_id = mhi.tb_interface_id AND ihi.tb_institution_id = ?
+           AND ihi.active = 'S' AND ihi.deleted = 'N')
      INNER JOIN setes_central.tb_interface i
        ON (i.id = mhi.tb_interface_id AND i.deleted = 'N')
      WHERE m.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}${privilegeFilter}
@@ -168,10 +175,11 @@ export async function getModuleInterfaces(
   return rows
 }
 
-// UNION conceitual: interfaces contratadas ainda sem módulo,
-// agrupadas por tb_interface.group_default (workflow do prompt, passo 2)
+// UNION conceitual: interfaces contratadas (pela chave do contrato — D-GE4/D-GE22)
+// ainda sem módulo (do grupo), agrupadas por tb_interface.group_default
+// (workflow do prompt, passo 2)
 export async function getUngroupedInterfaces(
-  schemaName: string, userId: number, skipPrivilegeFilter: boolean
+  schemaName: string, institutionId: number, userId: number, skipPrivilegeFilter: boolean
 ): Promise<MenuInterfaceRow[]> {
   const s = assertSchema(schemaName)
   const privilegeFilter = skipPrivilegeFilter ? '' : `
@@ -179,7 +187,8 @@ export async function getUngroupedInterfaces(
                 WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id
                   AND uhp.tb_privilege_id = ${PRIVILEGE_VISUALIZAR}
                   AND uhp.active = 'S' AND uhp.deleted = 'N')`
-  const params = skipPrivilegeFilter ? [] : [userId]
+  // ordem dos `?` no SQL: o contrato (início do WHERE) antes do privilégio (fim)
+  const params = skipPrivilegeFilter ? [institutionId] : [institutionId, userId]
 
   const [rows] = await pool.query<any[]>(
     `SELECT NULL            AS moduleId,
@@ -191,7 +200,8 @@ export async function getUngroupedInterfaces(
      FROM \`${s}\`.tb_institution_has_interface ihi
      INNER JOIN setes_central.tb_interface i
        ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-     WHERE ihi.active = 'S' AND ihi.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}
+     WHERE ihi.tb_institution_id = ? AND ihi.active = 'S' AND ihi.deleted = 'N'
+       ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}
        AND NOT EXISTS (SELECT 1 FROM \`${s}\`.tb_module_has_interface mhi
                        INNER JOIN \`${s}\`.tb_module m2
                           ON (m2.id = mhi.tb_module_id AND m2.deleted = 'N')

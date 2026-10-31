@@ -25,7 +25,7 @@ function handleError(res: Response, err: unknown, context: string) {
  * @swagger
  * /api/core/info:
  *   get:
- *     summary: Informações da institution (schema, nome, ativa)
+ *     summary: Informações da institution do JWT (id, nome, ativa) — pelo id da sessão, nunca pela 1ª linha do schema (D-GE4)
  *     tags: [Core]
  *     security:
  *       - BearerAuth: []
@@ -48,7 +48,7 @@ function handleError(res: Response, err: unknown, context: string) {
  */
 router.get('/info', async (req: Request, res: Response) => {
   try {
-    const data = await getInstitutionData(req.institution!.schemaName)
+    const data = await getInstitutionData(req.institution!)
     res.json({ ok: true, data })
   } catch (err) {
     handleError(res, err, 'core/info')

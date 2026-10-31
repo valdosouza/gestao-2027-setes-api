@@ -63,8 +63,10 @@ describe('montagem canônica preservada (decisão 12)', () => {
     expect(menus).toHaveLength(2)
     expect(menus[0].module).toMatchObject({ id: 1, description: 'Comercial' })
     expect(menus[1].module).toMatchObject({ id: null, description: 'Sistema' })
-    // admin pula o filtro de privilégio (skipPrivilegeFilter = true)
-    expect(mockModuleIfaces).toHaveBeenCalledWith('setes_acme', 5, true)
+    // admin pula o filtro de privilégio (skipPrivilegeFilter = true); o contrato
+    // lido é o da institution da sessão (D-GE4)
+    expect(mockModuleIfaces).toHaveBeenCalledWith('setes_acme', 7, 5, true)
+    expect(mockUngrouped).toHaveBeenCalledWith('setes_acme', 7, 5, true)
   })
 
   it('regular: filtro de privilégio VISUALIZAR ativo', async () => {
@@ -74,7 +76,7 @@ describe('montagem canônica preservada (decisão 12)', () => {
 
     const menus = await getMenus(regularPayload)
     expect(menus).toEqual([])
-    expect(mockModuleIfaces).toHaveBeenCalledWith('setes_acme', 9, false)
+    expect(mockModuleIfaces).toHaveBeenCalledWith('setes_acme', 7, 9, false)
     expect(mockAllPrivs).not.toHaveBeenCalled()
   })
 })

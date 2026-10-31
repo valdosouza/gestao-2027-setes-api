@@ -143,6 +143,33 @@ pelo `testToken` (`src/test-setup/test-token.ts`; par de TESTE gerado pelo setup
 **Licença × privilégio** (D-F37): as guardas de ação (`@shared/auth/require-privilege`) conferem a interface CONTRATADA
 para TODOS; super/admin passam só o privilégio.
 
+### Recuperação de senha, aviso ao dono e SMTP (Q-PV38 / D-RS4 / D-RS5 — 2026-10-18/21)
+
+`POST /auth/recovery-password` + `/auth/change-password` com o PEDIDO DE TROCA DE SENHA em `setes_central.tb_user_password_reset`
+(sql/67 — o boot NÃO sobe sem a tabela): 5 erradas esgotam o código, 3/h e 10/24 h por conta, resposta neutra com piso de 400 ms,
+código como HMAC. **D-RS4**: quando um código esgota ou o teto é atingido, o DONO recebe e-mail neutro (no máximo 1/h — fato na irmã
+`tb_user_password_reset_notice`, também do sql/67). **D-RS5**: em PRODUÇÃO (`NODE_ENV=production`) o SMTP é OBRIGATÓRIO — o boot
+recusa subir sem `SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASSWORD/SMTP_FROM` completos (`assertMailerReady`); em dev sem SMTP o código vai
+ao LOG. Valores reais só no `.env` vivo (Valdo). Pré-voo: `scripts/pre-deploy-tz-check.ts` confere config + conexão SMTP sem enviar.
+Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publicação, §13.10 execução de 2026-10-21).
+
+### Senha perdida do SUPER — procedimento do OPERADOR (D-PV46, 2026-10-20; exceção explícita — PADROES §3.1)
+
+Nenhuma porta HTTP redefine a senha do Super (o admin não troca a senha do super — D-PV12; com DOIS Supers ativos, um define a do outro
+pela tela de Usuários do Super). Quando NÃO resta outro Super ativo e o e-mail de recuperação não resolve, o operador roda NO SERVIDOR,
+com o `.env` do destino:
+
+```bash
+npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts          # ENSAIO: lista o(s) Super(s), nada gravado
+npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts --vai    # redefine (1 Super ativo); --user-id/--email nomeiam o alvo
+```
+
+O script gera senha inicial aleatória (16 caracteres), grava com o MESMO hash do login pela peça do auth (sob a trava da linha do usuário —
+mata o código de recuperação aberto), **imprime a senha UMA vez** no terminal (nunca em log/arquivo/banco) e registra no LOG quem rodou
+(usuário do SO + host), quando e o id do Super; `tb_user.updated_at` recebe o instante (`tb_user` não tem `updated_by`). Recusa qualquer
+conta que não seja Super (vínculo `kind='super'` na institution 1), Super inativo e 2+ Supers ativos. Entregar a senha ao titular por canal
+seguro; ele define a própria em seguida. Roteiro de operação definitivo nasce com a Onda 4 (deploy) — até lá, esta nota.
+
 ### Chave do Sincronizador
 
 O módulo `institutions` ADMINISTRA a `setes_central.tb_sync_api_key` (emissão da

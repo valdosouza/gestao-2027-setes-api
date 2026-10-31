@@ -40,7 +40,7 @@ describe('POST /hooks/bank-channel/:institutionId/:token', () => {
     expect(res.body).toEqual({ ok: true, received: 2 })
     await flush()
     expect(processed).toEqual([{ schema: 'setes_setes', inst: 1, codes: ['uuid-0001-aaaa', 'uuid-0002-bbbb'] }])
-    expect(findChannel).toHaveBeenCalledWith('setes_setes', TOKEN)
+    expect(findChannel).toHaveBeenCalledWith('setes_setes', 1, TOKEN)
   })
 
   it('token errado → 404 e nada processado', async () => {

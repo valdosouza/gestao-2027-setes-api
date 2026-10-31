@@ -334,7 +334,11 @@ export async function getGeneralObservations(
   return rows.map(r => String(r.note ?? '')).filter(t => t.trim() !== '')
 }
 
-/** Observação vinculada à regra (`tb_tax_rule.tb_observation_id`), por regra. */
+/**
+ * Observação vinculada à regra (`tb_tax_rule.tb_observation_id`), por regra. A PK de `tb_observation` é
+ * `(id, tb_institution_id)` e as duas tabelas são do ESTABELECIMENTO: junta pela PK inteira, com a institution
+ * da REGRA — só por `o.id`, com matriz e filial no mesmo schema a nota sairia com o texto da outra (D-GE4).
+ */
 export async function getRuleObservationNotes(
   schemaName: string, ruleIds: number[]
 ): Promise<Map<number, string | null>> {
@@ -346,7 +350,8 @@ export async function getRuleObservationNotes(
     `SELECT r.id AS ruleId, o.note AS note
        FROM \`${s}\`.tb_tax_rule r
        LEFT JOIN \`${s}\`.tb_observation o
-         ON (o.id = r.tb_observation_id AND o.deleted = 'N')
+         ON (o.id = r.tb_observation_id AND o.tb_institution_id = r.tb_institution_id
+             AND o.deleted = 'N')
       WHERE r.id IN (?)`,
     [unique]
   )

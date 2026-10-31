@@ -44,14 +44,19 @@ export async function getBankChannel(
   return rows[0] ? map(rows[0]) : null
 }
 
-/** Webhook (D-I15): o token no path identifica o canal — e só ele. */
+/**
+ * Webhook (D-I15): o token no path identifica o canal — e só DENTRO da institution do path. O schema não
+ * identifica a institution (matriz e filial podem dividir o schema — D-GE4): token de outra institution =
+ * canal inexistente (o chamador responde igual ao token desconhecido, sem vazar que o token existe).
+ */
 export async function findBankChannelByInboundToken(
-  schemaName: string, inboundToken: string
+  schemaName: string, institutionId: number, inboundToken: string
 ): Promise<BankChannelRow | null> {
   assertSchemaName(schemaName)
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(inboundToken)) return null
   const [rows] = await pool.query<any[]>(
-    `${SELECT(schemaName)} WHERE c.inbound_token = ? AND c.deleted = 'N'`, [inboundToken]
+    `${SELECT(schemaName)} WHERE c.inbound_token = ? AND c.tb_institution_id = ? AND c.deleted = 'N'`,
+    [inboundToken, institutionId]
   )
   return rows[0] ? map(rows[0]) : null
 }

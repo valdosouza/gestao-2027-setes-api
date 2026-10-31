@@ -17,7 +17,9 @@ import { handleWebhookItems } from '@shared/bank-slip-registration'
  *
  * Responde 200 assim que identifica o canal e enfileira (o Inter reenvia até 4×
  * em não-2xx — e o que reenvia é o gatilho, então perder um é barato). Token
- * desconhecido → 404 sem distinguir "institution não existe" de "token errado".
+ * desconhecido → 404 sem distinguir "institution não existe" de "token errado";
+ * token de OUTRA institution do mesmo schema também (D-GE4 — o token só vale
+ * dentro da institution do path).
  */
 
 /**
@@ -73,7 +75,7 @@ export async function receive(req: Request, res: Response): Promise<void> {
   const token = String(req.params.token ?? '')
   try {
     const schemaName = await institutionSchema(institutionId)
-    const channel = schemaName ? await findBankChannelByInboundToken(schemaName, token) : null
+    const channel = schemaName ? await findBankChannelByInboundToken(schemaName, institutionId, token) : null
     if (!schemaName || !channel || channel.active !== 'S') {
       res.status(404).json({ error: 'Não encontrado', code: 'NOT_FOUND' })
       return
@@ -106,7 +108,8 @@ const router = Router()
  *       `{codigoSolicitacao, seuNumero, situacao, ...}`); **só o `codigoSolicitacao`
  *       é usado** — cada apresentação identificada é reconsultada no banco por mTLS
  *       e a voz do banco é gravada com `source='W'`. Responde 200 imediatamente.
- *       Token desconhecido/canal inativo → 404. Sem JWT (exceção nomeada). URL
+ *       Token desconhecido, de OUTRA institution (D-GE4) ou canal inativo → 404,
+ *       a mesma resposta nos três casos. Sem JWT (exceção nomeada). URL
  *       pública só existe na Onda 4 (D33); até lá a consulta ativa faz o papel.
  *     security: []
  *     parameters:

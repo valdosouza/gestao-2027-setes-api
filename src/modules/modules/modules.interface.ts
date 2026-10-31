@@ -21,3 +21,14 @@ export interface ModuleInterfaceLookupRow {
   i18nKey:      string | null
   groupDefault: string | null
 }
+
+/**
+ * Escopo da escrita do menu: o schema (os módulos são do GRUPO — D-GE5) e a
+ * chave do contrato que decide a elegibilidade (D-GE4 — o contrato é do grupo,
+ * D-GE22: na onda 1 vira a chave do grupo; hoje = a institution da sessão).
+ * O `req.institution` do JWT satisfaz este tipo.
+ */
+export interface MenuScope {
+  schemaName:    string
+  institutionId: number
+}

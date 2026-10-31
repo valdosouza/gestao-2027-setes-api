@@ -1,10 +1,19 @@
 import { Router, Request, Response } from 'express'
 import { login, selectInstitution, switchInstitution, recoveryPassword, changePassword } from './auth.service'
 import { authMiddleware } from '@gateway/auth.middleware'
+import { perEmailRateLimit } from '@gateway/rate-limit.middleware'
+import { bodyText } from '@shared/auth/login-email'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
 
 const router = Router()
+
+// Q-PV38: limite POR E-MAIL (memória — camada de carga) nas duas rotas públicas de senha, além do limite por IP do app.ts.
+// A garantia durável é o teto POR CONTA do auth.service (tentativas por código + emissões por janela). Valores: Q-RS1.
+export const RECOVERY_PER_EMAIL = { windowMinutes: 15, max: 5 }
+export const CHANGE_PER_EMAIL   = { windowMinutes: 15, max: 10 }
+const recoveryPerEmail = perEmailRateLimit(RECOVERY_PER_EMAIL.windowMinutes, RECOVERY_PER_EMAIL.max)
+const changePerEmail   = perEmailRateLimit(CHANGE_PER_EMAIL.windowMinutes, CHANGE_PER_EMAIL.max)
 
 function fail(res: Response, err: unknown, context: string) {
   if (err instanceof HttpError) {
@@ -159,7 +168,11 @@ router.post('/select-institution', async (req: Request, res: Response) => {
  * /auth/recovery-password:
  *   post:
  *     summary: Inicia recuperação de senha (resposta genérica por segurança)
- *     description: Envia email com código de recuperação se o email existe
+ *     description: |
+ *       Emite um código de 6 dígitos (válido por 15 minutos; substitui o código anterior) e o envia ao e-mail de login
+ *       GRAVADO da conta — nunca ao texto da requisição. A resposta é SEMPRE a mesma 200 genérica: conta inexistente ou
+ *       inativa e conta no teto de emissões (3 por hora e 10 por 24 h por conta — Q-PV38) não recebem código e respondem
+ *       igual. O envio do e-mail não segura a resposta. Limite por e-mail (5 a cada 15 min) além do limite por IP — 429.
  *     tags: [Auth]
  *     security: []
  *     requestBody:
@@ -187,17 +200,19 @@ router.post('/select-institution', async (req: Request, res: Response) => {
  *                   type: string
  *       400:
  *         description: Email ausente
+ *       429:
+ *         description: Limite de pedidos por e-mail ou por IP excedido (a mesma resposta exista o e-mail ou não)
  *       500:
  *         description: Erro interno
  */
-router.post('/recovery-password', async (req: Request, res: Response) => {
-  const { email } = req.body ?? {}
+router.post('/recovery-password', recoveryPerEmail, async (req: Request, res: Response) => {
+  const email = bodyText((req.body ?? {}).email)
   if (!email) {
     res.status(400).json({ error: 'O campo "email" é obrigatório' })
     return
   }
   try {
-    await recoveryPassword(String(email))
+    await recoveryPassword(email)
     res.json({ ok: true, message: 'Se o email existir, um código de recuperação foi enviado' })
   } catch (err) {
     fail(res, err, 'recovery-password')
@@ -209,7 +224,12 @@ router.post('/recovery-password', async (req: Request, res: Response) => {
  * /auth/change-password:
  *   post:
  *     summary: Altera senha com código de recuperação
- *     description: Valida email + código + nova senha; altera a senha se código é válido
+ *     description: |
+ *       Valida email + código + nova senha; altera a senha se o código é válido. O código vale 15 minutos e aguenta 5
+ *       tentativas ERRADAS (Q-PV38): esgotado o orçamento, qualquer tentativa — mesmo com o código certo — recebe a mesma
+ *       401 até um código novo ser pedido. Toda recusa (código errado, esgotado, vencido, substituído, já usado, e-mail
+ *       inexistente, conta inativa) é a MESMA 401 — nunca diz se o e-mail existe. Trocar a senha ou o e-mail de login por
+ *       outro caminho invalida o código aberto. Limite por e-mail (10 a cada 15 min) além do limite por IP — 429.
  *     tags: [Auth]
  *     security: []
  *     requestBody:
@@ -226,7 +246,7 @@ router.post('/recovery-password', async (req: Request, res: Response) => {
  *                 description: Código de 6 dígitos enviado por email
  *               newPassword:
  *                 type: string
- *                 minLength: 8
+ *                 minLength: 5
  *     responses:
  *       200:
  *         description: Senha alterada com sucesso
@@ -241,18 +261,21 @@ router.post('/recovery-password', async (req: Request, res: Response) => {
  *       400:
  *         description: Campos obrigatórios ausentes ou senha muito curta
  *       401:
- *         description: Código inválido ou expirado
+ *         description: Código inválido ou expirado (a mesma resposta para toda recusa)
+ *       429:
+ *         description: Limite de tentativas por e-mail ou por IP excedido (a mesma resposta exista o e-mail ou não)
  *       500:
  *         description: Erro interno
  */
-router.post('/change-password', async (req: Request, res: Response) => {
-  const { email, code, newPassword } = req.body ?? {}
+router.post('/change-password', changePerEmail, async (req: Request, res: Response) => {
+  const body = req.body ?? {}
+  const email = bodyText(body.email), code = bodyText(body.code), newPassword = bodyText(body.newPassword)
   if (!email || !code || !newPassword) {
     res.status(400).json({ error: 'Os campos "email", "code" e "newPassword" são obrigatórios' })
     return
   }
   try {
-    await changePassword(String(email), String(code), String(newPassword))
+    await changePassword(email, code, newPassword)
     res.json({ ok: true })
   } catch (err) {
     fail(res, err, 'change-password')

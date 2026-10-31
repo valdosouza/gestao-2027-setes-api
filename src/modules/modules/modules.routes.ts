@@ -61,7 +61,7 @@ router.get('/search-criteria', controller.searchCriteria)
  * @swagger
  * /api/modules/interface-lookup:
  *   get:
- *     summary: Interfaces elegíveis ao vínculo (contratadas, kind T, fora do grupo Super)
+ *     summary: Interfaces elegíveis ao vínculo (contratadas pela institution do JWT — D-GE4, kind T, fora do grupo Super)
  *     tags: [Modules]
  *     security:
  *       - BearerAuth: []
