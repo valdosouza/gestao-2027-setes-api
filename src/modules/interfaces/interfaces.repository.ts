@@ -211,6 +211,20 @@ export async function liveInterfaceIdsWithKey(i18nKey: string): Promise<number[]
   return rows.map(r => Number(r.id))
 }
 
+/**
+ * A interface tem configuração ou campo VIVO no catálogo (`tb_interface_has_config`/`tb_interface_has_field`)? D-PV25/D-PV42: o par
+ * CONFIGURAR é exigido dela (a REGRA do CONFIGURAR — o mesmo critério do seed 68) e a chave dela fica congelada (as configs e os
+ * campos são presos à chave).
+ */
+export async function interfaceHasConfigOrField(id: number): Promise<boolean> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT (EXISTS (SELECT 1 FROM setes_central.tb_interface_has_config c WHERE c.tb_interface_id = ? AND c.deleted = 'N')
+          OR EXISTS (SELECT 1 FROM setes_central.tb_interface_has_field  f WHERE f.tb_interface_id = ? AND f.deleted = 'N')) AS has`,
+    [id, id]
+  )
+  return Number(rows[0]?.has ?? 0) === 1
+}
+
 export async function deleteInterface(id: number): Promise<void> {
   await pool.query(
     `UPDATE setes_central.tb_interface SET deleted = 'S', updated_at = NOW() WHERE id = ?`,

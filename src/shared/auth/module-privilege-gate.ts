@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction, RequestHandler, Router } from 'express'
 import { privilegeVerdict, denyPrivilege } from '@shared/auth/require-privilege'
-import { delegatedSuperVerdict, isDelegableSuperInterface } from '@shared/auth/super-delegation'
+import { isDelegableSuperInterface } from '@shared/auth/super-delegation'
 import logger from '@shared/logger/logger'
 import {
   PRIVILEGE_INSERIR, PRIVILEGE_ALTERAR, PRIVILEGE_EXCLUIR, PRIVILEGE_VISUALIZAR,
@@ -159,9 +159,10 @@ async function interfacesOf(spec: PrivilegeActSpec | undefined, moduleKey: strin
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
- * `delegatedSuper` (D-PV11): tela do grupo Super DELEGÁVEL a usuário da Setes — o veredito é o da delegação (super passa; usuário da
- * Setes, admin inclusive, só com o privilégio marcado pelo Super; outra institution: a tela não existe), sem licença. Só vale para as
- * chaves da lista `DELEGABLE_SUPER_INTERFACES` (a montagem lança com outra chave — D-PV11 (d)).
+ * `delegatedSuper` (D-PV11): tela do grupo Super DELEGÁVEL a usuário da Setes. Desde a costura A1 (D-AU6) o veredito é o MESMO de toda
+ * guarda — a view sabe que a tela é delegável (super passa; usuário da Setes, admin inclusive, só com o privilégio marcado pelo Super;
+ * outra institution: a tela não existe) —; a marca fica na MONTAGEM: só vale para as chaves de `DELEGABLE_SUPER_INTERFACES` (a montagem
+ * lança com outra chave — D-PV11 (d)) e a tabela das rotas (`listGatedRoutes`) a mostra.
  */
 export interface GateOptions { delegatedSuper?: boolean }
 
@@ -194,9 +195,8 @@ export function modulePrivilegeGate(moduleKey: string, subRouter: Router, opts: 
         return
       }
       const keys = await interfacesOf(spec, moduleKey, matched?.params ?? {})
-      const verdict = delegatedSuper
-        ? await delegatedSuperVerdict(inst, keys, privilegeId)
-        : await privilegeVerdict(inst, keys, privilegeId)
+      // D-PV11: a tela delegável tem o MESMO veredito (a view sabe que ela é delegável — `vw_interface_catalog.delegable`)
+      const verdict = await privilegeVerdict(inst, keys, privilegeId)
       if (verdict !== 'ok') {
         // rastro da negação (gate socrático da D-PV2 — a "conferência depois" da janela precisa saber QUEM foi barrado e por QUÊ)
         logger.warn('Privilégio negado pela guarda do roteador', {

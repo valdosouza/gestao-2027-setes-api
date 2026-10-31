@@ -13,6 +13,9 @@ import pool from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
 import { assertF2aFreezeTriggers } from './migrations/f2a-freeze-triggers'
 import { assertPrivilegeCatalog } from '@shared/auth/assert-privilege-catalog'
+import { assertAccessViews } from '@shared/access'
+import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { DELEGABLE_SUPER_INTERFACES } from '@shared/auth/delegable-interfaces'
 
 const PORT = process.env.PORT ?? 3000
 
@@ -28,6 +31,8 @@ async function bootstrap() {
     logger.info(`CHECK do banco: ${await assertCheckConstraintsEnforced()}`)           // D-IB26
     logger.info(`Catálogo IBS/CBS (script 63): ${await assertIbscbsCatalogSchema()}`)   // D-IB36
     logger.info(`Pedido de troca de senha (script 67): ${await assertPasswordResetReady()}`)   // Q-PV38
+    // Costura A1 da auth-api (D-AU3/D-UC9): as views centrais do veredito (script 70) — sem elas NENHUMA rota autentica
+    logger.info(`Veredito de acesso (script 70): ${await assertAccessViews(SETES_INSTITUTION_ID, DELEGABLE_SUPER_INTERFACES)}`)
     // D-RS5: em produção (NODE_ENV=production) o SMTP é OBRIGATÓRIO — sem ele o setes-api NÃO sobe (o código de recuperação
     // nunca vai ao log de produção e o aviso ao dono da conta — D-RS4 — não pode morrer em silêncio). Em dev: só o resumo.
     const envWarning = nodeEnvWarning()

@@ -13,6 +13,7 @@ import path from 'path'
 import { spawnSync } from 'child_process'
 import request from 'supertest'
 import { testToken } from '../test-setup/test-token'
+import { accessAnswer, ModelProfile } from '../test-setup/access-model'
 import { rawServiceRow, TEST_KEY } from '../test-setup/fiscal-voice-rows'
 
 jest.mock('../shared/db/connection', () => ({
@@ -46,10 +47,10 @@ import { getOrderCancelPlan, CANCEL_PLAN_LOCK_WAIT_SECONDS } from '../modules/bi
 import { handleError } from '../shared/http/controller-utils'
 import { pagedEnvelope } from '../shared/list'
 import { HttpError } from '../shared/errors/http-error'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import { f2aFreezeTriggerSpecs, f2aFreezeTriggersMissing, assertF2aFreezeTriggers } from '../migrations/f2a-freeze-triggers'
 import { splitStatements } from '../migrations/runner'
 import { serviceView } from '../test-setup/fiscal-voice-rows'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
 import app from '../app'
 
 // scripts/ fica fora do rootDir do tsc (src) — o import estático quebraria o `npm run build`; require com o tipo da função
@@ -77,12 +78,26 @@ let lifeRows: any[]
 let lifeError: any
 let fiscalRows: any[]
 let fiscalError: any
+const KEY_OF: Record<number, string> = Object.fromEntries(Object.entries(CATALOG).map(([k, id]) => [id, k]))
+/** o perfil do vínculo (usuário 7, institution 1) é o do token da vez — a sessão viva devolve o do token (`access-session.mock`) */
+let profile: ModelProfile = 'admin'
+/** `privileged` (`${userId}:${interfaceId}:${privilegeId}`) → concessões por chave e NOME do verbo (D-PV53) */
+function grantsOf(userId: number): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const g of privileged) {
+    const [u, i, p] = g.split(':').map(Number)
+    if (u === userId && KEY_OF[i]) (out[KEY_OF[i]] ??= []).push(PRIVILEGE_NAME_BY_ID[p])
+  }
+  return out
+}
 
 function routePool(): void {
   q.mockImplementation(async (sql: string, params: any[] = []) => {
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) { const id = CATALOG[String(params[0])]; return [id ? [{ id }] : []] }
-    if (/tb_institution_has_interface/.test(sql)) return [contracted.has(Number(params[1])) ? [{ 1: 1 }] : []]
-    if (/tb_user_has_privilege/.test(sql)) return [privileged.has(`${params[0]}:${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
+    // costura A1 da auth-api (D-AU3/D-AU6): o veredito das guardas é a pilha de views (dublê `test-setup/access-model`)
+    const a = accessAnswer(sql, params, (userId: number) => ({
+      profile, contracted: [...contracted].map(id => KEY_OF[id]).filter(Boolean), granted: grantsOf(userId),
+    }))
+    if (a) return [a, []]
     if (/vw_order_interface/.test(sql)) { const k = BRANCH[Number(params[1])]; return [k ? [{ k }] : []] }
     if (/tb_invoice_cancel_waiver/.test(sql)) return [[]]
     if (/vw_invoice_life/.test(sql)) { if (lifeError) throw lifeError; const ids: number[] = (params[1] ?? []).map(Number); return [lifeRows.filter(r => ids.includes(Number(r.invoiceId)))] }
@@ -143,8 +158,8 @@ function planConn(sc: PlanScenario = {}) {
 
 const USER = { institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes' }
 const ADMIN = { ...USER, role: 'admin' }
-const bearer = (p: object) => `Bearer ${testToken(p)}`
-const err = (code: string, errno: number, msg = `${code} detalhe-interno-da-causa`) => Object.assign(new Error(msg), { code, errno })
+const bearer = (p: { role: string }) => { profile = p.role as ModelProfile; return `Bearer ${testToken(p)}` }
+const err =(code: string, errno: number, msg = `${code} detalhe-interno-da-causa`) => Object.assign(new Error(msg), { code, errno })
 const lockWait = err('ER_LOCK_WAIT_TIMEOUT', 1205, 'Lock wait timeout exceeded; try restarting transaction')
 const deadlock = err('ER_LOCK_DEADLOCK', 1213, 'Deadlock found when trying to get lock')
 const denied = err('ER_TABLEACCESS_DENIED_ERROR', 1142, "SELECT command denied to user 'setes'@'%' for table 'vw_invoice_service_transmission' detalhe-interno-da-causa")
@@ -156,7 +171,6 @@ const unrec = (over: any = {}) => row({ accessKey: null, authorityRecorded: 'N',
 const ENV0 = { ...process.env }
 beforeEach(() => {
   jest.clearAllMocks()
-  resetPrivilegeCache()
   contracted = new Set(Object.values(CATALOG)); privileged = new Set()
   lifeRows = [{ invoiceId: ORDER, invoiceDeleted: 'N', lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]
   lifeError = undefined; fiscalRows = []; fiscalError = undefined
@@ -311,19 +325,19 @@ describe('1 — D-F130: a porta tipa a falha de LEITURA da voz (503 + ref + alar
 // 2. D-F131 — GET …/cancel-plan: a guarda do POST e a espera curta que nunca volta ao pool
 // =================================================================================================
 describe('2 — D-F131: guarda CANCELAR do ramo e a sessão encurtada (devolvida ou descartada — nunca ao pool encurtada)', () => {
-  const plan = (who: object = USER) => request(app).get(`/api/billing/${ORDER}/cancel-plan`).set('Authorization', bearer(who))
+  const plan = (who: { role: string } = USER) => request(app).get(`/api/billing/${ORDER}/cancel-plan`).set('Authorization', bearer(who))
 
   it('[RESISTIU] privilégio do RAMO: sem nada / CANCELAR só em `orders` / FATURAR (5) na OS → 403 sem abrir conexão; CANCELAR (7) na OS → 200; ramo não contratado → 403 até para o admin', async () => {
     for (const grants of [[], ['7:29:7'], ['7:20:5'], ['7:31:7']]) {
-      privileged = new Set(grants); resetPrivilegeCache()
+      privileged = new Set(grants)
       const r = await plan()
       expect([grants, r.status, r.body.code]).toEqual([grants, 403, 'PRIVILEGE_REQUIRED'])
     }
     expect(getConn).not.toHaveBeenCalled()
-    privileged = new Set(['7:20:7']); resetPrivilegeCache()
+    privileged = new Set(['7:20:7'])
     getConn.mockResolvedValue(planConn({ fiscal: [] }).conn)
     expect((await plan()).status).toBe(200)
-    contracted.delete(CATALOG['service-orders']); resetPrivilegeCache(); getConn.mockClear()
+    contracted.delete(CATALOG['service-orders']); getConn.mockClear()
     const r = await plan(ADMIN)
     expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED']); expect(getConn).not.toHaveBeenCalled()
   })

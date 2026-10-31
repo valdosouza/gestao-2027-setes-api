@@ -4,7 +4,7 @@
 // regular precisa do par; o override pessoal 'U' segue aberto (A-PV6). D-PV24: o super escapa também do "adquirida"; D-PV39: a tela do
 // Super delegável conta como adquirida pela Setes.
 import pool from '../shared/db/connection'
-import { resetPrivilegeCache, interfaceAcquiredFor, escapesLicense } from '../shared/auth/require-privilege'
+import { interfaceAcquiredFor, escapesLicense } from '../shared/auth/require-privilege'
 import { configureVerdict, canConfigure, assertCanConfigure } from '../shared/auth/configure-privilege'
 import * as vitrineRepo from '../shared/interface-vitrine/interface-vitrine.repository'
 import * as configRepo from '../shared/interface-config/interface-config.repository'
@@ -13,6 +13,8 @@ import * as fieldsRepo from '../modules/interface-fields/interface-fields.reposi
 import { saveConfigValue, fetchResolvedConfigs } from '../modules/interface-configs/interface-configs.service'
 import { saveFieldConfig, fetchResolvedFields } from '../modules/interface-fields/interface-fields.service'
 import { invalidateInterfaceConfigCatalog } from '../shared/interface-config/interface-config.service'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
+import { accessAnswer, AccessModel, ModelProfile } from '../test-setup/access-model'
 
 jest.mock('../shared/db/connection', () => ({ __esModule: true, default: { query: jest.fn() } }))
 jest.mock('../shared/interface-vitrine/interface-vitrine.repository', () => {
@@ -34,16 +36,31 @@ const CATALOG: Record<string, number> = { customers: 9, 'interface-configs': 10,
 const BY_ID = Object.fromEntries(Object.entries(CATALOG).map(([k, id]) => [id, k])) as Record<number, string>
 let contracted: Set<number>
 let privileged: Set<string>                       // `${userId}:${interfaceId}:${privilegeId}`
+/** O vínculo vivo de cada usuário × institution (`vw_user_link`) — o perfil do veredito é o DELE, nunca o `role` do token. */
+const LINKS: Record<string, ModelProfile> = { '9:2': 'user', '7:2': 'admin', '1:1': 'super', '9:1': 'user' }
+function modelFor(userId: number, institutionId: number): AccessModel | null {
+  const profile = LINKS[`${userId}:${institutionId}`]
+  if (!profile) return null
+  const granted: Record<string, string[]> = {}
+  for (const p of privileged) {
+    const [u, i, v] = p.split(':').map(Number)
+    if (u === userId && BY_ID[i]) (granted[BY_ID[i]] ??= []).push(PRIVILEGE_NAME_BY_ID[v])
+  }
+  return { profile, vendor: institutionId === 1, contracted: [...contracted].map(id => BY_ID[id]).filter(Boolean), granted }
+}
 function routeDb(): void {
   mockQuery.mockImplementation(async (sql: string, params: any[] = []) => {
+    const a = accessAnswer(sql, params, modelFor)                     // o veredito: as views (costura A1 — D-AU3/D-AU6)
+    if (a) return [a, []]
     if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) { const id = CATALOG[String(params[0])]; return [id ? [{ id }] : []] }
     if (/SELECT i18n_key AS k FROM setes_central\.tb_interface WHERE id/.test(sql)) { const k = BY_ID[Number(params[0])]; return [k ? [{ k }] : []] }
-    if (/tb_institution_has_interface/.test(sql)) return [contracted.has(Number(params[1])) ? [{ 1: 1 }] : []]
-    if (/tb_user_has_privilege/.test(sql)) return [privileged.has(`${params[0]}:${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
     throw new Error(`SQL inesperado: ${sql}`)
   })
 }
 const sqlCalls = (re: RegExp) => mockQuery.mock.calls.filter(c => re.test(String(c[0]))).length
+const ACCESS = /vw_user_access/
+const REACH = /vw_user_reach/
+const reads = (re: RegExp) => mockQuery.mock.calls.filter(c => re.test(String(c[0]))).map(c => c[1])
 
 const USER = { institutionId: 2, userId: 9, role: 'user', schemaName: 'setes_x' }
 const ADMIN = { institutionId: 2, userId: 7, role: 'admin', schemaName: 'setes_x' }
@@ -55,7 +72,7 @@ const CONFIGS = [
 ]
 
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache(); invalidateInterfaceConfigCatalog(9); invalidateInterfaceConfigCatalog(41)
+  jest.clearAllMocks(); invalidateInterfaceConfigCatalog(9); invalidateInterfaceConfigCatalog(41)
   contracted = new Set([9, 10, 11]); privileged = new Set()
   routeDb()
   ;(configRepo.listCatalogConfigs as jest.Mock).mockResolvedValue(CONFIGS)
@@ -76,15 +93,16 @@ describe('configureVerdict — CONFIGURAR na interface ALVO', () => {
   it('o par é da interface ALVO, não do painel: ALTERAR/CONFIGURAR em interface-configs não configura Clientes', async () => {
     privileged.add('9:10:11'); privileged.add('9:10:2')
     expect(await configureVerdict(USER, 9)).toBe('no-privilege')
-    expect(sqlCalls(/tb_user_has_privilege/)).toBeGreaterThan(0)
-    expect(mockQuery.mock.calls.filter(c => /tb_user_has_privilege/.test(String(c[0]))).map(c => c[1][2])).toEqual([11])   // só o 11
+    expect(reads(ACCESS)).toEqual([[9, 2, ['customers'], 'CONFIGURAR']])            // só a ALVO, só o CONFIGURAR
   })
-  it('admin passa (sem consultar vínculo); super escapa (sem consultar contrato)', async () => {
+  it('admin passa sem concessão; super escapa até sem contrato — os dois pelo caminho quente (uma leitura, sem o motivo)', async () => {
     expect(await configureVerdict(ADMIN, 9)).toBe('ok')
-    expect(sqlCalls(/tb_user_has_privilege/)).toBe(0)
-    jest.clearAllMocks()
+    expect(reads(ACCESS)).toEqual([[7, 2, ['customers'], 'CONFIGURAR']])
+    jest.clearAllMocks(); routeDb()
+    contracted.clear()
     expect(await configureVerdict(SUPER, 9)).toBe('ok')
-    expect(sqlCalls(/tb_institution_has_interface/)).toBe(0)
+    expect(reads(ACCESS)).toEqual([[1, 1, ['customers'], 'CONFIGURAR']])
+    expect(sqlCalls(REACH)).toBe(0)
   })
   it('assertCanConfigure: 403 PRIVILEGE_REQUIRED sem o par, 403 INTERFACE_NOT_ALLOWED sem contrato', async () => {
     await expect(assertCanConfigure(USER, 9)).rejects.toMatchObject({ statusCode: 403, code: 'PRIVILEGE_REQUIRED' })
@@ -97,16 +115,24 @@ describe('configureVerdict — CONFIGURAR na interface ALVO', () => {
 })
 
 describe('D-PV24/D-PV39 — "adquirida" pela peça única', () => {
-  it('o super escapa (nenhuma consulta); o regular consulta o contrato; D-PV39: a tela delegável conta como adquirida pela Setes', async () => {
+  it('o super escapa (alcança sem contrato); o regular pelo contrato; D-PV39: a tela delegável conta como adquirida pela Setes — tudo pela vw_user_reach', async () => {
     expect(escapesLicense(SUPER)).toBe(true)
-    expect(await interfaceAcquiredFor(SUPER, 9)).toBe(true)
-    expect(sqlCalls(/tb_institution_has_interface/)).toBe(0)
+    contracted.clear()
+    expect(await interfaceAcquiredFor(SUPER, 9)).toBe(true)                    // fora do contrato: o super escapa (D-PV24)
+    expect(await interfaceAcquiredFor(USER, 9)).toBe(false)
+    contracted = new Set([9, 10, 11])
     expect(await interfaceAcquiredFor(USER, 9)).toBe(true)
-    expect(await interfaceAcquiredFor(USER, 41)).toBe(false)                   // cliente: a delegável não está no contrato
-    expect(await interfaceAcquiredFor(SETES_USER, 41)).toBe(true)              // Setes: delegável = adquirida (D-PV39), sem consultar contrato
-    const before = sqlCalls(/tb_institution_has_interface/)
-    expect(await interfaceAcquiredFor(SETES_USER, 9)).toBe(true)               // o resto segue pelo CONTRATO (consulta)
-    expect(sqlCalls(/tb_institution_has_interface/)).toBe(before + 1)
+    expect(await interfaceAcquiredFor(USER, 41)).toBe(false)                   // cliente: a delegável não está ao alcance
+    expect(await interfaceAcquiredFor(SETES_USER, 41)).toBe(true)              // Setes: delegável = adquirida (D-PV39), sem contrato e sem concessão
+    expect(await interfaceAcquiredFor(SETES_USER, 9)).toBe(true)               // o resto segue pelo CONTRATO
+    contracted.delete(9)
+    expect(await interfaceAcquiredFor(SETES_USER, 9)).toBe(false)
+    expect(await interfaceAcquiredFor(USER, 777)).toBe(false)                  // fora do catálogo: nega sem perguntar à view
+    expect(reads(REACH)).toEqual([
+      [1, 1, ['customers']], [9, 2, ['customers']], [9, 2, ['customers']], [9, 2, ['institution-interfaces']],
+      [9, 1, ['institution-interfaces']], [9, 1, ['customers']], [9, 1, ['customers']],
+    ])
+    expect(sqlCalls(ACCESS)).toBe(0)                                            // "adquirida" é alcance, nunca verbo
   })
 })
 
@@ -124,7 +150,7 @@ describe('painel de configurações — saveConfigValue (D-PV25/D-PV26)', () => 
   it("target 'U' (override pessoal, scope U) NÃO pede CONFIGURAR (A-PV6)", async () => {
     await saveConfigValue(USER, 9, 'page_size', { content: '10', target: 'U' })
     expect(valuesRepo.upsertConfigValue).toHaveBeenCalledWith('setes_x', 2, 9, 'page_size', 9, '10')
-    expect(sqlCalls(/tb_user_has_privilege/)).toBe(0)
+    expect(sqlCalls(ACCESS)).toBe(0)                                            // só o alcance da tela (vw_user_reach), nenhum verbo
   })
   it('admin grava I sem par; super grava I em tela NÃO contratada (D-PV24 — fica latente até a contratação)', async () => {
     await saveConfigValue(ADMIN, 9, 'restrict_customer_to_salesman', { content: 'S', target: 'I' })

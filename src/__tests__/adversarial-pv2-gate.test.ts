@@ -75,7 +75,8 @@ jest.mock('../shared/fiscal/fiscal.repository', () => {
 })
 
 import pool from '../shared/db/connection'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
+import { accessAnswer, AccessModel, ModelProfile } from '../test-setup/access-model'
 import { matchModuleRoute, listGatedModules } from '../shared/auth/module-privilege-gate'
 import * as configsService from '../modules/interface-configs/interface-configs.service'
 import * as entityFiscal from '../shared/entity/entity-fiscal'
@@ -98,24 +99,44 @@ let dbDown = false
 let business: (sql: string, params: any[]) => any = () => [[]]   // resposta do dublê para o SQL de negócio
 
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
-  contracted = new Set(Object.values(CATALOG))
+  jest.clearAllMocks();  contracted = new Set(Object.values(CATALOG))
   granted = new Set()
   businessSql = []
   dbDown = false
   business = () => [[]]
   q.mockImplementation(async (sql: string, params: any[] = []) => {
     if (dbDown) throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })
+    // o veredito (costura A1 — D-AU3/D-AU6): as views respondidas pelo dublê; elas só têm linhas de interface VIVA do catálogo
+    // (CROSS JOIN com vw_interface_catalog) — chave fora do CATALOG não existe nelas, nem para o super
+    const p = Array.isArray(params[2]) ? [params[0], params[1], params[2].filter((k: string) => k in CATALOG), ...params.slice(3)] : params
+    const a = accessAnswer(String(sql), p, modelFor)
+    if (a) return [a, []]
+    // id pela chave: o resolvedor da interface DINÂMICA do painel (`CONFIGS_PANEL` — general-configs) — registro, não veredito
     if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) {
       const id = CATALOG[String(params[0])]
       return [id ? [{ id }] : []]
     }
-    if (/tb_institution_has_interface/.test(sql)) return [contracted.has(Number(params[1])) ? [{ 1: 1 }] : []]
-    if (/tb_user_has_privilege/.test(sql)) return [granted.has(`${params[0]}:${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
     businessSql.push(String(sql))
     return business(String(sql), params)
   })
 })
+
+/**
+ * O vínculo vivo (`vw_user_link`) — o perfil do veredito é o DELE, nunca o `role` do token: o 5 tem kind 'super' na institution 4
+ * (fora da Setes a view dá 'user'); o 2 é um usuário comum da própria Setes.
+ */
+const LINKS: Record<string, ModelProfile> = { '9:2': 'user', '7:3': 'admin', '1:1': 'super', '5:4': 'user', '2:1': 'user' }
+function modelFor(userId: number, institutionId: number): AccessModel | null {
+  const profile = LINKS[`${userId}:${institutionId}`]
+  if (!profile) return null
+  const byId = Object.fromEntries(Object.entries(CATALOG).map(([k, id]) => [id, k])) as Record<number, string>
+  const g: Record<string, string[]> = {}
+  for (const x of granted) {
+    const [u, i, v] = x.split(':').map(Number)
+    if (u === userId && byId[i]) (g[byId[i]] ??= []).push(PRIVILEGE_NAME_BY_ID[v])
+  }
+  return { profile, vendor: institutionId === 1, contracted: [...contracted].map(id => byId[id]).filter(Boolean), granted: g }
+}
 
 // regular (userId 9) na institution 2; admin (7) na 3; super legítimo (1/1); super FALSO (role super fora da Setes)
 const USER = bearer({ institutionId: 2, userId: 9, role: 'user', schemaName: 'setes_x' })
@@ -443,13 +464,17 @@ describe('[RESISTIU] perfis', () => {
     expect([res.status, res.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
   })
 
-  it('role "Super"/"SUPER"/" super" na institution 1 e institutionId "1" (string) não viram super', async () => {
+  // Costura A1 (D-UC9/D-AU3): o `role` do token não decide mais nada — o perfil é o do VÍNCULO vivo. A sonda segue com um usuário da
+  // Setes que NÃO é super no vínculo (o 2) carregando o `role` forjado; o token do próprio super (1/1) com o role em outra grafia é
+  // o super legítimo (o vínculo diz 'super'), não uma escalada.
+  it('role "super"/"Super"/"SUPER"/" super" no token de quem NÃO é super no vínculo (institution 1, também como "1") não vira super', async () => {
     contracted.clear()
     for (const p of [
-      { institutionId: 1, userId: 1, role: 'Super', schemaName: 'setes_setes' },
-      { institutionId: 1, userId: 1, role: 'SUPER', schemaName: 'setes_setes' },
-      { institutionId: 1, userId: 1, role: ' super', schemaName: 'setes_setes' },
-      { institutionId: '1', userId: 1, role: 'super', schemaName: 'setes_setes' },
+      { institutionId: 1, userId: 2, role: 'super', schemaName: 'setes_setes' },
+      { institutionId: 1, userId: 2, role: 'Super', schemaName: 'setes_setes' },
+      { institutionId: 1, userId: 2, role: 'SUPER', schemaName: 'setes_setes' },
+      { institutionId: 1, userId: 2, role: ' super', schemaName: 'setes_setes' },
+      { institutionId: '1', userId: 2, role: 'super', schemaName: 'setes_setes' },
     ]) {
       const res = await request(app).get('/api/customers').set('Authorization', bearer(p as any))
       expect([JSON.stringify(p), res.status === 401 || denied(res)]).toEqual([JSON.stringify(p), true])

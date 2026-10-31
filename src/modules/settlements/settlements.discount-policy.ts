@@ -1,6 +1,5 @@
 import { HttpError } from '@shared/errors/http-error'
-import { isAdmin } from '@shared/auth/roles'
-import { userHasPrivilege } from '@shared/auth/require-privilege'
+import { accessVerdict } from '@shared/access'
 import { PRIVILEGE_DESCONTO } from '@shared/auth/privileges'
 import { getConfigContent } from '@shared/interface-config'
 import { toCents } from '@shared/money'
@@ -17,7 +16,7 @@ export const CHARGE_AGREEMENTS_INTERFACE = 'bank-charge-agreements'
  * Configurações (`max_discount_aliquot` na interface `settlements`, scope I —
  * default 0 = nenhum desconto sem o privilégio, fiel ao legado) e quem tem o
  * privilégio DESCONTO (seed 55) passa sem teto. Admin/super passam (regra dos
- * guards). Só a porta MANUAL: boleto (desconto congelado da carteira) e cheque
+ * guards — pelo veredito único, costura A1). Só a porta MANUAL: boleto (desconto congelado da carteira) e cheque
  * (sem desconto) não passam por aqui.
  */
 export async function assertDiscountPolicy(
@@ -39,8 +38,9 @@ export async function assertDiscountAliquot(
   inst: InstitutionPayload, requested: number, interfaceKey: string
 ): Promise<void> {
   if (!(requested > 0)) return
-  if (isAdmin(inst)) return
-  if (await userHasPrivilege(inst.schemaName, inst.userId, interfaceKey, PRIVILEGE_DESCONTO)) return
+  // costura A1 (D-AU6): o veredito único — admin/super passam pelo par REGISTRADO da interface ao alcance; o regular pela concessão
+  // (antes uma 5ª cópia crua: isAdmin + tb_user_has_privilege, sem licença e sem par registrado — achado do guardião)
+  if ((await accessVerdict(inst, [interfaceKey], PRIVILEGE_DESCONTO)) === 'ok') return
   const limit = Math.max(0, Number(await getConfigContent(inst, SETTLEMENTS_INTERFACE, DISCOUNT_LIMIT_CONFIG) ?? 0) || 0)
   // L-2 (adversarial da Rodada 6): comparação em CENTAVOS da alíquota — a folga
   // de 1e-9 deixava 5.000000001 passar num teto de 5 (política de autorização

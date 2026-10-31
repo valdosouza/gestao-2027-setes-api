@@ -7,10 +7,12 @@ import {
   UserListRow, InstitutionLookupRow, UserRow, UserInput, UserInstitutionGrant, UserInstitutionLink,
   UserInterfacePrivileges, UserPrivilegeGrant,
 } from './users.interface'
-import { invalidatePrivilegeVerdicts } from '@shared/auth/require-privilege'
 
 // Peça centralizada em @shared/db/schema (2026-08-04).
 import { assertSchema } from '@shared/db/schema'
+import { HttpError } from '@shared/errors/http-error'
+import { passwordSetAt } from '@shared/auth/password'
+import { ErrorCodes } from '@shared/errors/error-codes'
 // Nascimento da credencial promovido a @shared/user em 2026-08-15 (A2 — o
 // onboarding do Estabelecimento também cria usuário). O módulo REEXPORTA
 // para manter estável o contrato do cadastro (service e testes).
@@ -150,6 +152,7 @@ export async function getUser(id: number, institutionId: number | null = null): 
             e.name_company AS nameCompany,
             e.nick_trade   AS nickTrade,
             m.email,
+            (u.password IS NOT NULL AND u.password <> '') AS hasCredential,
             CASE WHEN ? IS NULL THEN NULL
                  WHEN ihu.tb_user_id IS NULL THEN 'N'
                  WHEN ihu.active = 'S' AND ihu.deleted = 'N' THEN 'S' ELSE 'N' END AS active
@@ -166,14 +169,16 @@ export async function getUser(id: number, institutionId: number | null = null): 
      WHERE u.id = ? AND u.deleted = 'N'`,
     [institutionId, institutionId, id]
   )
-  return (rows[0] as UserRow | undefined) ?? null
+  const row = rows[0]
+  return row ? ({ ...row, hasCredential: Boolean(Number(row.hasCredential)) } as UserRow) : null
 }
 
 
 /**
- * PUT: senha só muda quando [passwordHash] vier (null mantém). D-PV19 (D-UC1/D-UC2): o e-mail de login NÃO se regrava (o
+ * PUT: [passwordHash] = a 1ª senha de uma conta SEM credencial (A-PV23 — usuário vindo do setes-sync); null mantém. D-PV48: a gravação é
+ * CONDICIONAL (`password IS NULL`) — duas edições simultâneas não definem duas vezes; quem chega depois recebe 409 e a transação volta. D-PV19 (D-UC1/D-UC2): o e-mail de login NÃO se regrava (o
  * service já recusou qualquer troca — a credencial é do titular) e "ativo" é o VÍNCULO com [linkInstitutionId] (null = não mexe);
- * `tb_user.active` (a credencial) fica como está. Inativar o vínculo derruba o cache do veredito do usuário (D-PV29).
+ * `tb_user.active` (a credencial) fica como está. Inativar o vínculo vale NA HORA (D-UC9 — o veredito lê a view viva, sem cache: D-AU8).
  */
 export async function updateUserCascade(
   id: number, input: UserInput, passwordHash: string | null, linkInstitutionId: number | null = null
@@ -185,10 +190,15 @@ export async function updateUserCascade(
       nameCompany: input.nameCompany, nickTrade: input.nickTrade,
     })
     if (passwordHash !== null) {
-      await conn.query(
-        `UPDATE setes_central.tb_user SET password = ?, updated_at = NOW() WHERE id = ?`,
-        [passwordHash, id]
+      const [res] = await conn.query<any>(
+        `UPDATE setes_central.tb_user SET password = ?, password_set_at = ?, updated_at = NOW()
+          WHERE id = ? AND (password IS NULL OR password = '')`,
+        [passwordHash, passwordSetAt(), id]
       )
+      if (Number(res?.affectedRows ?? 0) !== 1) {
+        throw new HttpError(409, 'A credencial deste usuário já existe — só o titular troca a senha, pela recuperação',
+          [{ field: 'password', message: 'Senha definida só na criação da credencial (D-PV48)' }], ErrorCodes.PASSWORD_OWNER_ONLY)
+      }
     } else {
       await conn.query(`UPDATE setes_central.tb_user SET updated_at = NOW() WHERE id = ?`, [id])
     }
@@ -207,7 +217,6 @@ export async function updateUserCascade(
   } finally {
     conn.release()
   }
-  if (input.active !== undefined && linkInstitutionId !== null) invalidatePrivilegeVerdicts({ userId: id })
 }
 
 export async function userExists(id: number): Promise<boolean> {
@@ -422,7 +431,6 @@ export async function setUserPrivileges(
   } finally {
     conn.release()
   }
-  invalidatePrivilegeVerdicts({ userId })      // D-PV29: privilégio salvo — revogação imediata no processo
 }
 
 /** Sincroniza vínculos: concede a lista (com kind), revoga (soft) as demais. */
@@ -464,5 +472,4 @@ export async function setInstitutionLinks(
   } finally {
     conn.release()
   }
-  invalidatePrivilegeVerdicts({ userId })      // D-PV29: vínculo de usuário mudou
 }

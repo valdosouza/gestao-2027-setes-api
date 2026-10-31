@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { INTERFACE_KEY_PATTERN } from '@shared/auth/privilege-catalog'
 
 /**
  * DTO (Zod) do módulo interfaces — mesmo shape para POST e PUT (o id é
@@ -9,8 +10,9 @@ import { z } from 'zod'
  */
 export const interfaceDto = z.object({
   groupDefault: z.string().max(100).nullable().optional(),
-  // D-PV15 (gate adversarial do delta): a forma canônica das rotas do app e do boot — minúsculas, dígitos e hífen
-  i18nKey:      z.string().max(100).regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Chave: minúsculas, dígitos e hífen (ex.: bank-slips)').nullable().optional(),
+  // D-PV15 (gate adversarial do delta) + D-PV42 (Valdo 2026-10-20): identificador TÉCNICO, em inglês, na forma da rota do app
+  // (`/home/<chave>/`) — começa por letra; minúsculas, dígitos e hífen (sem hífen repetido nem no fim). A MESMA regra do boot.
+  i18nKey:      z.string().max(100).regex(INTERFACE_KEY_PATTERN, 'Chave técnica em inglês: começa por letra; minúsculas, dígitos e hífen (ex.: bank-slips)').nullable().optional(),
   description:  z.string().min(1).max(100),
   kind:         z.enum(['T', 'R']).nullable().optional(),
   position:     z.string().max(10).nullable().optional(),

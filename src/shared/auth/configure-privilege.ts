@@ -12,7 +12,7 @@ import { privilegeVerdict, resolveInterfaceKey, PrivilegeVerdict } from '@shared
  * o VISUALIZAR do painel só deixa navegar); "Configurações Gerais" = CONFIGURAR em `general-configs` (a interface alvo É ela).
  * Admin passa sempre (D32), o super escapa (A-PV1/D-PV24), o regular precisa do par (interface × CONFIGURAR) — que existe no
  * catálogo para toda interface com config ou campo (seed 68). O override PESSOAL ('U') segue aberto (A-PV6) — não passa por aqui.
- * O veredito segue a MESMA peça das guardas (licença antes do privilégio; cache da D-PV29).
+ * O veredito segue a MESMA peça das guardas (licença antes do privilégio — a pilha de views, sem cache: costura A1, D-AU8).
  */
 export async function configureVerdict(inst: InstitutionPayload, interfaceId: number): Promise<PrivilegeVerdict> {
   const key = await resolveInterfaceKey(interfaceId)

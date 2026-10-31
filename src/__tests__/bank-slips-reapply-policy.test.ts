@@ -5,6 +5,7 @@
 // D-PV40: `refresh` por boleto e `/refresh` (passada) = CONSULTAR (12); `register`/`pay-sandbox` = TRANSMITIR (9).
 import request from 'supertest'
 import { bearer } from '../test-setup/test-token'
+import { accessAnswer, AccessModel } from '../test-setup/access-model'
 
 jest.mock('../shared/db/connection', () => ({ __esModule: true, default: { query: jest.fn(), getConnection: jest.fn(), on: jest.fn(), end: jest.fn() } }))
 jest.mock('../shared/logger/logger', () => ({ __esModule: true, default: { error: jest.fn(), warn: jest.fn(), info: jest.fn() } }))
@@ -30,29 +31,36 @@ jest.mock('../modules/bank-slips/bank-slips.registration.service', () => {
 const EVENT_KIND: Record<number, string> = { 1: 'R', 2: 'C', 3: 'V', 4: 'S' }
 
 import pool from '../shared/db/connection'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import { listGatedRoutes } from '../shared/auth/module-privilege-gate'
 import * as reg from '../modules/bank-slips/bank-slips.registration.service'
 import { reapplyPrivilegeFor, reapplyEffectVerdict } from '../modules/bank-slips/bank-slips.reapply-policy'
 import { PRIVILEGE_ALTERAR, PRIVILEGE_CANCELAR, PRIVILEGE_CONSULTAR, PRIVILEGE_TRANSMITIR } from '../shared/auth/privileges'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
 import app from '../app'
 
 const q = (pool as any).query as jest.Mock
-const CATALOG: Record<string, number> = { 'bank-slips': 38 }
-let granted: Set<string>
+/** concessões (ids do catálogo) do usuário regular 9 na tela de boletos */
+let granted: Set<number>
+// costura A1 (D-AU3): o veredito lê as views — a tela de boletos CONTRATADA para a institution 2; o 7 é admin, o 9 regular com as
+// concessões de `granted` (o verbo pelo NOME — D-PV53)
+const accessModel = (userId: number, institutionId: number): AccessModel | null => {
+  if (institutionId !== 2) return null
+  if (userId === 7) return { profile: 'admin', contracted: ['bank-slips'] }
+  if (userId === 9) return { profile: 'user', contracted: ['bank-slips'], granted: { 'bank-slips': [...granted].map(id => PRIVILEGE_NAME_BY_ID[id]) } }
+  return null
+}
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
+  jest.clearAllMocks()
   granted = new Set()
   q.mockImplementation(async (sql: string, params: any[] = []) => {
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) { const id = CATALOG[String(params[0])]; return [id ? [{ id }] : []] }
-    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]
-    if (/tb_user_has_privilege/.test(sql)) return [granted.has(`${params[0]}:${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
+    const a = accessAnswer(sql, params, accessModel)
+    if (a) return [a, []]
     return [[]]
   })
 })
 const USER = bearer({ institutionId: 2, userId: 9, role: 'user', schemaName: 'setes_x' })
 const ADMIN = bearer({ institutionId: 2, userId: 7, role: 'admin', schemaName: 'setes_x' })
-const grant = (...privs: number[]) => privs.forEach(p => granted.add(`9:38:${p}`))
+const grant = (...privs: number[]) => privs.forEach(p => granted.add(p))
 const reapply = (token: string, event: number) => request(app).post('/api/bank-slips/5/reapply').set('Authorization', token).send({ attempt: 1, event })
 
 describe('mapa do efeito → privilégio', () => {

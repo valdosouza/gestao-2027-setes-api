@@ -3,17 +3,21 @@
 // Usado pela cerca (`src/__tests__/privilege-catalog-fence.test.ts`) e pelas sondas do gate.
 //
 // O que ela LÊ (cada consumidor de privilégio vira pares (interface, privilégio) com o lugar de onde veio):
-//  - setes-api (`src/**/*.ts`, por AST): as PRIMITIVAS `requirePrivilege(interface|[…], P)`, `requirePrivilegeFor(P, resolver)` e
-//    `userHasPrivilege(schema, user, interface, P)`. Função que só REPASSA a interface (ou o privilégio) recebida por PARÂMETRO vira
+//  - setes-api (`src/**/*.ts`, por AST): as PRIMITIVAS `requirePrivilege(interface|[…], P)`, `requirePrivilegeFor(P, resolver)`,
+//    `privilegeVerdict(inst, interfaces, P)` e `accessVerdict(inst, interfaces, P)` (o veredito único da costura A1 — D-AU6; `P` é
+//    id OU nome do verbo). Função que só REPASSA a interface (ou o privilégio) recebida por PARÂMETRO vira
 //    primitiva DERIVADA, seguida pelo SÍMBOLO (no arquivo que a declara ou importada dele — nunca pelo nome solto). Interface e
 //    privilégio são resolvidos pelo ESCOPO LÉXICO (gate adversarial 2026-10-18: a 1ª versão procurava constante pelo NOME no
-//    repositório inteiro e lia o par ERRADO com constante sombreada ou import renomeado): texto literal, lista literal, `const`
-//    literal do escopo, constante exportada pelo módulo importado, `PRIVILEGE_<NOME>` importado de `@shared/auth/privileges` (ou
-//    `erp.PRIVILEGE_<NOME>` do núcleo `fiscal-api`) ou id literal. O resolver de `requirePrivilegeFor` tem de ser o SÍMBOLO importado
-//    de `billing.interface-resolver.ts`. Fora disso a chamada é NÃO RESOLVÍVEL e reprova — quem cria guarda dinâmica registra a
-//    primitiva aqui (`API_PRIMITIVES`) com o que ela consome (privilégio fixo, ou vários);
-//  - nfse-api (`src/**/*.ts`): `requireBranchPrivilege(ctx, inst, ref, P)` (interface = o RAMO — `ORDER_BRANCH_INTERFACES`) e
-//    `passScope(ctx, inst, KEYS, P)`; qualquer `userHasPrivilege` fora da implementação (`guards.ts`) reprova;
+//    repositório inteiro e lia o par ERRADO com constante sombreada ou import renomeado): texto literal, lista literal (de textos ou
+//    de constantes), `const` literal do escopo, constante exportada pelo módulo importado, `PRIVILEGE_<NOME>` importado de
+//    `@shared/auth/privileges`, id literal ou o NOME do verbo em texto (D-PV53). O resolver de `requirePrivilegeFor` tem de ser o
+//    SÍMBOLO importado de `billing.interface-resolver.ts`. Fora disso a chamada é NÃO RESOLVÍVEL e reprova — quem cria guarda dinâmica
+//    registra a primitiva aqui (`API_PRIMITIVES`) com o que ela consome (privilégio fixo, ou vários). A guarda POR ROTEADOR (D-PV2) NÃO
+//    passa por aqui: os pares dela vêm da MESMA tabela que ela usa (`listGatedRoutes()` — D-PV14), e o `privilegeAct(PRIVILEGE_X)` no
+//    `<m>.routes.ts` de um módulo guardado não é "PRIVILEGE solto";
+//  - nfse-api (`src/**/*.ts`): `requireBranchPrivilege(ctx, inst, ref, 'VERBO')` (interface = o RAMO — `ORDER_BRANCH_INTERFACES`),
+//    `passScope(ctx, inst, KEYS, 'VERBO')` e o veredito do núcleo (`access.accessVerdict`/`access.grantedKeys`) fora da implementação
+//    (`guards.ts`) — o verbo pelo NOME (D-PV53: as APIs fiscais não guardam número de privilégio; `erp.PRIVILEGE_*` não existe mais);
 //  - setes-app (`apps/web/lib` e `packages/*/lib`, por um tokenizador de Dart — strings, raw, aspas triplas, interpolação e
 //    comentário de bloco ANINHADO): `CurrentInterface.can('NOME')`; a interface é a do MÓDULO (`apps/web/lib/app/modules/<pasta>/`),
 //    lida no mapa `interfaceRoutes` (`home/interface_routes.dart`: i18n_key → `/home/<rota>/`, pasta = rota com `_`). `can` fora de um
@@ -49,13 +53,30 @@ export interface Primitive { name: string; key: KeySpec; priv: PrivSpec; declFil
 export const API_PRIMITIVES: readonly Primitive[] = [
   { name: 'requirePrivilege',    key: { arg: 0 },         priv: { arg: 1 } },
   { name: 'requirePrivilegeFor', key: { resolverArg: 1 }, priv: { arg: 0 } },
-  { name: 'userHasPrivilege',    key: { arg: 2 },         priv: { arg: 3 } },
+  { name: 'privilegeVerdict',    key: { arg: 1 },         priv: { arg: 2 } },
+  { name: 'accessVerdict',       key: { arg: 1 },         priv: { arg: 2 } },
+  // reaplicar a voz do banco (D-PV27): o privilégio é o do EFEITO, escolhido pela VOZ do evento (`reapplyPrivilegeFor`) — dinâmico,
+  // então o registro diz o que ela consome (ALTERAR para a liquidação, CANCELAR para o cancelamento)
+  { name: 'reapplyVerdictFor',   key: { arg: 1 },         priv: { fixed: ['ALTERAR', 'CANCELAR'] },
+    declFile: 'src/modules/bank-slips/bank-slips.reapply-policy.ts' },
 ]
-/** Implementação das primitivas (não é consumidor; os exports dela são classificados pela cerca). */
-export const API_IMPL = ['src/shared/auth/require-privilege.ts']
+/**
+ * IMPLEMENTAÇÃO (não é consumidor; os exports de cada arquivo são classificados pela cerca) → o motivo. A varredura não olha dentro
+ * delas: quem decide o par é quem CHAMA (as primitivas acima), a tabela do roteador (D-PV14) ou a REGRA conferida contra o banco.
+ */
+export const API_IMPL_REASONS: Readonly<Record<string, string>> = {
+  'src/shared/auth/require-privilege.ts': 'as primitivas (adaptador Express do veredito único — costura A1)',
+  'src/shared/access/index.ts': 'o adaptador do veredito único (`fiscal-api/access` — a pilha de views; o verbo pelo NOME)',
+  'src/shared/auth/module-privilege-gate.ts': 'a guarda POR ROTEADOR (D-PV2): os pares vêm da tabela `listGatedRoutes()` (D-PV14)',
+  'src/shared/auth/configure-privilege.ts': 'a REGRA do CONFIGURAR (D-PV25): CONFIGURAR na interface ALVO, dinâmica — o conjunto (toda ' +
+    'interface com config ou campo no catálogo + general-configs) é conferido contra o banco pelo boot e pelo teste ao vivo (D-PV51)',
+}
+export const API_IMPL = Object.keys(API_IMPL_REASONS)
 /** Os ids (`PRIVILEGE_<NOME>`) e o mapa nome → id (não são consumidores). */
 export const PRIVILEGES_FILE = 'src/shared/auth/privileges.ts'
 export const API_DECLARATIONS = [PRIVILEGES_FILE, 'src/shared/auth/privilege-catalog.ts']
+/** O marcador do ato na rota (D-PV2) — lido pela tabela do roteador, não pela varredura. */
+export const ROUTER_GATE_FILE = 'src/shared/auth/module-privilege-gate.ts'
 
 /** Resolvers de interface por requisição → as interfaces que podem devolver (a cerca confere o tipo `OrderInterfaceKey`). */
 export const API_RESOLVERS: Readonly<Record<string, readonly string[]>> = {
@@ -67,11 +88,13 @@ export const RESOLVER_FILE = 'src/modules/billing/billing.interface-resolver.ts'
 export const NFSE_PRIMITIVES: readonly Primitive[] = [
   { name: 'requireBranchPrivilege', key: { keys: ORDER_BRANCH_INTERFACES }, priv: { arg: 3 } },
   { name: 'passScope',              key: { arg: 2 },                        priv: { arg: 3 } },
-  { name: 'userHasPrivilege',       key: { arg: 2 },                        priv: { arg: 3 } },
+  // o veredito do núcleo (`fiscal-api/access`) chamado DIRETO fora de guards.ts é uma guarda nova: lida como as outras
+  { name: 'accessVerdict',          key: { arg: 2 },                        priv: { arg: 3 } },
+  { name: 'grantedKeys',            key: { arg: 2 },                        priv: { arg: 3 } },
 ]
 export const NFSE_IMPL = ['src/modules/guards.ts']
-/** O pacote do núcleo fiscal: `erp.PRIVILEGE_<NOME>` vindo dele vale pelo nome (a cerca confere os ids contra `src/erp/facts.ts`). */
-export const CORE_PACKAGE = 'fiscal-api'
+/** O vocabulário dos verbos do núcleo (`PRIVILEGE_NAMES`) — a cerca o confere contra `PRIVILEGE_ID` (D-PV53). */
+export const CORE_ACCESS_FILE = 'src/access/access.ts'
 
 export const APP_ROUTES_FILE = 'apps/web/lib/app/modules/home/interface_routes.dart'
 export const APP_IMPL = [
@@ -279,7 +302,6 @@ interface ScanCtx {
   resolvers: Readonly<Record<string, readonly string[]>>
   resolverFile: string
   privilegesFile: string
-  corePackage: string
 }
 const fileOf = (ctx: ScanCtx, module: string | null): ScanFile | undefined => ctx.files.find(f => sameModule(module, f.rel))
 
@@ -289,6 +311,24 @@ function resolveKeys(ctx: ScanCtx, file: ScanFile, e: ts.Expression | undefined,
   if (lit) return { ok: lit }
   const x = unwrap(e)
   if (depth > 8) return { fail: 'constante encadeada demais' }
+  // lista com CONSTANTES (`[REAPPLY_INTERFACE]`, `[interfaceKey]` da costura A1): cada item pela mesma regra; um ÚNICO item que é
+  // parâmetro vira o repasse daquele parâmetro (a derivada aceita texto ou lista no lugar dele)
+  if (ts.isArrayLiteralExpression(x)) {
+    if (x.elements.length === 1 && !ts.isSpreadElement(x.elements[0])) {
+      const one = resolveKeys(ctx, file, x.elements[0], depth + 1)
+      if ('param' in one || 'fail' in one) return one
+      return { ok: one.ok }
+    }
+    const out: string[] = []
+    for (const el of x.elements) {
+      if (ts.isSpreadElement(el)) return { fail: `lista de interfaces com espalhamento: ${oneLine(x.getText())}` }
+      const r = resolveKeys(ctx, file, el, depth + 1)
+      if ('fail' in r) return r
+      if ('param' in r) return { fail: `lista de interfaces mistura parâmetro e constante: ${oneLine(x.getText())}` }
+      out.push(...r.ok)
+    }
+    return { ok: out }
+  }
   if (ts.isIdentifier(x)) {
     const d = declOf(x, file.rel)
     if (d.kind === 'const') return resolveKeys(ctx, file, d.init, depth + 1)
@@ -317,6 +357,11 @@ function resolvePriv(ctx: ScanCtx, file: ScanFile, e: ts.Expression | undefined,
     const n = NAME_BY_ID.get(Number(x.text))
     return n ? { ok: n } : { fail: `privilégio ${x.text} fora do catálogo` }
   }
+  // D-PV53: o verbo pelo NOME (`'TRANSMITIR'`) — a mesma forma do `CurrentInterface.can('X')` do app; EXATO, como a view
+  // (`privilege` COLLATE utf8mb4_bin — migration 075)
+  if (ts.isStringLiteral(x) || ts.isNoSubstitutionTemplateLiteral(x)) {
+    return x.text in PRIVILEGE_ID ? { ok: x.text as PrivilegeName } : { fail: `privilégio "${x.text}" fora do catálogo (${Object.keys(PRIVILEGE_ID).join(', ')})` }
+  }
   const byName = (text: string): Resolved<PrivilegeName> => {
     const n = privilegeOfName(text)
     return n ? { ok: n } : { fail: `privilégio não resolvível: ${text}` }
@@ -324,7 +369,7 @@ function resolvePriv(ctx: ScanCtx, file: ScanFile, e: ts.Expression | undefined,
   if (ts.isIdentifier(x)) {
     const d = declOf(x, file.rel)
     if (d.kind === 'import') {
-      if (sameModule(d.module, ctx.privilegesFile) || d.spec === ctx.corePackage) return byName(d.original)
+      if (sameModule(d.module, ctx.privilegesFile)) return byName(d.original)
       const target = fileOf(ctx, d.module)
       const init = target && topLevelConstInit(target.sf, d.original)
       return init ? resolvePriv(ctx, target!, init, depth + 1) : { fail: `privilégio ${x.text} importado sem constante legível (${d.spec})` }
@@ -336,8 +381,8 @@ function resolvePriv(ctx: ScanCtx, file: ScanFile, e: ts.Expression | undefined,
   }
   if (ts.isPropertyAccessExpression(x) && ts.isIdentifier(x.expression)) {
     const d = declOf(x.expression, file.rel)
-    if ((d.kind === 'namespace' && sameModule(d.module, ctx.privilegesFile)) || (d.kind === 'import' && d.spec === ctx.corePackage)
-      || d.kind === 'free') return byName(x.name.text)
+    // `erp.PRIVILEGE_*` do núcleo NÃO vale mais (D-PV53: as APIs fiscais não guardam número de privilégio) — cai em "não resolvível"
+    if ((d.kind === 'namespace' && sameModule(d.module, ctx.privilegesFile)) || d.kind === 'free') return byName(x.name.text)
   }
   return { fail: `privilégio não resolvível: ${oneLine(x.getText())}` }
 }
@@ -361,15 +406,21 @@ export function scanTs(
   sources: readonly TsSource[], primitives: readonly Primitive[], consumer: PrivilegeConsumer,
   opts: {
     impl?: string[]; declarations?: string[]; resolvers?: Readonly<Record<string, readonly string[]>>
-    resolverFile?: string; privilegesFile?: string; corePackage?: string
+    resolverFile?: string; privilegesFile?: string
+    /**
+     * `<m>.routes.ts` dos módulos GUARDADOS pela guarda por roteador (D-PV2): ali o `privilegeAct(PRIVILEGE_X, …)` é o marcador que a
+     * TABELA do roteador lê (`listGatedRoutes()` — D-PV14), não "PRIVILEGE solto". Fora deles o marcador nunca é lido — é solto.
+     */
+    routerActFiles?: readonly string[]
   } = {},
 ): FenceScan {
   const impl = opts.impl ?? []
   const declarations = opts.declarations ?? []
+  const routerActFiles = new Set(opts.routerActFiles ?? [])
   const files: ScanFile[] = sources.map(s => ({ rel: s.file, sf: ts.createSourceFile(s.file, s.code, ts.ScriptTarget.Latest, true) }))
   const ctx: ScanCtx = {
     files, resolvers: opts.resolvers ?? API_RESOLVERS, resolverFile: opts.resolverFile ?? RESOLVER_FILE,
-    privilegesFile: opts.privilegesFile ?? PRIVILEGES_FILE, corePackage: opts.corePackage ?? CORE_PACKAGE,
+    privilegesFile: opts.privilegesFile ?? PRIVILEGES_FILE,
   }
   const out: FenceScan = { pairs: [], unresolved: [], loose: [], shared: [] }
   const consumedPrivNodes = new Set<ts.Node>()
@@ -503,6 +554,15 @@ export function scanTs(
     const lines = f.sf.getFullText().split(/\r?\n/)
     const visit = (n: ts.Node): void => {
       if (ts.isImportDeclaration(n)) return
+      // D-PV14: o marcador do ato no roteador de um módulo GUARDADO — a 1ª ponta (o privilégio) é lida pela tabela, não solta. Só o
+      // `privilegeAct` importado da peça da guarda (pelo símbolo, não pelo nome solto)
+      if (routerActFiles.has(f.rel) && ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'privilegeAct'
+        && n.arguments.length > 0) {
+        const d = declOf(n.expression, f.rel)
+        if (d.kind === 'import' && d.original === 'privilegeAct' && sameModule(d.module, ROUTER_GATE_FILE)) {
+          consumedPrivNodes.add(unwrap(n.arguments[0]))
+        }
+      }
       const isRef = (ts.isIdentifier(n) && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) && privilegeOfName(n.text))
         || (ts.isPropertyAccessExpression(n) && privilegeOfName(n.name.text))
       if (isRef && !consumedPrivNodes.has(n)) {
@@ -597,11 +657,18 @@ export function exportedNames(code: string): string[] {
   return out
 }
 
-/** `export const PRIVILEGE_<NOME> = <id>` de um arquivo (o núcleo fiscal repete os ids que a nfse-api usa). */
+/** `[export] const PRIVILEGE_<NOME> = <id>` de um arquivo — o núcleo fiscal NÃO pode ter nenhuma (D-PV53). */
 export function privilegeConstants(code: string): Record<string, number> {
   const out: Record<string, number> = {}
-  for (const m of code.matchAll(/export const PRIVILEGE_([A-Z]+)\s*=\s*(\d+)/g)) out[m[1]] = Number(m[2])
+  for (const m of code.matchAll(/\bconst\s+PRIVILEGE_([A-Z]+)\s*(?::[^=]*)?=\s*(\d+)/g)) out[m[1]] = Number(m[2])
   return out
+}
+
+/** Os textos de `[export] const NOME = ['a', 'b'] [as const]` de TOPO de um arquivo TS — ou null (o vocabulário `PRIVILEGE_NAMES`). */
+export function constStringArray(code: string, name: string): string[] | null {
+  const sf = ts.createSourceFile('x.ts', code, ts.ScriptTarget.Latest, true)
+  const init = topLevelConstInit(sf, name)
+  return init ? literalStrings(init) : null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -919,7 +986,7 @@ export const TS_PROBES: { code: string; pairs: string[]; unresolved: number; fil
   { file: ROUTES, code: `import { resolveFromBody } from './billing.interface-resolver'\nrouter.post('/i', requirePrivilegeFor(PRIVILEGE_FATURAR, resolveFromBody))`,
     pairs: ['orders|FATURAR', 'service-orders|FATURAR', 'order-returns|FATURAR'], unresolved: 0 },
   // repasse por parâmetro: a derivada é lida nas chamadas dela
-  { code: `export async function pol(inst: any, key: string) { await userHasPrivilege(inst.s, inst.u, key, PRIVILEGE_DESCONTO) }\n` +
+  { code: `export async function pol(inst: any, key: string) { await accessVerdict(inst, [key], PRIVILEGE_DESCONTO) }\n` +
       `const A = 'bank-charge-agreements'\nawait pol(i, A)\nawait pol(i, 'settlements')`,
     pairs: ['bank-charge-agreements|DESCONTO', 'settlements|DESCONTO'], unresolved: 0 },
   // dois níveis de repasse (interface e privilégio por parâmetro)
@@ -942,8 +1009,8 @@ export const TS_PROBES: { code: string; pairs: string[]; unresolved: number; fil
   // NÃO resolvíveis — reprovam
   { code: `router.put('/x', requirePrivilege(req.params.k, PRIVILEGE_ALTERAR))`, pairs: [], unresolved: 1 },
   { code: `const P = { put: 2 }\nrouter.put('/x', requirePrivilege('customers', P.put))`, pairs: [], unresolved: 1 },
-  { code: `export function crud(key: string) { return async (req: any) => userHasPrivilege(s, u, key, METHOD[req.method]) }`, pairs: [], unresolved: 1 },
-  { code: `const guard = (k: string) => async () => userHasPrivilege(s, u, k, PRIVILEGE_ALTERAR)\n[1].map(() => (x: string) => requirePrivilege(x, 6))`,
+  { code: `export function crud(key: string) { return async (req: any) => privilegeVerdict(inst, [key], METHOD[req.method]) }`, pairs: [], unresolved: 1 },
+  { code: `const guard = (k: string) => async () => accessVerdict(inst, k, PRIVILEGE_ALTERAR)\n[1].map(() => (x: string) => requirePrivilege(x, 6))`,
     pairs: [], unresolved: 1 },
   { code: `import { requirePrivilege as rp } from '@shared/auth/require-privilege'\nrouter.put('/x', rp('a', 2))`, pairs: [], unresolved: 1 },
   { code: `const g = requirePrivilege\nrouter.put('/x', g('a', 2))`, pairs: [], unresolved: 1 },
@@ -960,15 +1027,42 @@ export const TS_PROBES: { code: string; pairs: string[]; unresolved: number; fil
   { code: `class G { gate(k: string) { return requirePrivilege(k, PRIVILEGE_ALTERAR) } }`, pairs: [], unresolved: 1 },
   // `.js` no import resolve como o arquivo (ESM)
   // campo/membro com o nome de uma primitiva não é consumo
-  { code: `interface Port { userHasPrivilege(a: string): boolean }\nconst mock = { userHasPrivilege: () => true }`, pairs: [], unresolved: 0 },
+  { code: `interface Port { privilegeVerdict(a: string): boolean }\nconst mock = { accessVerdict: () => true }`, pairs: [], unresolved: 0 },
+  // costura A1 (D-AU6): o veredito único pelo id ou pelo NOME do verbo (D-PV53 — exato, como a view)
+  { code: `if ((await accessVerdict(inst, ['bank-slips'], 'CONSULTAR')) === 'ok') ok()`, pairs: ['bank-slips|CONSULTAR'], unresolved: 0 },
+  { code: `const v = await privilegeVerdict(inst, ['orders', 'service-orders'], PRIVILEGE_FATURAR)`, pairs: ['orders|FATURAR', 'service-orders|FATURAR'], unresolved: 0 },
+  { code: `await accessVerdict(inst, ['bank-slips'], 'consultar')`, pairs: [], unresolved: 1 },
+  { code: `await accessVerdict(inst, ['bank-slips'], 'AUTORIZAR')`, pairs: [], unresolved: 1 },
+  // lista com CONSTANTES (o `[REAPPLY_INTERFACE]` da política); parâmetro misturado com constante reprova
+  { code: `const K = 'cashier'\nrouter.put('/x', requirePrivilege([K, 'orders'], PRIVILEGE_ALTERAR))`, pairs: ['cashier|ALTERAR', 'orders|ALTERAR'], unresolved: 0 },
+  { code: `export function g(k: string) { return requirePrivilege([k, 'orders'], 2) }`, pairs: [], unresolved: 1 },
+  // D-PV53: o número do núcleo (`erp.PRIVILEGE_*`) não existe mais — importado de verdade, não resolve
+  { code: `import { erp } from 'fiscal-api'\nrouter.put('/x', requirePrivilege('settlements', erp.PRIVILEGE_ALTERAR))`, pairs: [], unresolved: 1 },
+  // a primitiva antiga (antes da costura A1) não é mais primitiva: o nome solto não vira par
+  { code: `await userHasPrivilege(s, u, 'settlements', 2)`, pairs: [], unresolved: 0 },
 ]
 
 /** Código TS → linhas soltas esperadas (`PRIVILEGE_<NOME>` fora de primitiva). */
-export const LOOSE_PROBES: { code: string; loose: number }[] = [
+export const LOOSE_PROBES: { code: string; loose: number; file?: string; routerActFiles?: string[] }[] = [
   { code: `const sql = \`... tb_privilege_id = \${PRIVILEGE_ALTERAR}\``, loose: 1 },
-  { code: `if (await userHasPrivilege(s, u, 'settlements', PRIVILEGE_DESCONTO)) ok()`, loose: 0 },
+  { code: `if (await accessVerdict(inst, ['settlements'], PRIVILEGE_DESCONTO)) ok()`, loose: 0 },
   { code: `throw new Error(ErrorCodes.PRIVILEGE_REQUIRED)`, loose: 0 },
   { code: `const map = { PRIVILEGE_ALTERAR: 7 }`, loose: 1 },
+  // D-PV14: o marcador do ato no <m>.routes.ts de um módulo GUARDADO é lido pela tabela do roteador — não é solto
+  { file: 'src/modules/orders/orders.routes.ts', routerActFiles: ['src/modules/orders/orders.routes.ts'],
+    code: `import { privilegeAct } from '@shared/auth/module-privilege-gate'\nimport { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'\n` +
+      `router.post('/:id/items', privilegeAct(PRIVILEGE_ALTERAR), c.add)`, loose: 0 },
+  // … fora de um módulo guardado o marcador nunca é lido (nenhuma guarda o procura): é solto
+  { file: 'src/modules/users/users.routes.ts', routerActFiles: ['src/modules/orders/orders.routes.ts'],
+    code: `import { privilegeAct } from '@shared/auth/module-privilege-gate'\nimport { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'\n` +
+      `router.post('/:id/items', privilegeAct(PRIVILEGE_ALTERAR), c.add)`, loose: 1 },
+  // … e um `privilegeAct` que não é o da guarda (homônimo local) também
+  { file: 'src/modules/orders/orders.routes.ts', routerActFiles: ['src/modules/orders/orders.routes.ts'],
+    code: `function privilegeAct(p: number) { return p }\nrouter.post('/x', privilegeAct(PRIVILEGE_ALTERAR))`, loose: 1 },
+  // o 2º argumento (a interface) não muda nada; um PRIVILEGE_ fora do 1º argumento segue solto
+  { file: 'src/modules/orders/orders.routes.ts', routerActFiles: ['src/modules/orders/orders.routes.ts'],
+    code: `import { privilegeAct } from '@shared/auth/module-privilege-gate'\nrouter.get('/p', privilegeAct(PRIVILEGE_VISUALIZAR, 'partnerships'))\n` +
+      `const outro = PRIVILEGE_EXCLUIR`, loose: 1 },
 ]
 
 /** Arquivo/código Dart → { pares esperados, compartilhados, reprova? }. */
@@ -989,6 +1083,9 @@ export const DART_PROBES: { file: string; code: string; pairs: string[]; shared:
   { file: 'apps/web/lib/app/modules/orders/p.dart', code: `CurrentInterface.can(PrivilegeNames.cancel)`, pairs: ['orders|CANCELAR'], shared: 0, unresolved: 0 },
   { file: 'apps/web/lib/app/modules/orders/p.dart', code: `CurrentInterface.can(PrivilegeNames.nada)`, pairs: [], shared: 0, unresolved: 1 },
   { file: 'apps/web/lib/app/modules/orders/p.dart', code: `CurrentInterface.can('insert')`, pairs: [], shared: 0, unresolved: 1 },
+  // os verbos da D-PV25/D-PV40 (o vocabulário inteiro do catálogo vale)
+  { file: 'apps/web/lib/app/modules/orders/p.dart', code: `if (CurrentInterface.can('CONSULTAR') && CurrentInterface.can('CONFIGURAR')) x();`,
+    pairs: ['orders|CONSULTAR', 'orders|CONFIGURAR'], shared: 0, unresolved: 0 },
   { file: 'apps/web/lib/app/modules/sem_rota/p.dart', code: `CurrentInterface.can('ALTERAR')`, pairs: [], shared: 0, unresolved: 1 },
   { file: 'apps/web/lib/app/modules/orders/p.dart',
     code: `final pode = CurrentInterface.value?.privileges.contains('FATURAR') ?? true;`, pairs: [], shared: 0, unresolved: 1 },

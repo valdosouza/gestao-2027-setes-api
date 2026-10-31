@@ -54,11 +54,11 @@
       "^@feature-flags/(.*)$": "<rootDir>/src/feature-flags/$1"
     },
     "setupFiles": [
-      "<rootDir>/src/test-setup/jwt-keys.ts",
-      "<rootDir>/src/test-setup/privilege-cache.ts"
+      "<rootDir>/src/test-setup/jwt-keys.ts"
     ],
     "setupFilesAfterEnv": [
-      "<rootDir>/src/test-setup/time-zone.mock.ts"
+      "<rootDir>/src/test-setup/time-zone.mock.ts",
+      "<rootDir>/src/test-setup/access-session.mock.ts"
     ]
   }
 }

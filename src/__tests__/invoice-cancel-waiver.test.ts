@@ -5,6 +5,7 @@
 // banco fiscal_api — linhas REAIS da view passadas pelo mapa da família); a dispensa vive numa loja em memória com a MESMA chave da tabela.
 import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
 import { serviceView, unrecorded, TEST_KEY } from '../test-setup/fiscal-voice-rows'
+import { accessAnswer, AccessModel, ModelProfile } from '../test-setup/access-model'
 import request from 'supertest'
 
 jest.mock('../shared/db/connection', () => ({
@@ -35,7 +36,6 @@ import * as invoiceModule from '../shared/invoice/invoice'
 import * as voicePort from '../shared/fiscal-voice'
 import { waiveSubstitutedCancel } from '../shared/invoice'
 import { ErrorCodes } from '../shared/errors/error-codes'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import app from '../app'
 
 const S = { schema: 'setes_setes', inst: 1, user: 7 }
@@ -72,7 +72,6 @@ function wireConn() {
 
 beforeEach(() => {
   jest.clearAllMocks()
-  resetPrivilegeCache()
   waivers = new Map(); lockOrder = []
   ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
   wireConn()
@@ -83,13 +82,19 @@ beforeEach(() => {
     lockOrder.push(`voz:${inst}/${inv}/vida ${life}`); return [tx()]
   })
   q.mockImplementation(async (sql: string, params: any[]) => {
-    if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: 30 }]]
-    if (/tb_user_has_privilege/.test(sql)) return [privileged && Number(params?.[1]) === 30 ? [{ 1: 1 }] : []]
-    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]                 // D-F37 (F2a A2): licença para todos — contratada
+    // costura A1 (D-AU3): o veredito é a leitura das views — D-F37 (F2a A2): licença para todos, as interfaces do ramo CONTRATADAS;
+    // o regular exerce CANCELAR na interface do ramo só com a concessão (`privileged`)
+    const a = accessAnswer(sql, params, (): AccessModel => ({
+      profile, contracted: ['orders', 'service-orders'],
+      granted: { 'service-orders': privileged ? ['CANCELAR'] : [] },
+    }))
+    if (a) return [a, []]
     return [[]]
   })
 })
 let privileged = true
+/** perfil do vínculo na institution do token (a sessão viva devolve o do token — `access-session.mock`) */
+let profile: ModelProfile = 'admin'
 
 const waive = (reason = 'substituta emitida no portal — serviço segue faturado') =>
   waiveSubstitutedCancel(conn as any, S.schema, S.inst, S.user, { orderId: INVOICE, reason })
@@ -160,7 +165,10 @@ describe('peça waiveSubstitutedCancel (D-F67/D-F73/D-F74)', () => {
 })
 
 describe('rota POST /api/billing/cancel-waiver (D-F72: privilégio CANCELAR do ramo)', () => {
-  const token = (role: string) => `Bearer ${testToken({ institutionId: S.inst, userId: S.user, role, schemaName: S.schema })}`
+  const token = (role: ModelProfile) => {
+    profile = role                                             // o vínculo vivo tem o perfil do token (a view decide pelo vínculo)
+    return `Bearer ${testToken({ institutionId: S.inst, userId: S.user, role, schemaName: S.schema })}`
+  }
   it('admin → 200 { ok, data: { orderId, accessKey, createdAt, alreadyWaived } }, transação confirmada', async () => {
     const res = await request(app).post('/api/billing/cancel-waiver').set('Authorization', token('admin'))
       .send({ orderId: INVOICE, reason: 'substituta emitida no portal' })

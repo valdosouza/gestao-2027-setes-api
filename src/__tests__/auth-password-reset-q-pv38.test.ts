@@ -159,7 +159,8 @@ async function run(sql: string, params: any[], owner: object | null, undo: Array
     return [{ affectedRows: r ? 1 : 0 }]
   }
   if (/UPDATE setes_central\.tb_user SET password = \?/.test(sql)) {
-    const [hash, userId] = params
+    const [hash, setAt, userId] = params                 // D-EA7: a senha e o instante T vão JUNTOS (a peça "definir a senha")
+    if (!/password_set_at = \?/.test(sql) || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(String(setAt))) throw new Error('senha sem o instante T (D-EA7)')
     const u = users.get(Number(userId))!
     const before = u.password
     u.password = hash

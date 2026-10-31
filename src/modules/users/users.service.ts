@@ -4,6 +4,7 @@ import { isOwnVendorInstitution } from '@shared/institution-interfaces'
 import { DELEGABLE_SUPER_INTERFACES, isDelegableSuperInterface } from '@shared/auth/super-delegation'
 import { ListQuery, PagedRows, PublicSearchCriterion, SearchCriterion, publicCriteria } from '@shared/list'
 import { md5Password } from '@shared/auth/password'
+import { PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 import {
   UserListRow, UserRow, UserCreateInput, UserUpdateInput, UserScope,
   UserInstitutionGrant, UserInstitutionLink, UserInterfacePrivileges,
@@ -167,7 +168,17 @@ export async function editUser(
         [{ field: 'institutionId', message: 'Sem vínculo' }], ErrorCodes.VALIDATION_FAILED)
     }
   }
-  const hash = input.password ? md5Password(input.password) : null
+  // D-PV48 (Valdo 2026-10-27): depois de criada a credencial, NINGUÉM troca a senha pelo cadastro — nem o admin, nem o Super — só o
+  // titular, pela recuperação (D-PV47). A-PV23 (ratificada 2026-10-31): conta SEM senha (vinda do setes-sync) recebe a 1ª UMA vez — é a
+  // criação da credencial. Recusa explícita, nunca ignora em silêncio.
+  let hash: string | null = null
+  if (input.password) {
+    if (current.hasCredential) {
+      throw new HttpError(409, 'Depois de criada a credencial, só o próprio usuário troca a senha — pelo "Esqueci minha senha"',
+        [{ field: 'password', message: 'Senha definida só na criação da credencial (D-PV48)' }], ErrorCodes.PASSWORD_OWNER_ONLY)
+    }
+    hash = md5Password(input.password)
+  }
   await updateUserCascade(id, input, hash, linkInstitutionId)
 }
 
@@ -299,5 +310,16 @@ export async function saveUserPrivileges(
       [{ field: 'privilegeIds', message: `Fora do catálogo da interface: ${invalid.join(', ')}` }])
   }
 
-  await setUserPrivileges(target.schemaName, userId, interfaceId, privilegeIds)
+  // D-PV57/D-PV58 (Valdo 2026-10-31, "Todos"): todo verbo escolhido para o usuário numa interface leva o VISUALIZAR da MESMA interface —
+  // inclusive o CONFIGURAR. A lista gravada é a autoridade (D-PV59: lista vazia = sem a tela). D-PV60: só na ESCRITA — nenhuma concessão
+  // antiga é corrigida por script; corrige quando o admin salvar de novo esta tela deste usuário.
+  const granted = withVisualizar(privilegeIds, catalog)
+  await setUserPrivileges(target.schemaName, userId, interfaceId, granted)
+}
+
+/** D-PV58: lista com qualquer verbo e sem o VISUALIZAR → o VISUALIZAR entra (quando o catálogo da interface o tem — D-PV51). */
+export function withVisualizar(privilegeIds: readonly number[], catalog: ReadonlySet<number>): number[] {
+  const ids = [...new Set(privilegeIds)]
+  if (ids.length > 0 && !ids.includes(PRIVILEGE_VISUALIZAR) && catalog.has(PRIVILEGE_VISUALIZAR)) ids.push(PRIVILEGE_VISUALIZAR)
+  return ids
 }

@@ -13,11 +13,11 @@ import { contentionToHttpError } from '@shared/db/contention'
 import { newCrashRef, recordCrash } from '@shared/errors/crash.repository'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { InstitutionPayload } from '@shared/types/express'
-import { isOwnVendorInstitution } from '@shared/auth/roles'
 import {
   signFinalToken as signProductToken, signSelectionToken, verifySelectionToken, deriveProductSecret,
 } from '@shared/auth/product-token'
 import { SessionContext, getSessionContext } from '@shared/session-context'
+import { liveSession } from '@shared/access'
 import { md5Password } from '@shared/auth/password'
 import { HttpError } from '@shared/errors/http-error'
 import { sendMail, isMailerConfigured, isProduction } from '@shared/mailer/mailer'
@@ -45,11 +45,9 @@ export interface IssuedSession {
 // com o cadastro de Usuário (@shared/auth/password).
 const md5 = md5Password
 
-// 'super' fora da institution da Setes é ignorado (decisão 14)
+// 'super' fora da institution da Setes é ignorado (decisão 14) — quem decide é a `vw_user_link` (o perfil chega pronto: costura A1)
 function resolveRole(link: UserInstitution): string {
-  const kind = link.profile ?? 'user'
-  if (kind === 'super' && !isOwnVendorInstitution(link.institutionId)) return 'user'   // D-PV37: predicado único
-  return kind
+  return link.profile ?? 'user'
 }
 
 async function signFinalToken(userId: number, link: UserInstitution): Promise<IssuedSession> {
@@ -91,13 +89,13 @@ export async function login(email: string, password: string): Promise<LoginResul
 
 // Passo 4: valida o token de seleção e o vínculo antes de emitir o JWT final
 export async function selectInstitution(selectionToken: string, institutionId: number): Promise<IssuedSession> {
-  let userId: number
+  let selection: { userId: number; iat: number }
   try {
-    userId = verifySelectionToken(selectionToken).userId
+    selection = verifySelectionToken(selectionToken)
   } catch {
     throw new HttpError(401, 'Token de seleção inválido ou expirado')
   }
-  return issueForInstitution(userId, institutionId)
+  return issueForInstitution(selection.userId, institutionId, selection.iat)
 }
 
 // Passo 5: troca de institution com JWT final válido
@@ -105,11 +103,19 @@ export async function switchInstitution(userId: number, institutionId: number): 
   return issueForInstitution(userId, institutionId)
 }
 
-// Nunca confia no body: revalida o vínculo no banco
-async function issueForInstitution(userId: number, institutionId: number): Promise<IssuedSession> {
+// Nunca confia no body: revalida o vínculo no banco. D-EA7 (achado do guardião, 2026-10-31): a SELEÇÃO não passa pelo middleware — o token
+// de seleção (5 min) emitido ANTES de uma troca de senha não pode cunhar o final depois dela: confere a MESMA sessão viva com o `iat` dele.
+async function issueForInstitution(userId: number, institutionId: number, selectionIat?: number): Promise<IssuedSession> {
   const institutions = await getInstitutionsForUser(userId)
   const link = institutions.find(i => i.institutionId === institutionId)
   if (!link) throw new HttpError(403, 'Usuário sem vínculo ativo com esta institution')
+  if (selectionIat !== undefined) {
+    const who = { userId, institutionId: link.institutionId, schemaName: link.schemaName, role: link.profile ?? 'user' }
+    if (!(await liveSession(who, selectionIat))) {
+      throw new HttpError(401, 'O acesso deste usuário a este estabelecimento não vale mais — entre de novo', undefined,
+        ErrorCodes.SESSION_REVOKED)
+    }
+  }
   return signFinalToken(userId, link)
 }
 

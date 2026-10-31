@@ -66,7 +66,7 @@ describe('assinatura e verificação', () => {
   })
   it('marca própria: o de SELEÇÃO não vale como final e o final não vale como seleção', () => {
     const sel = signSelectionToken(7)
-    expect(verifySelectionToken(sel)).toEqual({ userId: 7 })
+    expect(verifySelectionToken(sel)).toEqual({ userId: 7, iat: expect.any(Number) })   // D-EA7: o iat confere a sessão na seleção
     expect(() => verifyFinalToken(sel)).toThrow(/Token inválido/)
     expect(() => verifySelectionToken(signFinalToken(FINAL))).toThrow(/seleção inválido/)
     const { payload } = jwt.decode(sel, { complete: true }) as any

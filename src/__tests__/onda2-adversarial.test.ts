@@ -14,7 +14,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { testToken } from '../test-setup/test-token'   // D-F13 (F2a A2): RS256 com kid
-import { grantingPrivileges } from '../test-setup/privilege-db'
+import { accessAnswer, AccessModel, ALL_VERBS, ModelProfile } from '../test-setup/access-model'
 import request from 'supertest'
 import { createPrivateKey } from 'crypto'
 
@@ -110,9 +110,23 @@ const TOKEN = 'A'.repeat(24) + 'b'.repeat(24)
 const channelRow = { bankAccountId: 1, institutionId: 1, environment: 'S', clientId: 'cid', inboundToken: TOKEN, active: 'S', bankNumber: '077', accountNumber: '12345', accountNumberDv: '6' }
 const accountRow = { id: 1, bankId: 77, bankNumber: '077', bankName: 'Inter', agency: '0001', number: '12345', numberDv: '6', active: 'S' }
 
+// D-PV2 + costura A1 (D-AU3): a guarda por roteador lê o veredito nas views — aqui o usuário tem o privilégio (o teste é da rota):
+// as telas da onda CONTRATADAS, o regular com todo verbo concedido; o perfil do vínculo é o do token da requisição (a sessão viva
+// devolve o do token — `access-session.mock`)
+let profile: ModelProfile = 'user'
+const ONDA2_KEYS = ['bank-accounts', 'bank-slips']
+const accessModel = (): AccessModel => ({
+  profile, contracted: ONDA2_KEYS, granted: Object.fromEntries(ONDA2_KEYS.map(k => [k, ALL_VERBS])),
+})
+function granting(next: (sql: string, params: any[]) => Promise<any>) {
+  return async (sql: string, params: any[] = []) => {
+    const a = accessAnswer(sql, params, accessModel)
+    if (a) return [a, []]
+    return next(sql, params)
+  }
+}
 function poolDefaults() {
-  // D-PV2: a guarda por roteador consulta catálogo/contrato/vínculo — aqui o usuário tem o privilégio (o teste é da rota)
-  q.mockImplementation(grantingPrivileges(async (sql: string, params: any[]) => {
+  q.mockImplementation(granting(async (sql: string, params: any[]) => {
     if (/FROM `setes_setes`\.tb_bank_slip WHERE/.test(sql)) return [[header]]
     if (/tb_bank_slip_title t/.test(sql)) return [[{ entityId: 900 }]]
     if (/tb_state WHERE/.test(sql)) return [[{ abbreviation: 'PR' }]]
@@ -124,8 +138,8 @@ function poolDefaults() {
 }
 const tokenFor = (role: string, institutionId = 1) =>
   testToken({ institutionId, userId: 7, role, schemaName: 'setes_setes' })
-const asUser  = () => `Bearer ${tokenFor('user')}`
-const asAdmin = () => `Bearer ${tokenFor('admin')}`
+const asUser  = () => { profile = 'user'; return `Bearer ${tokenFor('user')}` }
+const asAdmin = () => { profile = 'admin'; return `Bearer ${tokenFor('admin')}` }
 const ok = (obj: unknown, status = 200) => ({ status, headers: {}, text: obj == null ? '' : JSON.stringify(obj) })
 const tokenResp = ok({ access_token: 'tok', token_type: 'Bearer', expires_in: 3600 })
 const adapterCtx = { channel: { ...channelRow, bankAccountId: 3 } as any, secrets: { cert: Buffer.from('c'), key: Buffer.from('k'), clientSecret: 's' } }
@@ -545,12 +559,12 @@ describe('rotas — autorização, escopo e bordas de entrada', () => {
     expect(res.status).toBe(400); expect(res.body.code).toBe('VALIDATION_FAILED')
   })
   it('GET /channel de conta de OUTRO institution → 404 sem vazar', async () => {
-    q.mockImplementation(grantingPrivileges(async () => [[]]))
+    q.mockImplementation(granting(async () => [[]]))
     const res = await request(app).get('/api/bank-accounts/77/channel').set('Authorization', asUser())
     expect(res.status).toBe(404); expect(res.body.code).toBe('BANK_ACCOUNT_NOT_FOUND')
   })
   it('POST /:id/register para boleto de OUTRO institution → 404 BANK_SLIP_NOT_FOUND, banco nunca chamado', async () => {
-    q.mockImplementation(grantingPrivileges(async () => [[]]))
+    q.mockImplementation(granting(async () => [[]]))
     const res = await request(app).post('/api/bank-slips/999/register').set('Authorization', asUser())
     expect(res.status).toBe(404); expect(res.body.code).toBe('BANK_SLIP_NOT_FOUND')
     expect(adapter.register).not.toHaveBeenCalled()

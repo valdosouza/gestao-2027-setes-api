@@ -4,20 +4,25 @@
 // continuam exclusivas e intactas com o filtro kind='T' ativo; interface
 // kind='R' (recurso/aba) NUNCA vai a menu — o filtro é feito no SQL
 // (ONLY_SCREEN_KIND), então aqui garantimos (a) a montagem da árvore
-// inalterada e (b) a presença do filtro nas TRÊS queries do repositório.
+// inalterada e (b) a presença do filtro em TODAS as queries de ARRANJO do repositório.
+// Costura A1 da auth-api (D-AU3/D-AU6, 2026-10-31): o repositório só dá o ARRANJO; QUAIS telas e QUAIS botões vêm de UMA leitura da
+// `vw_user_access` (VISUALIZAR dá o item) — o dublê `accessAnswer` responde à view a partir do perfil, do contrato e das concessões.
 import fs from 'fs'
 import path from 'path'
+import pool from '../shared/db/connection'
 import * as repo from '../modules/core/core.repository'
 import { getMenus } from '../modules/core/core.service'
 import { InstitutionPayload } from '../shared/types/express'
+import { accessAnswer, AccessModel } from '../test-setup/access-model'
 
 jest.mock('../modules/core/core.repository')
+jest.mock('../shared/db/connection', () => ({ __esModule: true, default: { query: jest.fn() } }))
 
-const mockModuleIfaces  = repo.getModuleInterfaces      as jest.Mock
-const mockUngrouped     = repo.getUngroupedInterfaces   as jest.Mock
-const mockUserPrivs     = repo.getUserPrivileges        as jest.Mock
-const mockAllPrivs      = repo.getAllInterfacePrivileges as jest.Mock
-const mockAllCentral    = repo.getAllCentralInterfaces  as jest.Mock
+const mockQuery         = (pool as any).query as jest.Mock
+const mockModuleIfaces  = repo.getModuleInterfaces          as jest.Mock
+const mockUngrouped     = repo.getUngroupedInterfaces       as jest.Mock
+const mockAllCentral    = repo.getAllCentralInterfaces      as jest.Mock
+const mockDelegable     = repo.getDelegableSuperInterfaces  as jest.Mock
 
 const superPayload: InstitutionPayload = {
   institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes',
@@ -35,60 +40,93 @@ const row = (over: Partial<repo.MenuInterfaceRow>): repo.MenuInterfaceRow => ({
   buttonAction: null, imgIndex: null, ...over,
 })
 
-beforeEach(() => jest.clearAllMocks())
+const IDS = { interfaces: 3, users: 8, customers: 9 }
+let models: Record<string, AccessModel>             // `${userId}:${institutionId}` → o que as views dão
+beforeEach(() => {
+  jest.clearAllMocks()
+  models = {
+    '1:1': { profile: 'super', vendor: true, interfaceIds: IDS },
+    '5:7': { profile: 'admin', contracted: ['users', 'customers'], interfaceIds: IDS },
+    '9:7': { profile: 'user', contracted: ['users', 'customers'], interfaceIds: IDS },
+  }
+  mockQuery.mockImplementation(async (sql: string, params: any[] = []) => {
+    const a = accessAnswer(sql, params, (u, i) => models[`${u}:${i}`] ?? null)
+    if (a) return [a, []]
+    throw new Error(`SQL inesperado: ${sql}`)
+  })
+  mockModuleIfaces.mockResolvedValue([])
+  mockUngrouped.mockResolvedValue([])
+  mockAllCentral.mockResolvedValue([])
+  mockDelegable.mockResolvedValue([])
+})
+const accessReads = () => mockQuery.mock.calls.filter(c => /vw_user_access/.test(String(c[0])))
 
 describe('montagem canônica preservada (decisão 12)', () => {
   it('super: catálogo central agrupado por group_default', async () => {
     mockAllCentral.mockResolvedValue([
-      row({ moduleDescription: 'Super',    interfaceId: 3, interfaceDescription: 'Interfaces' }),
-      row({ moduleDescription: 'Sistema',  interfaceId: 8, interfaceDescription: 'Usuários' }),
+      row({ moduleDescription: 'Super',    interfaceId: 3, interfaceDescription: 'Interfaces', i18nKey: 'interfaces' }),
+      row({ moduleDescription: 'Sistema',  interfaceId: 8, interfaceDescription: 'Usuários', i18nKey: 'users' }),
     ])
-    mockAllPrivs.mockResolvedValue([])
 
     const menus = await getMenus(superPayload)
     expect(menus.map(m => m.module.description)).toEqual(['Super', 'Sistema'])
     expect(mockModuleIfaces).not.toHaveBeenCalled()
+    expect(mockUngrouped).not.toHaveBeenCalled()
+    expect(mockDelegable).not.toHaveBeenCalled()
   })
 
   it('admin: módulos do cliente + group_default, exclusivos entre si', async () => {
     mockModuleIfaces.mockResolvedValue([
-      row({ moduleId: 1, moduleDescription: 'Comercial', interfaceId: 9, interfaceDescription: 'Customer' }),
+      row({ moduleId: 1, moduleDescription: 'Comercial', interfaceId: 9, interfaceDescription: 'Customer', i18nKey: 'customers' }),
     ])
     mockUngrouped.mockResolvedValue([
-      row({ moduleDescription: 'Sistema', interfaceId: 8, interfaceDescription: 'Usuários' }),
+      row({ moduleDescription: 'Sistema', interfaceId: 8, interfaceDescription: 'Usuários', i18nKey: 'users' }),
     ])
-    mockAllPrivs.mockResolvedValue([])
 
     const menus = await getMenus(adminPayload)
     expect(menus).toHaveLength(2)
     expect(menus[0].module).toMatchObject({ id: 1, description: 'Comercial' })
     expect(menus[1].module).toMatchObject({ id: null, description: 'Sistema' })
-    // admin pula o filtro de privilégio (skipPrivilegeFilter = true); o contrato
-    // lido é o da institution da sessão (D-GE4)
-    expect(mockModuleIfaces).toHaveBeenCalledWith('setes_acme', 7, 5, true)
-    expect(mockUngrouped).toHaveBeenCalledWith('setes_acme', 7, 5, true)
+    // o arranjo é do schema (módulos do GRUPO — D-GE5); o que o usuário vê é UMA leitura da view, pela institution da sessão (D-GE4)
+    expect(mockModuleIfaces).toHaveBeenCalledWith('setes_acme')
+    expect(mockUngrouped).toHaveBeenCalledWith('setes_acme')
+    const reads = accessReads()
+    expect(reads).toHaveLength(1)
+    expect(String(reads[0][0])).toMatch(/`setes_acme`\.vw_user_access/)
+    expect(reads[0][1]).toEqual([5, 7])
   })
 
-  it('regular: filtro de privilégio VISUALIZAR ativo', async () => {
-    mockModuleIfaces.mockResolvedValue([])
-    mockUngrouped.mockResolvedValue([])
-    mockUserPrivs.mockResolvedValue([])
+  it('regular: VISUALIZAR dá o item — sem a concessão, nada; com ela, só aquela tela (e só os verbos concedidos)', async () => {
+    mockModuleIfaces.mockResolvedValue([
+      row({ moduleId: 1, moduleDescription: 'Comercial', interfaceId: 9, interfaceDescription: 'Customer', i18nKey: 'customers' }),
+    ])
+    mockUngrouped.mockResolvedValue([
+      row({ moduleDescription: 'Sistema', interfaceId: 8, interfaceDescription: 'Usuários', i18nKey: 'users' }),
+    ])
 
+    expect(await getMenus(regularPayload)).toEqual([])
+
+    models['9:7'] = { ...models['9:7'], granted: { customers: ['VISUALIZAR', 'ALTERAR'], users: ['ALTERAR'] } }
     const menus = await getMenus(regularPayload)
-    expect(menus).toEqual([])
-    expect(mockModuleIfaces).toHaveBeenCalledWith('setes_acme', 7, 9, false)
-    expect(mockAllPrivs).not.toHaveBeenCalled()
+    expect(menus).toHaveLength(1)
+    expect(menus[0].interfaces.map(i => [i.i18nKey, i.privileges])).toEqual([['customers', ['ALTERAR', 'VISUALIZAR']]])
+    expect(accessReads().map(c => c[1])).toEqual([[9, 7], [9, 7]])
   })
 })
 
 describe("filtro kind='T' nas queries de menu (decisão 13)", () => {
-  it('as TRÊS queries do repositório filtram interface-tela', () => {
+  it('TODAS as queries de arranjo do repositório filtram interface-tela', () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, '../modules/core/core.repository.ts'), 'utf-8'
     )
-    // Constante única injetada nos três SELECTs de menu
+    // Constante única injetada nos SELECTs de menu
     expect(source).toContain(`const ONLY_SCREEN_KIND = \`AND i.kind = 'T'\``)
-    const uses = source.match(/\$\{ONLY_SCREEN_KIND\}/g) ?? []
-    expect(uses.length).toBeGreaterThanOrEqual(3)
+    for (const fn of ['getModuleInterfaces', 'getUngroupedInterfaces', 'getAllCentralInterfaces', 'getDelegableSuperInterfaces']) {
+      const start = source.indexOf(`export async function ${fn}(`)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const next = source.indexOf('\nexport ', start + 1)
+      const body = source.slice(start, next < 0 ? undefined : next)
+      expect({ fn, filtered: body.includes('${ONLY_SCREEN_KIND}') }).toEqual({ fn, filtered: true })
+    }
   })
 })

@@ -3,7 +3,6 @@ import { assertSchema } from '@shared/db/schema'
 import { escapeLike, ListQuery, PagedRows } from '@shared/list'
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
-import { invalidatePrivilegeVerdicts } from '@shared/auth/require-privilege'
 
 /**
  * Vínculo ESTABELECIMENTO × INTERFACES (`tb_institution_has_interface` — o "contrato de interfaces": quais telas cada cliente tem;
@@ -24,7 +23,7 @@ import { invalidatePrivilegeVerdicts } from '@shared/auth/require-privilege'
  *    grupo Super — a porta delegada só vincula vendáveis e não lista as do grupo Super.
  *  - D-PV37/D-PV38: "a própria Setes" é a constante `SETES_INSTITUTION_ID` / o predicado `isOwnVendorInstitution`, re-exportados
  *    daqui para as três portas (lista, leitura, escrita) — definidos em `@shared/auth/roles` (módulo-folha, sem ciclo).
- *  - D-PV29: toda gravação do contrato derruba o cache do veredito da institution alvo.
+ *  - D-AU8 (costura A1, 2026-10-31): sem cache do veredito — toda gravação do contrato vale na hora (a view é lida viva).
  */
 
 export { SETES_INSTITUTION_ID, isOwnVendorInstitution } from '@shared/auth/roles'
@@ -34,7 +33,11 @@ export { SETES_INSTITUTION_ID, isOwnVendorInstitution } from '@shared/auth/roles
  * sozinho; o onboarding as concede a todo cliente novo e a porta delegada NÃO as revoga (D-PV35 — 409 INTERFACE_STRUCTURAL_LOCKED).
  * `general-configs` só entra aqui no dia em que o onboarding a der (D-PV35: "mais general-configs se o onboarding a der").
  */
-export const STRUCTURAL_INTERFACE_KEYS: readonly string[] = ['users', 'modules', 'interface-configs', 'establishment']
+// D-PV54 (Valdo 2026-10-27): `interface-fields` e `general-configs` também — a gêmea da `interface-configs` e as Configurações Gerais (a
+// estrutural só garante que a PORTA existe; quem ajusta segue decidido pelo CONFIGURAR na tela-alvo — D-PV25).
+export const STRUCTURAL_INTERFACE_KEYS: readonly string[] = [
+  'users', 'modules', 'interface-configs', 'establishment', 'interface-fields', 'general-configs',
+]
 
 export function isStructuralInterface(interfaceKey: string | null | undefined): boolean {
   return interfaceKey != null && STRUCTURAL_INTERFACE_KEYS.includes(interfaceKey)
@@ -129,7 +132,7 @@ export interface InterfaceLinkChange {
 /**
  * D-PV34 — UMA marca do contrato: concede (`linked: true`) ou revoga (soft, `linked: false`) UMA interface da institution ALVO.
  * Regra ÚNICA das duas portas: interface VIVA do catálogo (400 no campo `interfaceId`), leitura travante da linha
- * (`FOR UPDATE` — duas marcas simultâneas no mesmo par se serializam), idempotente. Derruba o cache do veredito (D-PV29).
+ * (`FOR UPDATE` — duas marcas simultâneas no mesmo par se serializam), idempotente. Vale NA HORA (o veredito lê a view viva — D-AU8).
  */
 export async function setInstitutionInterfaceLink(
   schemaName: string, institutionId: number, interfaceId: number, linked: boolean
@@ -187,7 +190,6 @@ export async function setInstitutionInterfaceLink(
   } finally {
     conn.release()
   }
-  invalidatePrivilegeVerdicts({ institutionId })      // D-PV29: o contrato mudou — nenhum veredito guardado vale
   return { interfaceId, linked, changed: true }
 }
 

@@ -189,7 +189,8 @@ async function run(sql: string, params: any[], owner: object | null, undo: Array
   // novo: o UPDATE da senha limpa activation_key junto (código antigo em texto puro não revive)
   if (/UPDATE setes_central\.tb_user SET password = \?/.test(sql)) {
     if (failUpdatePasswordWith) throw failUpdatePasswordWith(params)
-    const [hash, userId] = params
+    const [hash, setAt, userId] = params                 // D-EA7: a senha e o instante T vão JUNTOS (a peça "definir a senha")
+    if (!/password_set_at = \?/.test(sql) || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(String(setAt))) throw new Error('senha sem o instante T (D-EA7)')
     const u = users.get(Number(userId))!
     const before = u.password
     u.password = hash
@@ -555,7 +556,7 @@ describe('[delta] borda do job de fundo e o log do alarme neutro', () => {
     const code = lastCode(email)
     failUpdatePasswordWith = (params: any[]) => Object.assign(new Error("Data too long for column 'password' at row 1"), {
       code: 'ER_DATA_TOO_LONG', errno: 1406, sqlMessage: "Data too long for column 'password' at row 1",
-      sql: `UPDATE setes_central.tb_user SET password = '${params[0]}', activation_key = NULL, updated_at = NOW() WHERE id = ${params[1]}`,
+      sql: `UPDATE setes_central.tb_user SET password = '${params[0]}', password_set_at = '${params[1]}', activation_key = NULL, updated_at = NOW() WHERE id = ${params[2]}`,
     })
     await expect(changePassword(email, code, newPassword)).rejects.toMatchObject({ statusCode: 401 })
     const md5 = md5Password(newPassword)

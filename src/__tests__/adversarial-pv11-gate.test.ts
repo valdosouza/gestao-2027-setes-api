@@ -22,9 +22,10 @@ jest.mock('../feature-flags/flag.service', () => ({ __esModule: true, isModuleEn
 
 import pool from '../shared/db/connection'
 import { isModuleEnabled } from '../feature-flags/flag.service'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import { gatedModule, listGatedRoutes } from '../shared/auth/module-privilege-gate'
 import { getMenus } from '../modules/core/core.service'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
+import { accessAnswer, AccessModel, ModelProfile } from '../test-setup/access-model'
 import app from '../app'
 
 const q = (pool as any).query as jest.Mock
@@ -90,8 +91,25 @@ const conn = {
   }),
 }
 
+/**
+ * O veredito (costura A1 — D-AU3/D-AU6): as views respondidas pelo dublê. Perfil do VÍNCULO (`vw_user_link`), nunca o `role` do token:
+ * o 1 é o super da Setes; o 2 admin da Setes; o 30 admin do cliente 7; 31 e 33 têm kind 'super' FORA da Setes (a view dá 'user'); o 32
+ * usuário comum. Contrato = as marcas vivas (`linked`); concessão na delegável = `granted`.
+ */
+const PROFILE: Record<number, ModelProfile> = { 1: 'super', 2: 'admin', 30: 'admin' }
+function modelFor(userId: number, institutionId: number): AccessModel | null {
+  if (!(LINKS[userId] ?? []).includes(institutionId)) return null
+  const schema = SCHEMAS[institutionId]
+  const profile: ModelProfile = userId === 1 && institutionId !== 1 ? 'user' : (PROFILE[userId] ?? 'user')
+  const contracted = [...linked].filter(l => l.startsWith(`${schema}:${institutionId}:`))
+    .map(l => INTERFACES[Number(l.split(':')[2])]).filter(i => i && !i.deleted).map(i => i.key)
+  const verbs = [...granted].filter(g => g.startsWith(`${schema}:${userId}:`)).map(g => PRIVILEGE_NAME_BY_ID[Number(g.split(':')[2])])
+  return { profile, vendor: institutionId === 1, contracted, granted: { 'institution-interfaces': verbs } }
+}
+
 function defaultDb(sql: string, params: any[] = []): any {
-  if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [params[0] === 'institution-interfaces' ? [{ id: IFACE }] : []]
+  const a = accessAnswer(sql, params, modelFor)
+  if (a) return [a, []]
   if (/SELECT i18n_key AS k FROM setes_central\.tb_interface WHERE id/.test(sql)) {
     const i = INTERFACES[Number(params[0])]
     return [i && !i.deleted ? [{ k: i.key }] : []]
@@ -107,15 +125,11 @@ function defaultDb(sql: string, params: any[] = []): any {
     if (/deleted = 'N'/.test(sql) && deleted === 'S') return [[]]
     return [[{ i18nKey: i.key, deleted }]]
   }
-  if (/tb_user_has_privilege/.test(sql) && /tb_privilege_id = \?/.test(sql)) {
-    const schema = /`(setes_\w+)`/.exec(sql)?.[1]
-    return [granted.has(`${schema}:${params[0]}:${params[2]}`) && params[1] === IFACE ? [{ 1: 1 }] : []]
-  }
   if (/SELECT 1 FROM setes_central\.tb_user WHERE id = \?/.test(sql)) return [[{ 1: 1 }]]
   // D-PV19: editUser lê a conta (getUser) — e-mail atual + ativo do vínculo em foco
   if (/e\.name_company AS nameCompany/.test(sql) && /FROM setes_central\.tb_user u/.test(sql)) {
     const uid = Number(params[2] ?? params[0])
-    return [[{ id: uid, nameCompany: 'U', nickTrade: 'U', email: EMAILS[uid] ?? `u${uid}@x.com`, active: 'S' }]]
+    return [[{ id: uid, nameCompany: 'U', nickTrade: 'U', email: EMAILS[uid] ?? `u${uid}@x.com`, active: 'S', hasCredential: 1 }]]
   }
   // vínculos com o perfil (assertAccountManageable): o usuário 1 é o SUPER da Setes
   if (/SELECT tb_institution_id AS institutionId, kind[\s\S]*?FROM setes_central\.tb_institution_has_user/.test(sql)) {
@@ -153,8 +167,7 @@ function defaultDb(sql: string, params: any[] = []): any {
 }
 
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
-  granted = new Set(); linked = new Set(['setes_cliente:7:9']); savedContract = []; revokedContract = []; privilegeWrites = []; userWrites = []; userPrivilegesListParams = null
+  jest.clearAllMocks();  granted = new Set(); linked = new Set(['setes_cliente:7:9']); savedContract = []; revokedContract = []; privilegeWrites = []; userWrites = []; userPrivilegesListParams = null
   linksInTx = {}
   for (const k of Object.keys(DORMANT_LINKS)) delete DORMANT_LINKS[Number(k)]
   getConn.mockResolvedValue(conn)
@@ -320,25 +333,29 @@ describe('(2) auto-concessão pelo cadastro de privilégios', () => {
   // vínculo e, pela D-PV12, o admin mexe na senha de todos do próprio estabelecimento menos a do super. Limite registrado (Q-PV55):
   // até a onda 0 do convidado (D-UC6 — o admin define só a senha INICIAL), o admin de X troca a senha de um login que o Super também
   // vinculou a Y. Conhecimento negativo: NÃO "consertar" — o vínculo cruzado só o Super cria.
-  it('[DECIDIDO D-PV19] admin de OUTRO cliente troca a senha de usuário vinculado TAMBÉM à Setes (vínculo kind user) — a A-PV13 morreu', async () => {
+  it('[DECIDIDO D-PV19 + D-PV48] admin de OUTRO cliente edita usuário vinculado TAMBÉM à Setes (a A-PV13 morreu) — mas a SENHA ninguém troca: 409', async () => {
     LINKS[5] = [1, 7]
     try {
-      const r = await request(app).put('/api/users/5').set('Authorization', OTHER_ADMIN)
-        .send({ nameCompany: 'Suporte', nickTrade: 'Suporte', email: 'suporte@setes.com.br', password: 'nova-senha', active: 'S' })
+      const body = { nameCompany: 'Suporte', nickTrade: 'Suporte', email: 'suporte@setes.com.br', active: 'S' }
+      const pw = await request(app).put('/api/users/5').set('Authorization', OTHER_ADMIN).send({ ...body, password: 'nova-senha' })
+      expect([pw.status, pw.body.code]).toEqual([409, 'PASSWORD_OWNER_ONLY'])
+      const r = await request(app).put('/api/users/5').set('Authorization', OTHER_ADMIN).send(body)
       expect(r.status).toBe(200)
-      expect(userWrites.filter(w => /SET password/.test(w.sql)).length).toBe(1)
+      expect(userWrites.filter(w => /SET password/.test(w.sql))).toEqual([])
     } finally {
       delete LINKS[5]
     }
   })
 
   // ---- DECIDIDO (D-PV12, Valdo — fecha a Q-PV37): o admin da Setes TROCA a senha do usuário que o Super liberou ---------
-  it('[DECIDIDO D-PV12] admin da Setes troca a senha do usuário que o Super liberou — rotina do admin; só a conta do super fica fora', async () => {
+  it('[SUPERADO pela D-PV48 — a D-PV12 caiu] admin da Setes NÃO troca a senha do usuário que o Super liberou (só o titular, pela recuperação); o resto da conta segue editável', async () => {
     granted = new Set(['setes_setes:9:6', 'setes_setes:9:2'])
-    const r = await request(app).put('/api/users/9').set('Authorization', SETES_ADMIN)
-      .send({ nameCompany: 'U', nickTrade: 'U', email: 'u@setes.com.br', password: 'nova-senha', active: 'S' })
+    const body = { nameCompany: 'U', nickTrade: 'U', email: 'u@setes.com.br', active: 'S' }
+    const pw = await request(app).put('/api/users/9').set('Authorization', SETES_ADMIN).send({ ...body, password: 'nova-senha' })
+    expect([pw.status, pw.body.code]).toEqual([409, 'PASSWORD_OWNER_ONLY'])
+    const r = await request(app).put('/api/users/9').set('Authorization', SETES_ADMIN).send(body)
     expect(r.status).toBe(200)
-    expect(userWrites.filter(w => /SET password/.test(w.sql)).length).toBe(1)
+    expect(userWrites.filter(w => /SET password/.test(w.sql))).toEqual([])
   })
 })
 
@@ -517,15 +534,23 @@ describe('(8) menu', () => {
   const row = (id: number, key: string, group: string) => ({
     moduleId: null, moduleDescription: group, moduleIcon: null, interfaceId: id, interfaceDescription: key, i18nKey: key,
   })
-  const menuDb = (opts: { ungrouped: any[]; delegated: any[]; own: any[] }) => async (sql: string) => {
-    if (/FROM `setes_\w+`\.tb_module m/.test(sql)) return [[]]
-    if (/FROM `setes_\w+`\.tb_institution_has_interface ihi/.test(sql)) return [opts.ungrouped]
-    if (/FROM setes_central\.tb_interface_has_privilege ihp/.test(sql)) {
-      return [[{ interfaceId: 29, privilegeId: V, description: 'VISUALIZAR' },
-        { interfaceId: IFACE, privilegeId: V, description: 'VISUALIZAR' }, { interfaceId: IFACE, privilegeId: A, description: 'ALTERAR' }]]
-    }
-    if (/i\.i18n_key IN \(\?\)/.test(sql) && /EXISTS/.test(sql)) return [opts.delegated]
-    if (/FROM `setes_\w+`\.tb_user_has_privilege uhp/.test(sql)) return [opts.own]
+  /**
+   * Costura A1 (D-AU3/D-AU6): o repositório dá só o ARRANJO (módulos, telas sem módulo, a delegável); QUAIS telas e QUAIS botões vêm
+   * de UMA leitura da `vw_user_access` — respondida pelo dublê. Catálogo: orders com VISUALIZAR; a delegável com VISUALIZAR e ALTERAR;
+   * o Super marcou ao admin da Setes SÓ o VISUALIZAR da delegável.
+   */
+  const menuModel = (contracted: string[]): AccessModel => ({
+    profile: 'admin', vendor: true, contracted,
+    registered: { orders: ['VISUALIZAR'], 'institution-interfaces': ['VISUALIZAR', 'ALTERAR'] },
+    granted: { 'institution-interfaces': ['VISUALIZAR'] },
+    interfaceIds: { orders: 29, 'institution-interfaces': IFACE },
+  })
+  const menuDb = (opts: { ungrouped: any[]; delegable: any[]; model: AccessModel }) => async (sql: string, params: any[] = []) => {
+    const a = accessAnswer(sql, params, opts.model)
+    if (a) return [a, []]
+    if (/NOT EXISTS \(SELECT 1 FROM `setes_\w+`\.tb_module_has_interface/.test(sql)) return [opts.ungrouped]
+    if (/FROM `setes_\w+`\.tb_module m\b/.test(sql)) return [[]]
+    if (/i\.i18n_key IN \(\?\)/.test(sql)) return [opts.delegable]
     return [[]]
   }
   const flat = (menus: any[]) => menus.flatMap(m => m.interfaces.map((i: any) => [i.i18nKey, i.privileges]))
@@ -533,17 +558,18 @@ describe('(8) menu', () => {
 
   it('[RESISTIU] admin com SÓ VISUALIZAR marcado pelo Super: a tela aparece com [VISUALIZAR], nunca o catálogo [VISUALIZAR, ALTERAR]', async () => {
     q.mockImplementation(menuDb({
-      ungrouped: [row(29, 'orders', 'Vendas')], delegated: [row(IFACE, 'institution-interfaces', 'Super')],
-      own: [{ interfaceId: IFACE, privilegeId: V, description: 'VISUALIZAR' }],
+      ungrouped: [row(29, 'orders', 'Vendas')], delegable: [row(IFACE, 'institution-interfaces', 'Super')], model: menuModel(['orders']),
     }))
     expect(flat(await getMenus(ADMIN_SETES))).toEqual([['orders', ['VISUALIZAR']], ['institution-interfaces', ['VISUALIZAR']]])
   })
 
-  it.failing('[ACHADO LOW] se a tela delegável também estiver no CONTRATO da Setes fora do grupo Super, o admin a vê DUAS vezes — uma com o catálogo (ALTERAR)', async () => {
+  // Era `it.failing` [ACHADO LOW] (2026-10-18): a tela aparecia DUAS vezes, uma com os botões do catálogo. A costura A1 fechou por
+  // construção — os botões de QUALQUER entrada vêm da view (a delegável só pela concessão, nunca pelo contrato) e o menu não repete a tela.
+  it('[CORRIGIDO pela costura A1 — era ACHADO LOW] a tela delegável também no CONTRATO da Setes fora do grupo Super: aparece UMA vez, só com o que o Super marcou', async () => {
     q.mockImplementation(menuDb({
       ungrouped: [row(29, 'orders', 'Vendas'), row(IFACE, 'institution-interfaces', 'Sistema')],
-      delegated: [row(IFACE, 'institution-interfaces', 'Sistema')],
-      own: [{ interfaceId: IFACE, privilegeId: V, description: 'VISUALIZAR' }],
+      delegable: [row(IFACE, 'institution-interfaces', 'Sistema')],
+      model: menuModel(['orders', 'institution-interfaces']),
     }))
     const entries = flat(await getMenus(ADMIN_SETES)).filter(([k]: any) => k === 'institution-interfaces')
     expect(entries).toEqual([['institution-interfaces', ['VISUALIZAR']]])
@@ -607,7 +633,8 @@ describe('(10) montagem', () => {
 // RE-PROVA (2026-10-18, revista em 2026-10-21) — a barreira da conta (`assertAccountManageable` — D-PV12; a A-PV13 morreu, D-PV19)
 // =====================================================================================================================
 describe('(R2) barreira da conta — outras portas, vínculo adormecido, corrida', () => {
-  const editBody = (email: string) => ({ nameCompany: 'U', nickTrade: 'U', email, password: 'nova-senha', active: 'S' })
+  // D-PV48: a edição da conta NÃO leva senha (credencial existente — só o titular troca, pela recuperação)
+  const editBody = (email: string) => ({ nameCompany: 'U', nickTrade: 'U', email, active: 'S' })
   const passwordWrites = () => userWrites.filter(w => /SET password/.test(w.sql))
 
   // ---- (a) outras rotas que escrevem a CONTA ----------------------------------------------------------------------------
@@ -631,7 +658,7 @@ describe('(R2) barreira da conta — outras portas, vínculo adormecido, corrida
   it('[RESISTIU] (a) a conta própria (vínculo com o próprio estabelecimento, sem super) segue editável — controle; o ativo vai ao VÍNCULO, não à credencial', async () => {
     const r = await request(app).put('/api/users/32').set('Authorization', OTHER_ADMIN).send(editBody('u32@cliente.com'))
     expect(r.status).toBe(200)
-    expect(passwordWrites().length).toBe(1)
+    expect(passwordWrites()).toEqual([])                       // D-PV48: nenhuma porta do cadastro grava senha de credencial existente
     expect(userWrites.filter(w => /tb_institution_has_user/.test(w.sql) && /SET active/.test(w.sql)).map(w => w.params)).toEqual([['S', 32, 7]])
     expect(userWrites.filter(w => /UPDATE setes_central\.tb_user\b/.test(w.sql) && /active/.test(w.sql))).toEqual([])
   })
@@ -702,7 +729,7 @@ describe('(R2) barreira da conta — outras portas, vínculo adormecido, corrida
     try {
       const r = await request(app).put('/api/users/6').set('Authorization', OTHER_ADMIN).send(editBody('u6@setes.com.br'))
       expect(r.status).toBe(200)
-      expect(passwordWrites().length).toBe(1)
+      expect(passwordWrites()).toEqual([])                       // D-PV48: nenhuma porta do cadastro grava senha de credencial existente
     } finally { delete LINKS[6] }
   })
 

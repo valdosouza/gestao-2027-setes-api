@@ -1,5 +1,4 @@
 import pool from '@shared/db/connection'
-import { PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 
 // A institution vem do JWT: o schema NÃO a identifica — matriz e filial podem dividir o schema
 // (frente do grupo, D-GE4); o schema fica como conferência (os dois saem do MESMO vínculo no login).
@@ -133,25 +132,16 @@ export interface MenuInterfaceRow {
   imgIndex:             number | null
 }
 
-// Interfaces registradas em módulos do cliente (workflow do prompt, passo 1).
-// Usuário REGULAR só enxerga o que tem privilégio VISUALIZAR (opção 1 do
-// workflow de privilégios — decisão do Valdo 2026-07-12); ADMIN pula o
-// filtro (contrato completo, exceto módulo Super — que nem está no schema).
-// Os módulos são do GRUPO (o schema — D-GE5) e o contrato também (D-GE22): o
-// filtro pela chave evita a UNIÃO das linhas do schema (D-GE4); na onda 1 a
-// chave passa a ser a do grupo — hoje = a institution da sessão.
-export async function getModuleInterfaces(
-  schemaName: string, institutionId: number, userId: number, skipPrivilegeFilter: boolean
-): Promise<MenuInterfaceRow[]> {
-  const s = assertSchema(schemaName)
-  const privilegeFilter = skipPrivilegeFilter ? '' : `
-    AND EXISTS (SELECT 1 FROM \`${s}\`.tb_user_has_privilege uhp
-                WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id
-                  AND uhp.tb_privilege_id = ${PRIVILEGE_VISUALIZAR}
-                  AND uhp.active = 'S' AND uhp.deleted = 'N')`
-  // ordem dos `?` no SQL: o contrato (no JOIN) antes do privilégio (no WHERE)
-  const params = skipPrivilegeFilter ? [institutionId] : [institutionId, userId]
+// ---------------------------------------------------------------------
+// Costura A1 da frente auth-api (D-AU3/D-AU6, Valdo 2026-10-31): o menu deixou de REFAZER o veredito (era a 4ª cópia — filtro de
+// VISUALIZAR em SQL, contrato lido aqui, três trilhas por perfil). Aqui fica só o ARRANJO (módulos do grupo, `group_default`,
+// `position`, a regra do grupo Super — D-PV55 —, só telas kind 'T'); QUAIS telas e QUAIS botões vêm de UMA leitura da
+// `vw_user_access` (VISUALIZAR dá o item, os verbos dão os botões) pela biblioteca única (`@shared/access`) — em `core.service`.
+// ---------------------------------------------------------------------
 
+/** Telas do catálogo vinculadas a módulos do schema (do GRUPO — D-GE5), na ordem do menu. Quem filtra o que o usuário vê é a view. */
+export async function getModuleInterfaces(schemaName: string): Promise<MenuInterfaceRow[]> {
+  const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
     `SELECT m.id            AS moduleId,
             m.description   AS moduleDescription,
@@ -162,34 +152,18 @@ export async function getModuleInterfaces(
      FROM \`${s}\`.tb_module m
      INNER JOIN \`${s}\`.tb_module_has_interface mhi
        ON (mhi.tb_module_id = m.id AND mhi.active = 'S' AND mhi.deleted = 'N')
-     INNER JOIN \`${s}\`.tb_institution_has_interface ihi
-       ON (ihi.tb_interface_id = mhi.tb_interface_id AND ihi.tb_institution_id = ?
-           AND ihi.active = 'S' AND ihi.deleted = 'N')
      INNER JOIN setes_central.tb_interface i
        ON (i.id = mhi.tb_interface_id AND i.deleted = 'N')
-     WHERE m.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}${privilegeFilter}
+     WHERE m.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}
      ORDER BY COALESCE(m.position, 999999), m.id,
-              COALESCE(mhi.position, 999999), i.description`,
-    params
+              COALESCE(mhi.position, 999999), i.description`
   )
   return rows
 }
 
-// UNION conceitual: interfaces contratadas (pela chave do contrato — D-GE4/D-GE22)
-// ainda sem módulo (do grupo), agrupadas por tb_interface.group_default
-// (workflow do prompt, passo 2)
-export async function getUngroupedInterfaces(
-  schemaName: string, institutionId: number, userId: number, skipPrivilegeFilter: boolean
-): Promise<MenuInterfaceRow[]> {
+/** Telas do catálogo (fora do grupo Super) SEM módulo no schema, agrupadas por `group_default` (workflow do prompt, passo 2). */
+export async function getUngroupedInterfaces(schemaName: string): Promise<MenuInterfaceRow[]> {
   const s = assertSchema(schemaName)
-  const privilegeFilter = skipPrivilegeFilter ? '' : `
-    AND EXISTS (SELECT 1 FROM \`${s}\`.tb_user_has_privilege uhp
-                WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id
-                  AND uhp.tb_privilege_id = ${PRIVILEGE_VISUALIZAR}
-                  AND uhp.active = 'S' AND uhp.deleted = 'N')`
-  // ordem dos `?` no SQL: o contrato (início do WHERE) antes do privilégio (fim)
-  const params = skipPrivilegeFilter ? [institutionId] : [institutionId, userId]
-
   const [rows] = await pool.query<any[]>(
     `SELECT NULL            AS moduleId,
             i.group_default AS moduleDescription,
@@ -197,58 +171,19 @@ export async function getUngroupedInterfaces(
             i.id            AS interfaceId,
             i.description   AS interfaceDescription,
             i.i18n_key      AS i18nKey
-     FROM \`${s}\`.tb_institution_has_interface ihi
-     INNER JOIN setes_central.tb_interface i
-       ON (i.id = ihi.tb_interface_id AND i.deleted = 'N')
-     WHERE ihi.tb_institution_id = ? AND ihi.active = 'S' AND ihi.deleted = 'N'
-       ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}
+     FROM setes_central.tb_interface i
+     WHERE i.deleted = 'N' ${NOT_SUPER_GROUP} ${ONLY_SCREEN_KIND}
        AND NOT EXISTS (SELECT 1 FROM \`${s}\`.tb_module_has_interface mhi
                        INNER JOIN \`${s}\`.tb_module m2
                           ON (m2.id = mhi.tb_module_id AND m2.deleted = 'N')
                        WHERE mhi.tb_interface_id = i.id
-                         AND mhi.active = 'S' AND mhi.deleted = 'N')${privilegeFilter}
-     ORDER BY i.group_default, i.description`,
-    params
+                         AND mhi.active = 'S' AND mhi.deleted = 'N')
+     ORDER BY i.group_default, i.description`
   )
   return rows
 }
 
-export interface PrivilegeRow {
-  interfaceId: number
-  privilegeId: number
-  description: string | null
-}
-
-// Privilégios do usuário por interface (decisão 21 — alimenta os botões da UI)
-export async function getUserPrivileges(schemaName: string, userId: number): Promise<PrivilegeRow[]> {
-  const s = assertSchema(schemaName)
-  const [rows] = await pool.query<any[]>(
-    `SELECT uhp.tb_interface_id AS interfaceId,
-            p.id                AS privilegeId,
-            p.description       AS description
-     FROM \`${s}\`.tb_user_has_privilege uhp
-     INNER JOIN setes_central.tb_privilege p ON (p.id = uhp.tb_privilege_id AND p.deleted = 'N')
-     WHERE uhp.tb_user_id = ? AND uhp.active = 'S' AND uhp.deleted = 'N'`,
-    [userId]
-  )
-  return rows
-}
-
-// Superusuário: todos os privilégios do catálogo por interface (bypass — decisão 14 Fase 2)
-export async function getAllInterfacePrivileges(): Promise<PrivilegeRow[]> {
-  const [rows] = await pool.query<any[]>(
-    `SELECT ihp.tb_interface_id AS interfaceId,
-            p.id                AS privilegeId,
-            p.description       AS description
-     FROM setes_central.tb_interface_has_privilege ihp
-     INNER JOIN setes_central.tb_privilege p ON (p.id = ihp.tb_privilege_id AND p.deleted = 'N')
-     WHERE ihp.active = 'S' AND ihp.deleted = 'N'`
-  )
-  return rows
-}
-
-// Superusuário: lê TODAS as interfaces do catálogo central, agrupadas por group_default.
-// Bypassa tb_institution_has_interface e tb_user_has_privilege (decisão: isSuper() é suficiente).
+/** Superusuário: TODAS as telas do catálogo central (inclusive o grupo Super), agrupadas por `group_default`. */
 export async function getAllCentralInterfaces(): Promise<MenuInterfaceRow[]> {
   const [rows] = await pool.query<any[]>(
     `SELECT NULL            AS moduleId,
@@ -267,15 +202,11 @@ export async function getAllCentralInterfaces(): Promise<MenuInterfaceRow[]> {
 }
 
 /**
- * D-PV11 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): telas do grupo Super DELEGÁVEIS que o Super liberou ao usuário da
- * Setes (VISUALIZAR marcado no cadastro dele). Fora do contrato e fora do `NOT_SUPER_GROUP` por construção: só entram estas
- * chaves, e só com o vínculo explícito do usuário (admin inclusive).
+ * D-PV11: telas do grupo Super DELEGÁVEIS (fora do `NOT_SUPER_GROUP` por construção — só estas chaves). Quem decide se o usuário da
+ * Setes as vê é a view (a delegável só pelo verbo marcado pelo Super, até para o admin).
  */
-export async function getDelegatedSuperInterfaces(
-  schemaName: string, userId: number, keys: readonly string[]
-): Promise<MenuInterfaceRow[]> {
+export async function getDelegableSuperInterfaces(keys: readonly string[]): Promise<MenuInterfaceRow[]> {
   if (keys.length === 0) return []
-  const s = assertSchema(schemaName)
   const [rows] = await pool.query<any[]>(
     `SELECT NULL            AS moduleId,
             i.group_default AS moduleDescription,
@@ -287,11 +218,8 @@ export async function getDelegatedSuperInterfaces(
             NULL            AS imgIndex
        FROM setes_central.tb_interface i
       WHERE i.deleted = 'N' ${ONLY_SCREEN_KIND} AND i.i18n_key IN (?)
-        AND EXISTS (SELECT 1 FROM \`${s}\`.tb_user_has_privilege uhp
-                     WHERE uhp.tb_user_id = ? AND uhp.tb_interface_id = i.id AND uhp.tb_privilege_id = ?
-                       AND uhp.active = 'S' AND uhp.deleted = 'N')
       ORDER BY i.position, i.description`,
-    [keys, userId, PRIVILEGE_VISUALIZAR]
+    [keys]
   )
   return rows
 }

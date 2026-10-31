@@ -16,16 +16,27 @@ jest.mock('../shared/errors/crash.repository', () => ({
 jest.mock('../feature-flags/flag.service', () => ({ __esModule: true, isModuleEnabled: jest.fn().mockResolvedValue(true), invalidateCache: jest.fn() }))
 
 import pool from '../shared/db/connection'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import { gatedModule } from '../shared/auth/module-privilege-gate'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
+import { accessAnswer, AccessModel, ModelProfile } from '../test-setup/access-model'
 import app from '../app'
 
 const q = (pool as any).query as jest.Mock
 const getConn = (pool as any).getConnection as jest.Mock
-const IFACE = 41                                                      // id de 'institution-interfaces' no dublê
-let granted: Set<string>                                              // `${schema}:${userId}:${privilegeId}`
-let contractQueries: number
+let granted: Set<string>                                              // `${schema}:${userId}:${privilegeId}` na delegável
+let contractedKeys: string[]                                          // licença viva das institutions (a delegável fica FORA dela por construção)
 let saved: Array<{ institutionId: number; ids: number[] }>
+/** Vínculo vivo (`vw_user_link`): o 31 tem kind 'super' na institution 7 — fora da Setes a view dá 'user'. */
+const LINKS: Record<string, ModelProfile> = { '1:1': 'super', '2:1': 'admin', '9:1': 'user', '30:7': 'admin', '31:7': 'user' }
+const SCHEMA_OF: Record<number, string> = { 1: 'setes_setes', 7: 'setes_cliente' }
+function modelFor(userId: number, institutionId: number): AccessModel | null {
+  const profile = LINKS[`${userId}:${institutionId}`]
+  const schema = SCHEMA_OF[institutionId]
+  if (!profile || !schema) return null
+  const verbs = [...granted].filter(g => g.startsWith(`${schema}:${userId}:`)).map(g => PRIVILEGE_NAME_BY_ID[Number(g.split(':')[2])])
+  return { profile, vendor: institutionId === 1, contracted: contractedKeys, granted: { 'institution-interfaces': verbs } }
+}
+const viewReads = (view: 'access' | 'reach') => q.mock.calls.filter(c => new RegExp(`vw_user_${view}`).test(String(c[0]))).map(c => c[1])
 const conn = {
   beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
   query: jest.fn(async (sql: string, params: any[]) => {
@@ -35,16 +46,11 @@ const conn = {
 }
 
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
-  granted = new Set(); contractQueries = 0; saved = []
+  jest.clearAllMocks();  granted = new Set(); contractedKeys = ['customers']; saved = []
   getConn.mockResolvedValue(conn)
   q.mockImplementation(async (sql: string, params: any[] = []) => {
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [params[0] === 'institution-interfaces' ? [{ id: IFACE }] : []]
-    if (/tb_institution_has_interface/.test(sql) && !/LEFT JOIN/.test(sql)) { contractQueries++; return [[]] }   // nada contratado
-    if (/tb_user_has_privilege/.test(sql) && /tb_privilege_id = \?/.test(sql)) {
-      const schema = /`(setes_\w+)`/.exec(sql)?.[1]
-      return [granted.has(`${schema}:${params[0]}:${params[2]}`) && params[1] === IFACE ? [{ 1: 1 }] : []]
-    }
+    const a = accessAnswer(sql, params, modelFor)                       // o veredito (costura A1): as views
+    if (a) return [a, []]
     if (/FROM setes_central\.tb_institution i\s+INNER JOIN setes_central\.tb_entity/.test(sql)) return [[{ id: 7, name: 'Cliente X', active: 'S' }]]
     if (/COUNT\(\*\) AS total/.test(sql)) return [[{ total: 1 }]]
     if (/SELECT schema_name AS schemaName/.test(sql)) return [[{ schemaName: params[0] === 1 ? 'setes_setes' : 'setes_cliente' }]]
@@ -63,18 +69,22 @@ const OTHER_ADMIN = bearer({ institutionId: 7, userId: 30, role: 'admin', schema
 const FAKE_SUPER = bearer({ institutionId: 7, userId: 31, role: 'super', schemaName: 'setes_cliente' })
 
 describe('guarda DELEGADA da tela "Interfaces dos clientes"', () => {
-  it('o super passa sempre — sem consultar contrato nem vínculo', async () => {
+  it('o super passa sempre — sem contrato nem concessão; uma leitura da vw_user_access por requisição, sem ler o motivo', async () => {
+    contractedKeys = []
     expect((await request(app).get('/api/institution-interfaces').set('Authorization', SUPER)).status).toBe(200)
     expect((await request(app).put('/api/institution-interfaces/7/interfaces/9').set('Authorization', SUPER).send({ linked: true })).status).toBe(200)
-    expect(contractQueries).toBe(0)
+    expect(viewReads('access')).toEqual([[1, 1, ['institution-interfaces'], 'VISUALIZAR'], [1, 1, ['institution-interfaces'], 'ALTERAR']])
+    expect(viewReads('reach')).toEqual([])
   })
 
-  it('D-PV11 (b): o ADMIN da Setes SEM a liberação do Super é barrado (exceção à regra "admin passa o privilégio")', async () => {
+  it('D-PV11 (b): o ADMIN da Setes SEM a liberação do Super é barrado (exceção à regra "admin passa o privilégio") — nem a licença abre', async () => {
+    contractedKeys = ['customers', 'institution-interfaces']           // a tela vinculada ao contrato da Setes NÃO conta (fora da licença)
     const r = await request(app).get('/api/institution-interfaces').set('Authorization', SETES_ADMIN)
     expect([r.status, r.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
   })
 
-  it('com a liberação: VISUALIZAR abre a lista e o detalhe; ALTERAR é preciso para gravar (admin ou usuário comum)', async () => {
+  it('com a liberação: VISUALIZAR abre a lista e o detalhe; ALTERAR é preciso para gravar (admin ou usuário comum) — sem licença', async () => {
+    contractedKeys = []                                                 // a licença não entra: nada contratado, só a concessão do Super
     for (const [token, userId] of [[SETES_ADMIN, 2], [SETES_USER, 9]] as const) {
       granted = new Set([`setes_setes:${userId}:6`])
       expect((await request(app).get('/api/institution-interfaces').set('Authorization', token)).status).toBe(200)
@@ -85,7 +95,6 @@ describe('guarda DELEGADA da tela "Interfaces dos clientes"', () => {
       expect((await request(app).put('/api/institution-interfaces/7/interfaces/9').set('Authorization', token).send({ linked: true })).status).toBe(200)
     }
     expect(saved).toEqual([{ institutionId: 7, ids: [9] }, { institutionId: 7, ids: [9] }])   // D-PV34: uma marca por chamada
-    expect(contractQueries).toBe(0)                                                            // a licença não entra
   })
 
   it('D-PV11 (c): o usuário liberado NÃO mexe nas interfaces da PRÓPRIA Setes (só o Super) e nem a vê na lista', async () => {
@@ -101,8 +110,9 @@ describe('guarda DELEGADA da tela "Interfaces dos clientes"', () => {
     expect((await request(app).put('/api/institution-interfaces/1/interfaces/9').set('Authorization', SUPER).send({ linked: true })).status).toBe(200)
   })
 
-  it('a tela não existe para os clientes: admin de outra institution (mesmo com vínculo no schema dele) e "super" fora da Setes → 403', async () => {
+  it('a tela não existe para os clientes: admin de outra institution (mesmo com vínculo no schema dele e a tela no contrato) e "super" fora da Setes → 403', async () => {
     granted = new Set(['setes_cliente:30:6', 'setes_cliente:31:6'])
+    contractedKeys = ['customers', 'institution-interfaces']
     for (const token of [OTHER_ADMIN, FAKE_SUPER]) {
       const r = await request(app).get('/api/institution-interfaces').set('Authorization', token)
       expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])

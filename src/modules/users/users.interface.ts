@@ -27,6 +27,11 @@ export interface UserRow {
    * JWT; super = `?institutionId`). Sem foco (super na tela global) vem `null` — a credencial em si nunca se inativa pelo cadastro.
    */
   active:      'S' | 'N' | null
+  /**
+   * D-PV48/A-PV23 (2026-10-27/31): a credencial já foi CRIADA (há senha)? Sem senha (usuário vindo do setes-sync) o cadastro define a 1ª,
+   * uma vez só; com senha, só o titular troca, pela recuperação. Nunca o hash.
+   */
+  hasCredential: boolean
 }
 
 export interface UserInput {

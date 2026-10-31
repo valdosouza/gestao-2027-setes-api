@@ -15,6 +15,7 @@ import { bearer } from '../test-setup/test-token'
 import {
   GROUP_SCHEMA, MATRIZ, FILIAL, normalizeSql, paramOf, scopedByInstitution, joinsByInstitution,
 } from '../test-setup/two-institutions'
+import { accessAnswer, AccessModel } from '../test-setup/access-model'
 import { getInstitutionInterfaces, setInstitutionInterface } from '../modules/admin/admin.service'
 import { getMenus, getSessionInfo } from '../modules/core/core.service'
 import { getRuleObservationNotes } from '../modules/billing/billing.repository'
@@ -66,6 +67,20 @@ const CHANNELS = [
 ]
 
 const iface = (id: number) => CATALOG.find(c => c.id === id)!
+/** tb_user_has_privilege — o usuário regular 9 tem VISUALIZAR nas três telas (quem recorta o menu dele é o contrato da CHAVE). */
+let REGULAR_GRANTS: Record<string, string[]> = {}
+/**
+ * Costura A1 (D-AU3/D-AU6, 2026-10-31): o veredito — e o recorte do menu — é a `vw_user_access` lida pela CHAVE (usuário, institution).
+ * O dublê responde pela institution que a PRÓPRIA leitura liga ao `tb_institution_id = ?`: o contrato dela (CONTRACT), nunca o do schema.
+ */
+function accessModelOf(userId: number, institutionId: number): AccessModel | null {
+  if (!INSTITUTIONS.some(i => i.id === institutionId)) return null
+  const contracted = CONTRACT.filter(c => c.tb_institution_id === institutionId).map(c => iface(c.tb_interface_id).i18nKey)
+  const interfaceIds = Object.fromEntries(CATALOG.map(c => [c.i18nKey, c.id]))
+  if (userId === 5) return { profile: 'admin', contracted, interfaceIds }
+  if (userId === 9) return { profile: 'user', contracted, granted: REGULAR_GRANTS, interfaceIds }
+  return null
+}
 const menuRow = (id: number, module: typeof MENU | null) => ({
   moduleId: module?.id ?? null, moduleDescription: module?.description ?? iface(id).groupDefault,
   moduleIcon: module?.icon ?? null, interfaceId: id, interfaceDescription: iface(id).description,
@@ -76,6 +91,8 @@ const menuRow = (id: number, module: typeof MENU | null) => ({
 async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown]> {
   const t = normalizeSql(sql)
   if (/^(INSERT|UPDATE)\b/.test(t)) return [{ affectedRows: 1 }, null]
+  const access = accessAnswer(sql, params, accessModelOf)
+  if (access) return [access, null]
 
   // setes_central.tb_institution (core: info da institution; admin/webhook: schema do alvo)
   if (/FROM setes_central\.tb_institution i INNER JOIN setes_central\.tb_entity e/.test(t)) {
@@ -104,17 +121,15 @@ async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown
       return hits.length > 0 ? hits.map(() => ({ ...base, granted: 1 })) : [{ ...base, granted: 0 }]
     }), null]
   }
+  // menu (costura A1): o repositório só dá o ARRANJO do grupo — módulos × telas e as telas sem módulo, sem contrato nem privilégio
   if (/FROM \w+\.tb_module m INNER JOIN \w+\.tb_module_has_interface mhi/.test(t)) {
-    const ihi = scopedByInstitution(t, params, 'ihi', CONTRACT)
-    return [MENU.interfaceIds.flatMap(id =>
-      ihi.filter(c => c.tb_interface_id === id).map(() => menuRow(id, MENU))), null]
+    return [MENU.interfaceIds.map(id => menuRow(id, MENU)), null]
+  }
+  if (/FROM setes_central\.tb_interface i WHERE .*NOT EXISTS \(SELECT 1 FROM \w+\.tb_module_has_interface mhi/.test(t)) {
+    return [CATALOG.filter(c => !MENU.interfaceIds.includes(c.id)).map(c => menuRow(c.id, null)), null]
   }
   if (/FROM \w+\.tb_institution_has_interface ihi INNER JOIN setes_central\.tb_interface i/.test(t)) {
     const ihi = scopedByInstitution(t, params, 'ihi', CONTRACT)
-    if (/NOT EXISTS/.test(t)) {
-      return [ihi.filter(c => !MENU.interfaceIds.includes(c.tb_interface_id))
-        .map(c => menuRow(c.tb_interface_id, null)), null]
-    }
     if (/i\.id IN \(\?\)/.test(t)) {
       const wanted = params[params.length - 1] as number[]
       return [ihi.filter(c => wanted.includes(c.tb_interface_id)).map(c => ({ id: c.tb_interface_id })), null]
@@ -180,9 +195,13 @@ const shape = (menus: Awaited<ReturnType<typeof getMenus>>) =>
 let conn: ReturnType<typeof fakeConn>
 beforeEach(() => {
   jest.clearAllMocks()
+  REGULAR_GRANTS = { customers: ['VISUALIZAR'], providers: ['VISUALIZAR'], orders: ['VISUALIZAR'] }
   mockQuery.mockImplementation(fakeQuery)
   conn = fakeConn()
 })
+/** Parâmetros de cada leitura da `vw_user_access` (o recorte do menu) — a CHAVE (usuário, institution) da sessão. */
+const accessReads = () => mockQuery.mock.calls
+  .filter(c => /vw_user_access/.test(String(c[0]))).map(c => c[1])
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('A3 — contrato de interfaces lido pela institution do escopo', () => {
@@ -209,11 +228,18 @@ describe('A3 — contrato de interfaces lido pela institution do escopo', () => 
   it('menu do admin: o menu do GRUPO filtrado pelo contrato lido pela CHAVE da sessão (D-GE5/D-GE4)', async () => {
     expect(shape(await getMenus(adminOf(MATRIZ)))).toEqual([['Vendas', [10, 30]]])
     expect(shape(await getMenus(adminOf(FILIAL)))).toEqual([['Vendas', [30]], ['Compras', [20]]])
+    // costura A1: o recorte é UMA leitura da view por menu, pela chave da sessão — nunca o contrato do schema inteiro
+    expect(accessReads()).toEqual([[5, MATRIZ], [5, FILIAL]])
   })
 
-  it('menu do usuário regular: mesmo recorte, com o filtro de privilégio junto (ordem dos parâmetros)', async () => {
+  it('menu do usuário regular: mesmo recorte, com o filtro de privilégio junto (a mesma leitura da view, pela chave da sessão)', async () => {
     const regular = { institutionId: FILIAL, userId: 9, role: 'user', schemaName: GROUP_SCHEMA }
+    // VISUALIZAR nas três; a 10 (contrato só da matriz) fica fora pelo contrato da CHAVE
     expect(shape(await getMenus(regular))).toEqual([['Vendas', [30]], ['Compras', [20]]])
+    expect(accessReads()).toEqual([[9, FILIAL]])
+    // sem o VISUALIZAR de Pedidos, a 30 sai — o privilégio filtra junto
+    REGULAR_GRANTS = { providers: ['VISUALIZAR'] }
+    expect(shape(await getMenus(regular))).toEqual([['Compras', [20]]])
   })
 
   it('Menus — telas elegíveis ao vínculo: só o contrato da chave do JWT, sem duplicar', async () => {

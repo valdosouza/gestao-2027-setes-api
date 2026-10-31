@@ -31,5 +31,14 @@ export async function reapplyEffectVerdict(
 ): Promise<ReapplyPolicyVerdict> {
   const privilegeId = reapplyPrivilegeFor(event.kind)
   const interfaces = [REAPPLY_INTERFACE] as const
-  return { verdict: await privilegeVerdict(inst, interfaces, privilegeId), privilegeId, interfaces }
+  return { verdict: await reapplyVerdictFor(inst, interfaces, privilegeId), privilegeId, interfaces }
+}
+
+/**
+ * O veredito do EFEITO. O privilégio vem da VOZ (`reapplyPrivilegeFor`), que a cerca do catálogo (D-PV9) não lê estaticamente —
+ * esta função é PRIMITIVA REGISTRADA no predicado (`API_PRIMITIVES`, `fixed` ALTERAR/CANCELAR): os dois pares de `bank-slips`
+ * ficam na lista única e no catálogo. Trocar o mapa voz → privilégio acima exige trocar o registro junto.
+ */
+function reapplyVerdictFor(inst: InstitutionPayload, interfaces: readonly string[], privilegeId: number): Promise<PrivilegeVerdict> {
+  return privilegeVerdict(inst, interfaces, privilegeId)
 }

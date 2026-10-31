@@ -12,6 +12,8 @@ jest.mock('../feature-flags/flag.service', () => ({ __esModule: true, isModuleEn
 
 import pool from '../shared/db/connection'
 import * as requirePrivilege from '../shared/auth/require-privilege'
+import { accessAnswer, AccessModel } from '../test-setup/access-model'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
 import {
   STRUCTURAL_INTERFACE_KEYS, isStructuralInterface, isSellableInterface, isOwnVendorInstitution, SETES_INSTITUTION_ID,
 } from '../shared/institution-interfaces'
@@ -21,7 +23,6 @@ import app from '../app'
 
 const q = (pool as any).query as jest.Mock
 const getConn = (pool as any).getConnection as jest.Mock
-const IFACE = 41
 /** catálogo do dublê: id → { k, kind, g } */
 const CAT: Record<number, { k: string; kind: string; g: string | null }> = {
   9: { k: 'customers', kind: 'T', g: 'Registers' }, 18: { k: 'partnerships', kind: 'R', g: 'Registers' },
@@ -34,6 +35,20 @@ let granted: Set<string>                                      // `${schema}:${us
 let writes: Array<{ kind: 'insert' | 'update'; schema: string; institutionId: number; interfaceId: number; active?: string }>
 let forUpdateSeen: string[]
 
+/** O vínculo vivo (`vw_user_link`) de cada usuário × institution do teste. */
+const LINKS: Record<string, 'super' | 'admin' | 'user'> = { '1:1': 'super', '9:1': 'user', '30:7': 'admin' }
+const SCHEMA_OF: Record<number, string> = { 1: 'setes_setes', 7: 'setes_cliente' }
+/** O que as views do veredito veem: o contrato = as marcas vivas (`linked`); a concessão na delegável = `granted`. */
+function modelFor(userId: number, institutionId: number): AccessModel | null {
+  const profile = LINKS[`${userId}:${institutionId}`]
+  const schema = SCHEMA_OF[institutionId]
+  if (!profile || !schema) return null
+  const contracted = [...linked].filter(l => l.startsWith(`${schema}:${institutionId}:`))
+    .map(l => CAT[Number(l.split(':')[2])]?.k).filter((k): k is string => !!k)
+  const verbs = [...granted].filter(g => g.startsWith(`${schema}:${userId}:`)).map(g => PRIVILEGE_NAME_BY_ID[Number(g.split(':')[2])])
+  return { profile, vendor: institutionId === 1, contracted, granted: { 'institution-interfaces': verbs } }
+}
+
 const conn = {
   beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn(),
   query: jest.fn(async (sql: string, params: any[] = []) => {
@@ -44,29 +59,32 @@ const conn = {
       if (dormant.has(`${schema}:${params[0]}:${params[1]}`)) return [[{ active: 'N', deleted: 'N' }]]
       return [[]]
     }
-    if (/INSERT INTO `setes_\w+`\.tb_institution_has_interface/.test(sql)) { writes.push({ kind: 'insert', schema, institutionId: params[0], interfaceId: params[1] }); return [[]] }
+    if (/INSERT INTO `setes_\w+`\.tb_institution_has_interface/.test(sql)) {
+      writes.push({ kind: 'insert', schema, institutionId: params[0], interfaceId: params[1] })
+      linked.add(`${schema}:${params[0]}:${params[1]}`)                              // a marca vira contrato vivo (lido pela view)
+      return [[]]
+    }
     if (/UPDATE `setes_\w+`\.tb_institution_has_interface/.test(sql)) {
       const active = /SET active = 'S'/.test(sql) ? 'S' : 'N'
-      writes.push({ kind: 'update', schema, institutionId: params[0], interfaceId: params[1], active }); return [[]]
+      writes.push({ kind: 'update', schema, institutionId: params[0], interfaceId: params[1], active })
+      if (active === 'S') linked.add(`${schema}:${params[0]}:${params[1]}`); else linked.delete(`${schema}:${params[0]}:${params[1]}`)
+      return [[]]
     }
     return [[]]
   }),
 }
 
 beforeEach(() => {
-  jest.clearAllMocks(); requirePrivilege.resetPrivilegeCache()
+  jest.clearAllMocks()
   linked = new Set(['setes_cliente:7:9']); dormant = new Set(['setes_cliente:7:18']); granted = new Set(); writes = []; forUpdateSeen = []
   getConn.mockResolvedValue(conn)
   q.mockImplementation(async (sql: string, params: any[] = []) => {
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [params[0] === 'institution-interfaces' ? [{ id: IFACE }] : []]
+    // o veredito (costura A1): as views respondidas pelo dublê — vínculo, contrato (`linked`) e concessão na delegável (`granted`)
+    const a = accessAnswer(sql, params, modelFor)
+    if (a) return [a, []]
     if (/SELECT id, i18n_key AS k, kind, group_default AS groupDefault\s+FROM setes_central\.tb_interface WHERE id = \?/.test(sql)) {
       const c = CAT[Number(params[0])]
       return [c ? [{ id: Number(params[0]), k: c.k, kind: c.kind, groupDefault: c.g }] : []]
-    }
-    if (/tb_institution_has_interface/.test(sql) && !/LEFT JOIN/.test(sql)) return [[]]       // nada contratado (a delegada não usa licença)
-    if (/tb_user_has_privilege/.test(sql) && /tb_privilege_id = \?/.test(sql)) {
-      const schema = /`(setes_\w+)`/.exec(sql)?.[1]
-      return [granted.has(`${schema}:${params[0]}:${params[2]}`) && params[1] === IFACE ? [{ 1: 1 }] : []]
     }
     if (/SELECT schema_name AS schemaName/.test(sql)) return [[{ schemaName: Number(params[0]) === 1 ? 'setes_setes' : Number(params[0]) === 7 ? 'setes_cliente' : null }].filter(r => r.schemaName)]
     if (/LEFT JOIN `setes_\w+`\.tb_institution_has_interface/.test(sql)) {
@@ -91,7 +109,9 @@ describe('D-PV37 — a própria Setes é UMA constante/predicado (re-exportados 
   })
   it('D-PV35: a lista das estruturais é UMA — o onboarding lê a da peça', () => {
     expect(FROM_ONBOARDING).toBe(STRUCTURAL_INTERFACE_KEYS)
-    expect([...STRUCTURAL_INTERFACE_KEYS].sort()).toEqual(['establishment', 'interface-configs', 'modules', 'users'])
+    // D-PV54 (Valdo 2026-10-27): `interface-fields` e `general-configs` também são estruturais
+    expect([...STRUCTURAL_INTERFACE_KEYS].sort()).toEqual(
+      ['establishment', 'general-configs', 'interface-configs', 'interface-fields', 'modules', 'users'])
     expect([isStructuralInterface('users'), isStructuralInterface('customers'), isStructuralInterface(null)]).toEqual([true, false, false])
     const sell = (id: number) => isSellableInterface({ kind: CAT[id].kind, groupDefault: CAT[id].g })
     expect([sell(9), sell(18), sell(41), isSellableInterface({ kind: 'X', groupDefault: null })]).toEqual([true, true, false, false])
@@ -121,13 +141,15 @@ describe('D-PV34 — UMA marca por vez, idempotente, nas duas portas', () => {
     expect(conn.commit).toHaveBeenCalled()
     expect(forUpdateSeen.length).toBeGreaterThan(0)                                 // leitura TRAVANTE da linha da marca
   })
-  it('a marca derruba o cache do veredito da institution alvo (D-PV29)', async () => {
-    const spy = jest.spyOn(requirePrivilege, 'invalidatePrivilegeVerdicts')
-    await mark(SUPER, 7, 42, true)
-    expect(spy).toHaveBeenCalledWith({ institutionId: 7 })
-    spy.mockClear()
-    await mark(SUPER, 7, 9, true)                                                      // sem mudança: nada a derrubar
-    expect(spy).not.toHaveBeenCalled()
+  it('a marca vale na hora para a institution alvo — sem cache do veredito para derrubar (D-AU8 revê a D-PV29): a próxima pergunta relê a view', async () => {
+    const ADMIN7 = { institutionId: 7, userId: 30, role: 'admin', schemaName: 'setes_cliente' }
+    const reads = () => q.mock.calls.filter(c => /`setes_cliente`\.vw_user_access/.test(String(c[0]))).length
+    expect(await requirePrivilege.privilegeVerdict(ADMIN7, ['customers'], 6)).toBe('ok')
+    expect((await mark(SUPER, 7, 9, false)).body.data).toEqual({ interfaceId: 9, linked: false, changed: true })
+    expect(await requirePrivilege.privilegeVerdict(ADMIN7, ['customers'], 6)).toBe('not-contracted')
+    expect((await mark(SUPER, 7, 9, true)).body.data).toEqual({ interfaceId: 9, linked: true, changed: true })
+    expect(await requirePrivilege.privilegeVerdict(ADMIN7, ['customers'], 6)).toBe('ok')
+    expect(reads()).toBe(3)                                                            // uma leitura viva por pergunta
   })
   it('a porta do Super em /api/admin grava pela MESMA peça por marca; a lista inteira não existe mais em nenhuma das portas', async () => {
     const r = await request(app).put('/api/admin/institutions/7/interfaces/42').set('Authorization', SUPER).send({ linked: true })

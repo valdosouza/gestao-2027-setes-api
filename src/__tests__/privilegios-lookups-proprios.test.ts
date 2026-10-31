@@ -17,7 +17,8 @@ jest.mock('../feature-flags/flag.service', () => ({ __esModule: true, isModuleEn
 jest.mock('../shared/customer-wallet', () => ({ __esModule: true, walletSalesmanId: jest.fn(async () => null) }))
 
 import pool from '../shared/db/connection'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
+import { accessAnswer, AccessModel } from '../test-setup/access-model'
 import app from '../app'
 
 const q = (pool as any).query as jest.Mock
@@ -25,16 +26,26 @@ const CATALOG: Record<string, number> = {
   settlements: 21, cashier: 30, 'service-orders': 20, 'payment-types': 16, customers: 9, partnerships: 18,
   'order-returns': 31, orders: 29, contracts: 17, 'bank-accounts': 19, 'financial-plans': 14, collaborators: 12, cfop: 15,
 }
+const BY_ID = Object.fromEntries(Object.entries(CATALOG).map(([k, id]) => [id, k])) as Record<number, string>
 let granted: Set<string>                                           // `${interfaceId}:${privilegeId}` do usuário 9
 const USER = bearer({ institutionId: 1, userId: 9, role: 'user', schemaName: 'setes_setes' })
 
+/** As views do veredito (costura A1): o usuário 9 é regular na institution 1, tudo contratado — o teste é da CONCESSÃO. */
+function modelFor(userId: number, institutionId: number): AccessModel | null {
+  if (userId !== 9 || institutionId !== 1) return null
+  const g: Record<string, string[]> = {}
+  for (const p of granted) {
+    const [i, v] = p.split(':').map(Number)
+    ;(g[BY_ID[i]] ??= []).push(PRIVILEGE_NAME_BY_ID[v])
+  }
+  return { profile: 'user', vendor: true, contracted: Object.keys(CATALOG), granted: g }
+}
+
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
-  granted = new Set()
+  jest.clearAllMocks();  granted = new Set()
   q.mockImplementation(async (sql: string, params: any[] = []) => {
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [CATALOG[params[0]] ? [{ id: CATALOG[params[0]] }] : []]
-    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]                 // tudo contratado: o teste é do privilégio
-    if (/tb_user_has_privilege/.test(sql)) return [granted.has(`${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
+    const a = accessAnswer(sql, params, modelFor)
+    if (a) return [a, []]
     return [[{ id: 1 }]]                                                              // qualquer consulta de lista de apoio
   })
 })

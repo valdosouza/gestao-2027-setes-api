@@ -3,15 +3,13 @@
 // QUANDO o painel é o dela. O resolvedor lê o `:id` com a MESMA regra do controller (`parseId` = Number inteiro) — se lessem
 // diferente, o privilégio de uma interface abriria o painel de outra.
 import pool from '../shared/db/connection'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import { CONFIGS_PANEL } from '../modules/interface-configs/interface-configs.privilege-policy'
 
 jest.mock('../shared/db/connection', () => ({ __esModule: true, default: { query: jest.fn() } }))
 const mockQuery = (pool as any).query as jest.Mock
 
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
-  mockQuery.mockImplementation(async (_sql: string, params: any[]) => [params[0] === 'general-configs' ? [{ id: 11 }] : []])
+  jest.clearAllMocks();  mockQuery.mockImplementation(async (_sql: string, params: any[]) => [params[0] === 'general-configs' ? [{ id: 11 }] : []])
 })
 
 const BOTH = ['interface-configs', 'general-configs']

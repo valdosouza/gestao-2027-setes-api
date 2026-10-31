@@ -5,15 +5,13 @@ import {
   getPreferences, upsertPreference,
   getTheme, upsertTheme,
   getModuleInterfaces, getUngroupedInterfaces,
-  getUserPrivileges, getAllInterfacePrivileges,
-  getAllCentralInterfaces,
+  getAllCentralInterfaces, getDelegableSuperInterfaces,
   MenuInterfaceRow,
 } from './core.repository'
 import { InstitutionPayload } from '@shared/types/express'
 import { isSuper } from '@shared/auth/roles'
-import { isOwnVendorInstitution } from '@shared/institution-interfaces'
 import { DELEGABLE_SUPER_INTERFACES } from '@shared/auth/super-delegation'
-import { getDelegatedSuperInterfaces, getUserPrivileges as userPrivilegesOf } from './core.repository'
+import { accessRows } from '@shared/access'
 import { SessionContext, getSessionContext } from '@shared/session-context'
 import { HttpError } from '@shared/errors/http-error'
 
@@ -145,39 +143,38 @@ export interface MenuModule {
   interfaces: MenuInterface[]
 }
 
+/**
+ * O menu do usuário no estabelecimento (decisões 18/21 da Fase 1). Costura A1 da auth-api (D-AU3/D-AU6): UMA leitura da `vw_user_access`
+ * (biblioteca única) diz QUAIS telas (VISUALIZAR) e QUAIS botões (os verbos) — super, admin, regular e a tela do Super delegada saem da
+ * MESMA regra das guardas (o super tudo; o admin todo verbo registrado das telas contratadas; o regular o concedido; a delegável só pelo
+ * verbo marcado pelo Super). Daqui só o ARRANJO: o super vê o catálogo central agrupado (inclusive o grupo Super); os demais, os módulos
+ * do schema + as telas sem módulo por `group_default`, fora o grupo Super (D-PV55) — e, ao usuário da Setes, a delegável.
+ */
 export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[]> {
   const superUser = isSuper(payload)
-  // Definições por perfil (decisão do Valdo 2026-07-12):
-  // SUPER   → tudo, inclusive o módulo Super (catálogo central direto);
-  // ADMIN   → tudo do CONTRATO do institution, sem tb_user_has_privilege
-  //           (o módulo Super não existe no schema do cliente);
-  // REGULAR → só interfaces com privilégio VISUALIZAR (opção 1 do workflow).
-  const adminUser = !superUser && payload.role === 'admin'
-  const { schemaName, institutionId, userId } = payload
+  const { schemaName } = payload
 
-  const [inModules, ungrouped, privileges] = superUser
-    ? await Promise.all([
-        Promise.resolve([] as MenuInterfaceRow[]),
-        getAllCentralInterfaces(),
-        getAllInterfacePrivileges(),
-      ])
-    : await Promise.all([
-        // módulos do GRUPO (D-GE5) × contrato lido pela chave (D-GE4 — do grupo pela D-GE22; hoje = a institution)
-        getModuleInterfaces(schemaName, institutionId, userId, adminUser),
-        getUngroupedInterfaces(schemaName, institutionId, userId, adminUser),
-        // Admin opera tudo: botões liberados com o catálogo de privilégios
-        // de cada interface; regular recebe só o que lhe foi concedido.
-        adminUser ? getAllInterfacePrivileges() : getUserPrivileges(schemaName, userId),
-      ])
-
+  const rows = await accessRows(payload)
   const privMap = new Map<number, string[]>()
-  for (const p of privileges) {
-    if (!privMap.has(p.interfaceId)) privMap.set(p.interfaceId, [])
-    if (p.description) privMap.get(p.interfaceId)!.push(p.description)
+  for (const r of rows) {
+    if (!privMap.has(r.interfaceId)) privMap.set(r.interfaceId, [])
+    privMap.get(r.interfaceId)!.push(r.privilege)
   }
+  const visible = (interfaceId: number) => (privMap.get(interfaceId) ?? []).includes('VISUALIZAR')
+
+  const [inModules, ungrouped, delegable] = superUser
+    ? [[] as MenuInterfaceRow[], await getAllCentralInterfaces(), [] as MenuInterfaceRow[]]
+    : await Promise.all([
+        getModuleInterfaces(schemaName),
+        getUngroupedInterfaces(schemaName),
+        getDelegableSuperInterfaces(DELEGABLE_SUPER_INTERFACES),
+      ])
 
   const modules = new Map<string, MenuModule>()
+  const seen = new Set<number>()
   const add = (row: MenuInterfaceRow) => {
+    if (!visible(row.interfaceId) || seen.has(row.interfaceId)) return
+    seen.add(row.interfaceId)
     const key = row.moduleId !== null ? `m:${row.moduleId}` : `g:${row.moduleDescription ?? 'Geral'}`
     if (!modules.has(key)) {
       modules.set(key, {
@@ -197,20 +194,7 @@ export async function getMenus(payload: InstitutionPayload): Promise<MenuModule[
 
   inModules.forEach(add)
   ungrouped.forEach(add)
-
-  // D-PV11: tela do Super DELEGADA ao usuário da Setes — só com o vínculo explícito (até o admin); os botões dela são os
-  // privilégios que o SUPER marcou para ele, nunca o catálogo (o admin não "passa" o privilégio de tela delegada).
-  if (!superUser && isOwnVendorInstitution(payload.institutionId)) {   // D-PV37: predicado único
-    const delegated = await getDelegatedSuperInterfaces(schemaName, userId, DELEGABLE_SUPER_INTERFACES)
-    if (delegated.length > 0) {
-      const own = adminUser ? await userPrivilegesOf(schemaName, userId) : privileges
-      for (const row of delegated) {
-        privMap.set(row.interfaceId, own.filter(p => p.interfaceId === row.interfaceId && p.description)
-          .map(p => p.description as string))
-        add(row)
-      }
-    }
-  }
+  delegable.forEach(add)
 
   return Array.from(modules.values())
 }

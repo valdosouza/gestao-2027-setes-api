@@ -7,10 +7,11 @@ import express, { Router } from 'express'
 import request from 'supertest'
 import pool from '../shared/db/connection'
 import logger from '../shared/logger/logger'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import {
   gatedModule, privilegeAct, openRoute, matchModuleRoute, listGatedRoutes, PRIVILEGE_BY_METHOD,
 } from '../shared/auth/module-privilege-gate'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
+import { accessAnswer, AccessModel, ModelProfile } from '../test-setup/access-model'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true,
@@ -22,18 +23,31 @@ const mockQuery = (pool as any).query as jest.Mock
 const CATALOG: Record<string, number> = { widgets: 50, partnerships: 18, 'general-configs': 11, 'interface-configs': 10 }
 let contracted: Set<number>
 let privileged: Set<string>                         // `${userId}:${interfaceId}:${privilegeId}`
+/** Vínculo vivo (`vw_user_link`) de cada usuário × institution — o perfil do veredito é o dele, nunca o `role` do token. */
+const LINKS: Record<string, ModelProfile> = { '1:1': 'super', '7:2': 'admin', '9:2': 'user' }
+function modelFor(userId: number, institutionId: number): AccessModel | null {
+  const profile = LINKS[`${userId}:${institutionId}`]
+  if (!profile) return null
+  const byId = Object.fromEntries(Object.entries(CATALOG).map(([k, id]) => [id, k])) as Record<number, string>
+  const granted: Record<string, string[]> = {}
+  for (const p of privileged) {
+    const [u, i, v] = p.split(':').map(Number)
+    if (u === userId && byId[i]) (granted[byId[i]] ??= []).push(PRIVILEGE_NAME_BY_ID[v])
+  }
+  return { profile, vendor: institutionId === 1, contracted: [...contracted].map(id => byId[id]).filter(Boolean), granted }
+}
 function routeDb(): void {
   mockQuery.mockImplementation(async (sql: string, params: any[] = []) => {
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) {
-      const id = CATALOG[String(params[0])]
-      return [id ? [{ id }] : []]
-    }
-    if (/tb_institution_has_interface/.test(sql)) return [contracted.has(Number(params[1])) ? [{ 1: 1 }] : []]
-    if (/tb_user_has_privilege/.test(sql)) return [privileged.has(`${params[0]}:${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
+    // as views só têm linhas de interface VIVA do catálogo (CROSS JOIN com vw_interface_catalog): chave fora do CATALOG não existe nelas
+    const p = Array.isArray(params[2]) ? [params[0], params[1], params[2].filter((k: string) => k in CATALOG), ...params.slice(3)] : params
+    const a = accessAnswer(sql, p, modelFor)
+    if (a) return [a, []]
     throw new Error(`SQL inesperado: ${sql}`)
   })
 }
 const sqlCalls = (re: RegExp) => mockQuery.mock.calls.filter(c => re.test(String(c[0])))
+const ACCESS = /vw_user_access/
+const REACH = /vw_user_reach/
 
 const SUPER = { institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' }
 const ADMIN = { institutionId: 2, userId: 7, role: 'admin', schemaName: 'setes_x' }
@@ -74,8 +88,7 @@ function app() {
 }
 
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
-  contracted = new Set(Object.values(CATALOG)); privileged = new Set()
+  jest.clearAllMocks();  contracted = new Set(Object.values(CATALOG)); privileged = new Set()
   routeDb()
   inst = USER
 })
@@ -94,7 +107,8 @@ describe('mapa do verbo (D-PV2)', () => {
     privileged.add(`9:50:${pid}`)
     const ok = await (request(app()) as any)[m](url)
     expect(ok.status).toBe(200)
-    expect(sqlCalls(/tb_user_has_privilege/).map(c => c[1][2])).toEqual([pid, pid])
+    // o veredito pergunta pelo NOME do verbo (D-PV53), uma vez por requisição, na interface do módulo
+    expect(sqlCalls(ACCESS).map(c => c[1])).toEqual([[9, 2, ['widgets'], PRIVILEGE_NAME_BY_ID[pid]], [9, 2, ['widgets'], PRIVILEGE_NAME_BY_ID[pid]]])
   })
 
   it('HEAD de uma rota GET confere VISUALIZAR', async () => {
@@ -127,13 +141,13 @@ describe('atos de processo e exceções declarados na rota', () => {
     privileged.add('9:50:7'); privileged.add('9:50:4')
     expect((await request(app()).post('/api/widgets/12/cancel')).status).toBe(200)
     expect((await request(app()).get('/api/widgets/12/pdf')).status).toBe(200)
-    expect(sqlCalls(/tb_user_has_privilege/).map(c => c[1][2])).toEqual([7, 4])
+    expect(sqlCalls(ACCESS).map(c => c[1][3])).toEqual(['CANCELAR', 'IMPRIMIR'])
   })
 
   it('openRoute: nenhum privilégio, nenhuma consulta de licença', async () => {
     const r = await request(app()).get('/api/widgets/key/customers')
     expect(r.status).toBe(200)
-    expect(sqlCalls(/tb_institution_has_interface|tb_user_has_privilege/)).toHaveLength(0)
+    expect(mockQuery).not.toHaveBeenCalled()
   })
 
   it('privilegeAct com outra interface: a aba Parceria confere `partnerships`, não o módulo', async () => {
@@ -171,12 +185,14 @@ describe('atos de processo e exceções declarados na rota', () => {
 })
 
 describe('perfis: licença (D-F37) × A-PV1 × admin', () => {
-  it('admin passa o privilégio sem consultar vínculo — com a interface CONTRATADA', async () => {
+  it('admin passa o privilégio sem concessão alguma — com a interface CONTRATADA (caminho quente: uma leitura, sem o motivo)', async () => {
     inst = ADMIN
     for (const [m, url] of [['get', '/api/widgets'], ['post', '/api/widgets'], ['delete', '/api/widgets/5'], ['post', '/api/widgets/9/cancel']] as const) {
       expect((await (request(app()) as any)[m](url)).status).toBe(200)
     }
-    expect(sqlCalls(/tb_user_has_privilege/)).toHaveLength(0)
+    expect(privileged.size).toBe(0)
+    expect(sqlCalls(ACCESS).map(c => c[1][3])).toEqual(['VISUALIZAR', 'INSERIR', 'EXCLUIR', 'CANCELAR'])
+    expect(sqlCalls(REACH)).toHaveLength(0)
   })
 
   it('interface NÃO contratada: 403 INTERFACE_NOT_ALLOWED para admin e regular com o vínculo', async () => {
@@ -188,12 +204,15 @@ describe('perfis: licença (D-F37) × A-PV1 × admin', () => {
     }
   })
 
-  it('A-PV1: o super passa a interface NÃO contratada (sem consultar o contrato nem o vínculo)', async () => {
+  it('A-PV1: o super passa a interface NÃO contratada e sem concessão (caminho quente: sem ler o motivo)', async () => {
     contracted.clear(); inst = SUPER
     for (const [m, url] of [['get', '/api/widgets'], ['put', '/api/widgets/5'], ['get', '/api/widgets/3/partnership']] as const) {
       expect((await (request(app()) as any)[m](url)).status).toBe(200)
     }
-    expect(sqlCalls(/tb_institution_has_interface|tb_user_has_privilege/)).toHaveLength(0)
+    expect(sqlCalls(ACCESS).map(c => c[1])).toEqual([
+      [1, 1, ['widgets'], 'VISUALIZAR'], [1, 1, ['widgets'], 'ALTERAR'], [1, 1, ['partnerships'], 'VISUALIZAR'],
+    ])
+    expect(sqlCalls(REACH)).toHaveLength(0)
   })
 
   it('A-PV1 não é "interface inexistente": chave fora do catálogo central nega também para o super', async () => {

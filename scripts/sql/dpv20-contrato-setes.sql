@@ -16,13 +16,13 @@
 --   service-tax-rules, services, settlement-rules, settlements, state-tax-rates, tax-rules, users.
 --   Fora da lista: `state-tax-rates` (sem interface no catálogo — D-PV23) e `partnerships` (flag
 --   deleted='S' → pela D-PV22 a 'R' só entra se a flag estiver ligada; NÃO entra). `interface-fields`
---   não tem flag nem é estrutural → NÃO entra (o painel de campos segue só do Super até o Super contratar).
+--   ENTRA desde a D-PV54 (Valdo 2026-10-27 — virou ESTRUTURAL, gêmea da `interface-configs`; revê a nota da D-PV20 de 21/10).
 --   Já contratadas (14, conferidas no banco): bank-charge-agreements, bank-slips, cashier, checks,
 --   establishment, order-returns, orders, price-lists, service-orders, service-tax-rules, services,
 --   settlement-rules, settlements, tax-rules.
---   NOVAS (15): bank-accounts, billing, carriers, categories, collaborators, contracts, customers,
---   financial-plans, general-configs, interface-configs, modules, payment-types, providers, salesmen, users.
---   Total depois: 29 interfaces no contrato da Setes.
+--   NOVAS (16): bank-accounts, billing, carriers, categories, collaborators, contracts, customers,
+--   financial-plans, general-configs, interface-configs, interface-fields, modules, payment-types, providers, salesmen, users.
+--   Total depois: 30 interfaces no contrato da Setes.
 --
 -- Idempotente (INSERT … ON DUPLICATE KEY UPDATE revive/religa a linha; re-executar não muda nada).
 -- Por `i18n_key`, nunca por id fixo. Conferência no fim FALHA ALTO se alguma interface esperada ficar
@@ -44,8 +44,8 @@ INSERT INTO `tmp_dpv20_expected` (`k`) VALUES
 -- novas pelas flags (11)
 ('bank-accounts'), ('billing'), ('carriers'), ('categories'), ('collaborators'), ('contracts'), ('customers'),
 ('financial-plans'), ('payment-types'), ('providers'), ('salesmen'),
--- estruturais nomeadas pela D-PV20 (4)
-('users'), ('modules'), ('interface-configs'), ('general-configs');
+-- estruturais (D-PV20 + D-PV54 — a lista de `STRUCTURAL_INTERFACE_KEYS`, menos `establishment`, que já está acima)
+('users'), ('modules'), ('interface-configs'), ('general-configs'), ('interface-fields');
 
 -- Conferência 0 (FALHA ALTO antes de gravar): toda chave esperada existe VIVA no catálogo central
 SET @dpv20_unknown := (
@@ -64,7 +64,7 @@ SELECT 1, i.`id`, 'S', NOW(), NOW()
   JOIN `setes_central`.`tb_interface` i ON i.`i18n_key` = e.`k` AND i.`deleted` = 'N'
 ON DUPLICATE KEY UPDATE `active` = 'S', `deleted` = 'N', `updated_at` = NOW();
 
--- Conferência 1 (informativa): o contrato da Setes depois — esperado 29 linhas vivas
+-- Conferência 1 (informativa): o contrato da Setes depois — esperado 30 linhas vivas
 SELECT i.`i18n_key` AS `interface`, ihi.`active`, ihi.`deleted`
   FROM `tb_institution_has_interface` ihi
   JOIN `setes_central`.`tb_interface` i ON i.`id` = ihi.`tb_interface_id`

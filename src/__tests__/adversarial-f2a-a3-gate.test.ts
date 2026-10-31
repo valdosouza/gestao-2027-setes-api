@@ -13,6 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import request from 'supertest'
 import { testToken } from '../test-setup/test-token'
+import { accessAnswer, ModelProfile } from '../test-setup/access-model'
 import { rawServiceRow, serviceView, TEST_KEY } from '../test-setup/fiscal-voice-rows'
 
 jest.mock('../shared/db/connection', () => ({
@@ -44,8 +45,8 @@ import {
 import { readServiceVoiceOfLife, readServiceVoicesOfLives, assertFiscalVoiceReadable } from '../shared/fiscal-voice'
 import { fetchOrders } from '../modules/service-orders/service-orders.service'
 import { handleError } from '../shared/http/controller-utils'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import { splitStatements } from '../migrations/runner'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
 import app from '../app'
 
 /** ADV_SHOW=1 roda os achados como `it` comum — para LER a mensagem da falha (o motivo certo, não erro de mock). */
@@ -66,13 +67,27 @@ let waiverRows: any[]
 let fiscalRows: any[]
 let fiscalError: any
 let poolSql: string[]
+const KEY_OF: Record<number, string> = Object.fromEntries(Object.entries(CATALOG).map(([k, id]) => [id, k]))
+/** o perfil do vínculo (usuário 7, institution 1) é o do token da vez — a sessão viva devolve o do token (`access-session.mock`) */
+let profile: ModelProfile = 'admin'
+/** `privileged` (`${userId}:${interfaceId}:${privilegeId}`) → concessões por chave e NOME do verbo (D-PV53) */
+function grantsOf(userId: number): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const g of privileged) {
+    const [u, i, p] = g.split(':').map(Number)
+    if (u === userId && KEY_OF[i]) (out[KEY_OF[i]] ??= []).push(PRIVILEGE_NAME_BY_ID[p])
+  }
+  return out
+}
 
 function routePool(): void {
   q.mockImplementation(async (sql: string, params: any[] = []) => {
     poolSql.push(String(sql))
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) { const id = CATALOG[String(params[0])]; return [id ? [{ id }] : []] }
-    if (/tb_institution_has_interface/.test(sql)) return [contracted.has(Number(params[1])) ? [{ 1: 1 }] : []]
-    if (/tb_user_has_privilege/.test(sql)) return [privileged.has(`${params[0]}:${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
+    // costura A1 da auth-api (D-AU3/D-AU6): o veredito das guardas é a pilha de views (dublê `test-setup/access-model`)
+    const a = accessAnswer(sql, params, (userId: number) => ({
+      profile, contracted: [...contracted].map(id => KEY_OF[id]).filter(Boolean), granted: grantsOf(userId),
+    }))
+    if (a) return [a, []]
     if (/vw_order_interface/.test(sql)) { const k = BRANCH[Number(params[1])]; return [k ? [{ k }] : []] }
     if (/tb_invoice_cancel_waiver/.test(sql)) return [waiverRows]
     if (/vw_invoice_life/.test(sql)) { const ids: number[] = (params[1] ?? []).map(Number); return [lifeRows.filter(r => ids.includes(Number(r.invoiceId)))] }
@@ -124,14 +139,13 @@ const voiceDown = (cause: RegExp) => expect.objectContaining({ statusCode: 503, 
 const USER = { institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes' }
 const ADMIN = { ...USER, role: 'admin' }
 const SUPER = { ...USER, role: 'super' }
-const bearer = (p: object) => `Bearer ${testToken(p)}`
+const bearer = (p: { role: string }) => { profile = p.role as ModelProfile; return `Bearer ${testToken(p)}` }
 const lockWait = Object.assign(new Error('Lock wait timeout exceeded; try restarting transaction'), { code: 'ER_LOCK_WAIT_TIMEOUT', errno: 1205 })
 const deadlock = Object.assign(new Error('Deadlock found when trying to get lock'), { code: 'ER_LOCK_DEADLOCK', errno: 1213 })
 
 const ENV0 = { ...process.env }
 beforeEach(() => {
   jest.clearAllMocks()
-  resetPrivilegeCache()
   contracted = new Set(Object.values(CATALOG)); privileged = new Set(); poolSql = []
   lifeRows = [{ invoiceId: 100, invoiceDeleted: 'N', lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]
   waiverRows = []; fiscalRows = []; fiscalError = undefined
@@ -265,8 +279,8 @@ describe('2 — "manter a nota" (D-F67/D-F80) só na SUBSTITUIÇÃO em PRODUÇÃ
 // 3. Rotas novas: GET …/cancel-plan e GET …/fiscal-effect
 // =================================================================================================
 describe('3 — GET /api/billing/:orderId/cancel-plan e /fiscal-effect (D-F115/D-F128/D-F37)', () => {
-  const plan = (id: string | number = 100, who: object = ADMIN) => request(app).get(`/api/billing/${id}/cancel-plan`).set('Authorization', bearer(who))
-  const effect = (id: string | number = 100, who: object = ADMIN) => request(app).get(`/api/billing/${id}/fiscal-effect`).set('Authorization', bearer(who))
+  const plan = (id: string | number = 100, who: { role: string } = ADMIN) => request(app).get(`/api/billing/${id}/cancel-plan`).set('Authorization', bearer(who))
+  const effect = (id: string | number = 100, who: { role: string } = ADMIN) => request(app).get(`/api/billing/${id}/fiscal-effect`).set('Authorization', bearer(who))
 
   // A-PV1 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): revê a D-F37 SÓ para o super (ele passa a licença).
   it('[RESISTIU] ramo NÃO contratado → 403 INTERFACE_NOT_ALLOWED para usuário e admin (D-F37) — nas duas rotas, antes de abrir transação', async () => {
