@@ -6,7 +6,7 @@ import {
 } from '@shared/interface-config'
 import {
   interfaceCatalogViolations, assertNoCatalogViolation, CatalogViolation, requiredPairsOf, isMenuScreen, isScreen,
-  interfaceKeyUses, consumedPrivileges, ConsumedPrivilege, InterfaceCatalogState,
+  interfaceKeyUses, consumedPrivileges, ConsumedPrivilege, InterfaceCatalogState, CONFIGURE_PRIVILEGE,
 } from '@shared/auth/privilege-catalog'
 import { InterfaceRow, InterfaceInput, InterfaceConfigInput } from './interfaces.interface'
 import {
@@ -163,11 +163,16 @@ export async function saveInterfaceConfig(
   invalidateInterfaceConfigCatalog(id)
 }
 
-export async function removeInterfaceConfig(id: number, name: string): Promise<void> {
-  await fetchInterface(id)
+export async function removeInterfaceConfig(id: number, name: string): Promise<{ retiredConfigure: boolean }> {
+  const row = await fetchInterface(id)
   if (!(await interfaceConfigExists(id, name))) {
     throw new HttpError(404, 'Configuração não encontrada no catálogo desta interface')
   }
-  await softDeleteInterfaceConfig(id, name)
+  // D-PV65: a última config leva o CONFIGURAR junto — salvo se ele segue EXIGIDO sem config (código, `general-configs`, reserva): a MESMA
+  // peça que diz o que o catálogo não pode perder (`requiredPairsOf`, sem a regra "tem config")
+  const stillRequired = requiredPairsOf(row.i18nKey, { screen: false, configurable: false })
+    .some(r => r.privilege === CONFIGURE_PRIVILEGE)
+  const result = await softDeleteInterfaceConfig(id, name, !stillRequired)
   invalidateInterfaceConfigCatalog(id)
+  return result
 }

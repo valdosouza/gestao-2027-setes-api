@@ -105,6 +105,8 @@ const ALLOWED_LOOSE: Record<string, string> = {
     'interface na MESMA transação — confere o verbo vivo; escreve o registro, não decide ato',
   'src/modules/interfaces/interfaces.repository.ts: [interfaceId, PRIVILEGE_CONFIGURAR])':
     'escritor do CATÁLOGO (D-PV25 regra 5): o INSERT/revive do par (interface × CONFIGURAR) junto da config — não decide ato',
+  'src/modules/interfaces/interfaces.repository.ts: [interfaceId, PRIVILEGE_CONFIGURAR, interfaceId, interfaceId])':
+    'escritor do CATÁLOGO (D-PV65): a ÚLTIMA config excluída retira o par (interface × CONFIGURAR) na mesma transação — não decide ato',
 }
 
 /**

@@ -120,9 +120,9 @@ export async function deleteConfig(req: Request, res: Response): Promise<void> {
     return
   }
   try {
-    await removeInterfaceConfig(id, name)
-    logger.info('Configuração do catálogo removida', { interfaceId: id, name })
-    res.json({ ok: true })
+    const { retiredConfigure } = await removeInterfaceConfig(id, name)
+    logger.info('Configuração do catálogo removida', { interfaceId: id, name, retiredConfigure })
+    res.json({ ok: true, retiredConfigure })
   } catch (err) {
     handleError(res, err, 'interfaces/:id/configs/:name DELETE')
   }

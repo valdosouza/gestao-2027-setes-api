@@ -179,9 +179,11 @@ router.put('/:id/configs/:name', controller.putConfig)
  * /api/interfaces/{id}/configs/{name}:
  *   delete:
  *     summary: Exclui logicamente uma configuração do catálogo (deleted='S')
+ *     description: D-PV65 — a ÚLTIMA config viva (sem campo no catálogo) leva junto o par (interface × CONFIGURAR), salvo se ele segue exigido
+ *       (código, Configurações Gerais, reservado). `retiredConfigure` diz se o par saiu.
  *     tags: [Interfaces]
  *     responses:
- *       200: { description: 'Configuração removida' }
+ *       200: { description: 'Configuração removida — `{ ok: true, retiredConfigure: boolean }`' }
  *       404: { description: 'Interface ou configuração inexistente' }
  */
 router.delete('/:id/configs/:name', controller.deleteConfig)

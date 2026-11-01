@@ -5,7 +5,8 @@
 jest.mock('../shared/db/connection', () => ({ __esModule: true, default: { query: jest.fn(), getConnection: jest.fn() } }))
 
 import pool from '../shared/db/connection'
-import { upsertInterfaceConfig } from '../modules/interfaces/interfaces.repository'
+import { upsertInterfaceConfig, softDeleteInterfaceConfig } from '../modules/interfaces/interfaces.repository'
+import { requiredPairsOf } from '../shared/auth/privilege-catalog'
 import { PRIVILEGE_CONFIGURAR } from '../shared/auth/privileges'
 
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
@@ -58,5 +59,38 @@ describe('upsertInterfaceConfig — a config e o CONFIGURAR da interface na mesm
     const { log } = fakeConn(true, /tb_interface_has_privilege/)
     await expect(upsertInterfaceConfig(7, 'page_size', INPUT)).rejects.toThrow('falha simulada')
     expect(log).toEqual(['BEGIN', 'ROLLBACK', 'RELEASE'])
+  })
+})
+
+describe('D-PV65 (Valdo 2026-11-01, "Sim, retira junto") — a ÚLTIMA config excluída leva o CONFIGURAR junto (o espelho da criação)', () => {
+  it('com retireConfigureIfLast: soft delete da config + retirada do par na MESMA transação; devolve se o par saiu', async () => {
+    const { conn, calls, log } = fakeConn(true)
+    conn.query.mockImplementation(async (sql: string, params: any[] = []) => {
+      calls.push({ sql: norm(sql), params })
+      return [{ affectedRows: /tb_interface_has_privilege/.test(sql) ? 1 : 1 }, []]
+    })
+    expect(await softDeleteInterfaceConfig(7, 'page_size', true)).toEqual({ retiredConfigure: true })
+    expect(log).toEqual(['BEGIN', 'COMMIT', 'RELEASE'])
+    expect(calls[0].sql).toMatch(/^UPDATE setes_central\.tb_interface_has_config SET deleted = 'S'/)
+    expect(calls[1].sql).toMatch(/^UPDATE setes_central\.tb_interface_has_privilege ihp SET ihp\.active = 'N', ihp\.deleted = 'S'/)
+    expect(calls[1].sql).toMatch(/BINARY p\.description = 'CONFIGURAR'/)                  // só o verbo com o NOME exato (o cuidado do nascimento)
+    expect(calls[1].sql).toMatch(/NOT EXISTS \(SELECT 1 FROM setes_central\.tb_interface_has_config c WHERE c\.tb_interface_id = \? AND c\.deleted = 'N'\)/)
+    expect(calls[1].sql).toMatch(/NOT EXISTS \(SELECT 1 FROM setes_central\.tb_interface_has_field f WHERE f\.tb_interface_id = \? AND f\.deleted = 'N'\)/)
+    expect(calls[1].params).toEqual([7, PRIVILEGE_CONFIGURAR, 7, 7])
+  })
+
+  it('o par não saiu (sobra config/campo — 0 linhas) → retiredConfigure false; sem a marca, só a config', async () => {
+    const zero = fakeConn(true)
+    zero.conn.query.mockImplementation(async (sql: string) => [{ affectedRows: /tb_interface_has_privilege/.test(sql) ? 0 : 1 }, []])
+    expect(await softDeleteInterfaceConfig(7, 'a', true)).toEqual({ retiredConfigure: false })
+    const keep = fakeConn(true)
+    expect(await softDeleteInterfaceConfig(7, 'a', false)).toEqual({ retiredConfigure: false })
+    expect(keep.calls.some(c => /tb_interface_has_privilege/.test(c.sql))).toBe(false)
+  })
+
+  it('a decisão de manter usa a peça do catálogo: regra (Configurações Gerais) e código (engrenagem do app) seguram o par; sem consumidor, sai', () => {
+    const configure = (k: string) => requiredPairsOf(k, { screen: false, configurable: false }).some(r => r.privilege === 'CONFIGURAR')
+    // countries: a engrenagem da fábrica consome o CONFIGURAR (lista à mão) — o par fica e não vira "sobrando"; billing não tem consumidor
+    expect([configure('general-configs'), configure('countries'), configure('billing')]).toEqual([true, true, false])
   })
 })

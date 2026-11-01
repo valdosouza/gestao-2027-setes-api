@@ -214,15 +214,43 @@ export async function interfaceConfigExists(
 }
 
 /** Remove (soft) uma configuração do catálogo. */
+/**
+ * Exclui logicamente a config E — D-PV65 (Valdo 2026-11-01) — quando [retireConfigureIfLast] e esta era a ÚLTIMA config viva da interface
+ * (sem campo vivo no catálogo), retira o par (interface × CONFIGURAR) na MESMA transação: o espelho de `upsertInterfaceConfig` (D-PV25).
+ * Só o par cujo verbo tem o NOME exato (o mesmo cuidado do nascimento). Devolve se o par saiu (a tela espelha).
+ */
 export async function softDeleteInterfaceConfig(
-  interfaceId: number, name: string
-): Promise<void> {
-  await pool.query(
-    `UPDATE setes_central.tb_interface_has_config
-        SET deleted = 'S', updated_at = NOW()
-      WHERE tb_interface_id = ? AND name = ?`,
-    [interfaceId, name]
-  )
+  interfaceId: number, name: string, retireConfigureIfLast = false
+): Promise<{ retiredConfigure: boolean }> {
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await conn.query(
+      `UPDATE setes_central.tb_interface_has_config
+          SET deleted = 'S', updated_at = NOW()
+        WHERE tb_interface_id = ? AND name = ?`,
+      [interfaceId, name]
+    )
+    let retiredConfigure = false
+    if (retireConfigureIfLast) {
+      const [res] = await conn.query<any>(
+        `UPDATE setes_central.tb_interface_has_privilege ihp
+            SET ihp.active = 'N', ihp.deleted = 'S', ihp.updated_at = NOW()
+          WHERE ihp.tb_interface_id = ? AND ihp.tb_privilege_id = ? AND (ihp.deleted <> 'S' OR ihp.active <> 'N')
+            AND EXISTS (SELECT 1 FROM setes_central.tb_privilege p WHERE p.id = ihp.tb_privilege_id AND BINARY p.description = 'CONFIGURAR')
+            AND NOT EXISTS (SELECT 1 FROM setes_central.tb_interface_has_config c WHERE c.tb_interface_id = ? AND c.deleted = 'N')
+            AND NOT EXISTS (SELECT 1 FROM setes_central.tb_interface_has_field f WHERE f.tb_interface_id = ? AND f.deleted = 'N')`,
+        [interfaceId, PRIVILEGE_CONFIGURAR, interfaceId, interfaceId])
+      retiredConfigure = Number(res?.affectedRows ?? 0) > 0
+    }
+    await conn.commit()
+    return { retiredConfigure }
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /**
