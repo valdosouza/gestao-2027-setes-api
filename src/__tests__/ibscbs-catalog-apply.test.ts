@@ -15,7 +15,9 @@ function fakeConn(tables: Record<string, Row[] | ((sql: string, params: unknown[
       const s = sql.replace(/\s+/g, ' ').trim()
       if (/^SET SESSION/.test(s)) return [[]]
       if (/^SELECT/.test(s) && s.includes('AS applicable')) {
-        const v = writes.length === 0 && tables.__pieceBefore !== undefined ? tables.__pieceBefore : tables.__piece
+        // o "antes" (D-IB47) é lido DEPOIS de gravar o indicador do CST (A-IB120) — as escritas do CST não viram o retrato
+        const catalogUntouched = writes.every(w => /setes_central\.tb_tax_ibscbs /.test(w.sql))
+        const v = catalogUntouched && tables.__pieceBefore !== undefined ? tables.__pieceBefore : tables.__piece
         return [typeof v === 'function' ? v(s, params) : v ?? []]
       }
       if (/^SELECT \/\* ibscbs-ahead \*\//.test(s)) {
@@ -43,7 +45,7 @@ function fakeConn(tables: Record<string, Row[] | ((sql: string, params: unknown[
 const pieceOf = (rows: Row[]) => (sql: string, params: unknown[]) => {
   const codes = Array.isArray(params[1]) ? params[1] as string[] : [params[1] as string]
   const mine = rows.filter(r => codes.includes(r.code))
-    .map((r): Row => ({ cst: '000', name: 'n', requiresRegular: 'N', absentSince: null, applicable: 1, validUntil: null, ...r }))
+    .map((r): Row => ({ cst: '000', name: 'n', requiresRegular: 'N', absentSince: null, applicable: 1, validUntil: null, requiresGroup: 'S', ...r }))
   if (!/v\.valid_from <= \?/.test(sql)) return mine.sort((a, b) => a.code.localeCompare(b.code) || a.validFrom.localeCompare(b.validFrom))
   const d = String(params[2])
   const vig = mine.filter(r => r.absentSince == null && r.validFrom <= d && (r.validUntil == null || r.validUntil >= d))
@@ -54,7 +56,7 @@ const pieceOf = (rows: Row[]) => (sql: string, params: unknown[]) => {
 const bothAccepted = () => pieceOf([{ code: '000001', validFrom: '2026-01-01' }, { code: '000006', validFrom: '2026-01-01' }])
 
 const catalog = (): ItCatalog => ({
-  csts: [{ id: '000', description: 'Tributação integral' }],
+  csts: [{ id: '000', description: 'Tributação integral', requiresGroup: true }],
   classifications: [
     { code: '000001', cst: '000', name: 'n1', description: 'd1', validFrom: '2026-01-01', validUntil: null,
       requiresRegularTaxation: false, updatedAt: '2026-01-01', models: ['SE', '55'] },
@@ -64,7 +66,7 @@ const catalog = (): ItCatalog => ({
 })
 
 const baseTables = () => ({
-  tb_tax_ibscbs: [{ id: '000', description: 'Tributação integral' }],
+  tb_tax_ibscbs: [{ id: '000', description: 'Tributação integral', requires_ibscbs_group: 'S' }],
   tb_tax_ibscbs_classification: [{ code: '000001', cst: '000' }, { code: '000006', cst: '000' }],
   tb_tax_ibscbs_classification_validity: [
     { code: '000001', valid_from: '2026-01-01', valid_until: null, name: 'n1', description: 'd1', requires_regular_taxation: 'N', source_updated_at: '2026-01-01' },
@@ -991,3 +993,112 @@ describe('applyCatalog — Rodada 7 (D-IB45…D-IB47)', () => {
   })
 })
 
+
+// D-IB113 (prompt_fase_ibs_cbs.md §13.8, fim): o indicador do grupo IBS/CBS (ind_gIBSCBS) é atributo do CST — a carga grava, conta a
+// mudança e o impacto lista os serviços que passam a ser recusados (inclusive o NULL → 'N' da 1ª carga depois do script 73)
+describe('applyCatalog — D-IB113 (indicador do grupo IBS/CBS do CST)', () => {
+  const base = { itVersion: 'IT t', models: ['SE'] as Array<'SE'>, unconfirmed: [], apply: false, reportImpact: true }
+  const client = (codes: Record<string, string>) => (sql: string, params: unknown[]) =>
+    (params[0] as string[]).filter(c => codes[c]).map(c => ({ code: c, n: 1, ids: codes[c] }))
+  const withCst = (group: boolean): ItCatalog => ({ ...catalog(), csts: [{ id: '000', description: 'Tributação integral', requiresGroup: group }] })
+  const cstWrites = (writes: Array<{ sql: string; params: unknown[] }>) => writes.filter(w => /setes_central\.tb_tax_ibscbs /.test(w.sql))
+  const tables = (stored: 'S' | 'N' | null) => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.tb_tax_ibscbs = [{ id: '000', description: 'Tributação integral', requires_ibscbs_group: stored }]
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000001': '40' })
+    return t
+  }
+  const groupPiece = (g: 'S' | 'N' | null) =>
+    pieceOf([{ code: '000001', validFrom: '2026-01-01', requiresGroup: g }, { code: '000006', validFrom: '2026-01-01', requiresGroup: g }])
+
+  it('indicador igual ao gravado = CST inalterado, nada escrito, nada a avisar', async () => {
+    const { conn, writes } = fakeConn(tables('S'))
+    const r = await applyCatalog(conn, { ...base, it: withCst(true), apply: true, reportImpact: false })
+    expect(r.cst).toMatchObject({ unchanged: 1, updated: 0, inserted: 0 })
+    expect(r.cstGroupOff).toEqual([])
+    expect(cstWrites(writes)).toEqual([])
+  })
+
+  it("'S' → 'N': grava o indicador, avisa o CST e o impacto lista o serviço pela DIFERENÇA do veredito (motivo cst-without-group)", async () => {
+    const t = tables('S')
+    t.__pieceBefore = groupPiece('S')
+    t.__piece = groupPiece('N')
+    const { conn, writes } = fakeConn(t)
+    const r = await applyCatalog(conn, { ...base, it: withCst(false), date: '2026-11-01' })
+    expect(cstWrites(writes).map(w => w.params)).toEqual([['Tributação integral', 'N', 'IT t', '000']])
+    expect(r.cst).toMatchObject({ updated: 1 })
+    expect(r.cstGroupOff).toEqual(['000'])
+    expect(r.impact).toEqual([{ schema: 'setes_a', institutionActive: true, kind: 'cClassTrib', code: '000001', services: 1, serviceIds: [40],
+      registrationStillAccepts: false, reason: 'cst-without-group' }])
+  })
+
+  it("NULL → 'N' (1ª carga depois do script 73): o \"antes\" já recusava pela falha fechada — o impacto lista mesmo assim", async () => {
+    const t = tables(null)
+    t.__pieceBefore = groupPiece(null)
+    t.__piece = groupPiece('N')
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: withCst(false), date: '2026-11-01' })
+    expect(r.cstGroupOff).toEqual(['000'])
+    expect(r.impact).toEqual([{ schema: 'setes_a', institutionActive: true, kind: 'cClassTrib', code: '000001', services: 1, serviceIds: [40],
+      registrationStillAccepts: false, reason: 'cst-without-group' }])
+  })
+
+  it("NULL → 'S': grava, ninguém perde (antes recusado, depois aceito) — sem aviso nem impacto", async () => {
+    const t = tables(null)
+    t.__pieceBefore = groupPiece(null)
+    t.__piece = groupPiece('S')
+    const { conn, writes } = fakeConn(t)
+    const r = await applyCatalog(conn, { ...base, it: withCst(true), date: '2026-11-01' })
+    expect(cstWrites(writes).map(w => w.params[1])).toEqual(['S'])
+    expect(r.cstGroupOff).toEqual([])
+    expect(r.impact).toEqual([])
+  })
+
+  it('CST novo que não leva o grupo nasce com N e entra no aviso', async () => {
+    const it = withCst(true)
+    it.csts.push({ id: '410', description: 'Imunidade', requiresGroup: false })
+    const { conn, writes } = fakeConn(tables('S'))
+    const r = await applyCatalog(conn, { ...base, it, apply: true, reportImpact: false })
+    expect(cstWrites(writes).map(w => w.params)).toEqual([['410', 'Imunidade', 'N', 'IT t']])
+    expect(r.cstGroupOff).toEqual(['410'])
+  })
+})
+
+// A-IB120 (gates da D-IB113): na 1ª carga depois do script 73 o indicador gravado é NULL — se o "antes" fosse lido com ele, todo
+// código sairia recusado e as perdas por OUTRO motivo sumiriam do impacto. O "antes" é lido DEPOIS de gravar o indicador da fonte.
+describe('applyCatalog — A-IB120 (linha de base do impacto com o indicador da fonte)', () => {
+  const base = { itVersion: 'IT t', models: ['SE'] as Array<'SE'>, unconfirmed: [], apply: false, reportImpact: true }
+  const client = (codes: Record<string, string>) => (sql: string, params: unknown[]) =>
+    (params[0] as string[]).filter(c => codes[c]).map(c => ({ code: c, n: 1, ids: codes[c] }))
+  const firstLoad = () => {
+    const t: Record<string, Row[] | ((sql: string, params: unknown[]) => Row[])> = { ...baseTables() }
+    t.tb_tax_ibscbs = [{ id: '000', description: 'Tributação integral', requires_ibscbs_group: null }]
+    t.tb_institution = [{ schema_name: 'setes_a', active: 'S' }]
+    t['setes_a.tb_service_ibscbs'] = client({ '000006': '60' })
+    return t
+  }
+
+  it('o "antes" é lido DEPOIS de gravar o indicador do CST (ordem dos comandos)', async () => {
+    const t = firstLoad()
+    t.__piece = bothAccepted()
+    const { conn, raw } = fakeConn(t)
+    await applyCatalog(conn, { ...base, it: catalog(), date: '2026-11-01' })
+    const sqls = raw.query.mock.calls.map((c: any[]) => String(c[0]).replace(/\s+/g, ' '))
+    const cstWrite = sqls.findIndex((q: string) => /^ ?UPDATE setes_central\.tb_tax_ibscbs SET/.test(q.trim()))
+    const firstVerdict = sqls.findIndex((q: string) => q.includes('AS applicable'))
+    expect(cstWrite).toBeGreaterThanOrEqual(0)
+    expect(firstVerdict).toBeGreaterThan(cstWrite)
+  })
+
+  it("1ª carga (NULL → 'S') que TAMBÉM tira a presença de um código usado: o impacto mostra a perda (o NULL não esconde mais)", async () => {
+    const t = firstLoad()
+    t.__pieceBefore = bothAccepted()   // o retrato com o indicador da fonte: os dois aceitos antes da carga
+    t.__piece = pieceOf([{ code: '000001', validFrom: '2026-01-01' }, { code: '000006', validFrom: '2026-01-01', applicable: 0 }])
+    t.tb_tax_ibscbs_classification_applicability = [   // 000006 tinha presença viva na NFS-e — a carga a retira (não confirmado)
+      { code: '000001', valid_from: '2026-01-01', model: 'SE', deleted: 'N' }, { code: '000006', valid_from: '2026-01-01', model: 'SE', deleted: 'N' }]
+    const r = await applyCatalog(fakeConn(t).conn, { ...base, it: catalog(), unconfirmed: [{ code: '000006', validFrom: '2026-01-01' }], date: '2026-11-01' })
+    expect(r.cstGroupOff).toEqual([])
+    expect(r.impact).toEqual([{ schema: 'setes_a', institutionActive: true, kind: 'cClassTrib', code: '000006', services: 1, serviceIds: [60],
+      registrationStillAccepts: false, reason: 'not-applicable' }])
+  })
+})

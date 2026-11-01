@@ -6,6 +6,9 @@ import { CellValue, XlsxSheet, excelSerialToIsoDate } from '@shared/xlsx/read-xl
  *   - D-IB23: a tabela oficial "IT 2025.002 vX - cClassTrib.xlsx" é a fonte de
  *     identidade, vigência (dIniVig/dFimVig), ind_gTribRegular e aplicabilidade por
  *     documento (indNFSe/indNFe/indNFCe); a API da Calculadora só CONFERE (reconcile.ts).
+ *   - D-IB113: da aba CST, o `ind_gIBSCBS` (o CST leva o grupo IBS/CBS no documento — 1 exige, 0 proíbe;
+ *     E0859/E0860/E0960/E0961 do leiaute da NT 009) é CONFERIDO 0/1 e gravado; os demais flags de grupo
+ *     do CST (ind_gRed, ind_gDif…) seguem sem consumidor (não são lidos).
  *   - Anexo VII da NFS-e (cIndOp) e a lista de NBS da Calculadora.
  * Tudo é validado ANTES de gravar ("o que valida é o que grava" — o banco do dev roda
  * sem modo estrito e truncaria em silêncio). Estrutura oficial mudada = erro ALTO.
@@ -18,7 +21,12 @@ export class CatalogSourceError extends Error {
   }
 }
 
-export interface CstRecord { id: string; description: string }
+export interface CstRecord {
+  id:            string
+  description:   string
+  /** ind_gIBSCBS do CST (D-IB113): true = o documento leva cIndOp + gIBSCBS; false = proibidos. */
+  requiresGroup: boolean
+}
 
 export interface ClassificationRecord {
   code:                    string
@@ -118,13 +126,16 @@ export function parseItCatalog(sheets: XlsxSheet[]): ItCatalog {
     const id = str(row[cstSheet.col[key('CST-IBS/CBS')]])
     if (!id) continue
     const description = str(row[cstSheet.col[key('Descrição CST-IBS/CBS')]])
+    const group = flag01(row[cstSheet.col[key('ind_gIBSCBS')]])
     const where = `CST linha ${r + 1}`
     if (!/^\d{3}$/.test(id)) { problems.push(`${where}: CST "${id}" não tem 3 dígitos`); continue }
     if (!description) problems.push(`${where}: descrição vazia`)
     if (description.length > LIMITS.cstDescription) problems.push(`${where}: descrição com ${description.length} > ${LIMITS.cstDescription}`)
+    // D-IB113: o que valida é o que grava — nada além de 0/1 vira indicador (vazio NÃO é 0)
+    if (group === null) problems.push(`${where} (${id}): ind_gIBSCBS "${str(row[cstSheet.col[key('ind_gIBSCBS')]])}" não é 0/1`)
     if (cstSeen.has(id)) { problems.push(`${where}: CST ${id} repetido`); continue }
     cstSeen.add(id)
-    csts.push({ id, description })
+    csts.push({ id, description, requiresGroup: group === 1 })
   }
 
   const cls = findSheet(sheets, [...IT_CLASS_COLS], 'IT/cClassTrib')

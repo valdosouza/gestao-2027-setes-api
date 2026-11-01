@@ -1,6 +1,6 @@
 import type { Connection, PoolConnection } from 'mysql2/promise'
 import {
-  ClassificationRefusal, ClassificationVerdict, MODEL_NFSE, classificationRegistrationVerdicts, classificationVerdictsAt,
+  ClassificationRefusal, ClassificationVerdict, MODEL_NFSE, classificationRegistrationVerdicts, classificationVerdictsAt, deriveCst,
   registrationWindowEnd,
 } from '@shared/ibscbs-classification'
 import { CatalogSourceError, ClassificationRecord, ItCatalog, NbsRecord, PlaceIndicatorRecord } from './parse'
@@ -184,6 +184,10 @@ export interface ApplyReport {
   validityEnded:         string[]
   /** D-IB47: linhas vigentes na data em que a fonte LIGOU a exigência de tributação regular (candidatas ao impacto). */
   validityRegularOn:     string[]
+  /** D-IB113: CSTs que passam a NÃO levar o grupo IBS/CBS nesta carga (de 'S' ou do indicador desconhecido — NULL, carga
+   *  anterior ao script 73): toda classificação deles passa a ser recusada; o impacto lista os serviços desses códigos com o
+   *  motivo `cst-without-group` (A-IB120 — o "antes" do veredito já usa o indicador da fonte). */
+  cstGroupOff:           string[]
   /** D-IB46: linhas presentes e vigentes na data antes da carga (sem data, 0). */
   validityVigentOnDate:  number
   /** Listas que encolheram mais que o limite (D-IB28 (c)) — no ensaio, aviso; no ato sem --aceita-encolher, recusa. */
@@ -244,7 +248,7 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
   const report: ApplyReport = {
     applied: false, cst: zero(), classification: zero(), validity: zero(), applicability: zero(),
     placeIndicator: zero(), placeApplicability: zero(), nbs: zero(),
-    validityEnded: [], validityRegularOn: [], validityVigentOnDate: 0, shrink: [], impact: [], impactAhead: [], impactAheadUntil: null, impactProblems: [],
+    validityEnded: [], validityRegularOn: [], cstGroupOff: [], validityVigentOnDate: 0, shrink: [], impact: [], impactAhead: [], impactAheadUntil: null, impactProblems: [],
   }
   await conn.query(`SET SESSION sql_mode = CONCAT_WS(',', @@SESSION.sql_mode, 'STRICT_ALL_TABLES')`)
   await conn.beginTransaction()
@@ -252,8 +256,34 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
     // Serializa cargas concorrentes (a 2ª espera a 1ª terminar).
     await conn.query(`SELECT id FROM ${C}.tb_tax_ibscbs FOR UPDATE`)
 
-    // D-IB47 (gate socrático do delta R7): o veredito ANTES de qualquer gravação, para todo código que a carga pode
-    // tocar (o catálogo inteiro ∪ a fonte) — o impacto é a diferença antes × depois, nunca inferido pelo tipo da mudança
+    // --- CST ----------------------------------------------------------------
+    // D-IB113: o indicador do grupo (ind_gIBSCBS) é atributo do CST — gravado a cada carga; NULL (carga anterior ao script 73) vira o da fonte
+    const [cstRows] = await conn.query<any[]>(`SELECT id, description, requires_ibscbs_group FROM ${C}.tb_tax_ibscbs`)
+    const cstHave = new Map<string, any>(cstRows.map(r => [r.id, r]))
+    for (const cst of input.it.csts) {
+      const row = cstHave.get(cst.id)
+      const group = cst.requiresGroup ? 'S' : 'N'
+      if (!row) {
+        await conn.query(
+          `INSERT INTO ${C}.tb_tax_ibscbs (id, description, requires_ibscbs_group, source_version, created_at, updated_at, deleted)
+           VALUES (?, ?, ?, ?, NOW(), NOW(), 'N')`, [cst.id, cst.description, group, input.itVersion])
+        report.cst.inserted++
+        if (group === 'N') report.cstGroupOff.push(cst.id)
+      } else if (row.description !== cst.description || row.requires_ibscbs_group !== group) {
+        await conn.query(
+          `UPDATE ${C}.tb_tax_ibscbs SET description = ?, requires_ibscbs_group = ?, source_version = ?, updated_at = NOW() WHERE id = ?`,
+          [cst.description, group, input.itVersion, cst.id])
+        report.cst.updated++
+        if (group === 'N' && row.requires_ibscbs_group !== 'N') report.cstGroupOff.push(cst.id)
+      } else report.cst.unchanged++
+    }
+
+    // D-IB47 (gate socrático do delta R7): o veredito ANTES da gravação do cClassTrib, para todo código que a carga pode
+    // tocar (o catálogo inteiro ∪ a fonte) — o impacto é a diferença antes × depois, nunca inferido pelo tipo da mudança.
+    // A-IB120 (gates da D-IB113): DEPOIS do indicador do CST — o "antes" já usa o indicador da FONTE. Na 1ª carga depois do
+    // script 73 o indicador gravado é NULL (desconhecido → tudo recusado): calculado antes, ele zerava a linha de base e
+    // escondia as perdas por OUTRO motivo (vigência, presença, conferência). A perda pelo próprio indicador (S/NULL → N) entra
+    // no impacto pelo `cstGroupOff` (lostAfterLoad)
     let before: Map<string, ClassificationVerdict> | null = null
     let beforeRegistration = new Map<string, ClassificationVerdict>()
     if (input.reportImpact && !input.apply) {
@@ -264,23 +294,6 @@ export async function applyCatalog(conn: Conn, input: ApplyInput): Promise<Apply
       // D-IB53: para o que a data do fato já recusa, o veredito do CADASTRO antes (o que o selo mostra)
       const refused = touched.filter(c => !before!.get(c)!.accepted)
       beforeRegistration = await classificationRegistrationVerdicts(conn, refused, MODEL_NFSE, input.date)
-    }
-
-    // --- CST ----------------------------------------------------------------
-    const [cstRows] = await conn.query<any[]>(`SELECT id, description FROM ${C}.tb_tax_ibscbs`)
-    const cstHave = new Map<string, any>(cstRows.map(r => [r.id, r]))
-    for (const cst of input.it.csts) {
-      const row = cstHave.get(cst.id)
-      if (!row) {
-        await conn.query(
-          `INSERT INTO ${C}.tb_tax_ibscbs (id, description, source_version, created_at, updated_at, deleted)
-           VALUES (?, ?, ?, NOW(), NOW(), 'N')`, [cst.id, cst.description, input.itVersion])
-        report.cst.inserted++
-      } else if (row.description !== cst.description) {
-        await conn.query(`UPDATE ${C}.tb_tax_ibscbs SET description = ?, source_version = ?, updated_at = NOW() WHERE id = ?`,
-          [cst.description, input.itVersion, cst.id])
-        report.cst.updated++
-      } else report.cst.unchanged++
     }
 
     // --- Identidade do cClassTrib (D-IB22) ----------------------------------
@@ -622,6 +635,18 @@ async function lostAfterLoad(
       classifications.set(code, now.reason!)
       registration.set(code, false)
       registrationOnly.add(code)
+    }
+  }
+  // D-IB113 + A-IB120: o CST que passou a NÃO levar o grupo nesta carga ('S' → 'N' ou o indicador DESCONHECIDO NULL → 'N' da 1ª
+  // carga depois do script 73). O "antes" já foi calculado com o indicador da fonte (applyCatalog), então a diferença do veredito
+  // não mostra esta perda: todo código desse CST recusado agora por esse motivo entra no impacto
+  if (report.cstGroupOff.length) {
+    const off = new Set(report.cstGroupOff)
+    for (const [code, now] of after) {
+      if (!classifications.has(code) && now.reason === 'cst-without-group' && off.has(deriveCst(code))) {
+        classifications.set(code, now.reason)
+        registration.set(code, false)
+      }
     }
   }
   const { ahead, aheadUntil } = await lossesAhead(conn, date, after, pendingReturns)

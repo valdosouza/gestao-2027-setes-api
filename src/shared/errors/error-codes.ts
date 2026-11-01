@@ -75,6 +75,7 @@ export const ErrorCodes = {
   IBSCBS_CLASSIFICATION_NOT_FOUND:        'IBSCBS_CLASSIFICATION_NOT_FOUND',
   IBSCBS_CLASSIFICATION_NOT_APPLICABLE:   'IBSCBS_CLASSIFICATION_NOT_APPLICABLE',
   IBSCBS_CLASSIFICATION_REQUIRES_REGULAR: 'IBSCBS_CLASSIFICATION_REQUIRES_REGULAR',
+  IBSCBS_CLASSIFICATION_GROUP_UNSUPPORTED: 'IBSCBS_CLASSIFICATION_GROUP_UNSUPPORTED',
   IBSCBS_PLACE_INDICATOR_INVALID:         'IBSCBS_PLACE_INDICATOR_INVALID',
   // Fase IBS/CBS (IB-2 — §12.6): declaração congelada no faturamento
   INVOICE_SERVICE_IBSCBS_REQUIRED:        'INVOICE_SERVICE_IBSCBS_REQUIRED',
@@ -260,6 +261,7 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   IBSCBS_CLASSIFICATION_NOT_FOUND:        'cClassTrib inexistente ou fora de vigência na data (IT 2025.002 — tabela oficial carregada no catálogo central)',
   IBSCBS_CLASSIFICATION_NOT_APPLICABLE:   'cClassTrib não aceito neste documento fiscal (indicador do IT) ou ainda não confirmado pela Calculadora oficial (A-IB1)',
   IBSCBS_CLASSIFICATION_REQUIRES_REGULAR: 'cClassTrib exige o grupo de tributação regular (gTribRegular), que este sistema ainda não emite — escolha outra classificação',
+  IBSCBS_CLASSIFICATION_GROUP_UNSUPPORTED: 'cClassTrib de CST que não leva o grupo IBS/CBS na NFS-e (ind_gIBSCBS = 0) — ainda não suportado (D-IB113); ou o indicador do CST ainda não foi carregado no catálogo central — escolha outra classificação',
   IBSCBS_PLACE_INDICATOR_INVALID:         'cIndOp inexistente ou não aceito neste documento fiscal (Anexo VII)',
   INVOICE_SERVICE_IBSCBS_REQUIRED:        'Declaração IBS/CBS obrigatória na competência e incompleta — classificação (cClassTrib + cIndOp) e NBS aceitas em todo serviço da nota (D-IB8/D-IB62)',
   INVOICE_SERVICE_MULTI_DECLARATION:      'Serviços da nota com declarações IBS/CBS diferentes — uma NFS-e declara UMA classificação (D-IB63): harmonize o cadastro ou fature em ordens separadas',
