@@ -1,7 +1,11 @@
 import { randomInt } from 'crypto'
 import { PoolConnection } from 'mysql2/promise'
+import { z } from 'zod'
 import { md5Password } from '@shared/auth/password'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog } from '@shared/mailer/mailer'
+import { institutionZoneFor, isValidTimeZone, DEFAULT_TIME_ZONE, Queryable } from '@shared/time-zone'
+import logger from '@shared/logger/logger'
 import { lockUserForPasswordReset, updatePassword } from './auth.repository'
 
 // =====================================================================================================================
@@ -30,19 +34,92 @@ export interface SuperAccount {
  * um vínculo adormecido (D-UC2) não loga, logo não é "Super ativo"). Leitura consistente, fora de transação.
  */
 export async function listSuperAccounts(conn: Pick<PoolConnection, 'query'>): Promise<SuperAccount[]> {
+  // D-EA23: TODOS os candidatos a e-mail de login (grupo 2, vivos, não brancos, na ordem do id) — quem escolhe é a peça `pickLoginEmail`,
+  // a MESMA regra que o ato aplica sob a trava (o separador é a quebra de linha: endereço válido nunca a contém)
   const [rows] = await conn.query<any[]>(
     `SELECT u.id, IF(u.active = 'S' AND ihu.active = 'S', 'S', 'N') AS active,
-            (SELECT m.email FROM setes_central.tb_entity_has_mailing ehm
+            (SELECT GROUP_CONCAT(m.email ORDER BY m.id SEPARATOR '\\n') FROM setes_central.tb_entity_has_mailing ehm
                INNER JOIN setes_central.tb_mailing m ON (m.id = ehm.tb_mailing_id)
               WHERE ehm.tb_entity_id = u.id AND ehm.tb_mailing_group_id = 2 AND ehm.deleted = 'N' AND m.deleted = 'N'
-              ORDER BY m.id LIMIT 1) AS loginEmail
+                AND TRIM(m.email) <> '') AS loginEmails
        FROM setes_central.tb_user u
       INNER JOIN setes_central.tb_institution_has_user ihu ON (ihu.tb_user_id = u.id)
       WHERE ihu.tb_institution_id = ? AND BINARY ihu.kind = 'super' AND ihu.deleted = 'N' AND u.deleted = 'N'
       ORDER BY u.id`,
     [SETES_INSTITUTION_ID]
   )
-  return rows.map(r => ({ id: Number(r.id), active: String(r.active), loginEmail: r.loginEmail == null ? null : String(r.loginEmail) }))
+  return rows.map(r => ({
+    id: Number(r.id), active: String(r.active),
+    loginEmail: pickLoginEmail(r.loginEmails == null ? [] : String(r.loginEmails).split('\n')),
+  }))
+}
+
+const LOGIN_EMAIL = z.string().email()
+
+/**
+ * D-EA23 (Valdo 2026-11-01, "(a) Regra única"): "o e-mail de login do Super" para o script é UM só, escolhido por UMA regra — o 1º (na
+ * ordem do id) e-mail de login vivo que, APARADO, é um endereço válido pelo MESMO validador do cadastro (`z.email()`); devolvido aparado.
+ * Nenhum válido = null (o script recusa — D-EA20). A lista, o ensaio e o ATO (sob a trava) usam esta peça; o aviso vai ao e-mail que o
+ * ATO escolheu (devolvido no veredito). Antes eram três regras e, com dado sujo (1º em branco, espaço no fim, troca por SQL entre a lista e
+ * o ato), a senha era trocada e o aviso não saía ou ia ao e-mail velho (gate adversarial do delta, ADV-EA20-01/02).
+ */
+export function pickLoginEmail(candidates: Array<string | null | undefined>): string | null {
+  for (const raw of candidates) {
+    const v = (raw ?? '').trim()
+    if (v && LOGIN_EMAIL.safeParse(v).success) return v
+  }
+  return null
+}
+
+export interface SuperTargetArgs { userId?: number; email?: string }
+export type SuperTargetChoice = { target: SuperAccount } | { refusal: string }
+
+/**
+ * Escolha do alvo do script (D-RS7, Valdo 2026-10-31 — revê a 2ª metade da A-RS8): o alvo NOMEADO por `--user-id`/`--email` vale entre
+ * QUALQUER Super vivo, ativo ou não (o inativo é recusado depois, no ato — D-RS16); SEM nome, só o ÚNICO Super ativo é implícito — com
+ * 2+ ativos o script RECUSA e pede o nome (nunca escolhe sozinho). A recusa não aponta tela nenhuma: pela D-PV48 ninguém define a senha
+ * de outro depois de criada a credencial — a saída "um Super define a do outro pela tela" morreu.
+ */
+export function pickSuperTarget(supers: SuperAccount[], args: SuperTargetArgs): SuperTargetChoice {
+  if (args.userId !== undefined) {
+    const s = supers.find(x => x.id === args.userId)
+    return s ? { target: s }
+      : { refusal: `o usuário ${args.userId} não é Super (ou está excluído) — este script só redefine a senha do Super (D-PV46)` }
+  }
+  if (args.email !== undefined) {
+    // gate adversarial (ADV-RS7-01): e-mail vazio/só espaços nunca casa — senão casaria o Super SEM e-mail de login (null ≈ '')
+    const wanted = args.email.trim().toLowerCase()
+    if (!wanted) return { refusal: '--email exige o e-mail de login' }
+    const found = supers.filter(x => x.loginEmail !== null && x.loginEmail.trim().toLowerCase() === wanted)
+    return found.length === 1 ? { target: found[0] }
+      : { refusal: 'nenhum Super (ou mais de um) com o e-mail de login informado — este script só redefine a senha do Super (D-PV46)' }
+  }
+  const active = supers.filter(s => s.active === 'S')
+  if (active.length === 1) return { target: active[0] }
+  if (active.length > 1) {
+    return { refusal: `há ${active.length} Supers ATIVOS (ids ${active.map(s => s.id).join(', ')}): nomeie o alvo com --user-id <id> `
+      + 'ou --email <login> — o script nunca escolhe sozinho entre mais de um (D-RS7)' }
+  }
+  return { refusal: supers.length === 0
+    ? 'nenhum Super vivo na institution da Setes — nada a fazer'
+    : `nenhum Super ATIVO (${supers.length} inativo(s)) e o script não reativa (D-RS16): ${INACTIVE_WITHOUT_ACTIVE_EXIT}` }
+}
+
+/** D-EA20: a saída do Super SEM e-mail de login — o login é pelo e-mail; o script não cadastra e-mail (fora da exceção da D-PV46). */
+export const NO_LOGIN_EMAIL_EXIT =
+  'o login é pelo e-mail — cadastre o e-mail de login do Super antes e rode de novo (D-EA20)'
+
+/**
+ * A saída de um Super INATIVO (D-RS16 — o script nunca reativa): com OUTRO Super ativo, ele reativa pela tela de Usuários; sem nenhum
+ * outro ativo, só SQL manual do operador (limite conhecido). Gate adversarial ADV-RS16-01: o ensaio e a recusa dizem a saída REAL,
+ * nunca "nomeie o alvo" nem "outro Super" que não existe.
+ */
+export const INACTIVE_WITHOUT_ACTIVE_EXIT =
+  'não há outro Super ativo para reativá-lo pela tela — só por SQL manual do operador (limite conhecido da D-RS16)'
+export function inactiveTargetExit(supers: SuperAccount[], target: SuperAccount): string {
+  return supers.some(s => s.active === 'S' && s.id !== target.id)
+    ? 'reative-o pela tela de Usuários (outro Super ativo) antes; este script não reativa (D-RS16)'
+    : INACTIVE_WITHOUT_ACTIVE_EXIT
 }
 
 /** Alfabeto sem os caracteres que se confundem na leitura (0/O, 1/l/I) — a senha é DITADA/anotada uma vez. */
@@ -62,14 +139,15 @@ export function hashInitialPassword(password: string): string {
 }
 
 export type SuperResetVerdict =
-  | { status: 'reset'; userId: number }
+  | { status: 'reset'; userId: number; loginEmail: string }   // D-EA23: o e-mail de login escolhido SOB a trava — o aviso vai a ele
   | { status: 'not-super'; userId: number }   // conta inexistente/excluída OU sem vínculo 'super' na Setes — a MESMA recusa, sem escrita
   | { status: 'inactive'; userId: number }    // Super com active = 'N': reativar é ato pela tela de Usuários (outro Super), não deste script
+  | { status: 'no-login-email'; userId: number }   // D-EA20: Super sem e-mail de login — a senha nova não serviria para entrar; sem escrita
 
 /**
  * O ATO: confere e grava na MESMA transação. Ordem: trava da linha do usuário em tb_user (serializador — regras 12/13) → vínculo
- * 'super' na institution da Setes (leitura consistente depois da trava) → `updatePassword` (a peça do fluxo normal). Qualquer outra
- * conta = recusa sem escrita. [passwordHash] já vem com o hash da casa (nunca a senha em claro chega ao repositório — decisão 2).
+ * 'super' na institution da Setes (leitura consistente depois da trava) → usuário E vínculo ativos (D-RS14) → e-mail de login vivo
+ * (D-EA20) → `updatePassword` (a peça do fluxo normal). Qualquer recusa = sem escrita. [passwordHash] já vem com o hash da casa (nunca a senha em claro chega ao repositório — decisão 2).
  */
 export async function resetSuperPasswordTx(conn: PoolConnection, userId: number, passwordHash: string): Promise<SuperResetVerdict> {
   if (!/^[0-9A-F]{32}$/.test(passwordHash)) throw new Error('hash da senha fora da forma da casa (md5Password)')
@@ -82,14 +160,147 @@ export async function resetSuperPasswordTx(conn: PoolConnection, userId: number,
   if (!link.length) return { status: 'not-super', userId }
   // A-RS10: "ativo" = usuário E vínculo ativos (o predicado do login) — vínculo adormecido não loga, redefinir a senha não o ajudaria
   if (locked.active !== 'S' || String(link[0].active) !== 'S') return { status: 'inactive', userId }
+  // D-EA20 (Valdo 2026-11-01, "(a) Recusar"): o login é pelo e-mail — sem e-mail de login a senha nova não serve para entrar e o aviso da
+  // D-RS13 não tem destino; a troca só derrubaria as sessões (D-EA7). D-EA23: o e-mail que vale é o da peça `pickLoginEmail` (a MESMA regra
+  // da lista e do ensaio), escolhido SOB a trava e devolvido no veredito — o aviso vai a ele. Nenhum válido = recusa sem escrita.
+  const [mail] = await conn.query<any[]>(
+    `SELECT m.email FROM setes_central.tb_entity_has_mailing ehm
+       INNER JOIN setes_central.tb_mailing m ON (m.id = ehm.tb_mailing_id)
+      WHERE ehm.tb_entity_id = ? AND ehm.tb_mailing_group_id = 2 AND ehm.deleted = 'N' AND m.deleted = 'N' AND TRIM(m.email) <> ''
+      ORDER BY m.id`,
+    [userId])
+  const loginEmail = pickLoginEmail((mail as any[]).map(r => (r?.email == null ? null : String(r.email))))
+  if (!loginEmail) return { status: 'no-login-email', userId }
   await updatePassword(conn, userId, passwordHash)
-  return { status: 'reset', userId }
+  return { status: 'reset', userId, loginEmail }
 }
 
-/** Máscara do e-mail para o log/tela do operador: `v***@setes.com.br`. */
-export function maskEmail(email: string | null): string {
-  if (!email) return '(sem e-mail de login)'
-  const at = email.indexOf('@')
-  if (at <= 0) return '***'
-  return `${email[0]}***${email.slice(at)}`
+/** Máscara do e-mail para o log/tela do operador: `v***@setes.com.br` — a regra é UMA, da peça de envio (D-EA21). */
+export { maskEmail }
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// D-RS13 (Valdo, 2026-10-31 — fecha a Q-RS13 = (b)): depois de GRAVAR, o script avisa o próprio Super por e-mail — texto NEUTRO, sem
+// link de ação (A-RS7: link = vetor de phishing por imitação), com o instante na zona do estabelecimento da Setes; vai ao e-mail de login
+// GRAVADO (nunca a um texto digitado). Sem DDL: o fato durável "senha definida por terceiro" nasce com a credencial da auth-api (D-AU5).
+// A falha do envio NÃO desfaz a troca (só log) — este aviso nunca lança. A senha NUNCA entra aqui (a função nem a recebe).
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+/** Assunto do aviso — distinto do código e do aviso de tentativas (D-RS4); os testes separam os e-mails por ele. */
+export const SUPER_RESET_NOTICE_SUBJECT = 'Setes — a senha da sua conta foi redefinida'
+
+/**
+ * Zona do estabelecimento da Setes (config `time_zone`, a mesma da casa) para o instante do aviso. O script não tem JWT: lê o schema da
+ * institution da Setes e pede a zona pela peça do fuso. Qualquer falha cai na zona padrão — o aviso nunca depende dela para sair.
+ */
+export async function setesInstitutionZone(q: Queryable): Promise<string> {
+  try {
+    const [rows] = await q.query('SELECT schema_name AS schemaName FROM setes_central.tb_institution WHERE id = ? LIMIT 1', [SETES_INSTITUTION_ID])
+    const schema = (rows as any[])?.[0]?.schemaName
+    return schema ? await institutionZoneFor(String(schema), SETES_INSTITUTION_ID, q) : DEFAULT_TIME_ZONE
+  } catch (err) {
+    logger.warn('D-RS13: zona do estabelecimento da Setes ilegível — o aviso usa a zona padrão', { message: (err as Error)?.message })
+    return DEFAULT_TIME_ZONE
+  }
+}
+
+/** O instante [at] como parede na [zone], em pt-BR ("01/11/2026 15:42"), com o nome da zona. Zona inválida = a padrão. */
+export function wallTimeInZone(at: Date, zone: string): string {
+  const z = isValidTimeZone(zone) ? zone : DEFAULT_TIME_ZONE
+  const p = Object.fromEntries(new Intl.DateTimeFormat('pt-BR', {
+    timeZone: z, hourCycle: 'h23', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(at).map(x => [x.type, x.value]))
+  return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute} (fuso ${z})`
+}
+
+/** O texto único do aviso (D-RS13) — neutro, sem link, sem senha, sem dizer quem é o operador (o autor fica no LOG do script). */
+export function superResetNoticeText(at: Date, zone: string): string {
+  return `A senha da sua conta de Super do Setes ERP foi redefinida pelo operador do servidor em ${wallTimeInZone(at, zone)}. `
+    + 'A senha inicial é entregue a você por outro canal; depois de entrar, defina a sua. '
+    + 'Se você não reconhece esta troca, avise imediatamente a equipe da Setes. Não respondemos a este e-mail.'
+}
+
+export type SuperResetNoticeOutcome = 'sent' | 'logged' | 'no-email' | 'failed' | 'unconfirmed'
+
+/**
+ * D-EA24 (Valdo 2026-11-01, "(a) Teto de 60 s"): teto TOTAL da espera do aviso ao Super. Os tetos do SMTP (15/15/30 s + DNS 15 s) não
+ * limitam o total — o de 30 s conta só silêncio, e um servidor que responde aos poucos prendia o aviso sem fim (gate adversarial do delta,
+ * ADV-EA19-02: aos 62 s seguia pendente, com a senha gravada e sem aparecer). Estourado o teto, o desfecho é 'unconfirmed' ("não confirmado
+ * — pode ainda sair") e a senha aparece; o envio SEGUE em segundo plano e o resultado tardio vai ao log (mascarado).
+ */
+export const SUPER_NOTICE_CAP_MS = 60_000
+
+/**
+ * Manda o aviso da D-RS13 ao e-mail de login gravado do Super [account]. NUNCA lança: falha do envio = `logger.error` + 'failed' (a troca
+ * da senha já foi gravada e fica — D-RS13). Sem e-mail de login = 'no-email' (aviso no log). Fora de produção sem SMTP o conteúdo vai ao
+ * log (molde D-RS4/D-RS18) = 'logged'. Chamar SÓ depois do COMMIT e FORA da retentativa de deadlock (um aviso por troca gravada).
+ */
+export async function sendSuperResetNotice(
+  account: SuperAccount, at: Date, zone: string, capMs: number = SUPER_NOTICE_CAP_MS,
+): Promise<SuperResetNoticeOutcome> {
+  try {
+    if (!account.loginEmail) {
+      logger.warn('D-RS13: Super sem e-mail de login — aviso da redefinição NÃO enviado', { userId: account.id })
+      return 'no-email'
+    }
+    // gate adversarial (ADV-RS13-02): o e-mail GRAVADO pode ter entrado fora da porta validada (SQL, carga) — o nodemailer lê "a@x, b@y"
+    // como LISTA e mandaria o aviso de segurança também a um terceiro. Só sai para UM endereço, pelo MESMO validador do cadastro.
+    if (!z.string().email().safeParse(account.loginEmail).success) {
+      logger.error('D-RS13: e-mail de login GRAVADO do Super não é um endereço único válido — aviso NÃO enviado; a senha SEGUE redefinida',
+        { userId: account.id, to: maskEmail(account.loginEmail) })
+      return 'failed'
+    }
+    const text = superResetNoticeText(at, zone)
+    const configured = isMailerConfigured()
+    const sending = sendMail({
+      to: account.loginEmail,
+      subject: SUPER_RESET_NOTICE_SUBJECT,
+      text,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto">
+          <h2 style="color:#1B3A5F">Aviso de segurança</h2>
+          <p>A senha da sua conta de Super do Setes ERP foi redefinida pelo operador do servidor em <strong>${wallTimeInZone(at, zone)}</strong>.</p>
+          <p>A senha inicial é entregue a você por outro canal; depois de entrar, defina a sua.</p>
+          <p><strong>Se você não reconhece esta troca</strong>, avise imediatamente a equipe da Setes.</p>
+          <p style="color:#8793B2;font-size:12px">Não respondemos a este e-mail.</p>
+        </div>`,
+    })
+    // D-EA24: corrida entre o envio e o teto TOTAL. O envio que perder a corrida segue em segundo plano — o desfecho tardio vai ao log
+    // (nunca como rejeição solta: derrubaria o processo)
+    let timer: NodeJS.Timeout | undefined
+    const cap = new Promise<'cap'>(resolve => { timer = setTimeout(() => resolve('cap'), capMs) })
+    let first: 'done' | 'cap'
+    try {
+      first = await Promise.race([sending.then(() => 'done' as const), cap])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+    if (first === 'cap') {
+      const to = maskEmail(account.loginEmail)
+      logger.warn(`D-EA24: aviso ao Super NÃO confirmado em ${Math.round(capMs / 1000)} s — o envio segue em segundo plano; a senha SEGUE `
+        + 'redefinida', { userId: account.id, to })
+      sending.then(
+        () => logger.info('D-EA24: aviso ao Super confirmado DEPOIS do teto', { userId: account.id, to }),
+        err => {
+          try { logger.error('D-EA24: aviso ao Super FALHOU depois do teto', { userId: account.id, to, ...mailErrorForLog(err) }) } catch { /* sem log */ }
+        })
+      return 'unconfirmed'
+    }
+    if (configured) return 'sent'
+    // o script roda FORA do boot (sem o `assertMailerReady`): em produção sem SMTP o aviso não saiu — é falha, nunca "foi ao log"
+    if (isProduction()) {
+      logger.error('D-RS13: SMTP ausente em PRODUÇÃO — aviso ao Super NÃO enviado; a senha SEGUE redefinida', { userId: account.id })
+      return 'failed'
+    }
+    logger.info('D-RS13: aviso ao Super (modo dev, SMTP ausente)', { userId: account.id, to: maskEmail(account.loginEmail), text })
+    return 'logged'
+  } catch (err) {
+    // D-EA21: o erro do SMTP vai ao log com TODO endereço mascarado (o nodemailer põe o destinatário na mensagem). A peça NUNCA lança
+    // (ADV-EA19-01): o `mailErrorForLog` não lança, e um log que falhe mesmo assim não derruba o desfecho — a senha ainda aparece.
+    try {
+      logger.error('D-RS13: falha no envio do aviso ao Super — a senha SEGUE redefinida', {
+        userId: account.id, to: maskEmail(account.loginEmail), ...mailErrorForLog(err),
+      })
+    } catch { /* o desfecho 'failed' vale mesmo sem o log */ }
+    return 'failed'
+  }
 }

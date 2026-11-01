@@ -5,6 +5,7 @@ import { perEmailRateLimit } from '@gateway/rate-limit.middleware'
 import { bodyText } from '@shared/auth/login-email'
 import { HttpError } from '@shared/errors/http-error'
 import logger from '@shared/logger/logger'
+import { maskEmailsInText } from '@shared/mailer/mailer'
 
 const router = Router()
 
@@ -26,8 +27,19 @@ function fail(res: Response, err: unknown, context: string) {
     })
     return
   }
-  logger.error(`Erro em auth/${context}`, { err })
+  // D-EA21 (gate adversarial do delta, ADV-EA21-02): nunca o `err` CRU — o erro do mysql2 carrega `sql` com os parâmetros FORMATADOS
+  // (o e-mail digitado nas três rotas públicas); só código, errno e a mensagem com todo endereço mascarado (molde do alarmNeutral)
+  logger.error(`Erro em auth/${context}`, authErrorForLog(err))
   res.status(500).json({ error: 'Erro interno' })
+}
+
+function authErrorForLog(err: unknown): { code?: unknown; errno?: unknown; message: string } {
+  try {
+    const e = err as { code?: unknown; errno?: unknown; message?: unknown } | null
+    return { code: e?.code, errno: e?.errno, message: maskEmailsInText(String(e?.message ?? err)) }
+  } catch {
+    return { message: '(erro sem texto legível)' }
+  }
 }
 
 /**

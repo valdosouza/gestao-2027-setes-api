@@ -20,7 +20,7 @@ import { SessionContext, getSessionContext } from '@shared/session-context'
 import { liveSession } from '@shared/access'
 import { md5Password } from '@shared/auth/password'
 import { HttpError } from '@shared/errors/http-error'
-import { sendMail, isMailerConfigured, isProduction } from '@shared/mailer/mailer'
+import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog } from '@shared/mailer/mailer'
 import logger from '@shared/logger/logger'
 
 // D-F13 (F2a, etapa A2): os tokens (final 24h — decisão 19 — e de seleção 5m) são RS256 com `kid`, assinados e
@@ -363,10 +363,10 @@ async function issueAndMail(user: AuthUser): Promise<void> {
     if (outcome.notice) await sendOwnerNotice(user, outcome.notice)
     return
   }
-  await sendRecoveryMail(user.loginEmail, code)
+  await sendRecoveryMail(user.loginEmail, code, user.id)
 }
 
-async function sendRecoveryMail(email: string, code: string): Promise<void> {
+async function sendRecoveryMail(email: string, code: string, userId: number): Promise<void> {
   const changeUrl = process.env.APP_CHANGE_PASSWORD_URL ?? 'http://localhost:5050/#/change-password'
   const configured = isMailerConfigured()           // FORA do try: erro aqui é bug nosso, sobe para a borda do job (alarme), não "falha de envio"
   let delivered = false
@@ -394,7 +394,8 @@ async function sendRecoveryMail(email: string, code: string): Promise<void> {
     })
     delivered = configured                            // sem SMTP o sendMail só avisa no log — nada foi entregue
   } catch (err) {
-    logger.error('Falha no envio do email de recuperação', { email, err })
+    // D-EA21: e-mail mascarado e o erro do SMTP sem o endereço cru (o nodemailer o põe na mensagem e em `response`/`rejected`)
+    logger.error('Falha no envio do email de recuperação', { userId, email: maskEmail(email), ...mailErrorForLog(err) })
     // segue: o código está gravado; em dev sai no log abaixo
   }
 
@@ -402,7 +403,8 @@ async function sendRecoveryMail(email: string, code: string): Promise<void> {
   // nenhum e ainda consumiria o teto. Em PRODUÇÃO o boot já recusou subir sem SMTP (`assertMailerReady`); este cinto garante que,
   // aconteça o que acontecer com o ambiente em execução, o código NUNCA vai ao log de produção (falha do SMTP real = só o erro acima).
   if (!delivered && !isProduction()) {
-    logger.info('Código de recuperação de senha (modo dev, SMTP ausente ou com falha)', { email, code })
+    // D-EA21: e-mail mascarado; o `userId` identifica a conta (com o e-mail mascarado, duas contas `v***@x` seriam indistinguíveis)
+    logger.info('Código de recuperação de senha (modo dev, SMTP ausente ou com falha)', { userId, email: maskEmail(email), code })
   }
 }
 
@@ -435,11 +437,11 @@ async function sendOwnerNotice(user: AuthUser, kind: PasswordResetNoticeKind): P
         </div>`,
     })
   } catch (err) {
-    logger.error('Falha no envio do aviso ao dono da conta (D-RS4)', { userId: user.id, kind, err })
+    logger.error('Falha no envio do aviso ao dono da conta (D-RS4)', { userId: user.id, kind, ...mailErrorForLog(err) })   // D-EA21
     return
   }
   if (!isMailerConfigured() && !isProduction()) {
-    logger.info('Aviso ao dono da conta (D-RS4, modo dev, SMTP ausente)', { userId: user.id, kind, email: user.loginEmail })
+    logger.info('Aviso ao dono da conta (D-RS4, modo dev, SMTP ausente)', { userId: user.id, kind, email: maskEmail(user.loginEmail) })   // D-EA21
   }
 }
 

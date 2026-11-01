@@ -162,25 +162,48 @@ código como HMAC. **D-RS4**: quando um código esgota ou o teto é atingido, o 
 `tb_user_password_reset_notice`, também do sql/67). **D-RS5**: em PRODUÇÃO (`NODE_ENV=production`) o SMTP é OBRIGATÓRIO — o boot
 recusa subir sem `SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASSWORD/SMTP_FROM` completos (`assertMailerReady`); em dev sem SMTP o código vai
 ao LOG. Valores reais só no `.env` vivo (Valdo). Pré-voo: `scripts/pre-deploy-tz-check.ts` confere config + conexão SMTP sem enviar.
+**D-EA21**: o DESTINATÁRIO de todo e-mail da casa nunca vai inteiro ao log — todo log que cita destinatário usa `maskEmail` (que
+mascara TODO endereço, inclusive de valor gravado em lista) e todo erro de envio passa por `mailErrorForLog` (ambos da `@shared/mailer`;
+o nodemailer põe o endereço na mensagem e em `response`/`rejected`); as três rotas públicas de `/auth` também nunca logam o `err` cru
+(o erro do mysql2 traz o `sql` com o e-mail digitado). FORA da regra, por ora: o remetente (`SMTP_FROM`/`SMTP_USER`, mostrado no boot e
+no ensaio para conferência) e o erro de banco das demais telas (`handleError` — Q-EA25 do `prompt_endurecer_autenticacao.md`).
 Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publicação, §13.10 execução de 2026-10-21).
 
-### Senha perdida do SUPER — procedimento do OPERADOR (D-PV46, 2026-10-20; exceção explícita — PADROES §3.1)
+### Senha perdida do SUPER — procedimento do OPERADOR (D-PV46 + D-RS7/D-RS13/D-RS14/D-RS16; exceção explícita — PADROES §3.1)
 
 Nenhuma porta HTTP redefine a senha do Super — nem de ninguém com credencial: D-PV48 (2026-10-27) — depois de criada a credencial, só o
 titular troca, pela recuperação (o `PUT /api/users/:id` recusa `password` com 409 `PASSWORD_OWNER_ONLY`; conta SEM senha vinda do sync
-recebe a 1ª uma vez — A-PV23). Este script é a ÚNICA exceção (A-PV22). Quando NÃO resta outro Super ativo e o e-mail de recuperação não resolve, o operador roda NO SERVIDOR,
-com o `.env` do destino:
+recebe a 1ª uma vez — A-PV23). Ninguém define a senha de OUTRO pela tela — nem um Super a de outro Super. Este script é a ÚNICA exceção
+(A-PV22): quando o Super perdeu a senha e o e-mail de recuperação não resolve, o operador roda NO SERVIDOR, com o `.env` do destino:
 
 ```bash
-npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts          # ENSAIO: lista o(s) Super(s), nada gravado
-npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts --vai    # redefine (1 Super ativo); --user-id/--email nomeiam o alvo
+npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts                     # ENSAIO: lista o(s) Super(s), nada gravado
+npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts --vai               # redefine o ÚNICO Super ativo
+npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts --user-id 7 --vai   # 2+ Supers ativos: nomeie o alvo (ou --email <login>)
 ```
 
-O script gera senha inicial aleatória (16 caracteres), grava com o MESMO hash do login pela peça do auth (sob a trava da linha do usuário —
-mata o código de recuperação aberto), **imprime a senha UMA vez** no terminal (nunca em log/arquivo/banco) e registra no LOG quem rodou
-(usuário do SO + host), quando e o id do Super; `tb_user.updated_at` recebe o instante (`tb_user` não tem `updated_by`). Recusa qualquer
-conta que não seja Super (vínculo `kind='super'` na institution 1), Super inativo e 2+ Supers ativos. Entregar a senha ao titular por canal
-seguro; ele define a própria em seguida. Roteiro de operação definitivo nasce com a Onda 4 (deploy) — até lá, esta nota.
+- **Alvo (D-RS7)**: com um só Super ativo, ele é o alvo implícito; com 2+ ativos o script só redefine o alvo NOMEADO por `--user-id` ou
+  `--email` — sem nome, recusa (nunca escolhe sozinho).
+- **Quem pode ser alvo (D-RS14/D-RS16)**: só Super = vínculo `kind='super'` na institution 1, com usuário E vínculo ativos (o mesmo
+  predicado do login). Admin, outra conta e Super inativo são recusados sem escrita; o script NUNCA reativa (reativar é ato de outro Super
+  pela tela de Usuários; o ÚNICO Super inativo só sai por SQL manual do operador — limite conhecido). Super SEM e-mail de login também é
+  recusado sem escrita (D-EA20 — o login é pelo e-mail: a senha nova não serviria; cadastre o e-mail antes), conferido sob a trava.
+  **O e-mail de login é UM, por UMA regra** (D-EA23 — peça `pickLoginEmail`): o 1º e-mail de login vivo que, aparado, é um endereço válido
+  pelo `z.email()` do cadastro; a lista, o ensaio e o ATO (sob a trava) usam a peça, e o aviso vai ao e-mail que o ato escolheu.
+- **O ato**: senha inicial aleatória (16 caracteres) gravada pela MESMA peça do login (sob a trava da linha do usuário — mata o código de
+  recuperação aberto; grava `password_set_at` — D-EA7, as sessões abertas do Super caem), **impressa UMA vez** no terminal (nunca em
+  log/arquivo/banco); o LOG do script registra quem rodou (usuário do SO + host), quando, o id e o e-mail mascarado — como TODO log de
+  e-mail da casa (D-EA21: `maskEmail`/`mailErrorForLog` da `@shared/mailer`; o transporte recebe o endereço inteiro); `tb_user` não ganha
+  `kind`/`updated_by` (D-RS15). O ENSAIO mostra o estado do SMTP e diz se o alvo está INATIVO (o `--vai` recusa, com a saída real).
+- **Aviso ao Super (D-RS13)**: depois de gravar, e-mail NEUTRO ao e-mail de login gravado ("sua senha foi redefinida pelo operador em
+  <instante na zona da Setes>; se não reconhece, avise") pela `@shared/mailer`, sem link e sem a senha, só para UM endereço válido;
+  falha do envio = log, a troca fica. **O aviso sai ANTES de a senha aparecer** (D-EA19 — o sinal fora da máquina precede a entrega do
+  segredo); a espera tem teto TOTAL de 60 s (D-EA24 — `SUPER_NOTICE_CAP_MS`; os tetos do SMTP contam só silêncio): estourado, "NÃO
+  CONFIRMADO (pode ainda sair)" e a senha aparece — o envio segue em segundo plano e o desfecho tardio vai ao log (o processo só termina
+  quando o servidor de e-mail responder ou desistir); Ctrl+C na espera deixa a senha trocada e desconhecida — rodar de novo.
+
+Entregar a senha ao titular por canal seguro; ele define a própria em seguida. Roteiro de operação definitivo nasce com a Onda 4 (deploy) —
+até lá, esta nota. Na A2 o script muda para a auth-api com os outros escritores da credencial (D-AU6/D-RS15).
 
 ### Chave do Sincronizador
 

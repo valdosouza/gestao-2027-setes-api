@@ -111,6 +111,10 @@ function transporter() {
     connectionTimeout: 15_000,
     greetingTimeout:   15_000,
     socketTimeout:     30_000,
+    // D-EA24 (Valdo 2026-11-01): o DNS também com teto explícito (o padrão do nodemailer é 30 s). Conhecimento negativo: estes tetos NÃO
+    // limitam a espera total — o `socketTimeout` conta só SILÊNCIO (servidor que responde aos poucos não estoura); quem precisa de teto
+    // total o põe por cima (o aviso ao Super: 60 s — `SUPER_NOTICE_CAP_MS`)
+    dnsTimeout:        15_000,
   })
 }
 
@@ -144,10 +148,45 @@ export interface MailMessage {
   text?:   string
 }
 
+/**
+ * D-EA21 (Valdo 2026-11-01, "(a) Mascarar em todos"): todo e-mail que vai ao LOG sai MASCARADO — `v***@setes.com.br` (1ª letra + domínio).
+ * O logger da casa é o console: o e-mail inteiro aparecia no terminal do operador e no log do servidor, para TODO e-mail que a casa envia
+ * (código de recuperação, aviso ao dono — D-RS4 —, aviso ao Super — D-RS13). Vale para quem loga destinatário, não só para esta peça.
+ */
+const ADDRESS_CHARS = `[^\\s<>"'(),;:[\\]]`
+const ADDRESS = `${ADDRESS_CHARS}+@${ADDRESS_CHARS}+`
+const maskOne = (addr: string): string => `${addr[0]}***${addr.slice(addr.indexOf('@'))}`
+
+export function maskEmail(email: string | null | undefined): string {
+  if (!email) return '(sem e-mail de login)'
+  // gate adversarial do delta (ADV-EA21-01): um valor gravado como LISTA ("a@x, b@y") mascara TODO endereço, não só o 1º
+  if (!new RegExp(ADDRESS).test(email)) return '***'
+  return email.replace(new RegExp(ADDRESS, 'g'), maskOne)
+}
+
+/** Qualquer endereço DENTRO de um texto (mensagem do SMTP, erro do banco, "Recipient address rejected: <x@y>") → mascarado. */
+export function maskEmailsInText(text: string): string {
+  return text.replace(new RegExp(ADDRESS, 'g'), maskOne)
+}
+
+/**
+ * O erro de um envio, pronto para o LOG (D-EA21): código, código de resposta do SMTP e mensagem com TODO endereço mascarado — o
+ * nodemailer põe o destinatário na mensagem e nos campos `response`/`rejected`, que por isso nunca vão ao log crus. NUNCA lança (gate
+ * adversarial do delta, ADV-EA19-01: uma rejeição que não vira texto derrubava o catch de quem loga).
+ */
+export function mailErrorForLog(err: unknown): { code?: unknown; responseCode?: unknown; message: string } {
+  try {
+    const e = err as { code?: unknown; responseCode?: unknown; message?: unknown } | null
+    return { code: e?.code, responseCode: e?.responseCode, message: maskEmailsInText(String(e?.message ?? err)) }
+  } catch {
+    return { message: '(erro sem texto legível)' }
+  }
+}
+
 export async function sendMail(message: MailMessage): Promise<void> {
   if (!isMailerConfigured()) {
     logger.warn('SMTP não configurado — email NÃO enviado (modo dev, conteúdo no log)', {
-      to: message.to, subject: message.subject,
+      to: maskEmail(message.to), subject: message.subject,          // D-EA21
     })
     return
   }
@@ -158,5 +197,5 @@ export async function sendMail(message: MailMessage): Promise<void> {
     html:    message.html,
     text:    message.text,
   })
-  logger.info('Email enviado', { to: message.to, subject: message.subject })
+  logger.info('Email enviado', { to: maskEmail(message.to), subject: message.subject })   // D-EA21
 }

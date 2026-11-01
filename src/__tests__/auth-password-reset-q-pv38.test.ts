@@ -13,7 +13,8 @@ jest.mock('../shared/db/connection', () => ({
 }))
 jest.mock('../shared/logger/logger', () => ({ __esModule: true, default: { error: jest.fn(), warn: jest.fn(), info: jest.fn() } }))
 jest.mock('../shared/mailer/mailer', () => ({
-  __esModule: true, sendMail: jest.fn().mockResolvedValue(undefined), isMailerConfigured: jest.fn(() => true),
+  __esModule: true, ...jest.requireActual('../shared/mailer/mailer'),   // maskEmail / mailErrorForLog reais (D-EA21)
+  sendMail: jest.fn().mockResolvedValue(undefined), isMailerConfigured: jest.fn(() => true),
   isProduction: jest.fn(() => false),
 }))
 jest.mock('../shared/errors/crash.repository', () => ({
@@ -717,7 +718,8 @@ describe('D-RS5 — o código vai ao log só em dev', () => {
     await recover('n8@x.com')
     const logged = (logger.info as jest.Mock).mock.calls.find(c => /modo dev, SMTP ausente/.test(c[0]))
     expect(logged).toBeDefined()
-    expect(logged![1]).toEqual(expect.objectContaining({ email: 'n8@x.com', code: expect.stringMatching(/^\d{6}$/) }))
+    // D-EA21 (Valdo 2026-11-01): o e-mail vai MASCARADO a todo log — o código (só fora de produção) segue legível para o dev
+    expect(logged![1]).toEqual(expect.objectContaining({ email: 'n***@x.com', code: expect.stringMatching(/^\d{6}$/) }))
   })
 
   it('PRODUÇÃO com SMTP ausente em execução: o código NUNCA vai ao log (nem o aviso em claro)', async () => {

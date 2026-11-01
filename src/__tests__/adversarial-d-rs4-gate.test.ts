@@ -21,7 +21,8 @@ jest.mock('../shared/db/connection', () => ({
 }))
 jest.mock('../shared/logger/logger', () => ({ __esModule: true, default: { error: jest.fn(), warn: jest.fn(), info: jest.fn() } }))
 jest.mock('../shared/mailer/mailer', () => ({
-  __esModule: true, sendMail: jest.fn().mockResolvedValue(undefined), isMailerConfigured: jest.fn(() => true),
+  __esModule: true, ...jest.requireActual('../shared/mailer/mailer'),   // maskEmail / mailErrorForLog reais (D-EA21)
+  sendMail: jest.fn().mockResolvedValue(undefined), isMailerConfigured: jest.fn(() => true),
   isProduction: jest.fn(() => false),
 }))
 jest.mock('../shared/errors/crash.repository', () => ({
