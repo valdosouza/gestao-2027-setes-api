@@ -10,8 +10,9 @@ import { privilegeVerdict, resolveInterfaceKey, PrivilegeVerdict } from '@shared
  * por QUALQUER caminho (engrenagem da tela X → painel; painel solto do menu Sistema com X selecionada). UMA regra, UM lugar: os
  * dois services dos painéis (`interface-configs`, `interface-fields`) resolvem o veredito pela interface ALVO (não pela do painel —
  * o VISUALIZAR do painel só deixa navegar); "Configurações Gerais" = CONFIGURAR em `general-configs` (a interface alvo É ela).
- * Admin passa sempre (D32), o super escapa (A-PV1/D-PV24), o regular precisa do par (interface × CONFIGURAR) — que existe no
- * catálogo para toda interface com config ou campo (seed 68). O override PESSOAL ('U') segue aberto (A-PV6) — não passa por aqui.
+ * Super e admin dispensam a concessão (A-PV1/D-PV24; D32) mas NÃO o registro: só passam se o par (interface × CONFIGURAR) existe no
+ * catálogo (D-PV62) — e ele existe para toda interface com config ou campo (seed 68; o escritor da config o garante — D-PV25). O
+ * regular precisa da concessão. O override PESSOAL ('U') segue aberto (A-PV6) — não passa por aqui.
  * O veredito segue a MESMA peça das guardas (licença antes do privilégio — a pilha de views, sem cache: costura A1, D-AU8).
  */
 export async function configureVerdict(inst: InstitutionPayload, interfaceId: number): Promise<PrivilegeVerdict> {

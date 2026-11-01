@@ -156,6 +156,13 @@ export async function insertInstitutionCascade(
   }
 }
 
+/** Schema e situação da institution viva (sem a cadeia) — a edição decide se a volta a ATIVO provisiona o schema. */
+export async function getInstitutionActivation(id: number): Promise<{ schemaName: string; active: string } | null> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT schema_name AS schemaName, active FROM setes_central.tb_institution WHERE id = ? AND deleted = 'N'`, [id])
+  return rows[0] ? { schemaName: String(rows[0].schemaName), active: String(rows[0].active) } : null
+}
+
 /** PUT: mesma cascade em transação única. schema_name é IMUTÁVEL. */
 export async function updateInstitutionCascade(
   id: number, input: InstitutionInput, updatedBy: number | null = null

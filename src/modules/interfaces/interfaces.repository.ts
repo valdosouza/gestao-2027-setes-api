@@ -152,14 +152,12 @@ export async function updateInterface(id: number, input: InterfaceInput): Promis
 }
 
 /**
- * Upsert de UMA configuração do catálogo (tb_interface_has_config — seção
- * "Configurações" da tela de Interfaces; ressuscita soft-deleted).
- */
-/**
- * Grava a config do catálogo E garante o par (interface × CONFIGURAR) na MESMA transação — a regra da D-PV25: o par existe para toda
+ * Upsert de UMA configuração do catálogo (tb_interface_has_config — seção "Configurações" da tela de Interfaces; ressuscita
+ * soft-deleted) E garante o par (interface × CONFIGURAR) na MESMA transação — a regra da D-PV25: o par existe para toda
  * interface com config ou campo no catálogo (a cerca da D-PV51 cobra no boot). Gate socrático da costura A1: antes, a 1ª config criada pelo
  * Super deixava a interface sem o CONFIGURAR — a engrenagem sumia para quem não é admin e o boot gritava. Revive o par soft-deletado (o
- * Super não o tira enquanto houver config — D-PV15). Sem o verbo vivo em tb_privilege (antes do seed 68), não há par a garantir.
+ * Super não o tira enquanto houver config — D-PV15). Sem o verbo vivo E com o nome exato em tb_privilege (antes do seed 68, ou o id 11
+ * ocupado por outro verbo — gate adversarial do delta, L4), não há par a garantir.
  */
 export async function upsertInterfaceConfig(
   interfaceId: number, name: string, input: InterfaceConfigInput
@@ -184,7 +182,7 @@ export async function upsertInterfaceConfig(
        input.options ?? null, input.defaultContent, input.scope]
     )
     const [verb] = await conn.query<any[]>(
-      `SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N'`, [PRIVILEGE_CONFIGURAR])
+      `SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N' AND BINARY description = 'CONFIGURAR'`, [PRIVILEGE_CONFIGURAR])
     if (verb.length > 0) {
       // updated_at ANTES de active/deleted: no ON DUPLICATE KEY UPDATE cada atribuição já vê as anteriores
       await conn.query(

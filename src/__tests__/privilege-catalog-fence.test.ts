@@ -62,6 +62,7 @@ const IMPL_NON_PRIVILEGE: Record<string, Record<string, string>> = {
     accessRows: 'o MENU: devolve TUDO o que o usuário pode (leitor registrado em GRANT_READERS — VISUALIZAR dá o item, REGRA do menu)',
     assertAccessViews: 'boot: as views existem e os literais batem (sem verbo)',
     assertAccessSchemaViews: 'boot: as views POR SCHEMA (migration 075) existem em cada institution ativa (sem verbo)',
+    INTERFACE_KEY_FORM: 'a forma canônica da chave (D-PV42) — a da biblioteca, usada pelo catálogo como INTERFACE_KEY_PATTERN (sem verbo)',
   },
   'setes-api src/shared/auth/module-privilege-gate.ts': {
     PRIVILEGE_BY_METHOD: 'a guarda por roteador: verbo HTTP → privilégio — pares pela tabela `listGatedRoutes()` (D-PV14)',
@@ -99,7 +100,7 @@ const ALLOWED_LOOSE: Record<string, string> = {
     'ALTERAR/CANCELAR) — trocar o mapa exige trocar o registro',
   'src/modules/users/users.service.ts: if (ids.length > 0 && !ids.includes(PRIVILEGE_VISUALIZAR) && catalog.has(PRIVILEGE_VISUALIZAR)) ids.push(PRIVILEGE_VISUALIZAR) ×3':
     'regra da CONCESSÃO (D-PV58): todo verbo escolhido leva o VISUALIZAR da mesma interface — escreve a concessão, não decide ato',
-  "src/modules/interfaces/interfaces.repository.ts: `SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N'`, [PRIVILEGE_CONFIGURAR])":
+  "src/modules/interfaces/interfaces.repository.ts: `SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N' AND BINARY description = 'CONFIGURAR'`, [PRIVILEGE_CONFIGURAR])":
     'escritor do CATÁLOGO (D-PV25 regra 5, gate socrático da costura A1): a config que o Super grava leva o par CONFIGURAR da ' +
     'interface na MESMA transação — confere o verbo vivo; escreve o registro, não decide ato',
   'src/modules/interfaces/interfaces.repository.ts: [interfaceId, PRIVILEGE_CONFIGURAR])':

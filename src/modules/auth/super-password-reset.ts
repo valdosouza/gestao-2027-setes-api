@@ -12,6 +12,7 @@ import { lockUserForPasswordReset, updatePassword } from './auth.repository'
 // HMAC carrega o hash da senha), sob a MESMA trava da linha do usuário (`lockUserForPasswordReset`, regra 12 do PADROES §9); o AUTOR
 // (operador do SO) vai ao LOG do script + roteiro — `tb_user` não tem `updated_by`, e o `updated_by` da casa significa id de tb_user.
 // "Super" = vínculo `tb_institution_has_user.kind = 'super'` com a institution da Setes (id 1), vivo — a MESMA regra do login
+// (comparado em BINÁRIO, sem caixa nem PAD SPACE — o mesmo julgamento da `vw_user_link`; re-gate socrático da costura A1, L2)
 // (`isSuper`: 'super' em outra institution é ignorado). `tb_user` não tem coluna `kind` (a D-PV46 cita colunas que não existem —
 // leitura ratificada como A-RS5). Recusa QUALQUER outra conta, inclusive admin, e Super inativo (reativar é ato pela tela).
 // =====================================================================================================================
@@ -37,7 +38,7 @@ export async function listSuperAccounts(conn: Pick<PoolConnection, 'query'>): Pr
               ORDER BY m.id LIMIT 1) AS loginEmail
        FROM setes_central.tb_user u
       INNER JOIN setes_central.tb_institution_has_user ihu ON (ihu.tb_user_id = u.id)
-      WHERE ihu.tb_institution_id = ? AND ihu.kind = 'super' AND ihu.deleted = 'N' AND u.deleted = 'N'
+      WHERE ihu.tb_institution_id = ? AND BINARY ihu.kind = 'super' AND ihu.deleted = 'N' AND u.deleted = 'N'
       ORDER BY u.id`,
     [SETES_INSTITUTION_ID]
   )
@@ -76,7 +77,7 @@ export async function resetSuperPasswordTx(conn: PoolConnection, userId: number,
   if (!locked) return { status: 'not-super', userId }
   const [link] = await conn.query<any[]>(
     `SELECT active FROM setes_central.tb_institution_has_user
-      WHERE tb_user_id = ? AND tb_institution_id = ? AND kind = 'super' AND deleted = 'N' LIMIT 1`,
+      WHERE tb_user_id = ? AND tb_institution_id = ? AND BINARY kind = 'super' AND deleted = 'N' LIMIT 1`,
     [userId, SETES_INSTITUTION_ID])
   if (!link.length) return { status: 'not-super', userId }
   // A-RS10: "ativo" = usuário E vínculo ativos (o predicado do login) — vínculo adormecido não loga, redefinir a senha não o ajudaria

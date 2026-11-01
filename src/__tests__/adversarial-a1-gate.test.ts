@@ -268,3 +268,14 @@ describe("[ACHADO LOW] um 2º privilégio 'FATURAR ' (espaço no fim) passa na g
     expect(privilegeCatalogViolations(null, 'FATURAR ').map(v => v.code)).toContain('PRIVILEGE_IN_USE')
   })
 })
+
+describe('[CORRIGIDO — re-gate socrático L1] UM classificador da falha de ler a sessão: o mesmo 503 no middleware e na seleção', () => {
+  it('banco fora na troca do token de SELEÇÃO → 503 SESSION_UNAVAILABLE com o código (era 500 "Erro interno")', async () => {
+    links['30:7'] = { profile: 'admin', vendor: 'N', schema: 'setes_cliente', passwordSetAt: null }
+    dbDown = true
+    const sel = testToken({ userId: 30, scope: 'select-institution' }, { expiresIn: '5m' })
+    const r = await request(app).post('/auth/select-institution').set('Authorization', `Bearer ${sel}`).send({ institutionId: 7 })
+    expect([r.status, r.body.code]).toEqual([503, 'SESSION_UNAVAILABLE'])
+    expect(JSON.stringify(r.body)).not.toMatch(/ECONNREFUSED|3306/)
+  })
+})

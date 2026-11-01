@@ -6,6 +6,7 @@ import {
 import { listGatedRoutes, GatedRoute } from '@shared/auth/module-privilege-gate'
 import { APP_INTERFACE_ROUTE_KEYS } from '@shared/auth/app-interface-routes'
 import { HttpError } from '@shared/errors/http-error'
+import { INTERFACE_KEY_FORM } from '@shared/access'
 import { ErrorCodes } from '@shared/errors/error-codes'
 
 /**
@@ -259,9 +260,10 @@ export const canonicalKey = (k: string): string => String(k).normalize('NFD').re
 
 /**
  * D-PV42 (Valdo 2026-10-20): a `i18n_key` é identificador TÉCNICO, em inglês, no formato da rota do app (`/home/<chave>/`):
- * `^[a-z][a-z0-9-]*$` — aqui sem hífen repetido nem no fim (a forma que o DTO já exigia desde a D-PV15).
+ * `^[a-z][a-z0-9-]*$` — aqui sem hífen repetido nem no fim (a forma que o DTO já exigia desde a D-PV15). É a forma da BIBLIOTECA do
+ * veredito (`fiscal-api/access` · `INTERFACE_KEY_FORM`, pelo adaptador): uma cópia só — a guarda do catálogo e o veredito julgam igual.
  */
-export const INTERFACE_KEY_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
+export const INTERFACE_KEY_PATTERN: RegExp = INTERFACE_KEY_FORM
 
 /** A marca `absentBy` não vale para par que um BOTÃO consome: botão sem o par no catálogo é o próprio C1 (some até do admin). */
 export const absentMarkHolds = (c: ConsumedPrivilege): boolean => !!c.absentBy && !c.consumers.includes('app')
@@ -463,6 +465,10 @@ export function privilegeCatalogProblems(
     const id = PRIVILEGE_ID[name]
     const description = byId.has(id) ? byId.get(id)! : null
     if (!exactName(description, name)) out.misnamed.push({ privilege: name, id, description })
+  }
+  // A-PV27: a repetição se confere em TODO o vocabulário fechado (o nome que a view lê como verbo), não só nos usados
+  for (const name of Object.keys(PRIVILEGE_ID) as PrivilegeName[]) {
+    const id = PRIVILEGE_ID[name]
     const otherIds = rows.filter(r => r.id !== id && collidesWith(r.description, name)).map(r => r.id).sort((a, b) => a - b)
     if (otherIds.length) out.duplicateNames.push({ privilege: name, id, otherIds })
   }
@@ -645,11 +651,13 @@ export function privilegeCatalogViolations(
   if (description !== null) {
     for (const name of Object.keys(PRIVILEGE_ID) as PrivilegeName[]) {
       const pid = PRIVILEGE_ID[name]
-      if (pid === id || !collidesWith(description, name) || !privilegeConsumersOf(pid, consumed).length) continue
+      // A-PV27 (gate adversarial do delta da costura A1): TODO o vocabulário fechado da biblioteca (`PRIVILEGE_NAMES`), consumido ou não
+      // — a view e a biblioteca leem QUALQUER linha com esse nome como o verbo (ex.: um 2º CATALOGAR antes do seed 66 da `merchandise`)
+      if (pid === id || !collidesWith(description, name)) continue
       out.push({
         code: 'PRIVILEGE_IN_USE', field: 'description',
-        message: `"${description}" é o nome do privilégio ${name} (${pid}), consumido pelo código — outra linha com o mesmo nome faria o app ` +
-          'liberar o botão pela linha errada',
+        message: `"${description}" é o nome do privilégio ${name} (${pid}) do vocabulário do veredito — outra linha com o mesmo nome seria ` +
+          'lida como ele',
       })
     }
   }

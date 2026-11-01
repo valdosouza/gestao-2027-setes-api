@@ -8,6 +8,8 @@
  *     e DE NOVO (re-executáveis).
  *  4. Confere de novo: a janela só pode seguir com ZERO alarme — o boot gritaria e o `check:privileges` (D-PV16) recusaria.
  *     Também: os 4 pares da D-PV61 retirados por soft delete (nunca apagados — PADROES §3.1).
+ *  5. As SEIS ordens dos três seeds, cada uma numa cópia NOVA: todas terminam com zero alarme (gate adversarial do delta, L5 — o seed
+ *     65 registra o CONFIGURAR da config que cria; antes, 68 → 65 deixava a `institution-interfaces` sem ele).
  *  No fim apaga o banco descartável, mesmo com falha.
  *
  *   npx tsx --require tsconfig-paths/register scripts/prove-privilege-catalog-window.ts
@@ -63,8 +65,7 @@ async function main(): Promise<void> {
     host: process.env.DB_HOST, port: Number(process.env.DB_PORT ?? 3306), user: process.env.DB_USER, password: process.env.DB_PASSWORD,
     multipleStatements: true,                                   // o seed vai INTEIRO (há ';' dentro de literal — o 65 tem '10=10;25=25…')
   })
-  try {
-    await conn.query(`SET NAMES utf8mb4`)
+  const freshCopy = async (): Promise<void> => {
     await conn.query(`DROP DATABASE IF EXISTS \`${PROBE}\``)
     const [cs] = await conn.query<any[]>(
       `SELECT DEFAULT_CHARACTER_SET_NAME c, DEFAULT_COLLATION_NAME k FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'setes_central'`)
@@ -73,6 +74,10 @@ async function main(): Promise<void> {
       await conn.query(`CREATE TABLE \`${PROBE}\`.\`${t}\` LIKE setes_central.\`${t}\``)
       await conn.query(`INSERT INTO \`${PROBE}\`.\`${t}\` SELECT * FROM setes_central.\`${t}\``)
     }
+  }
+  try {
+    await conn.query(`SET NAMES utf8mb4`)
+    await freshCopy()
 
     const before = await alarmsOf(conn)
     console.log(`\n── HOJE (cópia do dev, sem os seeds da janela): ${before.length} alarme(s)`)
@@ -96,6 +101,18 @@ async function main(): Promise<void> {
            JOIN \`${PROBE}\`.tb_interface i ON i.id = ihp.tb_interface_id WHERE i.i18n_key = ? AND ihp.tb_privilege_id = ?`, [k, pid])
       check(`D-PV61: ${k} × ${pid} retirado por soft delete (linha mantida)`,
         r.length === 0 || r.every(x => x.active === 'N' && x.deleted === 'S'), JSON.stringify(r))
+    }
+
+    // 5. as seis ordens, cada uma numa cópia nova
+    const [a, b, c] = WINDOW_SEEDS
+    for (const order of [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]]) {
+      await freshCopy()
+      let applied = true
+      for (const f of order) {
+        try { await conn.query(seedOnProbe(f)) } catch (e) { applied = false; console.log(`   ${f}: ${(e as Error).message}`) }
+      }
+      const alarms = applied ? await alarmsOf(conn) : ['(seed falhou)']
+      check(`ordem ${order.map(f => f.slice(0, 2)).join(' → ')}: zero alarme`, applied && alarms.length === 0, alarms.join(' | '))
     }
   } finally {
     await conn.query(`DROP DATABASE IF EXISTS \`${PROBE}\``).catch(() => undefined)

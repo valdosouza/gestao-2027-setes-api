@@ -39,7 +39,8 @@ describe('upsertInterfaceConfig — a config e o CONFIGURAR da interface na mesm
     expect(log).toEqual(['BEGIN', 'COMMIT', 'RELEASE'])
     expect(calls).toHaveLength(3)
     expect(calls[0].sql).toMatch(/^INSERT INTO setes_central\.tb_interface_has_config/)
-    expect(calls[1]).toEqual({ sql: "SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N'", params: [PRIVILEGE_CONFIGURAR] })
+    expect(calls[1]).toEqual({ sql: "SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N' AND BINARY description = 'CONFIGURAR'",
+      params: [PRIVILEGE_CONFIGURAR] })
     expect(calls[2].sql).toMatch(/^INSERT INTO setes_central\.tb_interface_has_privilege .* VALUES \(\?, \?, 'S', NOW\(\), NOW\(\), 'N'\)/)
     expect(calls[2].sql).toMatch(/ON DUPLICATE KEY UPDATE updated_at = IF\(active = 'S' AND deleted = 'N', updated_at, NOW\(\)\), active = 'S', deleted = 'N'$/)
     expect(calls[2].params).toEqual([7, PRIVILEGE_CONFIGURAR])

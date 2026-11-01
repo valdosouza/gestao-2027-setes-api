@@ -25,6 +25,7 @@ import path from 'path'
 import mysql from 'mysql2/promise'
 import dotenv from 'dotenv'
 import { todayIn, DEFAULT_TIME_ZONE } from '../src/shared/time-zone'
+import { PRIVILEGE_CONFIGURAR } from '../src/shared/auth/privileges'
 dotenv.config()
 
 const DEFAULT_SCHEMA = 'setes_central'
@@ -127,6 +128,19 @@ async function main() {
       .map(f => `  (${interfaceId}, '${f.fieldName}', '${f.tableName}', '${f.kind}', '${f.required}', NOW(), NOW(), 'N')`)
       .join(',\n')
 
+    const fieldsInsert = `INSERT IGNORE INTO \`tb_interface_has_field\`
+  (\`tb_interface_id\`, \`field_name\`, \`table_name\`, \`kind\`, \`required\`, \`created_at\`, \`updated_at\`, \`deleted\`)
+VALUES
+${values}`
+    // D-PV25 regra 5 (re-gate socrático da costura A1, L5): interface com campo no catálogo tem o par CONFIGURAR — nasce JUNTO dos campos
+    // (o molde do `upsertInterfaceConfig`); sem o verbo vivo em tb_privilege (antes do seed 68) não há par a garantir
+    const pairInsert = `INSERT IGNORE INTO \`tb_interface_has_privilege\`
+  (\`tb_interface_id\`, \`tb_privilege_id\`, \`active\`, \`created_at\`, \`updated_at\`, \`deleted\`)
+SELECT ${interfaceId}, p.\`id\`, 'S', NOW(), NOW(), 'N' FROM \`tb_privilege\` p
+ WHERE p.\`id\` = ${PRIVILEGE_CONFIGURAR} AND p.\`deleted\` = 'N' AND BINARY p.\`description\` = 'CONFIGURAR'`
+    const pairRevive = `UPDATE \`tb_interface_has_privilege\` SET \`active\` = 'S', \`deleted\` = 'N', \`updated_at\` = NOW()
+ WHERE \`tb_interface_id\` = ${interfaceId} AND \`tb_privilege_id\` = ${PRIVILEGE_CONFIGURAR} AND (\`active\` <> 'S' OR \`deleted\` <> 'N')`
+
     const sql = `-- =====================================================================
 -- Seed de tb_interface_has_field — ${interfaceLabel}
 -- Gerado por setes-api/scripts/gerar-interface-fields.ts em ${todayIn(DEFAULT_TIME_ZONE)}
@@ -137,15 +151,29 @@ async function main() {
 -- =====================================================================
 USE \`${DEFAULT_SCHEMA}\`;
 
-INSERT IGNORE INTO \`tb_interface_has_field\`
-  (\`tb_interface_id\`, \`field_name\`, \`table_name\`, \`kind\`, \`required\`, \`created_at\`, \`updated_at\`, \`deleted\`)
-VALUES
-${values};
+${fieldsInsert};
+
+-- D-PV25: o par (interface × CONFIGURAR) nasce junto dos campos
+${pairInsert};
+${pairRevive};
 `
 
+    // só os NOMES DE TABELA ganham o schema (a coluna `tb_privilege_id` não casa: a crase fecha logo depois do nome)
+    const inCentral = (q: string): string =>
+      q.replace(/`(tb_interface_has_field|tb_interface_has_privilege|tb_privilege)`/g, `\`${DEFAULT_SCHEMA}\`.\`$1\``)
     if (apply) {
-      await conn.query(sql.replace(/^USE .*;$/m, '').replace(/^--.*$/gm, ''))
-      console.log(`[fields] APLICADO: ${fields.length} campos da ${interfaceLabel} em ${DEFAULT_SCHEMA}.tb_interface_has_field`)
+      // os três comandos numa transação: nunca campo sem o CONFIGURAR da interface
+      await conn.beginTransaction()
+      try {
+        await conn.query(inCentral(fieldsInsert))
+        await conn.query(inCentral(pairInsert))
+        await conn.query(inCentral(pairRevive))
+        await conn.commit()
+      } catch (err) {
+        await conn.rollback()
+        throw err
+      }
+      console.log(`[fields] APLICADO: ${fields.length} campos da ${interfaceLabel} em ${DEFAULT_SCHEMA}.tb_interface_has_field (+ o par CONFIGURAR)`)
     }
 
     const outPath = out ?? path.resolve(__dirname, '..', '..', 'sql', `seed_interface_${interfaceId}_fields.sql`)

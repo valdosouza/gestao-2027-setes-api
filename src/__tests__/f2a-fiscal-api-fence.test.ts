@@ -22,7 +22,7 @@ const ALLOWED = new Set(['fiscal-api/reading', 'fiscal-api/federal-id'])
 const ALLOWED_ONLY_IN: Readonly<Record<string, readonly string[]>> = {
   // as provas em banco DESCARTÁVEL leem a biblioteca direto (a prova das views, a sonda do gate adversarial e a medição da D-AU8)
   'fiscal-api/access': ['src/shared/access/index.ts', 'scripts/prove-user-access-views.ts', 'scripts/adv-a1-probe.ts',
-    'scripts/measure-access-reads.ts'],
+    'scripts/adv-a1-delta-probe.ts', 'scripts/measure-access-reads.ts'],
 }
 
 describe('cerca F2a — o setes-api só importa `fiscal-api/reading`, `fiscal-api/federal-id` e (só no adaptador) `fiscal-api/access`', () => {

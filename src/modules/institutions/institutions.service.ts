@@ -13,7 +13,7 @@ import {
 } from './institutions.interface'
 import {
   listInstitutions, getInstitution, schemaNameExists, institutionExists,
-  insertInstitutionCascade, updateInstitutionCascade,
+  insertInstitutionCascade, updateInstitutionCascade, getInstitutionActivation,
   setInstitutionActive, deleteInstitution, insertDefaultFlags,
   grantStructuralInterfaces,
   getSyncApiKey, insertSyncApiKey,
@@ -122,6 +122,22 @@ export async function editInstitution(
 ): Promise<void> {
   if (!(await institutionExists(id))) {
     throw new HttpError(404, `Estabelecimento ${id} não encontrado`)
+  }
+  // Re-gate socrático da costura A1 (M1): voltar a ATIVO passa pelo MESMO provisionamento do onboarding — as migrations que chegaram
+  // com o estabelecimento inativo (a 075, views do veredito: sem ela toda guarda e o menu daquele cliente dariam 500 até o restart).
+  // DDL fora da transação e ANTES de gravar: se falhar, nada é gravado e a institution segue 'N'.
+  if (input.active === 'S') {
+    const state = await getInstitutionActivation(id)
+    if (state && state.active !== 'S') {
+      try {
+        await runMigrationsForSchema(state.schemaName)
+      } catch (err) {
+        logger.error('Provisionamento na reativação falhou — institution permanece inativa', { id, schemaName: state.schemaName, err })
+        throw new HttpError(500,
+          `O provisionamento do schema "${state.schemaName}" falhou — o estabelecimento ${id} permanece INATIVO (active='N') e nada ` +
+          'foi gravado. Corrija a causa e salve de novo.')
+      }
+    }
   }
   try {
     await updateInstitutionCascade(id, input, updatedBy)

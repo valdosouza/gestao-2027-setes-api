@@ -1,6 +1,8 @@
 import pool from '@shared/db/connection'
 import * as lib from 'fiscal-api/access'
 import { InstitutionPayload } from '@shared/types/express'
+import { HttpError } from '@shared/errors/http-error'
+import { assertSchema } from '@shared/db/schema'
 import {
   PRIVILEGE_INSERIR, PRIVILEGE_ALTERAR, PRIVILEGE_EXCLUIR, PRIVILEGE_IMPRIMIR, PRIVILEGE_FATURAR, PRIVILEGE_VISUALIZAR,
   PRIVILEGE_CANCELAR, PRIVILEGE_DESCONTO, PRIVILEGE_TRANSMITIR, PRIVILEGE_CATALOGAR, PRIVILEGE_CONFIGURAR, PRIVILEGE_CONSULTAR,
@@ -48,9 +50,23 @@ export function privilegeNameOf(privilege: number | lib.PrivilegeName): lib.Priv
  * em TODA rota protegida e pela troca do token de SELEÇÃO pelo final (o token de seleção anterior à troca de senha também não cunha).
  */
 export async function liveSession(payload: InstitutionPayload, iat: number): Promise<InstitutionPayload | null> {
-  const session = await lib.sessionOf(pool, payload, iat)
+  let session: Awaited<ReturnType<typeof lib.sessionOf>>
+  try {
+    session = await lib.sessionOf(pool, payload, iat)
+  } catch (err) {
+    // o erro HTTP da biblioteca (ex.: 503 SESSION_UNAVAILABLE — banco fora; o classificador é UM só, lá) vira o HttpError DESTE projeto:
+    // são classes diferentes, e o middleware e o `fail()` do auth reconhecem o daqui (sem isso o 503 virava 401 e derrubava o login)
+    const e = err as { statusCode?: unknown; message?: unknown; code?: unknown } | null
+    if (e && typeof e.statusCode === 'number') {
+      throw new HttpError(e.statusCode, String(e.message ?? ''), undefined, typeof e.code === 'string' ? e.code : undefined)
+    }
+    throw err
+  }
   return session ? { ...payload, role: session.profile } : null
 }
+
+/** A forma CANÔNICA da chave de interface (D-PV42) — a da biblioteca, a única cópia (o catálogo a usa como `INTERFACE_KEY_PATTERN`). */
+export const INTERFACE_KEY_FORM: RegExp = lib.INTERFACE_KEY_FORM
 
 /** O veredito de UMA ação (o verbo em QUALQUER das interfaces — Q-G16). */
 export async function accessVerdict(
@@ -77,43 +93,6 @@ export async function accessRows(inst: InstitutionPayload): Promise<lib.AccessRo
  * do Super delegáveis (D-PV11 (d)). Faltando a view, ou literal divergente, o setes-api NÃO sobe: o veredito estaria errado em TODA rota.
  * As views POR SCHEMA (`vw_user_reach`/`vw_user_access`) nascem da migration 075, que roda no mesmo boot.
  */
-/**
- * Boot, DEPOIS das migrations (gate socrático da costura A1): as views POR SCHEMA do veredito (migration 075) em CADA institution ativa,
- * pelas colunas que a biblioteca lê. Faltando num schema, o setes-api NÃO sobe — sem elas toda guarda daquele cliente viraria 500 na 1ª
- * leitura (o molde da conferência dos gatilhos da F2a). As centrais (sql/70) são conferidas antes, por `assertAccessViews`.
- */
-export async function assertAccessSchemaViews(): Promise<string> {
-  const [institutions] = await pool.query<any[]>(
-    "SELECT schema_name FROM setes_central.tb_institution WHERE active = 'S' AND deleted = 'N'")
-  const bad: string[] = []
-  for (const i of institutions) {
-    const schema = String(i.schema_name)
-    for (const [view, columns] of SCHEMA_VIEW_COLUMNS) {
-      try {
-        await pool.query(`SELECT ${columns} FROM \`${schema}\`.${view} LIMIT 0`)
-      } catch (err: any) {
-        if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE' || err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR'
-          || err?.errno === 1356 || err?.code === 'ER_VIEW_INVALID') {
-          bad.push(`${schema}.${view}`)
-          continue
-        }
-        throw err
-      }
-    }
-  }
-  if (bad.length) {
-    throw new Error(`views do veredito de acesso ausentes ou inválidas: ${bad.join(', ')} — a migration 075 não rodou nesses schemas `
-      + '(ou o script sql/70 foi aplicado depois e a view ficou inválida: reaplique a 075 no schema) — costura A1 (D-AU3)')
-  }
-  return `${institutions.length} schema(s)`
-}
-
-/** As colunas que a biblioteca `fiscal-api/access` lê de cada view por schema (a 075). */
-const SCHEMA_VIEW_COLUMNS: readonly [string, string][] = [
-  ['vw_user_reach', 'tb_user_id, tb_institution_id, tb_interface_id, interface_key, profile, delegable'],
-  ['vw_user_access', 'tb_user_id, tb_institution_id, tb_interface_id, interface_key, tb_privilege_id, privilege, profile, delegable'],
-]
-
 export async function assertAccessViews(
   vendorInstitutionId: number, delegableKeys: readonly string[],
 ): Promise<string> {
@@ -153,3 +132,40 @@ export async function assertAccessViews(
   }
   return 'ok'
 }
+
+/**
+ * Boot, DEPOIS das migrations (gate socrático da costura A1): as views POR SCHEMA do veredito (migration 075) em CADA institution ativa,
+ * pelas colunas que a biblioteca lê. Faltando num schema, o setes-api NÃO sobe — sem elas toda guarda daquele cliente viraria 500 na 1ª
+ * leitura (o molde da conferência dos gatilhos da F2a). As centrais (sql/70) são conferidas antes, por `assertAccessViews`.
+ */
+export async function assertAccessSchemaViews(): Promise<string> {
+  const [institutions] = await pool.query<any[]>(
+    "SELECT schema_name FROM setes_central.tb_institution WHERE active = 'S' AND deleted = 'N'")
+  const bad: string[] = []
+  for (const i of institutions) {
+    const schema = assertSchema(String(i.schema_name))      // o nome vai interpolado: a MESMA guarda dos outros leitores
+    for (const [view, columns] of SCHEMA_VIEW_COLUMNS) {
+      try {
+        await pool.query(`SELECT ${columns} FROM \`${schema}\`.${view} LIMIT 0`)
+      } catch (err: any) {
+        if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE' || err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR'
+          || err?.errno === 1356 || err?.code === 'ER_VIEW_INVALID') {
+          bad.push(`${schema}.${view}`)
+          continue
+        }
+        throw err
+      }
+    }
+  }
+  if (bad.length) {
+    throw new Error(`views do veredito de acesso ausentes ou inválidas: ${bad.join(', ')} — a migration 075 não rodou nesses schemas `
+      + '(ou o script sql/70 foi aplicado depois e a view ficou inválida: reaplique a 075 no schema) — costura A1 (D-AU3)')
+  }
+  return `${institutions.length} schema(s)`
+}
+
+/** As colunas que a biblioteca `fiscal-api/access` lê de cada view por schema (a 075). */
+const SCHEMA_VIEW_COLUMNS: readonly [string, string][] = [
+  ['vw_user_reach', 'tb_user_id, tb_institution_id, tb_interface_id, interface_key, profile, delegable'],
+  ['vw_user_access', 'tb_user_id, tb_institution_id, tb_interface_id, interface_key, tb_privilege_id, privilege, profile, delegable'],
+]

@@ -2,7 +2,6 @@ import { Request, Response, NextFunction } from 'express'
 import { verifyFinalTokenWithIat } from '@shared/auth/product-token'
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
-import logger from '@shared/logger/logger'
 import { runAsActor } from '@shared/request-actor'
 import { liveSession } from '@shared/access'
 
@@ -34,21 +33,12 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
     runAsActor({ institutionId: payload.institutionId, userId: payload.userId }, next)
   } catch (err) {
     // envelope do Framework de Mensagens ({ error, code }) — o app recebe UnauthorizedFailure com o código
+    // a sessão que não pôde ser LIDA (banco fora) chega aqui como HttpError 503 SESSION_UNAVAILABLE — o classificador é UM só, na
+    // biblioteca (`fiscal-api/access` · sessionOf), o mesmo da troca do token de seleção e das APIs fiscais; o app não derruba o login
     if (err instanceof HttpError) {
       res.status(err.statusCode).json({ error: err.message, code: err.code ?? ErrorCodes.UNAUTHORIZED })
-    } else if (isDbFailure(err)) {
-      // a sessão não pôde ser LIDA (banco fora): não é "token inválido" — o app não deve derrubar o login por isso
-      logger.error('Sessão viva não pôde ser lida (banco)', { message: (err as Error).message })
-      res.status(503).json({ error: 'Serviço indisponível — tente novamente', code: ErrorCodes.SESSION_UNAVAILABLE })
     } else {
       res.status(401).json({ error: 'Token inválido ou expirado', code: ErrorCodes.UNAUTHORIZED })
     }
   }
-}
-
-/** Erro do driver/banco (não do token): conexão recusada, tempo esgotado, SQL do driver. */
-function isDbFailure(err: unknown): boolean {
-  const e = err as { code?: unknown; errno?: unknown; sqlState?: unknown } | null
-  return !!e && (typeof e.errno === 'number' || typeof e.sqlState === 'string'
-    || (typeof e.code === 'string' && /^(ECONN|ETIMEDOUT|PROTOCOL_|ER_|EPIPE|ENOTFOUND)/.test(e.code)))
 }
