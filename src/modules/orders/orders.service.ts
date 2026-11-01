@@ -13,6 +13,7 @@ import {
   ORDER_SEARCH_CRITERIA, listCustomerLookup, listSalesmanLookup,
 } from './orders.repository'
 import { EnabledPaymentType } from '@shared/payment-types'
+import { listActiveSalesmanLookup } from './orders.repository'
 
 export interface OrdersScope {
   schemaName:    string
@@ -108,4 +109,9 @@ export async function updateNegotiation(
 /** Lookup de bancos (cheques do faturamento) — o módulo do app só fala com /api/orders. */
 export async function fetchBanksLookup(filter: string): Promise<OrderBankLookupRow[]> {
   return listBanksLookup(filter)
+}
+
+/** D-PV2: vendedores ATIVOS para o vendedor do pedido (o mesmo conjunto que o formulário lia do lookup de Clientes). */
+export async function fetchActiveSalesmanLookup(filter: string, scope: OrdersScope): Promise<OrderSearchLookupRow[]> {
+  return listActiveSalesmanLookup(filter.trim(), scope.schemaName, scope.institutionId)
 }

@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 import * as controller from './cashier.controller'
 
 /**
@@ -36,6 +38,26 @@ router.get('/current', controller.current)
  *       409: { description: 'Já existe um caixa aberto para este usuário (CASHIER_ALREADY_OPEN)' }
  */
 router.post('/open', controller.openCashier)
+
+/**
+ * @swagger
+ * /api/cashier/bank-accounts:
+ *   get:
+ *     summary: Contas bancárias da institution (destino da retirada/transferência — lista de apoio)
+ *     tags: [Cashier]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, bankNumber, bankDescription, agency, agencyDv, number, numberDv } (até 100)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela); declarada ANTES de GET /:id
+router.get('/bank-accounts', controller.bankAccountsLookup)
 
 /**
  * @swagger
@@ -88,7 +110,7 @@ router.get('/:id', controller.balance)
  *       404: { description: Caixa não encontrado }
  *       409: { description: 'Caixa fechado (CASHIER_NOT_OPEN)' }
  */
-router.post('/:id/withdraw', controller.withdrawFromCashier)
+router.post('/:id/withdraw', privilegeAct(PRIVILEGE_ALTERAR), controller.withdrawFromCashier)   // D-PV7: sangria = A (abrir = POST → I)
 
 /**
  * @swagger
@@ -129,6 +151,6 @@ router.post('/:id/withdraw', controller.withdrawFromCashier)
  *       404: { description: Caixa não encontrado }
  *       409: { description: 'Caixa já fechado (CASHIER_ALREADY_CLOSED)' }
  */
-router.post('/:id/close', controller.closeCashier)
+router.post('/:id/close', privilegeAct(PRIVILEGE_ALTERAR), controller.closeCashier)             // D-PV7: fechar = A
 
 export default router

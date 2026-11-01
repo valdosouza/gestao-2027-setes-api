@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_ALTERAR, PRIVILEGE_CANCELAR } from '@shared/auth/privileges'
 import * as controller from './checks.controller'
 
 /**
@@ -184,7 +186,7 @@ router.get('/:id', controller.getOne)
  *       404: { description: Cheque não encontrado }
  *       409: { description: 'CHECK_NOT_IN_CUSTODY / NO_OPEN_CASHIER' }
  */
-router.post('/:id/deposit', controller.deposit)
+router.post('/:id/deposit', privilegeAct(PRIVILEGE_ALTERAR), controller.deposit)
 
 /**
  * @swagger
@@ -223,7 +225,7 @@ router.post('/:id/deposit', controller.deposit)
  *       404: { description: Cheque não encontrado }
  *       409: { description: 'CHECK_NOT_IN_CUSTODY / NO_OPEN_CASHIER' }
  */
-router.post('/:id/discount', controller.discount)
+router.post('/:id/discount', privilegeAct(PRIVILEGE_ALTERAR), controller.discount)
 
 /**
  * @swagger
@@ -255,7 +257,7 @@ router.post('/:id/discount', controller.discount)
  *       404: { description: Cheque não encontrado }
  *       409: { description: 'CHECK_NOT_DISCOUNTED / NO_OPEN_CASHIER' }
  */
-router.post('/:id/return-refund', controller.returnRefund)
+router.post('/:id/return-refund', privilegeAct(PRIVILEGE_ALTERAR), controller.returnRefund)
 
 /**
  * @swagger
@@ -284,7 +286,7 @@ router.post('/:id/return-refund', controller.returnRefund)
  *       404: { description: Cheque não encontrado }
  *       409: { description: 'CHECK_NOT_DISCOUNTED' }
  */
-router.post('/:id/return-good', controller.returnGood)
+router.post('/:id/return-good', privilegeAct(PRIVILEGE_ALTERAR), controller.returnGood)
 
 /**
  * @swagger
@@ -317,7 +319,7 @@ router.post('/:id/return-good', controller.returnGood)
  *       409: { description: 'CHECK_NOT_IN_CUSTODY / NO_OPEN_CASHIER' }
  *       422: { description: 'CHECK_TITLE_NOT_PAYABLE (título a receber) / CHECK_EXCEEDS_BALANCE' }
  */
-router.post('/:id/pay', controller.pay)
+router.post('/:id/pay', privilegeAct(PRIVILEGE_ALTERAR), controller.pay)
 
 /**
  * @swagger
@@ -348,7 +350,7 @@ router.post('/:id/pay', controller.pay)
  *       404: { description: Cheque não encontrado }
  *       409: { description: 'CHECK_NOT_RETURNABLE / CHECK_NO_ORIGIN' }
  */
-router.post('/:id/return', controller.returnToOrigin)
+router.post('/:id/return', privilegeAct(PRIVILEGE_ALTERAR), controller.returnToOrigin)
 
 /**
  * @swagger
@@ -385,6 +387,7 @@ router.post('/:id/return', controller.returnToOrigin)
  *       404: { description: 'Cheque ou evento não encontrado' }
  *       409: { description: 'CHECK_ALREADY_MOVED / CHECK_EVENT_NOT_REVERSIBLE' }
  */
-router.post('/:id/reverse', controller.reverse)
+// D-PV7: os movimentos do cheque (depositar, descontar, devolver, usar em pagamento) = ALTERAR; estornar = CANCELAR
+router.post('/:id/reverse', privilegeAct(PRIVILEGE_CANCELAR), controller.reverse)
 
 export default router

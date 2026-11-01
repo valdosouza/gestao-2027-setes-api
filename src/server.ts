@@ -12,6 +12,10 @@ import { assertFiscalVoiceReadable } from '@shared/fiscal-voice'
 import pool from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
 import { assertF2aFreezeTriggers } from './migrations/f2a-freeze-triggers'
+import { assertPrivilegeCatalog } from '@shared/auth/assert-privilege-catalog'
+import { assertAccessViews, assertAccessSchemaViews } from '@shared/access'
+import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
+import { DELEGABLE_SUPER_INTERFACES } from '@shared/auth/delegable-interfaces'
 
 const PORT = process.env.PORT ?? 3000
 
@@ -27,6 +31,8 @@ async function bootstrap() {
     logger.info(`CHECK do banco: ${await assertCheckConstraintsEnforced()}`)           // D-IB26
     logger.info(`Catálogo IBS/CBS (scripts 63/73): ${await assertIbscbsCatalogSchema()}`)   // D-IB36 · D-IB113
     logger.info(`Pedido de troca de senha (script 67): ${await assertPasswordResetReady()}`)   // Q-PV38
+    // Costura A1 da auth-api (D-AU3/D-UC9): as views centrais do veredito (script 70) — sem elas NENHUMA rota autentica
+    logger.info(`Veredito de acesso (script 70): ${await assertAccessViews(SETES_INSTITUTION_ID, DELEGABLE_SUPER_INTERFACES)}`)
     // D-RS5: em produção (NODE_ENV=production) o SMTP é OBRIGATÓRIO — sem ele o setes-api NÃO sobe (o código de recuperação
     // nunca vai ao log de produção e o aviso ao dono da conta — D-RS4 — não pode morrer em silêncio). Em dev: só o resumo.
     const envWarning = nodeEnvWarning()
@@ -39,6 +45,10 @@ async function bootstrap() {
     await runMigrationsForAllInstitutions()
     // D-F135 (F2a): os gatilhos de TRAVA da f2a_fiscal_passivo conferidos pelo NOME em cada schema — faltando, o setes-api NÃO sobe
     logger.info(`Gatilhos de TRAVA da F2a: ${await assertF2aFreezeTriggers()}`)
+    // Costura A1 (D-AU3): as views POR SCHEMA do veredito (migration 075) — faltando num cliente, o setes-api NÃO sobe
+    logger.info(`Veredito de acesso (075 por schema): ${await assertAccessSchemaViews()}`)
+    // D-PV9: os pares (interface, privilégio) que o código consome conferidos contra o catálogo — faltando = ALARME, sobe assim mesmo
+    logger.info(`Catálogo de privilégios: ${await assertPrivilegeCatalog()}`)
     logger.info('Migrations concluidas. Subindo servidor...')
 
     app.listen(PORT, () => {

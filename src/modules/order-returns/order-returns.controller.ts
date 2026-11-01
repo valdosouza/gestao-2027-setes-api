@@ -8,6 +8,7 @@ import {
   editItemQuantity, deleteItem, removeReturn,
   ORDER_RETURN_SEARCH_CRITERIA, fetchOrderReturnSearchCriteria, fetchCustomerLookup,
 } from './order-returns.service'
+import { fetchCfopLookup } from './order-returns.service'
 
 function scopeOf(req: Request): OrderReturnsScope {
   const { schemaName, institutionId, userId, role } = req.institution!
@@ -112,5 +113,13 @@ export async function removeOrderItem(req: Request, res: Response): Promise<void
     res.json({ ok: true })
   } catch (err) {
     handleError(res, err, 'order-returns/:id/items/:itemId DELETE')
+  }
+}
+
+export async function cfopLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchCfopLookup(String(req.query.filter ?? '')) })
+  } catch (err) {
+    handleError(res, err, 'order-returns/cfop-lookup GET')
   }
 }

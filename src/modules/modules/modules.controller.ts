@@ -35,7 +35,7 @@ export async function searchCriteria(req: Request, res: Response): Promise<void>
 
 export async function interfaceLookup(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ ok: true, data: await fetchEligibleInterfaces(req.institution!) })
+    res.json({ ok: true, data: await fetchEligibleInterfaces(req.institution!) })   // D-PV24 (o super escapa da licença)
   } catch (err) {
     handleError(res, err, 'modules/interface-lookup GET')
   }

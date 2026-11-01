@@ -15,6 +15,7 @@ import { generateKeyPairSync, createPrivateKey, createPublicKey, sign as cryptoS
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import { testToken } from '../test-setup/test-token'
+import { accessAnswer, ModelProfile } from '../test-setup/access-model'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true, default: { query: jest.fn(), getConnection: jest.fn(), on: jest.fn(), end: jest.fn() },
@@ -49,12 +50,12 @@ import * as billingService from '../modules/billing/billing.service'
 import { lockInvoice, LAST_INVOICE_EVENT_KIND_SQL } from '../shared/invoice/invoice'
 import { CURRENT_RETURN_SQL } from '../shared/order-return/order-return'
 import {
-  requirePrivilege, requirePrivilegeFor, requireInterfaceFor, resetPrivilegeCache,
-} from '../shared/auth/require-privilege'
+  requirePrivilege, requirePrivilegeFor, requireInterfaceFor, } from '../shared/auth/require-privilege'
 import {
   loadJwtKeyRing, resetJwtKeyRing, assertJwtKeys, signFinalToken, signSelectionToken, verifyFinalToken,
 } from '../shared/auth/product-token'
 import { PRIVILEGE_CANCELAR } from '../shared/auth/privileges'
+import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
 import { runMigrationsForSchema } from '../migrations/runner'
 import app from '../app'
 
@@ -64,21 +65,33 @@ const failing: jest.It['failing'] = process.env.ADV_SHOW === '1' ? (it as any) :
 const getConn = (pool as any).getConnection as jest.Mock
 
 // ------------------------------------------------------------------------------------------------
-// banco de mentira das guardas (molde de require-privilege.test.ts): catálogo central, contrato, vínculos
+// banco de mentira das guardas: costura A1 da auth-api (D-AU3/D-AU6, 2026-10-31) — o veredito é a pilha de views lida pela biblioteca
+// `fiscal-api/access`; o dublê (`test-setup/access-model`) responde às views a partir do catálogo, do contrato e dos vínculos abaixo
 // ------------------------------------------------------------------------------------------------
 const CATALOG: Record<string, number> = { orders: 29, 'service-orders': 20, 'order-returns': 31, settlements: 21 }
+const KEY_OF: Record<number, string> = Object.fromEntries(Object.entries(CATALOG).map(([k, id]) => [id, k]))
 let contracted: Set<number>
 let privileged: Set<string>                       // `${userId}:${interfaceId}:${privilegeId}`
-let catalogLookups = 0
+/** o perfil do vínculo (usuário, institution) é o do token/payload da vez — a sessão viva devolve o do token (`access-session.mock`) */
+let profile: ModelProfile = 'user'
+const session = <P extends { role: string }>(p: P): P => { profile = p.role as ModelProfile; return p }
+function grantsOf(userId: number): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const g of privileged) {
+    const [u, i, p] = g.split(':').map(Number)
+    if (u !== userId || !KEY_OF[i]) continue
+    ;(out[KEY_OF[i]] ??= []).push(PRIVILEGE_NAME_BY_ID[p])
+  }
+  return out
+}
 function routeDb(): void {
   q.mockImplementation(async (sql: string, params: any[] = []) => {
-    if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) {
-      catalogLookups += 1
-      const id = CATALOG[String(params[0])]
-      return [id ? [{ id }] : []]
-    }
-    if (/tb_institution_has_interface/.test(sql)) return [contracted.has(Number(params[1])) ? [{ 1: 1 }] : []]
-    if (/tb_user_has_privilege/.test(sql)) return [privileged.has(`${params[0]}:${params[1]}:${params[2]}`) ? [{ 1: 1 }] : []]
+    // as views só conhecem a interface VIVA do catálogo central (`vw_interface_catalog`): chave fora dele não tem linha — nem para o super
+    const live = Array.isArray(params[2]) ? [params[0], params[1], params[2].filter((k: string) => k in CATALOG), ...params.slice(3)] : params
+    const a = accessAnswer(sql, live, (userId: number) => ({
+      profile, contracted: [...contracted].map(id => KEY_OF[id]).filter(Boolean), granted: grantsOf(userId),
+    }))
+    if (a) return [a, []]
     throw new Error(`SQL inesperado: ${String(sql).slice(0, 90)}`)
   })
 }
@@ -86,13 +99,15 @@ function routeDb(): void {
 const SUPER = { institutionId: 1, userId: 1, role: 'super', schemaName: 'setes_setes' }
 const ADMIN = { institutionId: 2, userId: 9, role: 'admin', schemaName: 'setes_x' }
 const USER = { institutionId: 2, userId: 9, role: 'user', schemaName: 'setes_x' }
-const bearer = (p: object) => `Bearer ${testToken(p)}`
+const bearer = (p: object) => {
+  if (typeof (p as any).role === 'string') session(p as { role: string })
+  return `Bearer ${testToken(p)}`
+}
 
 const ENV0 = { ...process.env }
 beforeEach(() => {
   jest.clearAllMocks()
-  resetPrivilegeCache()
-  contracted = new Set(Object.values(CATALOG)); privileged = new Set(); catalogLookups = 0
+  contracted = new Set(Object.values(CATALOG)); privileged = new Set(); profile = 'user'
   routeDb()
   ;(billingService.getOrderFiscalEffect as jest.Mock).mockResolvedValue({ orderId: 502, lifeEvent: 1, invoiceCancelled: false, effect: 'none', cancelWaiver: null })
   ;(billingService.getOrderCancelPlan as jest.Mock).mockResolvedValue({ orderId: 502, cancellable: true, blocks: [] })
@@ -236,9 +251,11 @@ function res() {
 }
 
 describe('D-F37 — licença (interface contratada) para todos', () => {
-  it('[RESISTIU] as 3 guardas × super/admin/regular com a interface NÃO contratada → 403 INTERFACE_NOT_ALLOWED, sem next', async () => {
+  // A-PV1 (Valdo 2026-10-18 — prompt_privilegios_interfaces.md): revê a D-F37 SÓ para o super — ele passa a licença
+  // (teste próprio em require-privilege.test.ts); admin e regular seguem barrados aqui.
+  it('[RESISTIU] as 3 guardas × admin/regular com a interface NÃO contratada → 403 INTERFACE_NOT_ALLOWED, sem next', async () => {
     contracted = new Set([CATALOG.settlements])          // nada do ramo contratado
-    for (const inst of [SUPER, ADMIN, USER]) {
+    for (const inst of [ADMIN, USER]) {
       privileged.add(`${inst.userId}:${CATALOG.orders}:${PRIVILEGE_CANCELAR}`)   // vínculo "velho" não salva ninguém
       for (const guard of [
         requirePrivilege('orders', PRIVILEGE_CANCELAR),
@@ -247,7 +264,7 @@ describe('D-F37 — licença (interface contratada) para todos', () => {
         requireInterfaceFor(async () => 'orders'),
       ]) {
         const r = res(); const next = jest.fn()
-        await guard({ institution: inst } as any, r, next)
+        await guard({ institution: session(inst) } as any, r, next)
         expect([inst.role, r.status.mock.calls[0]?.[0], r.json.mock.calls[0]?.[0]?.code, next.mock.calls.length])
           .toEqual([inst.role, 403, 'INTERFACE_NOT_ALLOWED', 0])
       }
@@ -256,31 +273,40 @@ describe('D-F37 — licença (interface contratada) para todos', () => {
 
   it('[RESISTIU] interface fora do catálogo central (ou soft-deletada lá) → 403 INTERFACE_NOT_ALLOWED para o super (não 500, não passa)', async () => {
     const r = res(); const next = jest.fn()
-    await requirePrivilegeFor(PRIVILEGE_CANCELAR, async () => 'interface-que-nao-existe')({ institution: SUPER } as any, r, next)
+    await requirePrivilegeFor(PRIVILEGE_CANCELAR, async () => 'interface-que-nao-existe')({ institution: session(SUPER) } as any, r, next)
     expect(r.status).toHaveBeenCalledWith(403)
+    expect(r.json.mock.calls[0][0].code).toBe('INTERFACE_NOT_ALLOWED')
     expect(next).not.toHaveBeenCalled()
   })
 
-  it('[RESISTIU] a licença lê o contrato ATIVO e VIVO (SQL), e o catálogo é cacheado por i18n_key (1 consulta para N requisições)', async () => {
-    for (let i = 0; i < 3; i++) await requireInterfaceFor(async () => 'orders')({ institution: ADMIN } as any, res(), jest.fn())
-    const contractSql = q.mock.calls.map(c => String(c[0])).filter(s => /tb_institution_has_interface/.test(s))
-    expect(contractSql).toHaveLength(3)
-    for (const s of contractSql) expect(s).toMatch(/active IS NULL OR active = 'S'\) AND deleted = 'N'/)
-    expect(catalogLookups).toBe(1)
-  })
-
-  it('[RESISTIU] rota: super/admin cancelando documento do ramo service-orders NÃO contratado → 403 antes do serviço', async () => {
-    contracted = new Set([CATALOG.orders])
-    for (const inst of [SUPER, ADMIN]) {
-      const r = await request(app).post('/api/billing/cancel').set('Authorization', bearer(inst)).send({ orderId: 501, reason: 'teste adversarial' })
-      expect([inst.role, r.status, r.body.code]).toEqual([inst.role, 403, 'INTERFACE_NOT_ALLOWED'])
+  // Costura A1 (D-AU8 — revê a D-PV29): o cache do catálogo/veredito MORREU; a licença é a `vw_user_reach` lida VIVA a cada pergunta, e
+  // o contrato ATIVO e VIVO é predicado da VIEW (migration 075 — a semântica dela é provada ao vivo por `scripts/prove-user-access-views.ts`).
+  it('[RESISTIU] a licença é lida VIVA a cada requisição (sem cache — D-AU8), pela chave (usuário, institution, interface); o contrato ATIVO e VIVO é predicado da view', async () => {
+    for (let i = 0; i < 3; i++) await requireInterfaceFor(async () => 'orders')({ institution: session(ADMIN) } as any, res(), jest.fn())
+    const reach = q.mock.calls.filter(c => /vw_user_reach/.test(String(c[0])))
+    expect(reach).toHaveLength(3)
+    for (const [sql, params] of reach) {
+      expect(String(sql)).toMatch(/FROM `setes_x`\.vw_user_reach/)
+      expect(params).toEqual([ADMIN.userId, ADMIN.institutionId, ['orders']])
     }
-    expect(billingService.cancelOrderInvoice).not.toHaveBeenCalled()
+    expect(q.mock.calls.some(c => /tb_institution_has_interface|tb_user_has_privilege|tb_interface WHERE/.test(String(c[0])))).toBe(false)
+    const view = fs.readFileSync(path.join(__dirname, '..', 'migrations', 'sql', '075_user_access_views.sql'), 'utf8').replace(/`/g, '')
+    expect(view).toMatch(/LEFT JOIN tb_institution_has_interface ihi[\s\S]*?ihi\.active = 'S' AND ihi\.deleted = 'N'/)
   })
 
-  it('[RESISTIU — F2a A3] as consultas novas (cancel-plan, fiscal-effect) exigem a LICENÇA do ramo para todos (D-F37): ramo não contratado → 403 antes do serviço', async () => {
+  it('[RESISTIU] rota: admin cancelando documento do ramo service-orders NÃO contratado → 403 antes do serviço; o super passa (A-PV1)', async () => {
+    contracted = new Set([CATALOG.orders])
+    const r = await request(app).post('/api/billing/cancel').set('Authorization', bearer(ADMIN)).send({ orderId: 501, reason: 'teste adversarial' })
+    expect([r.status, r.body.code]).toEqual([403, 'INTERFACE_NOT_ALLOWED'])
+    expect(billingService.cancelOrderInvoice).not.toHaveBeenCalled()
+    const s = await request(app).post('/api/billing/cancel').set('Authorization', bearer(SUPER)).send({ orderId: 501, reason: 'teste adversarial' })
+    expect(s.body.code).not.toBe('INTERFACE_NOT_ALLOWED')
+    expect(billingService.cancelOrderInvoice).toHaveBeenCalledTimes(1)
+  })
+
+  it('[RESISTIU — F2a A3] as consultas novas (cancel-plan, fiscal-effect) exigem a LICENÇA do ramo (D-F37; o super passa — A-PV1): ramo não contratado → 403 antes do serviço', async () => {
     contracted = new Set([CATALOG.settlements])
-    for (const inst of [SUPER, ADMIN, USER]) {
+    for (const inst of [ADMIN, USER]) {
       for (const url of ['/api/billing/501/cancel-plan', '/api/billing/501/fiscal-effect', '/api/billing/502/fiscal-effect']) {
         const r = await request(app).get(url).set('Authorization', bearer(inst))
         expect([inst.role, url, r.status, r.body.code]).toEqual([inst.role, url, 403, 'INTERFACE_NOT_ALLOWED'])

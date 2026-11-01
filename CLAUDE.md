@@ -140,8 +140,19 @@ Authorization: Bearer <jwt_token>
 PRIVADA; nfse-api/nfe-api só a PÚBLICA. HS256/`JWT_SECRET` aposentados — sem a chave o boot NÃO sobe. Testes assinam
 pelo `testToken` (`src/test-setup/test-token.ts`; par de TESTE gerado pelo setup do jest). NUNCA segredo em script versionado.
 
-**Licença × privilégio** (D-F37): as guardas de ação (`@shared/auth/require-privilege`) conferem a interface CONTRATADA
-para TODOS; super/admin passam só o privilégio.
+**Licença × privilégio** (D-F37, revista pela A-PV1 e pela D-PV62): as guardas de ação (`@shared/auth/require-privilege`) conferem a
+interface CONTRATADA para todos menos o super (A-PV1); super e admin dispensam a CONCESSÃO (o admin, menos nas telas delegáveis do Super —
+D-PV11), mas NUNCA o REGISTRO: só passam em par que existe em `tb_interface_has_privilege` (D-PV62 — verbo conferido sem seed = negado a
+todos até o seed; a cerca da D-PV51 e o `check:privileges` barram antes de publicar).
+
+**Veredito de acesso = UMA peça (costura A1 da frente auth-api — D-AU3/D-AU6/D-AU8, 2026-10-31)**: a regra "usuário U pode o verbo V
+na interface I" mora numa pilha de VIEWS (`setes_central.vw_user_link`/`vw_interface_catalog` — script `sql/70`; `<schema>.vw_user_reach`
+/`vw_user_access` — migration 075), lida VIVA (sem cache) pela biblioteca `fiscal-api/access`; aqui só o adaptador `@shared/access`
+(o único que importa o subpath — cerca `f2a-fiscal-api-fence`). `require-privilege`, `module-privilege-gate`, políticas e o MENU leem por
+ele; nenhum SQL próprio de `tb_user_has_privilege`/`tb_institution_has_interface` para decidir. O `authMiddleware` lê a SESSÃO viva em
+toda rota (401 `SESSION_REVOKED`; o `role` do token é trocado pelo perfil vivo — D-UC9). Boot recusa subir sem as views do `sql/70`
+(`assertAccessViews`). Prova da semântica: `scripts/prove-user-access-views.ts` (banco descartável). Na suíte, a leitura da sessão é
+dublada globalmente (`src/test-setup/access-session.mock.ts`) e o veredito responde por `src/test-setup/access-model.ts`.
 
 ### Recuperação de senha, aviso ao dono e SMTP (Q-PV38 / D-RS4 / D-RS5 — 2026-10-18/21)
 
@@ -155,8 +166,9 @@ Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publi
 
 ### Senha perdida do SUPER — procedimento do OPERADOR (D-PV46, 2026-10-20; exceção explícita — PADROES §3.1)
 
-Nenhuma porta HTTP redefine a senha do Super (o admin não troca a senha do super — D-PV12; com DOIS Supers ativos, um define a do outro
-pela tela de Usuários do Super). Quando NÃO resta outro Super ativo e o e-mail de recuperação não resolve, o operador roda NO SERVIDOR,
+Nenhuma porta HTTP redefine a senha do Super — nem de ninguém com credencial: D-PV48 (2026-10-27) — depois de criada a credencial, só o
+titular troca, pela recuperação (o `PUT /api/users/:id` recusa `password` com 409 `PASSWORD_OWNER_ONLY`; conta SEM senha vinda do sync
+recebe a 1ª uma vez — A-PV23). Este script é a ÚNICA exceção (A-PV22). Quando NÃO resta outro Super ativo e o e-mail de recuperação não resolve, o operador roda NO SERVIDOR,
 com o `.env` do destino:
 
 ```bash

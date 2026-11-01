@@ -5,6 +5,9 @@ import { entityRoleSearchCriteria, roleStatusSearchCriteria, saveEntityFiscalCha
 import {
   CollaboratorInput, CollaboratorListRow, CollaboratorFull,
 } from './collaborators.interface'
+import {
+  isOwnEstablishment, isOwnEstablishmentDocument, assertOwnEstablishmentChainUnchanged,
+} from '@shared/entity/own-establishment'
 
 /**
  * Repositório do CONCRETO Collaborator — CONSUMIDOR da cadeia de entidade
@@ -87,7 +90,7 @@ export async function getCollaborator(
   const chain = await getEntityFiscalFull(id)
   if (!chain) return null
 
-  return { ...chain, ...rows[0] }
+  return { ...chain, ...rows[0], ownEstablishment: isOwnEstablishment(id, institutionId) }   // D-PV32
 }
 
 export async function collaboratorExists(
@@ -123,12 +126,15 @@ export async function insertCollaboratorCascade(
   input: CollaboratorInput, schemaName: string, institutionId: number,
   updatedBy: number | null = null
 ): Promise<{ id: number; reused: boolean }> {
+  const own = await isOwnEstablishmentDocument(input, institutionId)
+  if (own) await assertOwnEstablishmentChainUnchanged(schemaName, institutionId, input)
   const table = `${schemaName}.tb_collaborator`
   const conn  = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    const { id, reused } = await saveEntityFiscalChain(conn, null, input, updatedBy)
+    // D-PV32: o próprio estabelecimento PODE ser papel — a cadeia e a tributação dele não se escrevem por aqui (conferido ANTES da transação)
+    const { id, reused } = own ? { id: institutionId, reused: true } : await saveEntityFiscalChain(conn, null, input, updatedBy)
 
     const [existing] = await conn.query<any[]>(
       `SELECT deleted FROM ?? WHERE id = ? AND tb_institution_id = ? FOR UPDATE`,
@@ -175,11 +181,13 @@ export async function updateCollaboratorCascade(
   id: number, input: CollaboratorInput, schemaName: string, institutionId: number,
   updatedBy: number | null = null
 ): Promise<void> {
+  const own = isOwnEstablishment(id, institutionId)
+  if (own) await assertOwnEstablishmentChainUnchanged(schemaName, institutionId, input)
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    await saveEntityFiscalChain(conn, id, input, updatedBy)
+    if (!own) await saveEntityFiscalChain(conn, id, input, updatedBy)   // D-PV32: emitente = cadeia só pelo Meu Estabelecimento
 
     await conn.query(
       `UPDATE ?? SET active = ?, dt_admission = ?, dt_resignation = ?,

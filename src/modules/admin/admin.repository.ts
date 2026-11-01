@@ -11,93 +11,13 @@ import pool from '@shared/db/connection'
 // (nunca o schemaName do próprio JWT).
 // ---------------------------------------------------------------------
 
-// Peça centralizada em @shared/db/schema (2026-08-04).
-import { assertSchema } from '@shared/db/schema'
 
-export async function getInstitutionSchemaName(institutionId: number): Promise<string | null> {
-  const [rows] = await pool.query<any[]>(
-    `SELECT schema_name AS schemaName
-     FROM setes_central.tb_institution
-     WHERE id = ? AND deleted = 'N'`,
-    [institutionId]
-  )
-  return rows[0]?.schemaName ?? null
-}
-
-export interface InterfaceGrantRow {
-  id:           number
-  description:  string | null
-  groupDefault: string | null
-  kind:         string | null
-  granted:      boolean
-}
-
-// Catálogo completo (central) + situação do contrato da institution ALVO, lido pela chave dela — nunca o
-// schema inteiro: sem o filtro, com 2 institutions no schema a tela mostraria o contratado da outra (e o
-// salvar o copiaria) e a tela das duas sairia duplicada (D-GE4). O contrato é do GRUPO (D-GE22): na onda 1
-// a chave passa a ser a do grupo (`groupInstitutionId`); hoje as duas coincidem (1 institution por schema).
-export async function listInterfacesWithGrant(
-  schemaName: string, institutionId: number
-): Promise<InterfaceGrantRow[]> {
-  const s = assertSchema(schemaName)
-  const [rows] = await pool.query<any[]>(
-    `SELECT i.id,
-            i.description,
-            i.group_default AS groupDefault,
-            i.kind,
-            CASE WHEN ihi.tb_interface_id IS NOT NULL THEN TRUE ELSE FALSE END AS granted
-     FROM setes_central.tb_interface i
-     LEFT JOIN \`${s}\`.tb_institution_has_interface ihi
-       ON (ihi.tb_interface_id = i.id AND ihi.tb_institution_id = ?
-           AND ihi.active = 'S' AND ihi.deleted = 'N')
-     WHERE i.deleted = 'N'
-     ORDER BY i.group_default, i.description`,
-    [institutionId]
-  )
-  return rows.map(r => ({ ...r, granted: Boolean(r.granted) }))
-}
-
-// Sincroniza o contrato: concede as interfaces da lista, revoga (soft) as demais
-export async function setInstitutionInterfaces(
-  schemaName: string, institutionId: number, interfaceIds: number[]
-): Promise<void> {
-  const s    = assertSchema(schemaName)
-  const conn = await pool.getConnection()
-  try {
-    await conn.beginTransaction()
-
-    if (interfaceIds.length > 0) {
-      const values = interfaceIds.map(id => [institutionId, id, 'S', new Date(), new Date()])
-      await conn.query(
-        `INSERT INTO \`${s}\`.tb_institution_has_interface
-           (tb_institution_id, tb_interface_id, active, created_at, updated_at)
-         VALUES ?
-         ON DUPLICATE KEY UPDATE active = 'S', deleted = 'N', updated_at = NOW()`,
-        [values]
-      )
-      await conn.query(
-        `UPDATE \`${s}\`.tb_institution_has_interface
-         SET active = 'N', updated_at = NOW()
-         WHERE tb_institution_id = ? AND tb_interface_id NOT IN (?)`,
-        [institutionId, interfaceIds]
-      )
-    } else {
-      await conn.query(
-        `UPDATE \`${s}\`.tb_institution_has_interface
-         SET active = 'N', updated_at = NOW()
-         WHERE tb_institution_id = ?`,
-        [institutionId]
-      )
-    }
-
-    await conn.commit()
-  } catch (err) {
-    await conn.rollback()
-    throw err
-  } finally {
-    conn.release()
-  }
-}
+// O vínculo estabelecimento × interfaces (leitura e escrita) virou peça ÚNICA em 2026-10-18 (D-PV11 — duas telas, a aba do Super e
+// a "Interfaces dos clientes" delegável): `@shared/institution-interfaces`, já na forma escopada pela institution (D-GE4).
+export {
+  getInstitutionSchemaName, listInterfacesWithGrant, setInstitutionInterfaceLink,
+} from '@shared/institution-interfaces'
+export type { InterfaceGrantRow } from '@shared/institution-interfaces'
 
 // Gate técnico de módulos da API (decisão 17): a tela do Super mantém
 // tb_feature_flag coerente com o contrato de interfaces.

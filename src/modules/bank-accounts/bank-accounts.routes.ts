@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 import * as controller from './bank-accounts.controller'
 import * as channel from './bank-accounts.channel.controller'
 import { adminGuard } from '@gateway/admin.guard'
@@ -235,8 +237,10 @@ router.delete('/:id', controller.remove)
  *       200: { description: 'Envelope { ok }' }
  */
 router.get('/:id/channel', channel.getChannel)
-router.put('/:id/channel', adminGuard, channel.putChannel)
-router.delete('/:id/channel', adminGuard, channel.deleteChannel)
+// Inventário da D-PV1 (§3): o canal API é parte da conta — toda escrita dele = ALTERAR (o adminGuard segue: segredos
+// e cota do banco são do admin — Q-I7); as leituras (GET canal/webhook) = VISUALIZAR pelo verbo.
+router.put('/:id/channel', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.putChannel)
+router.delete('/:id/channel', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.deleteChannel)
 
 /**
  * @swagger
@@ -273,8 +277,8 @@ router.delete('/:id/channel', adminGuard, channel.deleteChannel)
  *     responses:
  *       200: { description: 'Envelope { ok, data }' }
  */
-router.put('/:id/channel/secrets', adminGuard, channel.putSecrets)
-router.delete('/:id/channel/secrets', adminGuard, channel.deleteSecrets)
+router.put('/:id/channel/secrets', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.putSecrets)
+router.delete('/:id/channel/secrets', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.deleteSecrets)
 
 /**
  * @swagger
@@ -298,8 +302,8 @@ router.delete('/:id/channel/secrets', adminGuard, channel.deleteSecrets)
  *       409: { description: Canal/segredo/certificado/autenticação }
  *       503: { description: Banco indisponível }
  */
-router.post('/:id/channel/rotate-token', adminGuard, channel.rotateToken)
-router.post('/:id/channel/test', adminGuard, channel.test)   // gasta cota do banco: só admin (LOW-3 do gate, assunção Q-I7)
+router.post('/:id/channel/rotate-token', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.rotateToken)
+router.post('/:id/channel/test', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.test)   // gasta cota do banco: só admin (LOW-3 do gate, assunção Q-I7)
 
 /**
  * @swagger
@@ -332,7 +336,7 @@ router.post('/:id/channel/test', adminGuard, channel.test)   // gasta cota do ba
  *       200: { description: 'Envelope { ok }' }
  */
 router.get('/:id/channel/webhook', channel.getWebhook)
-router.put('/:id/channel/webhook', adminGuard, channel.putWebhook)
-router.delete('/:id/channel/webhook', adminGuard, channel.deleteWebhook)
+router.put('/:id/channel/webhook', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.putWebhook)
+router.delete('/:id/channel/webhook', adminGuard, privilegeAct(PRIVILEGE_ALTERAR), channel.deleteWebhook)
 
 export default router

@@ -11,6 +11,7 @@ import {
   retargetCharge,
   BILL_SEARCH_CRITERIA, SETTLED_SEARCH_CRITERIA, fetchBillSearchCriteria, fetchSettledSearchCriteria, fetchBillEntityLookup, fetchBillPaymentTypesLookup,
 } from './settlements.service'
+import { fetchChargePaymentTypes, fetchBankAccountLookup } from './settlements.service'
 
 /** Escopo SEMPRE do JWT (usuário assina o movimento). */
 function scopeOf(req: Request): SettlementScope {
@@ -152,5 +153,21 @@ export async function retarget(req: Request, res: Response): Promise<void> {
     res.json({ ok: true, data })
   } catch (err) {
     handleError(res, err, 'settlements/bills/:orderId/:parcel/charge PUT')
+  }
+}
+
+export async function chargePaymentTypes(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchChargePaymentTypes(String(req.query.filter ?? ''), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'settlements/payment-types GET')
+  }
+}
+
+export async function bankAccountsLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchBankAccountLookup(String(req.query.filter ?? ''), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'settlements/bank-accounts GET')
   }
 }

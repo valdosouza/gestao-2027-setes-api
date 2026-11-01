@@ -75,16 +75,5 @@ export async function interfaceExists(interfaceId: number): Promise<boolean> {
   return rows.length > 0
 }
 
-/** Interface adquirida pelo institution? (contrato comercial). */
-export async function isInterfaceAcquired(
-  schemaName: string, institutionId: number, interfaceId: number
-): Promise<boolean> {
-  assertSchemaName(schemaName)
-  const [rows] = await pool.query<any[]>(
-    `SELECT 1 FROM \`${schemaName}\`.tb_institution_has_interface
-      WHERE tb_institution_id = ? AND tb_interface_id = ?
-        AND active = 'S' AND deleted = 'N'`,
-    [institutionId, interfaceId]
-  )
-  return rows.length > 0
-}
+// `isInterfaceAcquired` (contrato cru lido para decidir) MORREU na costura A1 da auth-api (D-AU6): "adquirida" é o ALCANCE do usuário
+// pela view do veredito (`interfaceAcquiredFor` em `@shared/auth/require-privilege`).

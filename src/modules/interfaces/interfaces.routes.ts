@@ -75,6 +75,13 @@ router.get('/:id', controller.getById)
  *   post:
  *     summary: Cria uma interface (id gerado MAX+1 no backend) e grava os privilégios
  *     tags: [Interfaces]
+ *     responses:
+ *       400: { description: 'i18nKey fora da forma da rota (D-PV42 — chave técnica em inglês; começa por letra; minúsculas, dígitos e hífen)' }
+ *       409:
+ *         description: >-
+ *           D-PV15 (Q-PV17): a mudança recriaria o C1 — INTERFACE_KEY_IN_USE (chave repetida em outra interface viva) ou
+ *           CATALOG_PAIR_IN_USE (a tela nasce sem o VISUALIZAR — toda tela, inclusive do grupo Super, D-GE19);
+ *           fields[] nomeia cada consumidor
  */
 router.post('/', controller.create)
 
@@ -84,6 +91,15 @@ router.post('/', controller.create)
  *   put:
  *     summary: Atualiza uma interface (o id nunca muda) e sincroniza os privilégios
  *     tags: [Interfaces]
+ *     responses:
+ *       400: { description: 'i18nKey fora da forma da rota (D-PV42)' }
+ *       409:
+ *         description: >-
+ *           D-PV15 (Q-PV17) + D-PV42 (Q-PV50): INTERFACE_KEY_IN_USE — a i18nKey de interface existente NÃO se renomeia (identificador
+ *           técnico — mudar é código + seed), tela do cliente que o código usa não vira recurso nem vai ao grupo Super, ou chave
+ *           repetida em outra interface viva; CATALOG_PAIR_IN_USE — sairia do catálogo um par que o código opera (guarda por roteador,
+ *           lista à mão — D-PV14), o VISUALIZAR de uma tela, o CONFIGURAR de interface com config/campo (D-PV25) ou um par reservado
+ *           (D-PV51), inclusive pelo PUT sem privilegeIds; fields[] nomeia cada consumidor
  */
 router.put('/:id', controller.update)
 
@@ -93,6 +109,8 @@ router.put('/:id', controller.update)
  *   delete:
  *     summary: Exclui logicamente uma interface (deleted='S')
  *     tags: [Interfaces]
+ *     responses:
+ *       409: { description: 'D-PV15/D-PV42: INTERFACE_KEY_IN_USE — interface cuja chave o código usa (rota do app, config/campo, par operado ou reservado) não pode ser excluída' }
  */
 router.delete('/:id', controller.remove)
 
@@ -161,9 +179,11 @@ router.put('/:id/configs/:name', controller.putConfig)
  * /api/interfaces/{id}/configs/{name}:
  *   delete:
  *     summary: Exclui logicamente uma configuração do catálogo (deleted='S')
+ *     description: D-PV65 — a ÚLTIMA config viva (sem campo no catálogo) leva junto o par (interface × CONFIGURAR), salvo se ele segue exigido
+ *       (código, Configurações Gerais, reservado). `retiredConfigure` diz se o par saiu.
  *     tags: [Interfaces]
  *     responses:
- *       200: { description: 'Configuração removida' }
+ *       200: { description: 'Configuração removida — `{ ok: true, retiredConfigure: boolean }`' }
  *       404: { description: 'Interface ou configuração inexistente' }
  */
 router.delete('/:id/configs/:name', controller.deleteConfig)

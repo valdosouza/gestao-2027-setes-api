@@ -1,7 +1,7 @@
 import { HttpError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { ListQuery, PagedRows, PublicSearchCriterion, publicCriteria } from '@shared/list'
-import { ModuleRow, ModuleInterfaceLookupRow, MenuScope } from './modules.interface'
+import { ModuleRow, ModuleInterfaceLookupRow } from './modules.interface'
 import { ModuleBodyDto } from './modules.dto'
 import {
   listModules, getModule, listEligibleInterfaces, findIneligibleInterfaceIds,
@@ -15,7 +15,13 @@ import {
  * trocando de institution). Interface vinculada precisa ser ELEGÍVEL
  * (contratada — contrato do grupo, D-GE22, lido pela chave, D-GE4 — + kind 'T' + fora do Super)
  * → 422 com os ids inválidos.
+ * D-PV24 (Valdo 2026-10-20): o SUPER escapa da licença também aqui (`escapesLicense` — a mesma peça das guardas): para ele o
+ * catálogo inteiro de kind 'T' fora do grupo Super é elegível em qualquer cliente (D-PV55). Admin segue pelo contrato.
+ * Quem chama passa o `req.institution` inteiro — ele é o escopo (`MenuScope`) e diz quem pede.
  */
+import { escapesLicense } from '@shared/auth/require-privilege'
+import type { InstitutionPayload } from '@shared/types/express'
+
 
 export { MODULE_SEARCH_CRITERIA }
 
@@ -37,9 +43,9 @@ export async function fetchModule(schemaName: string, id: number): Promise<Modul
 }
 
 export async function fetchEligibleInterfaces(
-  scope: MenuScope
+  who: InstitutionPayload
 ): Promise<ModuleInterfaceLookupRow[]> {
-  return listEligibleInterfaces(scope.schemaName, scope.institutionId)
+  return listEligibleInterfaces(who.schemaName, who.institutionId, escapesLicense(who))
 }
 
 /**
@@ -50,11 +56,11 @@ export async function fetchEligibleInterfaces(
  * devolve a tela ao módulo certo sozinha. O 422 fica só para id NOVO no array.
  */
 async function assertEligible(
-  scope: MenuScope, interfaceIds: number[], alreadyLinked: number[] = []
+  who: InstitutionPayload, interfaceIds: number[], alreadyLinked: number[] = []
 ): Promise<void> {
   const grandfathered = new Set(alreadyLinked)
   const candidates = interfaceIds.filter(id => !grandfathered.has(id))
-  const invalid = await findIneligibleInterfaceIds(scope.schemaName, scope.institutionId, candidates)
+  const invalid = await findIneligibleInterfaceIds(who.schemaName, who.institutionId, candidates, escapesLicense(who))
   if (invalid.length > 0) {
     throw new HttpError(422,
       `Interface(s) não elegível(is) ao menu (não contratada, não-tela ou do grupo Super): ${invalid.join(', ')}`,
@@ -64,19 +70,19 @@ async function assertEligible(
 }
 
 export async function createModule(
-  scope: MenuScope, input: ModuleBodyDto
+  who: InstitutionPayload, input: ModuleBodyDto
 ): Promise<{ id: number }> {
-  await assertEligible(scope, input.interfaceIds)
-  const id = await insertModuleCascade(scope.schemaName, input)
+  await assertEligible(who, input.interfaceIds)
+  const id = await insertModuleCascade(who.schemaName, input)
   return { id }
 }
 
 export async function editModule(
-  scope: MenuScope, id: number, input: ModuleBodyDto
+  who: InstitutionPayload, id: number, input: ModuleBodyDto
 ): Promise<void> {
-  const current = await fetchModule(scope.schemaName, id)
-  await assertEligible(scope, input.interfaceIds, current.interfaceIds)
-  await updateModuleCascade(scope.schemaName, id, input)
+  const current = await fetchModule(who.schemaName, id)
+  await assertEligible(who, input.interfaceIds, current.interfaceIds)
+  await updateModuleCascade(who.schemaName, id, input)
 }
 
 /**

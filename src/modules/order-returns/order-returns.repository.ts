@@ -545,3 +545,23 @@ export async function listCustomerLookup(
   )
   return rows as OrderReturnLookupRow[]
 }
+
+export interface CfopLookupRow { id: string; description: string; active: string | null }
+
+/**
+ * D-PV2: CFOPs do catálogo CENTRAL para o diálogo de faturamento da devolução — MESMO conjunto da 1ª página que a tela
+ * lia do cadastro de CFOP (`deleted='N'`, filtro por código/descrição/resumo, ordem pelo código, 50).
+ */
+export async function listCfopLookup(filter: string): Promise<CfopLookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT c.id, c.description, c.active
+       FROM setes_central.tb_cfop c
+      WHERE c.deleted = 'N'
+        AND (? IS NULL OR c.id LIKE ? OR c.description LIKE ? OR c.concise LIKE ?)
+      ORDER BY c.id
+      LIMIT 50`,
+    [like, like, like, like]
+  )
+  return rows.map(r => ({ id: String(r.id), description: String(r.description ?? ''), active: r.active ?? null }))
+}

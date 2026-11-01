@@ -1,7 +1,7 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
 import * as controller from './settlements.controller'
-import { requirePrivilege } from '@shared/auth/require-privilege'
-import { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
+import { PRIVILEGE_EXCLUIR } from '@shared/auth/privileges'
 
 /**
  * Rotas do módulo settlements — montadas em /api/settlements.
@@ -110,6 +110,45 @@ router.get('/bills/entity-lookup', controller.billEntityLookup)
  *       500: { description: Erro interno }
  */
 router.get('/bills/payment-types-lookup', controller.billPaymentTypesLookup)
+
+/**
+ * @swagger
+ * /api/settlements/payment-types:
+ *   get:
+ *     summary: Formas HABILITADAS para "trocar a cobrança" do título (lista de apoio da tela)
+ *     tags: [Settlements]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, description, kind, maxParcels } (até 100)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela)
+router.get('/payment-types', controller.chargePaymentTypes)
+
+/**
+ * @swagger
+ * /api/settlements/bank-accounts:
+ *   get:
+ *     summary: Contas bancárias da institution (conta da baixa — lista de apoio da tela)
+ *     tags: [Settlements]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, bankNumber, bankDescription, agency, agencyDv, number, numberDv } (até 100)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+router.get('/bank-accounts', controller.bankAccountsLookup)
 
 /**
  * @swagger
@@ -244,7 +283,8 @@ router.get('/settled/search-criteria', controller.settledSearchCriteria)
  *       409: { description: 'Baixa não está vigente (já estornada ou é um registro de estorno)' }
  *       500: { description: Erro interno }
  */
-router.post('/reversal', controller.reversal)
+// D-PV7: estornar a baixa = EXCLUIR (a baixa em si é POST / → INSERIR pelo verbo)
+router.post('/reversal', privilegeAct(PRIVILEGE_EXCLUIR), controller.reversal)
 
 /**
  * @swagger
@@ -321,8 +361,8 @@ router.get('/statements', controller.statements)
  *       404: { description: Título não encontrado }
  *       409: { description: Título quitado ou com boleto vigente }
  */
-// D21: autoridade do ato — muda extrato e comissão futuros
-router.put('/bills/:orderId/:parcel/charge',
-  requirePrivilege('settlements', PRIVILEGE_ALTERAR), controller.retarget)
+// D21: autoridade do ato — muda extrato e comissão futuros. ALTERAR pelo VERBO (D-PV7: trocar cobrança = A) — a guarda
+// do roteador confere; o `requirePrivilege` daqui saiu (seria a 2ª consulta do mesmo par)
+router.put('/bills/:orderId/:parcel/charge', controller.retarget)
 
 export default router

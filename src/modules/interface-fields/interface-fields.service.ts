@@ -5,15 +5,21 @@ import {
   getResolvedFields, invalidateFieldConfig, findInterfaceIdByKey, ResolvedField,
 } from '@shared/field-config'
 import {
-  InterfaceVitrineRow, listVitrine, interfaceExists, isInterfaceAcquired, vitrineSearchCriteria,
+  InterfaceVitrineRow, listVitrine, interfaceExists, vitrineSearchCriteria,
 } from '@shared/interface-vitrine'
+import { assertCanConfigure, canConfigure } from '@shared/auth/configure-privilege'
+import { interfaceAcquiredFor } from '@shared/auth/require-privilege'
+import { ErrorCodes } from '@shared/errors/error-codes'
 import { FieldConfigInput } from './interface-fields.interface'
 import { getCatalogFieldRequired, upsertFieldConfig } from './interface-fields.repository'
 
 /**
  * Regra do painel de campos configuráveis (decisões 2, 3 e 6 da Fase 2):
  * vitrine com todas as interfaces; campos resolvidos (inclusive travados);
- * gravação só em interface adquirida e NUNCA afrouxando o baseline técnico.
+ * gravação só em interface adquirida (D-PV24: o super escapa; D-PV39: tela delegável = adquirida pela Setes) e NUNCA
+ * afrouxando o baseline técnico. D-PV25 (Valdo 2026-10-20): gravar required/caption/mask de um campo da tela X exige
+ * CONFIGURAR em X (a interface ALVO), por qualquer caminho — o ALTERAR do painel perdeu o consumidor (D-PV6 superada).
+ * `canConfigure` sai no GET /:id (aditivo) para a tela saber se o painel está editável.
  */
 
 /** Lista branca da vitrine deste painel (peça @shared/interface-vitrine — D-BA20). */
@@ -30,15 +36,20 @@ export async function fetchVitrine(
   return listVitrine(query, institution.schemaName, institution.institutionId)
 }
 
+export type ResolvedFieldForUser = ResolvedField & { canConfigure: boolean }
+
 export async function fetchResolvedFields(
   institution: InstitutionPayload, interfaceId: number
-): Promise<ResolvedField[]> {
+): Promise<ResolvedFieldForUser[]> {
   if (!(await interfaceExists(interfaceId))) {
     throw new HttpError(404, 'Interface não encontrada')
   }
-  return getResolvedFields(
+  const fields = await getResolvedFields(
     institution.schemaName, institution.institutionId, interfaceId
   )
+  if (fields.length === 0) return []
+  const allowed = await canConfigure(institution, interfaceId)     // D-PV25
+  return fields.map(f => ({ ...f, canConfigure: allowed }))
 }
 
 /**
@@ -63,11 +74,12 @@ export async function saveFieldConfig(
   if (!(await interfaceExists(interfaceId))) {
     throw new HttpError(404, 'Interface não encontrada')
   }
-  if (!(await isInterfaceAcquired(
-    institution.schemaName, institution.institutionId, interfaceId
-  ))) {
-    throw new HttpError(403, 'Interface não adquirida — configuração indisponível')
+  // D-PV24/D-PV39: o super escapa do "adquirida"; a tela delegável conta como adquirida pela Setes
+  if (!(await interfaceAcquiredFor(institution, interfaceId))) {
+    throw new HttpError(403, 'Interface não adquirida — configuração indisponível', [], ErrorCodes.INTERFACE_NOT_ALLOWED)
   }
+  // D-PV25: o campo da tela X se ajusta com CONFIGURAR em X (admin passa, super escapa)
+  await assertCanConfigure(institution, interfaceId)
 
   const requiredTech = await getCatalogFieldRequired(interfaceId, fieldName)
   if (requiredTech === null) {

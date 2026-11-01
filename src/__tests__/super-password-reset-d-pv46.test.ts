@@ -37,7 +37,7 @@ describe('D-PV46 — a peça do reset do Super (dublê)', () => {
         expect(params).toEqual([world.user?.id ?? params[0], 1])          // só a institution da Setes
         return [world.superLink ? [{ active: world.linkActive ?? 'S' }] : []]
       }
-      if (/UPDATE setes_central\.tb_user SET password = \?, activation_key = NULL/.test(q)) {
+      if (/UPDATE setes_central\.tb_user SET password = \?, password_set_at = \?, activation_key = NULL/.test(q)) {
         world.user!.password = params[0]
         return [{ affectedRows: 1 }]
       }
@@ -54,7 +54,8 @@ describe('D-PV46 — a peça do reset do Super (dublê)', () => {
     expect(world.user!.password).toBe(HASH)
     expect(sql[0]).toMatch(/FOR UPDATE/)                                   // 1º statement = a trava do usuário (regra 12)
     expect(sql[1]).toMatch(/kind = 'super'/)
-    expect(sql[2]).toMatch(/UPDATE setes_central\.tb_user SET password = \?, activation_key = NULL, updated_at = NOW\(\)/)
+    // D-EA7: o script define a senha pela MESMA peça — o instante T vai junto (as sessões anteriores do Super caem)
+    expect(sql[2]).toMatch(/UPDATE setes_central\.tb_user SET password = \?, password_set_at = \?, activation_key = NULL, updated_at = NOW\(\)/)
   })
 
   it('admin/user (sem vínculo super na Setes): recusa SEM escrita', async () => {
@@ -147,6 +148,8 @@ const hasEnv = fs.existsSync(path.join(REPO, '.env'))
     for (const t of ['tb_user', 'tb_institution_has_user', 'tb_mailing', 'tb_entity_has_mailing']) {
       await admin.query(`CREATE TABLE \`${PROBE}\`.\`${t}\` LIKE setes_central.\`${t}\``)   // sem FK, sem dado
     }
+    // D-EA7 (script sql/70): a coluna do instante da senha — a cópia nasce no formato DEPOIS da janela, mesmo antes de o 70 ir ao banco
+    await admin.query(`ALTER TABLE \`${PROBE}\`.tb_user ADD COLUMN IF NOT EXISTS password_set_at DATETIME NULL DEFAULT NULL AFTER password`)
     const now = new Date()
     // 900001 Super ativo · 900002 admin · 900003 Super com USUÁRIO inativo · 900004 'super' em OUTRA institution (ignorado) ·
     // 900005 vínculo super EXCLUÍDO · 900006 Super com VÍNCULO adormecido (ihu.active = N — A-RS10)

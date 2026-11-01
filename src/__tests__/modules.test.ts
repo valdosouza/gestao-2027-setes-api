@@ -32,7 +32,7 @@ beforeEach(() => jest.clearAllMocks())
 
 const SCHEMA = 'setes_acme'
 // escopo da escrita do menu: schema (módulos do GRUPO — D-GE5) + estabelecimento (contrato — D-GE4)
-const SCOPE = { schemaName: SCHEMA, institutionId: 70 } // id que não colide com nenhuma interface dos casos
+const SCOPE = { schemaName: SCHEMA, institutionId: 70, userId: 1, role: 'admin' } // id que não colide com nenhuma interface dos casos
 
 // ---------------------------------------------------------------------
 // DTO
@@ -188,7 +188,7 @@ describe('modules service', () => {
     // 4 = vinculada e hoje inelegível (contrato revogado); 7 = tela nova
     await editModule(SCOPE, 3, { description: 'R', interfaceIds: [4, 12, 7] } as any)
 
-    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, 70, [7])
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, 70, [7], false)     // D-PV24: 4º arg = o super escapa da licença (aqui não é super)
     expect(spyUpdate).toHaveBeenCalledWith(SCHEMA, 3,
       expect.objectContaining({ interfaceIds: [4, 12, 7] }))
     spyGet.mockRestore(); spyInvalid.mockRestore(); spyUpdate.mockRestore()
@@ -212,7 +212,7 @@ describe('modules service', () => {
 
     await createModule(SCOPE, { description: 'N', interfaceIds: [4, 12] } as any)
 
-    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, 70, [4, 12])
+    expect(spyInvalid).toHaveBeenCalledWith(SCHEMA, 70, [4, 12], false)
     spyInvalid.mockRestore(); spyInsert.mockRestore()
   })
 

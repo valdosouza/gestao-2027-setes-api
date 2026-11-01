@@ -13,6 +13,7 @@
 export * from './entity.types'
 export * from './entity.dto'
 export * from './entity.repository'
+export * from './own-establishment'
 
 export * from '../fiscal/fiscal.types'
 export * from '../fiscal/fiscal.dto'

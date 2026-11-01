@@ -8,6 +8,7 @@
     "db:migrate": "tsx --require tsconfig-paths/register scripts/run-migrations.ts",
     "fields:gen": "tsx scripts/gerar-interface-fields.ts",
     "errors:gen": "tsx scripts/gerar-error-catalog.ts",
+    "check:privileges": "tsx --require tsconfig-paths/register scripts/check-privilege-catalog.ts",
     "build": "tsc",
     "start": "node scripts/start-production.js",
     "test": "jest --runInBand --forceExit"
@@ -56,7 +57,8 @@
       "<rootDir>/src/test-setup/jwt-keys.ts"
     ],
     "setupFilesAfterEnv": [
-      "<rootDir>/src/test-setup/time-zone.mock.ts"
+      "<rootDir>/src/test-setup/time-zone.mock.ts",
+      "<rootDir>/src/test-setup/access-session.mock.ts"
     ]
   }
 }

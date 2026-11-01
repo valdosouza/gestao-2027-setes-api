@@ -12,6 +12,9 @@ import {
   CustomerInput, CustomerListRow, CustomerFull, RoleLookupRow,
   PartnershipPartnerRow, PartnershipPartnerInput,
 } from './customers.interface'
+import {
+  isOwnEstablishment, isOwnEstablishmentDocument, assertOwnEstablishmentChainUnchanged,
+} from '@shared/entity/own-establishment'
 
 /**
  * Repositório do CONCRETO Customer — CONSUMIDOR da cadeia de entidade fiscal
@@ -108,6 +111,7 @@ export async function getCustomer(
     ...chain, ...rows[0],
     wallet: Number(rows[0].tbPaymentTypesId) > 0 ? 'S' : 'N',
     tax,
+    ownEstablishment: isOwnEstablishment(id, institutionId),   // D-PV32: o app congela a cadeia e a aba Tributação
   }
 }
 
@@ -168,12 +172,15 @@ export async function insertCustomerCascade(
   input: CustomerInput, schemaName: string, institutionId: number,
   updatedBy: number | null = null
 ): Promise<{ id: number; reused: boolean }> {
+  const own = await isOwnEstablishmentDocument(input, institutionId)
+  if (own) await assertOwnEstablishmentChainUnchanged(schemaName, institutionId, input)
   const table = `${schemaName}.tb_customer`
   const conn  = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    const { id, reused } = await saveEntityFiscalChain(conn, null, input, updatedBy)
+    // D-PV32: o próprio estabelecimento PODE ser papel — a cadeia e a tributação dele não se escrevem por aqui (conferido ANTES da transação)
+    const { id, reused } = own ? { id: institutionId, reused: true } : await saveEntityFiscalChain(conn, null, input, updatedBy)
 
     const [existing] = await conn.query<any[]>(
       `SELECT deleted FROM ?? WHERE id = ? AND tb_institution_id = ? FOR UPDATE`,
@@ -208,7 +215,7 @@ export async function insertCustomerCascade(
 
     // Aba Tributação (decisão 17): salva JUNTO, na mesma transação;
     // undefined/null = não tocar (mesma proteção das listas da cadeia)
-    if (input.tax != null) {
+    if (!own && input.tax != null) {   // D-PV32: a tributação do emitente só pelo Meu Estabelecimento
       await upsertEntityTax(conn, schemaName, institutionId, id, input.tax)
     }
 
@@ -227,11 +234,13 @@ export async function updateCustomerCascade(
   id: number, input: CustomerInput, schemaName: string, institutionId: number,
   updatedBy: number | null = null
 ): Promise<void> {
+  const own = isOwnEstablishment(id, institutionId)
+  if (own) await assertOwnEstablishmentChainUnchanged(schemaName, institutionId, input)
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
 
-    await saveEntityFiscalChain(conn, id, input, updatedBy)
+    if (!own) await saveEntityFiscalChain(conn, id, input, updatedBy)   // D-PV32: emitente = cadeia só pelo Meu Estabelecimento
 
     const paymentTypesId =
       await resolveWalletPaymentType(conn, schemaName, institutionId, input)
@@ -244,7 +253,7 @@ export async function updateCustomerCascade(
       [`${schemaName}.tb_customer`, ...CUSTOMER_FIELDS(input, paymentTypesId), id, institutionId]
     )
 
-    if (input.tax != null) {
+    if (!own && input.tax != null) {   // D-PV32: a tributação do emitente só pelo Meu Estabelecimento
       await upsertEntityTax(conn, schemaName, institutionId, id, input.tax)
     }
 
@@ -388,4 +397,27 @@ export async function setCustomerPartnership(
   } finally {
     conn.release()
   }
+}
+
+export interface CollaboratorLookupRow { id: number; nickTrade: string | null; nameCompany: string | null }
+
+/**
+ * D-PV2: colaboradores da institution para a aba Parceria — MESMO conjunto da lista de Colaboradores (institution,
+ * `deleted='N'`, ativos e inativos: o salvar da parceria só confere `deleted`), mesma ordem; até 50.
+ */
+export async function listCollaboratorLookup(
+  filter: string, schemaName: string, institutionId: number
+): Promise<CollaboratorLookupRow[]> {
+  const like = filter ? `%${escapeLike(filter)}%` : null
+  const [rows] = await pool.query<any[]>(
+    `SELECT c.id, e.nick_trade AS nickTrade, e.name_company AS nameCompany
+       FROM ?? c
+       INNER JOIN setes_central.tb_entity e ON e.id = c.id
+      WHERE c.tb_institution_id = ? AND c.deleted = 'N'
+        AND (? IS NULL OR e.nick_trade LIKE ? OR e.name_company LIKE ?)
+      ORDER BY e.nick_trade, c.id
+      LIMIT 50`,
+    [`${schemaName}.tb_collaborator`, institutionId, like, like, like]
+  )
+  return rows.map(r => ({ id: Number(r.id), nickTrade: r.nickTrade ?? null, nameCompany: r.nameCompany ?? null }))
 }

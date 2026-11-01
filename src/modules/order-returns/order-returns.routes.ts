@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 import * as controller from './order-returns.controller'
 
 /**
@@ -111,6 +113,26 @@ router.get('/search-criteria', controller.searchCriteria)
  *       500: { description: Erro interno }
  */
 router.get('/customer-lookup', controller.customerLookup)
+
+/**
+ * @swagger
+ * /api/order-returns/cfop-lookup:
+ *   get:
+ *     summary: CFOPs do catálogo central para o faturamento da devolução (lista de apoio da tela)
+ *     tags: [OrderReturns]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, description, active } (até 50)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela) — o /api/cfop é do Super (superGuard): o admin recebia 403 nesse diálogo; declarada ANTES de GET /:id
+router.get('/cfop-lookup', controller.cfopLookup)
 router.post('/', controller.create)
 
 /**
@@ -182,6 +204,7 @@ router.delete('/:id', controller.remove)
  *       500: { description: Erro interno }
  */
 router.put('/:id/items/:itemId', controller.updateItem)
-router.delete('/:id/items/:itemId', controller.removeOrderItem)
+// D-PV21: ato sobre a devolução ABERTA = ALTERAR (tirar item); INSERIR = abrir a devolução; EXCLUIR = apagá-la (D-PV7)
+router.delete('/:id/items/:itemId', privilegeAct(PRIVILEGE_ALTERAR), controller.removeOrderItem)
 
 export default router

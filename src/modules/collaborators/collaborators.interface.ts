@@ -38,6 +38,8 @@ export interface CollaboratorListRow {
 
 /** Objeto COMPLETO devolvido no GET /api/collaborators/:id. */
 export interface CollaboratorFull extends EntityFiscalFull {
+  /** D-PV32: a entity é o próprio estabelecimento — cadeia e tributação SOMENTE LEITURA (edite em Meu Estabelecimento). */
+  ownEstablishment: boolean
   dtAdmission:         string | null
   dtResignation:       string | null
   salary:              number | null

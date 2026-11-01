@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { openRoute, privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 import * as controller from './interface-fields.controller'
 
 /**
@@ -75,7 +77,8 @@ router.get('/search-criteria', controller.searchCriteria)
  *       200:
  *         description: 'Lista resolvida ([] quando o módulo não tem catálogo)'
  */
-router.get('/key/:moduleKey', controller.getFieldsByKey)
+// D-PV2 (exceção nomeada): a config resolvida monta TODA tela — sem privilégio do painel
+router.get('/key/:moduleKey', openRoute('config de campos que monta toda tela'), controller.getFieldsByKey)
 
 /**
  * @swagger
@@ -90,7 +93,7 @@ router.get('/key/:moduleKey', controller.getFieldsByKey)
  *         schema: { type: integer }
  *     responses:
  *       200:
- *         description: '{ ok, data: [{ fieldName, tableName, kind, requiredTech, required, caption, mask, customized }] }'
+ *         description: '{ ok, data: [{ fieldName, tableName, kind, requiredTech, required, caption, mask, customized, canConfigure }] } — canConfigure (D-PV25): quem pede tem CONFIGURAR na interface alvo'
  *       404:
  *         description: Interface não encontrada
  */
@@ -123,9 +126,11 @@ router.get('/:id', controller.getFields)
  *     responses:
  *       200: { description: 'Config salva' }
  *       400: { description: 'Validação falhou (ex.: tentar afrouxar campo técnico)' }
- *       403: { description: 'Interface não adquirida' }
+ *       403: { description: 'Interface não adquirida (INTERFACE_NOT_ALLOWED) / sem CONFIGURAR na interface alvo (PRIVILEGE_REQUIRED — D-PV25)' }
  *       404: { description: 'Interface ou campo inexistente' }
  */
-router.put('/:id/:fieldName', controller.putField)
+// D-PV25 (supera a D-PV6): o VISUALIZAR do painel só deixa NAVEGAR; salvar o campo da tela X exige CONFIGURAR em X — decidido no
+// service pela interface ALVO (`@shared/auth/configure-privilege`). O ALTERAR do painel perdeu o consumidor (seed 68, C1).
+router.put('/:id/:fieldName', privilegeAct(PRIVILEGE_VISUALIZAR), controller.putField)
 
 export default router

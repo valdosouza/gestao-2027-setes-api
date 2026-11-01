@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import {
-  getInstitutionInterfaces, updateInstitutionInterfaces, updateFeatureFlag,
+  getInstitutionInterfaces, setInstitutionInterface, updateFeatureFlag,
 } from './admin.service'
 import { isSuper } from '@shared/auth/roles'
 import { HttpError } from '@shared/errors/http-error'
@@ -105,36 +105,68 @@ router.get('/institutions/:id/interfaces', async (req: Request, res: Response) =
   }
 })
 
-const interfacesSchema = z.object({
-  interfaceIds: z.array(z.number().int().positive()),
+const interfaceLinkSchema = z.object({
+  linked: z.boolean(),
 })
+
+/** `:interfaceId` inteiro positivo, senão 400 (mesma leitura do parseInstitutionId). */
+function parseInterfaceId(req: Request, res: Response): number | null {
+  const raw = String(req.params.interfaceId ?? '')
+  const id = Number(raw)
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'interfaceId inválido', fields: [{ field: 'interfaceId', message: 'Informe um id (inteiro positivo)' }] })
+    return null
+  }
+  return id
+}
 
 /**
  * @swagger
- * /api/admin/institutions/{id}/interfaces:
+ * /api/admin/institutions/{id}/interfaces/{interfaceId}:
  *   put:
- *     summary: Sincroniza o contrato comercial (concede a lista, revoga as demais)
+ *     summary: UMA marca do contrato comercial (D-PV34) — concede ou revoga uma interface do cliente; idempotente
  *     tags: [Admin]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [linked]
+ *             properties:
+ *               linked: { type: boolean }
+ *     responses:
+ *       200: { description: '{ ok, data: { interfaceId, linked, changed } }' }
+ *       400: { description: 'Corpo inválido ou interface fora do catálogo' }
+ *       404: { description: Institution não encontrada }
  */
-router.put('/institutions/:id/interfaces', async (req: Request, res: Response) => {
+router.put('/institutions/:id/interfaces/:interfaceId', async (req: Request, res: Response) => {
   const institutionId = parseInstitutionId(req, res)
   if (institutionId === null) return
+  const interfaceId = parseInterfaceId(req, res)
+  if (interfaceId === null) return
 
-  const parsed = interfacesSchema.safeParse(req.body)
+  const parsed = interfaceLinkSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json({ error: 'Body inválido: esperado { interfaceIds: number[] }' })
+    res.status(400).json({ error: 'Body inválido: esperado { linked: boolean }' })
     return
   }
   try {
-    await updateInstitutionInterfaces(institutionId, parsed.data.interfaceIds)
-    logger.info('Contrato de interfaces atualizado', { institutionId, total: parsed.data.interfaceIds.length })
-    res.json({ ok: true })
+    const change = await setInstitutionInterface(institutionId, interfaceId, parsed.data.linked)
+    // trilha (gate socrático da D-PV11): a marca e quem a fez — a mesma linha da tela delegável; marca sem mudança não é evento
+    if (change.changed) {
+      logger.info('Interface do estabelecimento alterada', {
+        door: 'admin', targetInstitutionId: institutionId, interfaceId, linked: change.linked,
+        byInstitutionId: req.institution!.institutionId, byUserId: req.institution!.userId, byRole: req.institution!.role,
+      })
+    }
+    res.json({ ok: true, data: change })
   } catch (err) {
     if (err instanceof HttpError) {
-      res.status(err.statusCode).json({ error: err.message })
+      res.status(err.statusCode).json({ error: err.message, code: err.code, fields: err.fields ?? [] })
       return
     }
-    logger.error('Erro ao atualizar interfaces do cliente', { err })
+    logger.error('Erro ao atualizar interface do cliente', { err })
     res.status(500).json({ error: 'Erro interno' })
   }
 })

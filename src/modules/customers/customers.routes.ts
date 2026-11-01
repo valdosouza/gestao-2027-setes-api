@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_VISUALIZAR, PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 import * as controller from './customers.controller'
 
 const router = Router()
@@ -61,6 +63,26 @@ router.get('/salesman-lookup', controller.salesmanLookup)
  *       500: { description: Erro interno }
  */
 router.get('/carrier-lookup', controller.carrierLookup)
+
+/**
+ * @swagger
+ * /api/customers/collaborator-lookup:
+ *   get:
+ *     summary: Colaboradores da institution para a aba Parceria (lista de apoio — privilégio da interface partnerships)
+ *     tags: [Customers]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, nickTrade, nameCompany } (até 50)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela); a aba Parceria é a interface 'R' `partnerships` (A-PV2) — declarada ANTES de GET /:id
+router.get('/collaborator-lookup', privilegeAct(PRIVILEGE_VISUALIZAR, 'partnerships'), controller.collaboratorLookup)
 
 /**
  * @swagger
@@ -252,7 +274,8 @@ router.delete('/:id', controller.remove)
  *       404: { description: Cliente não encontrado }
  *       500: { description: Erro interno }
  */
-router.get('/:id/partnership', controller.getPartnership)
-router.put('/:id/partnership', controller.putPartnership)
+// A-PV2: a aba Parceria é a interface kind 'R' `partnerships` — VISUALIZAR/ALTERAR DELA (não os de Clientes)
+router.get('/:id/partnership', privilegeAct(PRIVILEGE_VISUALIZAR, 'partnerships'), controller.getPartnership)
+router.put('/:id/partnership', privilegeAct(PRIVILEGE_ALTERAR, 'partnerships'), controller.putPartnership)
 
 export default router

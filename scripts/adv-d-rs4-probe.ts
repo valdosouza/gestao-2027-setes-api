@@ -127,6 +127,8 @@ async function main() {
   try {
     await admin.query(`CREATE SCHEMA \`${PROBE}\` DEFAULT CHARACTER SET utf8mb4`)
     await admin.query(`CREATE TABLE \`${PROBE}\`.tb_user LIKE setes_central.tb_user`)
+    // D-EA7 (script sql/70): a coluna do instante da senha (a peça "definir a senha" a grava junto do hash)
+    await admin.query(`ALTER TABLE \`${PROBE}\`.tb_user ADD COLUMN IF NOT EXISTS password_set_at DATETIME NULL DEFAULT NULL AFTER password`)
     const users = Array.from({ length: 8 }, (_, i) => 900001 + i)
     await admin.query(`INSERT INTO \`${PROBE}\`.tb_user (id, password, active, activation_key, created_at, updated_at, deleted) VALUES ?`,
       [users.map(id => [id, `HASH${id}`, 'S', null, new Date(), new Date(), 'N'])])

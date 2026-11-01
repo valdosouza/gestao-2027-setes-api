@@ -28,6 +28,8 @@ export interface CarrierListRow {
 
 /** Objeto COMPLETO devolvido no GET /api/carriers/:id. */
 export interface CarrierFull extends EntityFiscalFull {
+  /** D-PV32: a entity é o próprio estabelecimento — cadeia e tributação SOMENTE LEITURA (edite em Meu Estabelecimento). */
+  ownEstablishment: boolean
   active: SN | null
   tax:    EntityTaxRow | null
 }

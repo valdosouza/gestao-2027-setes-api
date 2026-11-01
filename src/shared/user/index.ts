@@ -1,6 +1,7 @@
 import pool from '@shared/db/connection'
 import { PoolConnection } from 'mysql2/promise'
 import { nextEntityId, insertEntity } from '@shared/entity/entity.repository'
+import { passwordSetAt } from '@shared/auth/password'
 
 /**
  * Peça `user` — nascimento de uma CREDENCIAL (entity + tb_user + e-mail de
@@ -117,10 +118,11 @@ export async function insertUserCascade(
     await insertEntity(conn, id, {
       nameCompany: input.nameCompany, nickTrade: input.nickTrade,
     })
+    // D-EA7: a criação da credencial grava o instante T junto do hash (o par)
     await conn.query(
-      `INSERT INTO setes_central.tb_user (id, password, active, created_at, updated_at)
-       VALUES (?, ?, ?, NOW(), NOW())`,
-      [id, passwordHash, input.active]
+      `INSERT INTO setes_central.tb_user (id, password, password_set_at, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NOW(), NOW())`,
+      [id, passwordHash, passwordHash ? passwordSetAt() : null, input.active]
     )
     await syncLoginEmail(conn, id, input.email)
     if (link !== null) {

@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { byDocument, getTax, putTax } from './entities.controller'
+import { byDocument } from './entities.controller'
 
 const router = Router()
 
@@ -48,58 +48,10 @@ const router = Router()
  */
 router.get('/by-document', byDocument)
 
-/**
- * @swagger
- * /api/entities/{id}/tax:
- *   get:
- *     summary: Tributação da entidade na institution do usuário logado
- *     description: >
- *       Fase 3 Rodada 4 (decisões 14–17) — tributação por RELAÇÃO COMERCIAL
- *       (tb_entity_tax no schema do cliente, PK entity + institution).
- *       Qualquer entidade pode precisar de tributação para receber notas;
- *       os módulos de papel (customers) salvam a aba junto no próprio POST/PUT.
- *     tags: [Entities]
- *     security:
- *       - BearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: integer }
- *     responses:
- *       200: { description: 'Envelope { ok, data } — EntityTaxRow ou null se nunca configurada' }
- *       401: { description: Não autenticado }
- *       404: { description: Entidade não encontrada }
- *       500: { description: Erro interno }
- *   put:
- *     summary: Gravar/atualizar a tributação da entidade (upsert)
- *     tags: [Entities]
- *     security:
- *       - BearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: integer }
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             description: >
- *               consumer/issRetido/issIndIncFiscal S|N (radiobox), byPassSt/
- *               autoSendInvoice/autoSendInvoiceJustXml S|N (checkbox),
- *               taxRegime (dropdown canônico), indIeDest 1|2|9,
- *               issExigibilidade 01..07, issProcessNr (25)
- *     responses:
- *       200: { description: 'Envelope { ok }' }
- *       400: { description: Validação (erro por campo) }
- *       401: { description: Não autenticado }
- *       404: { description: Entidade não encontrada }
- *       500: { description: Erro interno }
- */
-router.get('/:id/tax', getTax)
-router.put('/:id/tax', putTax)
+// D-PV23/D-PV30 (Valdo 2026-10-20, fecham a Q-PV14 (a) e a Q-PV25 (a)): as rotas AVULSAS `GET/PUT /:id/tax` SAÍRAM. Elas gravavam
+// `tb_entity_tax` (os FATOS fiscais da relação) por fora do ALTERAR do papel e das validações do Meu Estabelecimento — o gate
+// adversarial da D-PV2 as achou (HIGH, interino `adminGuard`). As três vias da REGRA de tributação (geral, por produto, por
+// cliente) são pelo cadastro de origem; a tributação da RELAÇÃO se edita na aba Tributação do PAPEL (na transação dele) e a do
+// emitente no Meu Estabelecimento. Sem consumidor no app. A sonda do gate virou cerca: `adversarial-pv2-gate.test.ts`.
 
 export default router

@@ -75,13 +75,42 @@ describe('auth.service — login', () => {
     expect(payload.institutionId).toBeUndefined()   // não passa no auth.middleware
   })
 
-  it("'super' fora da institution 1 é rebaixado para 'user' (decisão 14)", async () => {
-    mockGetInstitutions.mockResolvedValue([{ ...alphaLink, profile: 'super' }])
-    const result = await login('valdo@setes.com.br', '12345')
+  // Costura A1 da auth-api (D-AU3/D-AU6, 2026-10-31): o rebaixamento da decisão 14 é da VIEW `setes_central.vw_user_link` (o ÚNICO
+  // intérprete de `tb_institution_has_user.kind` — 'super' só na institution 1; a semântica da view é provada ao vivo em banco
+  // descartável por `scripts/prove-user-access-views.ts`). O login não reinterpreta nada: o repositório lê o `profile` da view e o
+  // service o repassa ao token.
+  it("'super' fora da institution 1 é rebaixado para 'user' (decisão 14) — pela VIEW; o login repassa o perfil da linha", async () => {
+    // (1) o repositório REAL lê o vínculo e o perfil da view (nunca `tb_institution_has_user.kind` cru)
+    const realRepo = jest.requireActual('../modules/auth/auth.repository') as typeof authRepo
+    const pool = (jest.requireActual('../shared/db/connection') as any).default
+    const spy = jest.spyOn(pool, 'query').mockResolvedValueOnce([
+      [{ institutionId: 2, schemaName: 'setes_alpha', name: 'Empresa Alpha', profile: 'user' }], [],
+    ] as any)
+    try {
+      const links = await realRepo.getInstitutionsForUser(1)
+      const [sql, params] = spy.mock.calls[0] as [string, any[]]
+      const flat = sql.replace(/\s+/g, ' ')
+      expect(flat).toMatch(/FROM setes_central\.vw_user_link l/)
+      expect(flat).toMatch(/\bl\.profile\b/)
+      expect(flat).not.toMatch(/tb_institution_has_user/)
+      expect(params).toEqual([1])
+      expect(links).toEqual([{ institutionId: 2, schemaName: 'setes_alpha', name: 'Empresa Alpha', profile: 'user' }])
+    } finally {
+      spy.mockRestore()
+    }
 
+    // (2) a linha que a view devolve para o vínculo 'super' com a institution 2 (perfil já rebaixado) → token com 'user'
+    mockGetInstitutions.mockResolvedValue([{ ...alphaLink, profile: 'user' }])
+    const result = await login('valdo@setes.com.br', '12345')
     const payload = verifyRs256(result.token)
     expect(payload.institutionId).toBe(2)
     expect(payload.role).toBe('user')
+
+    // (3) o service não tem regra própria de perfil: repassa o que a linha traz (a regra mora UMA vez, na view)
+    mockGetInstitutions.mockResolvedValue([{ ...alphaLink, profile: 'admin' }])
+    expect(verifyRs256((await login('valdo@setes.com.br', '12345')).token).role).toBe('admin')
+    mockGetInstitutions.mockResolvedValue([{ ...alphaLink, profile: null }])
+    expect(verifyRs256((await login('valdo@setes.com.br', '12345')).token).role).toBe('user')
   })
 })
 

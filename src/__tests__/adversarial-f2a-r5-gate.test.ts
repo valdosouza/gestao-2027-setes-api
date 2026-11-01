@@ -14,6 +14,7 @@ import fs from 'fs'
 import path from 'path'
 import request from 'supertest'
 import { testToken } from '../test-setup/test-token'
+import { accessAnswer } from '../test-setup/access-model'
 import { rawServiceRow } from '../test-setup/fiscal-voice-rows'
 
 jest.mock('../shared/db/connection', () => ({
@@ -31,7 +32,6 @@ import { readServiceVoiceOfLife, voiceFailureCause, FiscalVoiceUnavailableError 
 import { runAsActor } from '../shared/request-actor'
 import { assertAppliedMatchFiles, runMigrationsForSchema, splitStatements } from '../migrations/runner'
 import { f2aFreezeTriggerSpecs, f2aFreezeTriggersMissingIn, F2A_TOMBSTONE_NAME, F2A_PASSIVO_NAME } from '../migrations/f2a-freeze-triggers'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import app from '../app'
 
 const REPO = path.join(__dirname, '..', '..')
@@ -53,7 +53,6 @@ const denied = err('ER_TABLEACCESS_DENIED_ERROR', 1142, "SELECT command denied t
 
 beforeEach(() => {
   jest.clearAllMocks()
-  resetPrivilegeCache()
 })
 
 // =================================================================================================
@@ -113,9 +112,9 @@ describe('2 — D-F151: `@shared/request-actor` não cruza autores entre requisi
     refSeq = 0
     ;(crash.newCrashRef as jest.Mock).mockImplementation(() => `REFR5${String(++refSeq).padStart(3, '0')}`)
     q.mockImplementation(async (sql: string, params: any[] = []) => {
-      if (/FROM setes_central\.tb_interface WHERE i18n_key/.test(sql)) { const id = CATALOG[String(params[0])]; return [id ? [{ id }] : []] }
-      if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]
-      if (/tb_user_has_privilege/.test(sql)) return [[]]
+      // costura A1 (D-AU3/D-AU6): o veredito é a pilha de views — os dois autores são admin da institution 1, os ramos contratados
+      const a = accessAnswer(sql, params, { profile: 'admin', contracted: Object.keys(CATALOG) })
+      if (a) return [a, []]
       if (/vw_order_interface/.test(sql)) return [[{ k: 'service-orders' }]]
       if (/tb_invoice_cancel_waiver/.test(sql)) return [[]]
       if (/vw_invoice_life/.test(sql)) return [[{ invoiceId: ORDER, invoiceDeleted: 'N', lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]]

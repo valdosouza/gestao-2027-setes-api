@@ -17,8 +17,15 @@ function walk(dir: string): string[] {
 // D-CJ2 (frente do CNPJ alfanumérico, 2026-10-15): o 2º subpath permitido é a inscrição federal `fiscal-api/federal-id` — peça PURA
 // (sem banco, sem I/O), a regra única do CPF/CNPJ que o `@shared/validation` reexporta. Nada do lado de escrita.
 const ALLOWED = new Set(['fiscal-api/reading', 'fiscal-api/federal-id'])
+// Costura A1 da auth-api (D-AU6, Valdo 2026-10-31): o 3º subpath é o LEITOR do veredito de acesso `fiscal-api/access` (a pilha de views
+// publicada — nada de escrita). Só o ADAPTADOR o importa (`@shared/access` — um leitor no setes-api) e a prova das views em banco descartável.
+const ALLOWED_ONLY_IN: Readonly<Record<string, readonly string[]>> = {
+  // as provas em banco DESCARTÁVEL leem a biblioteca direto (a prova das views, a sonda do gate adversarial e a medição da D-AU8)
+  'fiscal-api/access': ['src/shared/access/index.ts', 'scripts/prove-user-access-views.ts', 'scripts/adv-a1-probe.ts',
+    'scripts/adv-a1-delta-probe.ts', 'scripts/measure-access-reads.ts'],
+}
 
-describe('cerca F2a — o setes-api só importa `fiscal-api/reading` e `fiscal-api/federal-id`', () => {
+describe('cerca F2a — o setes-api só importa `fiscal-api/reading`, `fiscal-api/federal-id` e (só no adaptador) `fiscal-api/access`', () => {
   it('nenhum import/require/import() de `fiscal-api` (raiz) ou de outro subpath dele', () => {
     const bad: string[] = []
     for (const f of ROOTS.flatMap(walk)) {
@@ -30,7 +37,9 @@ describe('cerca F2a — o setes-api só importa `fiscal-api/reading` e `fiscal-a
         const spec = (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier) ? n.moduleSpecifier.text
           : ts.isCallExpression(n) && (n.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === 'require'))
             && n.arguments[0] && ts.isStringLiteral(n.arguments[0]) ? n.arguments[0].text : null
-        if (spec && /^fiscal-api(?:\/|$)/.test(spec) && !ALLOWED.has(spec)) bad.push(`${path.relative(path.join(__dirname, '..', '..'), f)}: ${spec}`)
+        const rel = path.relative(path.join(__dirname, '..', '..'), f).replace(/\\/g, '/')
+        const onlyIn = spec ? ALLOWED_ONLY_IN[spec] : undefined
+        if (spec && /^fiscal-api(?:\/|$)/.test(spec) && !ALLOWED.has(spec) && !(onlyIn && onlyIn.includes(rel))) bad.push(`${rel}: ${spec}`)
         ts.forEachChild(n, visit)
       }
       visit(sf)

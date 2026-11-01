@@ -12,6 +12,7 @@ import {
   invoiceOrderBatch, expirationSuggestion, fetchProductsLookup,
   SERVICE_ORDER_SEARCH_CRITERIA, fetchServiceOrderSearchCriteria, fetchCustomerLookup,
 } from './service-orders.service'
+import { fetchPaymentTypesLookup } from './service-orders.service'
 
 /** Escopo SEMPRE do JWT (institution + usuário que assina a tb_order). */
 function scopeOf(req: Request): ServiceOrderScope {
@@ -219,5 +220,13 @@ export async function productsLookup(req: Request, res: Response): Promise<void>
     res.json({ ok: true, data: await fetchProductsLookup(filter, scopeOf(req)) })
   } catch (err) {
     handleError(res, err, 'service-orders/products GET')
+  }
+}
+
+export async function paymentTypesLookup(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ ok: true, data: await fetchPaymentTypesLookup(String(req.query.filter ?? ''), scopeOf(req)) })
+  } catch (err) {
+    handleError(res, err, 'service-orders/payment-types GET')
   }
 }

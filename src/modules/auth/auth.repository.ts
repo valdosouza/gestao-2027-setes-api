@@ -1,6 +1,7 @@
 import { PoolConnection } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { isLockWaitSupported } from '@shared/db/counters'
+import { passwordSetAt } from '@shared/auth/password'
 
 export interface AuthUser {
   id:       number
@@ -36,16 +37,15 @@ export async function findUserByEmail(email: string): Promise<AuthUser | null> {
   return { id: Number(rows[0].id), password: rows[0].password, active: rows[0].active, loginEmail: String(rows[0].loginEmail ?? '') }
 }
 
-// Institutions ativas do usuário (Passo 2 do fluxo de login)
+// Institutions ativas do usuário (Passo 2 do fluxo de login). Costura A1 da auth-api (D-AU3/D-AU6, 2026-10-31): o vínculo VIVO e o
+// PERFIL saem da `setes_central.vw_user_link` — o ÚNICO intérprete de `tb_institution_has_user.kind` ('super' só na Setes; qualquer
+// outro valor que não admin = 'user'), o MESMO que a sessão de cada requisição relê (D-UC9). O `resolveRole` do login morreu.
 export async function getInstitutionsForUser(userId: number): Promise<UserInstitution[]> {
   const [rows] = await pool.query<any[]>(
-    `SELECT i.id AS institutionId, i.schema_name AS schemaName, e.nick_trade AS name, ihu.kind AS profile
-     FROM setes_central.tb_institution_has_user ihu
-       INNER JOIN setes_central.tb_institution i ON (i.id = ihu.tb_institution_id)
-       INNER JOIN setes_central.tb_entity e      ON (e.id = i.id)
-     WHERE ihu.tb_user_id = ?
-       AND ihu.active = 'S' AND ihu.deleted = 'N'
-       AND i.active   = 'S' AND i.deleted   = 'N'`,
+    `SELECT l.tb_institution_id AS institutionId, l.schema_name AS schemaName, e.nick_trade AS name, l.profile
+     FROM setes_central.vw_user_link l
+       INNER JOIN setes_central.tb_entity e ON (e.id = l.tb_institution_id)
+     WHERE l.tb_user_id = ?`,
     [userId]
   )
   return rows.map(r => ({
@@ -229,9 +229,10 @@ export async function insertPasswordResetNotice(conn: PoolConnection, userId: nu
 // como usado na MESMA transação); `activation_key` segue LIMPA aqui como antes — nenhum leitor a aceita mais, e um código antigo
 // em texto puro não pode voltar a valer num rollback para o código anterior (que lia activation_key + updated_at).
 export async function updatePassword(conn: PoolConnection, userId: number, passwordHash: string): Promise<void> {
+  // D-EA7: definir a senha grava o instante T junto (o par hash × T) — as sessões emitidas antes caem na próxima requisição
   await conn.query(
-    `UPDATE setes_central.tb_user SET password = ?, activation_key = NULL, updated_at = NOW() WHERE id = ?`,
-    [passwordHash, userId]
+    `UPDATE setes_central.tb_user SET password = ?, password_set_at = ?, activation_key = NULL, updated_at = NOW() WHERE id = ?`,
+    [passwordHash, passwordSetAt(), userId]
   )
 }
 

@@ -9,6 +9,7 @@ import {
   updateLink, unlinkPaymentType,
   PAYMENT_TYPE_SEARCH_CRITERIA,
 } from './payment-types.repository'
+import { listFinancialPlansLookup, FinancialPlanLookupRow } from './payment-types.repository'
 
 /**
  * Regras do módulo payment-types (workflow do Valdo, 2026-07-18): o
@@ -65,4 +66,9 @@ export async function removeLink(
     throw new HttpError(404, `Forma de pagamento ${id} não vinculada a este estabelecimento`)
   }
   await unlinkPaymentType(id, scope.schemaName, scope.institutionId)
+}
+
+/** D-PV2: plano de contas para o vínculo da forma — o mesmo conjunto que a tela lia de /api/financial-plans. */
+export async function fetchFinancialPlansLookup(filter: string, scope: PaymentTypeScope): Promise<FinancialPlanLookupRow[]> {
+  return listFinancialPlansLookup(filter.trim(), scope.schemaName, scope.institutionId)
 }

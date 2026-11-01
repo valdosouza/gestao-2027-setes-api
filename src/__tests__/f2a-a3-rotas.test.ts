@@ -5,6 +5,7 @@
 import request from 'supertest'
 import { testToken } from '../test-setup/test-token'
 import { serviceView, TEST_KEY } from '../test-setup/fiscal-voice-rows'
+import { accessAnswer, AccessModel, ModelProfile } from '../test-setup/access-model'
 
 jest.mock('../shared/db/connection', () => ({
   __esModule: true, default: { query: jest.fn(), getConnection: jest.fn(), on: jest.fn(), end: jest.fn() },
@@ -31,7 +32,6 @@ import * as voicePort from '../shared/fiscal-voice'
 import * as cancelPiece from '../shared/invoice/invoice-cancel'
 import { HttpError } from '../shared/errors/http-error'
 import { FiscalVoiceUnavailableError } from '../shared/fiscal-voice'
-import { resetPrivilegeCache } from '../shared/auth/require-privilege'
 import app from '../app'
 
 const q = (pool as any).query as jest.Mock
@@ -39,17 +39,22 @@ const conn = { beginTransaction: jest.fn(), query: jest.fn(), commit: jest.fn(),
 const AUTH = `Bearer ${testToken({ institutionId: 1, userId: 7, role: 'user', schemaName: 'setes_setes' })}`
 const ADMIN = `Bearer ${testToken({ institutionId: 1, userId: 7, role: 'admin', schemaName: 'setes_setes' })}`   // /establishment tem adminGuard
 const readVoice = () => voicePort.readServiceVoiceOfLife as jest.Mock
+// costura A1 (D-AU3): o veredito lê as views pelo vínculo (user 7 × institution 1) — o perfil do vínculo é o do token da requisição
+// (a sessão viva devolve o do token — `access-session.mock`); D-F37: as interfaces do ramo CONTRATADAS, o regular sem concessão
+let profile: ModelProfile = 'admin'
+const asSession = (auth: string) => { profile = auth === ADMIN ? 'admin' : 'user'; return auth }
+const accessModel = (): AccessModel => ({ profile, contracted: ['orders', 'service-orders'], granted: {} })
 
 let lifeRows: any[]
 let waiverRows: any[]
 beforeEach(() => {
-  jest.clearAllMocks(); resetPrivilegeCache()
+  jest.clearAllMocks()
   lifeRows = [{ invoiceId: 7400, invoiceDeleted: 'N', lifeEvent: 1, lastEvent: 1, lastKind: 'E' }]
   waiverRows = []
   ;((pool as any).getConnection as jest.Mock).mockResolvedValue(conn)
-  q.mockImplementation(async (sql: string) => {
-    if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: 20 }]]
-    if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]
+  q.mockImplementation(async (sql: string, params: any[]) => {
+    const a = accessAnswer(sql, params, accessModel)
+    if (a) return [a, []]
     if (/tb_invoice_cancel_waiver/.test(sql)) return [waiverRows]          // antes: a consulta da dispensa também cita a vw_invoice_life
     if (/FROM `setes_setes`\.vw_invoice_life/.test(sql)) return [lifeRows]
     throw new Error(`SQL inesperado: ${sql.slice(0, 80)}`)
@@ -58,7 +63,7 @@ beforeEach(() => {
 })
 
 describe('GET /api/billing/:orderId/fiscal-effect (D-F114/D-F115)', () => {
-  const get = (id: string | number = 7400) => request(app).get(`/api/billing/${id}/fiscal-effect`).set('Authorization', AUTH)
+  const get = (id: string | number = 7400) => request(app).get(`/api/billing/${id}/fiscal-effect`).set('Authorization', asSession(AUTH))
 
   it('voz C comum (101101) em produção com a nota viva → effect "apply" (o app manda o POST /billing/cancel); a voz é a da VIDA da nota', async () => {
     readVoice().mockResolvedValue([serviceView({ lastKind: 'C', lastCode: '101101', lastSource: 'P' })])
@@ -122,7 +127,7 @@ describe('GET /api/billing/:orderId/cancel-plan (D-F29/D-F115 — consultivo; D-
     checksToReverse: [{ checkId: 42, event: 1, number: 'A' }], commissionEntries: [{}, {}], touchesCash: true, fiscalRecord: true,
   }
   // D-F131: a guarda é a do POST (CANCELAR) — o admin passa só o privilégio; o usuário comum precisa do vínculo
-  const get = (auth = ADMIN) => request(app).get('/api/billing/7400/cancel-plan').set('Authorization', auth)
+  const get = (auth = ADMIN) => request(app).get('/api/billing/7400/cancel-plan').set('Authorization', asSession(auth))
   let cashierRows: any[]
   let failRestore: boolean
   beforeEach(() => {
@@ -172,16 +177,18 @@ describe('GET /api/billing/:orderId/cancel-plan (D-F29/D-F115 — consultivo; D-
     expect((conn as any).destroy).toHaveBeenCalled(); expect(conn.release).not.toHaveBeenCalled()
   })
   it('[D-F131] usuário comum SEM o privilégio CANCELAR → 403 PRIVILEGE_REQUIRED antes de abrir conexão (não segura trava nenhuma)', async () => {
-    q.mockImplementation(async (sql: string) => {
-      if (/setes_central\.tb_interface WHERE i18n_key/.test(sql)) return [[{ id: 20 }]]
-      if (/tb_institution_has_interface/.test(sql)) return [[{ 1: 1 }]]
-      if (/tb_user_has_privilege/.test(sql)) return [[]]
+    q.mockImplementation(async (sql: string, params: any[]) => {
+      const a = accessAnswer(sql, params, accessModel)                    // ramo contratado, nenhuma concessão
+      if (a) return [a, []]
       throw new Error(`SQL inesperado: ${sql.slice(0, 80)}`)
     })
     const res = await get(AUTH)
     expect([res.status, res.body.code]).toEqual([403, 'PRIVILEGE_REQUIRED'])
     expect((pool as any).getConnection).not.toHaveBeenCalled()
-    expect(q.mock.calls.some(c => /tb_user_has_privilege/.test(String(c[0])))).toBe(true)
+    // o veredito perguntou à view o verbo CANCELAR na interface do ramo (e o alcance, só na negação, para o motivo)
+    const verdict = q.mock.calls.find(c => /vw_user_access/.test(String(c[0])))!
+    expect(verdict[1]).toEqual([7, 1, ['service-orders'], 'CANCELAR'])
+    expect(q.mock.calls.some(c => /vw_user_reach/.test(String(c[0])))).toBe(true)
   })
   it('recusa do plano (pedido não faturado) vira o 409 do POST, com a transação desfeita e a conexão devolvida', async () => {
     ;(cancelPiece.buildCancelPlan as jest.Mock).mockRejectedValue(new HttpError(409, 'Pedido 7400 não está faturado', undefined, 'INVOICE_NOT_CANCELLABLE'))

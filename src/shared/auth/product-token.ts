@@ -154,6 +154,14 @@ const isPositiveInt = (v: unknown): v is number => Number.isSafeInteger(v) && (v
 
 /** Token FINAL — a identidade da institution; o token de seleção NÃO serve. Devolve só os 4 campos. */
 export function verifyFinalToken(token: string): InstitutionPayload {
+  return verifyFinalTokenWithIat(token).payload
+}
+
+/**
+ * O token final + o `iat` (segundos). D-EA7 (Valdo 2026-10-31, costura A1): a sessão viva compara o `iat` com o instante em que a senha foi
+ * definida — token sem `iat` inteiro = 401 (molde do `exp`: sem ele a revogação seria falha ABERTA).
+ */
+export function verifyFinalTokenWithIat(token: string): { payload: InstitutionPayload; iat: number } {
   const p = verified(token)
   const ok = p.scope === undefined
     && isPositiveInt(p.institutionId)
@@ -161,14 +169,18 @@ export function verifyFinalToken(token: string): InstitutionPayload {
     && typeof p.role === 'string' && p.role.length > 0
     && typeof p.schemaName === 'string' && SCHEMA_RE.test(p.schemaName)
   if (!ok) throw unauthorized('Token inválido')
-  return { institutionId: p.institutionId as number, userId: p.userId as number, role: p.role as string, schemaName: p.schemaName as string }
+  if (!isPositiveInt(p.iat)) throw unauthorized('Token inválido')
+  return {
+    payload: { institutionId: p.institutionId as number, userId: p.userId as number, role: p.role as string, schemaName: p.schemaName as string },
+    iat: p.iat as number,
+  }
 }
 
 /** Token de SELEÇÃO — só o usuário e a marca; o token final NÃO serve. */
-export function verifySelectionToken(token: string): { userId: number } {
+export function verifySelectionToken(token: string): { userId: number; iat: number } {
   const p = verified(token)
-  if (p.scope !== SELECTION_SCOPE || p.institutionId !== undefined || !isPositiveInt(p.userId)) {
+  if (p.scope !== SELECTION_SCOPE || p.institutionId !== undefined || !isPositiveInt(p.userId) || !isPositiveInt(p.iat)) {
     throw unauthorized('Token de seleção inválido')
   }
-  return { userId: p.userId as number }
+  return { userId: p.userId as number, iat: p.iat as number }
 }

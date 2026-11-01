@@ -12,6 +12,7 @@ import { swaggerOptions } from '../shared/swagger/swagger-config'
 import {
   GROUP_SCHEMA, MATRIZ, FILIAL, normalizeSql, paramOf, scopedByInstitution, joinsByInstitution,
 } from '../test-setup/two-institutions'
+import { accessAnswer, AccessModel } from '../test-setup/access-model'
 import { getMenus, getSessionInfo } from '../modules/core/core.service'
 import { getRuleObservationNotes } from '../modules/billing/billing.repository'
 import { setWebhookProcessor } from '../modules/bank-channel-webhook/bank-channel-webhook.routes'
@@ -72,11 +73,19 @@ const menuRow = (id: number, module: { id: number; description: string } | null)
 })
 const linked = () => new Set(MODULES.flatMap(m => m.interfaceIds))
 
-/** Privilégio do usuário regular avaliado pelo parâmetro que o PRÓPRIO SQL liga ao `uhp.tb_user_id`. */
-function privileged(t: string, params: any[], interfaceId: number): boolean {
-  const user = paramOf(t, params, 'uhp.tb_user_id')
-  if (user === undefined) return true
-  return USER_PRIV.some(p => p.userId === Number(user) && p.interfaceId === interfaceId)
+/**
+ * Costura A1 (D-AU3/D-AU6, 2026-10-31): o recorte do menu é a `vw_user_access` lida pela CHAVE (usuário, institution) que a PRÓPRIA
+ * leitura liga aos `?` — o dublê responde com o contrato DAQUELA institution (CONTRACT) e as concessões do usuário (USER_PRIV, sem
+ * institution — o mesmo latente da view até a D-GE3). O 5 é admin; o 9, regular.
+ */
+function accessModelOf(userId: number, institutionId: number): AccessModel | null {
+  if (!INSTITUTIONS.some(i => i.id === institutionId)) return null
+  const contracted = CONTRACT.filter(c => c.tb_institution_id === institutionId).map(c => iface(c.tb_interface_id).i18nKey)
+  const interfaceIds = Object.fromEntries(CATALOG.map(c => [c.i18nKey, c.id]))
+  if (userId === 5) return { profile: 'admin', contracted, interfaceIds }
+  const granted = Object.fromEntries(USER_PRIV.filter(p => p.userId === userId)
+    .map(p => [iface(p.interfaceId).i18nKey, ['VISUALIZAR']]))
+  return { profile: 'user', contracted, granted, interfaceIds }
 }
 
 const sqlLog: Array<{ sql: string; params: any[] }> = []
@@ -84,6 +93,8 @@ const sqlLog: Array<{ sql: string; params: any[] }> = []
 async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown]> {
   const t = normalizeSql(sql)
   sqlLog.push({ sql: t, params })
+  const access = accessAnswer(sql, params, accessModelOf)
+  if (access) return [access, null]
   if (/^(INSERT|UPDATE)\b/.test(t)) {
     const m = /^UPDATE \w+\.tb_module SET description/.exec(t)
     if (m) {
@@ -103,6 +114,15 @@ async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown
   if (/SELECT schema_name AS schemaName FROM setes_central\.tb_institution WHERE id = \?/.test(t)) {
     return [INSTITUTIONS.filter(i => i.id === Number(params[0])).map(i => ({ schemaName: i.schemaName })), null]
   }
+  // D-PV34 — a marca única confere a interface viva e trava a linha do par
+  if (/FROM setes_central\.tb_interface WHERE id = \? AND deleted = 'N'/.test(t)) {
+    const i = CATALOG.find(c => c.id === Number(params[0]))
+    return [i ? [{ id: i.id, k: i.i18nKey, kind: i.kind, groupDefault: i.groupDefault }] : [], null]
+  }
+  if (/FROM \w+\.tb_institution_has_interface WHERE tb_institution_id = \? AND tb_interface_id = \? FOR UPDATE/.test(t)) {
+    return [CONTRACT.filter(c => c.tb_institution_id === Number(params[0]) && c.tb_interface_id === Number(params[1]))
+      .map(() => ({ active: 'S', deleted: 'N' })), null]
+  }
   if (/FROM setes_central\.tb_feature_flag/.test(t)) {
     return [[{ institutionId: Number(params[0]), moduleKey: 'modules', enabled: 1 }], null]
   }
@@ -119,11 +139,12 @@ async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown
       return hits.length > 0 ? hits.map(() => ({ ...base, granted: 1 })) : [{ ...base, granted: 0 }]
     }), null]
   }
-  // menu — telas em módulo
+  // menu (costura A1) — o ARRANJO do grupo: telas em módulo e telas sem módulo, sem contrato nem privilégio (quem recorta é a view)
   if (/FROM \w+\.tb_module m INNER JOIN \w+\.tb_module_has_interface mhi/.test(t)) {
-    const ihi = scopedByInstitution(t, params, 'ihi', CONTRACT)
-    return [MODULES.flatMap(m => m.interfaceIds.flatMap(id =>
-      ihi.filter(c => c.tb_interface_id === id && privileged(t, params, id)).map(() => menuRow(id, m)))), null]
+    return [MODULES.flatMap(m => m.interfaceIds.map(id => menuRow(id, m))), null]
+  }
+  if (/FROM setes_central\.tb_interface i WHERE .*NOT EXISTS \(SELECT 1 FROM \w+\.tb_module_has_interface mhi/.test(t)) {
+    return [CATALOG.filter(c => !linked().has(c.id)).map(c => menuRow(c.id, null)), null]
   }
   // detalhe do módulo
   if (/FROM \w+\.tb_module m WHERE m\.id = \?/.test(t)) {
@@ -133,10 +154,6 @@ async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown
   }
   if (/FROM \w+\.tb_institution_has_interface ihi INNER JOIN setes_central\.tb_interface i/.test(t)) {
     const ihi = scopedByInstitution(t, params, 'ihi', CONTRACT)
-    if (/NOT EXISTS/.test(t)) {
-      return [ihi.filter(c => !linked().has(c.tb_interface_id) && privileged(t, params, c.tb_interface_id))
-        .map(c => menuRow(c.tb_interface_id, null)), null]
-    }
     if (/i\.id IN \(\?\)/.test(t)) {
       const wanted = params[params.length - 1] as number[]
       return [ihi.filter(c => wanted.includes(c.tb_interface_id)).map(c => ({ id: c.tb_interface_id })), null]
@@ -146,8 +163,6 @@ async function fakeQuery(sql: string, params: any[] = []): Promise<[any, unknown
       return { id: i.id, description: i.description, i18nKey: i.i18nKey, groupDefault: i.groupDefault }
     }), null]
   }
-  if (/FROM \w+\.tb_user_has_privilege uhp INNER JOIN setes_central\.tb_privilege/.test(t)) return [[], null]
-  if (/FROM setes_central\.tb_interface_has_privilege ihp/.test(t)) return [[], null]
   if (/AS nextId/.test(t)) return [[{ nextId: 3 }], null]
   if (/AS nextPos/.test(t)) return [[{ nextPos: 3 }], null]
 
@@ -292,15 +307,22 @@ describe('W — webhook: token só vale dentro da institution do path', () => {
 
 // ── M — menu e módulos de menu ──────────────────────────────────────────────────────────────────────────────────────
 describe('M — menu do grupo × contrato lido pela chave (D-GE4; do grupo pela D-GE22)', () => {
-  it('usuário regular: os `?` ligam a institution ao ihi e o usuário ao uhp, nas DUAS consultas do menu', async () => {
+  // Costura A1 (D-AU3/D-AU6): o contrato e a concessão saíram das DUAS consultas do menu — o recorte é UMA leitura da `vw_user_access`;
+  // o ataque é o mesmo de antes (os `?` ligados à chave certa), agora na leitura que recorta.
+  it('usuário regular: os `?` da leitura que recorta o menu ligam o usuário e a institution da SESSÃO; o ARRANJO não recorta nada', async () => {
     const regular = { institutionId: FILIAL, userId: 9, role: 'user', schemaName: GROUP_SCHEMA }
     const menus = await getMenus(regular)
+    const cut = sqlLog.filter(s => /FROM \w+\.vw_user_access/.test(s.sql))
+    expect(cut).toHaveLength(1)
+    expect(cut[0].sql).toMatch(new RegExp(`FROM ${GROUP_SCHEMA}\\.vw_user_access`))   // a view do schema da sessão
+    expect(paramOf(cut[0].sql, cut[0].params, 'tb_user_id')).toBe(9)
+    expect(paramOf(cut[0].sql, cut[0].params, 'tb_institution_id')).toBe(FILIAL)
+    expect((cut[0].sql.match(/\?/g) ?? []).length).toBe(cut[0].params.length)
     const inModule = sqlLog.find(s => /FROM \w+\.tb_module m INNER JOIN/.test(s.sql))!
-    const ungrouped = sqlLog.find(s => /NOT EXISTS/.test(s.sql) && /tb_institution_has_interface ihi/.test(s.sql))!
+    const ungrouped = sqlLog.find(s => /NOT EXISTS/.test(s.sql) && /tb_module_has_interface mhi/.test(s.sql))!
     for (const q of [inModule, ungrouped]) {
-      expect(paramOf(q.sql, q.params, 'ihi.tb_institution_id')).toBe(FILIAL)
-      expect(paramOf(q.sql, q.params, 'uhp.tb_user_id')).toBe(9)
-      expect((q.sql.match(/\?/g) ?? []).length).toBe(q.params.length)
+      expect(q.sql).not.toMatch(/tb_institution_has_interface|tb_user_has_privilege/)
+      expect((q.sql.match(/\?/g) ?? []).length).toBe(0)
     }
     // a filial contratou 20 e 30; o módulo do grupo tem as duas
     expect(shape(menus)).toEqual([['Vendas', [30, 20]]])
@@ -369,14 +391,14 @@ describe('A — tela do Super num schema com duas institutions', () => {
     expect(res.body.data.map((r: any) => [r.id, r.granted])).toEqual([[10, false], [20, true], [30, true]])
   })
 
-  it('PUT /api/admin/institutions/8/interfaces [] revoga SÓ a filial (a matriz fica intacta)', async () => {
-    const res = await request(app).put(`/api/admin/institutions/${FILIAL}/interfaces`).set('Authorization', superToken())
-      .send({ interfaceIds: [] })
+  it('PUT /api/admin/institutions/8/interfaces/30 {linked:false} revoga SÓ a linha da filial (D-PV34 — a matriz fica intacta)', async () => {
+    const res = await request(app).put(`/api/admin/institutions/${FILIAL}/interfaces/30`).set('Authorization', superToken())
+      .send({ linked: false })
     expect(res.status).toBe(200)
     const writes = conn.query.mock.calls.filter(c => /^UPDATE/.test(normalizeSql(String(c[0]))))
     expect(writes).toHaveLength(1)
-    expect(normalizeSql(String(writes[0][0]))).toMatch(/WHERE tb_institution_id = \?$/)
-    expect(writes[0][1]).toEqual([FILIAL])
+    expect(normalizeSql(String(writes[0][0]))).toMatch(/WHERE tb_institution_id = \? AND tb_interface_id = \?$/)
+    expect(writes[0][1]).toEqual([FILIAL, 30])
   })
 })
 

@@ -28,6 +28,7 @@ import {
   ORDER_STANDALONE_DUE_DAY_MSG, ORDER_STANDALONE_PAYMENT_TYPE_MSG,
 } from './service-orders.messages'
 import { fifthBusinessDaySuggestion, contractDaySuggestion } from './service-orders.calc'
+import { listEnabledPaymentTypes, EnabledPaymentType } from '@shared/payment-types'
 
 /**
  * Regras do módulo service-orders: escopo SEMPRE da institution do JWT
@@ -347,4 +348,9 @@ export async function fetchProductsLookup(
   filter: string, scope: ServiceOrderScope
 ): Promise<ServiceProductLookupRow[]> {
   return listProductsLookup(filter, scope.schemaName, scope.institutionId)
+}
+
+/** D-PV2: formas HABILITADAS (o faturamento só aceita as habilitadas — `assertPaymentRules`). */
+export async function fetchPaymentTypesLookup(filter: string, scope: ServiceOrderScope): Promise<EnabledPaymentType[]> {
+  return listEnabledPaymentTypes(pool, scope.schemaName, scope.institutionId, filter)
 }

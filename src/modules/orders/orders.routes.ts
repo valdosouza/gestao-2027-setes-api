@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { privilegeAct } from '@shared/auth/module-privilege-gate'
+import { PRIVILEGE_ALTERAR } from '@shared/auth/privileges'
 import * as controller from './orders.controller'
 
 /**
@@ -106,6 +108,27 @@ router.get('/customer-lookup', controller.customerLookup)
  *       500: { description: Erro interno }
  */
 router.get('/salesman-lookup', controller.salesmanLookup)
+
+/**
+ * @swagger
+ * /api/orders/active-salesman-lookup:
+ *   get:
+ *     summary: Vendedores ATIVOS para o vendedor do pedido (lista de apoio do formulário)
+ *     tags: [Orders]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: filter
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: 'Envelope { ok, data } — lista { id, name } (até 50)' }
+ *       401: { description: Não autenticado }
+ *       403: { description: Sem o privilégio VISUALIZAR da tela (ou tela não contratada) }
+ */
+// D-PV2: lista de apoio do PRÓPRIO módulo (antes a tela lia o /api de outra — a guarda por roteador exigiria o privilégio daquela tela) — o formulário lia /api/customers/salesman-lookup (só ATIVOS); o /salesman-lookup daqui é o da pesquisa
+// avançada (ativos E inativos — D-BA42) e não muda
+router.get('/active-salesman-lookup', controller.activeSalesmanLookup)
 
 /**
  * @swagger
@@ -287,7 +310,9 @@ router.delete('/:id', controller.remove)
  *       404: { description: Pedido não encontrado }
  *       409: { description: 'Pedido já faturado (ORDER_INVOICED)' }
  */
-router.post('/:id/items', controller.addOrderItem)
+// D-PV21 (Valdo 2026-10-20, fecha a Q-PV10 = (b)): todo ato sobre o DOCUMENTO ABERTO é ALTERAR — item novo, item mudado, item
+// tirado, negociação. INSERIR = abrir o pedido; EXCLUIR = apagar o pedido aberto (D-PV7). Um verbo, um sentido, sobre o documento.
+router.post('/:id/items', privilegeAct(PRIVILEGE_ALTERAR), controller.addOrderItem)
 
 /**
  * @swagger
@@ -349,7 +374,7 @@ router.put('/:id/items/:itemId', controller.updateOrderItem)
  *       404: { description: Item não encontrado }
  *       409: { description: 'Pedido já faturado (ORDER_INVOICED)' }
  */
-router.delete('/:id/items/:itemId', controller.removeOrderItem)
+router.delete('/:id/items/:itemId', privilegeAct(PRIVILEGE_ALTERAR), controller.removeOrderItem)     // D-PV21
 
 /**
  * @swagger

@@ -1,4 +1,5 @@
 import pool from '@shared/db/connection'
+import { PRIVILEGE_CONFIGURAR } from '@shared/auth/privileges'
 import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { InterfaceRow, InterfaceInput, InterfaceConfigInput } from './interfaces.interface'
 
@@ -151,28 +152,53 @@ export async function updateInterface(id: number, input: InterfaceInput): Promis
 }
 
 /**
- * Upsert de UMA configuração do catálogo (tb_interface_has_config — seção
- * "Configurações" da tela de Interfaces; ressuscita soft-deleted).
+ * Upsert de UMA configuração do catálogo (tb_interface_has_config — seção "Configurações" da tela de Interfaces; ressuscita
+ * soft-deleted) E garante o par (interface × CONFIGURAR) na MESMA transação — a regra da D-PV25: o par existe para toda
+ * interface com config ou campo no catálogo (a cerca da D-PV51 cobra no boot). Gate socrático da costura A1: antes, a 1ª config criada pelo
+ * Super deixava a interface sem o CONFIGURAR — a engrenagem sumia para quem não é admin e o boot gritava. Revive o par soft-deletado (o
+ * Super não o tira enquanto houver config — D-PV15). Sem o verbo vivo E com o nome exato em tb_privilege (antes do seed 68, ou o id 11
+ * ocupado por outro verbo — gate adversarial do delta, L4), não há par a garantir.
  */
 export async function upsertInterfaceConfig(
   interfaceId: number, name: string, input: InterfaceConfigInput
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO setes_central.tb_interface_has_config
-       (tb_interface_id, name, description, kind, options,
-        default_content, scope, created_at, updated_at, deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
-     ON DUPLICATE KEY UPDATE
-       description     = VALUES(description),
-       kind            = VALUES(kind),
-       options         = VALUES(options),
-       default_content = VALUES(default_content),
-       scope           = VALUES(scope),
-       deleted         = 'N',
-       updated_at      = NOW()`,
-    [interfaceId, name, input.description, input.kind,
-     input.options ?? null, input.defaultContent, input.scope]
-  )
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await conn.query(
+      `INSERT INTO setes_central.tb_interface_has_config
+         (tb_interface_id, name, description, kind, options,
+          default_content, scope, created_at, updated_at, deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+       ON DUPLICATE KEY UPDATE
+         description     = VALUES(description),
+         kind            = VALUES(kind),
+         options         = VALUES(options),
+         default_content = VALUES(default_content),
+         scope           = VALUES(scope),
+         deleted         = 'N',
+         updated_at      = NOW()`,
+      [interfaceId, name, input.description, input.kind,
+       input.options ?? null, input.defaultContent, input.scope]
+    )
+    const [verb] = await conn.query<any[]>(
+      `SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N' AND BINARY description = 'CONFIGURAR'`, [PRIVILEGE_CONFIGURAR])
+    if (verb.length > 0) {
+      // updated_at ANTES de active/deleted: no ON DUPLICATE KEY UPDATE cada atribuição já vê as anteriores
+      await conn.query(
+        `INSERT INTO setes_central.tb_interface_has_privilege
+           (tb_interface_id, tb_privilege_id, active, created_at, updated_at, deleted)
+         VALUES (?, ?, 'S', NOW(), NOW(), 'N')
+         ON DUPLICATE KEY UPDATE updated_at = IF(active = 'S' AND deleted = 'N', updated_at, NOW()), active = 'S', deleted = 'N'`,
+        [interfaceId, PRIVILEGE_CONFIGURAR])
+    }
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /** Existe a configuração (não deletada) no catálogo da interface? */
@@ -188,15 +214,69 @@ export async function interfaceConfigExists(
 }
 
 /** Remove (soft) uma configuração do catálogo. */
+/**
+ * Exclui logicamente a config E — D-PV65 (Valdo 2026-11-01) — quando [retireConfigureIfLast] e esta era a ÚLTIMA config viva da interface
+ * (sem campo vivo no catálogo), retira o par (interface × CONFIGURAR) na MESMA transação: o espelho de `upsertInterfaceConfig` (D-PV25).
+ * Só o par cujo verbo tem o NOME exato (o mesmo cuidado do nascimento). Devolve se o par saiu (a tela espelha).
+ */
 export async function softDeleteInterfaceConfig(
-  interfaceId: number, name: string
-): Promise<void> {
-  await pool.query(
-    `UPDATE setes_central.tb_interface_has_config
-        SET deleted = 'S', updated_at = NOW()
-      WHERE tb_interface_id = ? AND name = ?`,
-    [interfaceId, name]
+  interfaceId: number, name: string, retireConfigureIfLast = false
+): Promise<{ retiredConfigure: boolean }> {
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await conn.query(
+      `UPDATE setes_central.tb_interface_has_config
+          SET deleted = 'S', updated_at = NOW()
+        WHERE tb_interface_id = ? AND name = ?`,
+      [interfaceId, name]
+    )
+    let retiredConfigure = false
+    if (retireConfigureIfLast) {
+      const [res] = await conn.query<any>(
+        `UPDATE setes_central.tb_interface_has_privilege ihp
+            SET ihp.active = 'N', ihp.deleted = 'S', ihp.updated_at = NOW()
+          WHERE ihp.tb_interface_id = ? AND ihp.tb_privilege_id = ? AND (ihp.deleted <> 'S' OR ihp.active <> 'N')
+            AND EXISTS (SELECT 1 FROM setes_central.tb_privilege p WHERE p.id = ihp.tb_privilege_id AND BINARY p.description = 'CONFIGURAR')
+            AND NOT EXISTS (SELECT 1 FROM setes_central.tb_interface_has_config c WHERE c.tb_interface_id = ? AND c.deleted = 'N')
+            AND NOT EXISTS (SELECT 1 FROM setes_central.tb_interface_has_field f WHERE f.tb_interface_id = ? AND f.deleted = 'N')`,
+        [interfaceId, PRIVILEGE_CONFIGURAR, interfaceId, interfaceId])
+      retiredConfigure = Number(res?.affectedRows ?? 0) > 0
+    }
+    await conn.commit()
+    return { retiredConfigure }
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+/**
+ * Ids das interfaces VIVAS com a chave — pela colação da coluna (sem caixa, sem acento, sem espaço no fim), a MESMA comparação
+ * da guarda `require-privilege` (D-PV15: chave repetida torna ambígua a resolução por `LIMIT 1`).
+ */
+export async function liveInterfaceIdsWithKey(i18nKey: string): Promise<number[]> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT id FROM setes_central.tb_interface WHERE deleted = 'N' AND i18n_key = ?`,
+    [i18nKey]
   )
+  return rows.map(r => Number(r.id))
+}
+
+/**
+ * A interface tem configuração ou campo VIVO no catálogo (`tb_interface_has_config`/`tb_interface_has_field`)? D-PV25/D-PV42: o par
+ * CONFIGURAR é exigido dela (a REGRA do CONFIGURAR — o mesmo critério do seed 68) e a chave dela fica congelada (as configs e os
+ * campos são presos à chave).
+ */
+export async function interfaceHasConfigOrField(id: number): Promise<boolean> {
+  const [rows] = await pool.query<any[]>(
+    `SELECT (EXISTS (SELECT 1 FROM setes_central.tb_interface_has_config c WHERE c.tb_interface_id = ? AND c.deleted = 'N')
+          OR EXISTS (SELECT 1 FROM setes_central.tb_interface_has_field  f WHERE f.tb_interface_id = ? AND f.deleted = 'N')) AS has`,
+    [id, id]
+  )
+  return Number(rows[0]?.has ?? 0) === 1
 }
 
 export async function deleteInterface(id: number): Promise<void> {

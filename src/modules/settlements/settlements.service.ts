@@ -16,6 +16,8 @@ import {
   listBills, settleBatch, listSettled, reverseSettlement, listStatements,
   BILL_SEARCH_CRITERIA, SETTLED_SEARCH_CRITERIA, listBillEntityLookup, listBillPaymentTypesLookup,
 } from './settlements.repository'
+import { listEnabledPaymentTypes, EnabledPaymentType } from '@shared/payment-types'
+import { listBankAccountLookup, BankAccountLookupRow } from '@shared/bank-account'
 
 /**
  * Regras do módulo settlements: escopo SEMPRE da institution do JWT
@@ -121,4 +123,14 @@ export async function retargetCharge(
       conn.release()
     }
   })
+}
+
+/** D-PV2: formas HABILITADAS para "trocar a cobrança" (o ato recusa forma desabilitada — `@shared/title-charge`). */
+export async function fetchChargePaymentTypes(filter: string, scope: SettlementScope): Promise<EnabledPaymentType[]> {
+  return listEnabledPaymentTypes(pool, scope.schemaName, scope.institutionId, filter)
+}
+
+/** D-PV2: contas da baixa pela peça `@shared/bank-account` (a tela não lê mais o /api de Contas Bancárias). */
+export async function fetchBankAccountLookup(filter: string, scope: SettlementScope): Promise<BankAccountLookupRow[]> {
+  return listBankAccountLookup(scope.schemaName, scope.institutionId, filter)
 }

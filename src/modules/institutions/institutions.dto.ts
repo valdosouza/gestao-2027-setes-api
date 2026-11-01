@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { entityFiscalBody, withFiscalRefinements } from '@shared/entity'
+import { newPasswordSchema } from '@shared/auth/password'
 
 /**
  * DTOs (Zod) do módulo institutions — o bloco da cadeia de entidade fiscal
@@ -17,12 +18,12 @@ const institutionBase = entityFiscalBody.extend({
 // Primeiro admin do cliente (A2, 2026-08-15): OBRIGATÓRIO no create e
 // inexistente no update — o estabelecimento nunca nasce sem dono, mas a
 // manutenção dos usuários é do cadastro de Usuários, não daqui.
-// Regras espelham users.dto (senha mín. 5, hash MD5 no service).
+// Regras espelham users.dto (senha mín. 5 e nunca só espaços — D-EA13; hash MD5 no service).
 const institutionAdminDto = z.object({
   nameCompany: z.string().min(1).max(100),
   nickTrade:   z.string().min(1).max(100),
   email:       z.string().min(1).max(100).email('E-mail inválido'),
-  password:    z.string().min(5).max(100),
+  password:    newPasswordSchema,
 })
 
 // schema_name: padrão setes_<nome>, informado na inclusão e IMUTÁVEL na
