@@ -13,7 +13,7 @@ import pool from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
 import { assertF2aFreezeTriggers } from './migrations/f2a-freeze-triggers'
 import { assertPrivilegeCatalog } from '@shared/auth/assert-privilege-catalog'
-import { assertAccessViews } from '@shared/access'
+import { assertAccessViews, assertAccessSchemaViews } from '@shared/access'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
 import { DELEGABLE_SUPER_INTERFACES } from '@shared/auth/delegable-interfaces'
 
@@ -45,6 +45,8 @@ async function bootstrap() {
     await runMigrationsForAllInstitutions()
     // D-F135 (F2a): os gatilhos de TRAVA da f2a_fiscal_passivo conferidos pelo NOME em cada schema — faltando, o setes-api NÃO sobe
     logger.info(`Gatilhos de TRAVA da F2a: ${await assertF2aFreezeTriggers()}`)
+    // Costura A1 (D-AU3): as views POR SCHEMA do veredito (migration 075) — faltando num cliente, o setes-api NÃO sobe
+    logger.info(`Veredito de acesso (075 por schema): ${await assertAccessSchemaViews()}`)
     // D-PV9: os pares (interface, privilégio) que o código consome conferidos contra o catálogo — faltando = ALARME, sobe assim mesmo
     logger.info(`Catálogo de privilégios: ${await assertPrivilegeCatalog()}`)
     logger.info('Migrations concluidas. Subindo servidor...')

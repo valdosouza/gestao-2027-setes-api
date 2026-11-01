@@ -1,5 +1,5 @@
 -- 075 — VIEWs do veredito de acesso POR SCHEMA de cliente: vw_user_reach + vw_user_access (costura A1 da frente auth-api — D-AU3/D-AU6/
--- D-AU8, Valdo 2026-10-31; Infra-IA/prompts/prompt_frente_auth_api.md, parecer do guardião no §7).
+-- D-AU8, Valdo 2026-10-31; Infra-IA/prompts/prompt_frente_auth_api.md, parecer do guardião no §3).
 --
 -- A pilha (cada predicado UMA vez): setes_central.vw_user_link (vínculo vivo + perfil) e setes_central.vw_interface_catalog (interface viva
 -- + modo de concessão) — script sql/70, aplicado ANTES deste — e, aqui:
@@ -18,7 +18,9 @@
 -- Lugares reservados (só uma linha cada, quando a decisão executar): D-GE3 (onda 0 do grupo) → `AND g.tb_institution_id =
 -- r.tb_institution_id` na concessão; D-GE22 (onda 1) → a licença pela chave do GRUPO; Q-EA7 (não decidida) → coluna na vw_user_link.
 --
--- `privilege` com COLLATE utf8mb4_bin: o verbo é citado pelo NOME (D-PV53), exato. Re-executável (CREATE OR REPLACE). Rodar com o usuário
+-- `privilege` com COLLATE utf8mb4_bin: o verbo é citado pelo NOME (D-PV53), exato — e SEM PAD SPACE (gate adversarial da A1: o
+-- `utf8mb4_bin` do MariaDB 10.4 iguala 'FATURAR ' a 'FATURAR'; um 2º verbo com espaço no fim valeria como o FATURAR): privilégio com
+-- espaço à direita fica FORA da view (o mesmo predicado do sql/70 para o `kind` e a `i18n_key`). Re-executável (CREATE OR REPLACE). Rodar com o usuário
 -- dono de sempre (DEFINER). Espelho no canônico (`sql/03_*.sql`, bloco das VIEWs) no MESMO passo do merge — com `SET NAMES utf8mb4` antes.
 CREATE OR REPLACE SQL SECURITY DEFINER VIEW `vw_user_reach` AS
 SELECT l.`tb_user_id`,
@@ -51,6 +53,7 @@ SELECT r.`tb_user_id`,
     ON ihp.`tb_interface_id` = r.`tb_interface_id` AND ihp.`active` = 'S' AND ihp.`deleted` = 'N'
   JOIN `setes_central`.`tb_privilege` p
     ON p.`id` = ihp.`tb_privilege_id` AND p.`deleted` = 'N'
+   AND CHAR_LENGTH(p.`description`) = CHAR_LENGTH(RTRIM(p.`description`))
   LEFT JOIN `tb_user_has_privilege` g
     ON g.`tb_user_id` = r.`tb_user_id`
    AND g.`tb_interface_id` = ihp.`tb_interface_id`

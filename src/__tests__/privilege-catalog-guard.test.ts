@@ -156,10 +156,12 @@ describe('D-PV15/D-PV51 — o que o catálogo não pode perder (peça pura)', ()
     expect(interfaceCatalogViolations(bare, { ...bare, kind: 'T' }).map(x => x.code)).toEqual(['CATALOG_PAIR_IN_USE'])
   })
 
-  it('privilégio consumido pelo NOME: renomear recusa (só a caixa pode mudar); excluir recusa', () => {
+  it('privilégio consumido pelo NOME EXATO (A-PV26): renomear recusa — nem a caixa muda; excluir recusa', () => {
     expect(privilegeCatalogViolations(2, 'EDITAR').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])
-    expect(privilegeCatalogViolations(2, ' ALTERAR').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])   // o app não faz trim
-    expect(privilegeCatalogViolations(2, 'Alterar')).toEqual([])
+    expect(privilegeCatalogViolations(2, ' ALTERAR').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])
+    expect(privilegeCatalogViolations(2, 'ALTERAR ').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])   // PAD SPACE: a view o tira
+    expect(privilegeCatalogViolations(2, 'Alterar').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])    // a view compara binário
+    expect(privilegeCatalogViolations(2, 'ALTERAR')).toEqual([])
     expect(privilegeCatalogViolations(6, null).map(x => x.field)).toEqual(['id'])
     expect(privilegeCatalogViolations(11, 'AJUSTAR').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])    // CONFIGURAR: a regra o consome
     expect(privilegeCatalogViolations(12, null).map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])         // CONSULTAR (D-PV40)
@@ -169,6 +171,7 @@ describe('D-PV15/D-PV51 — o que o catálogo não pode perder (peça pura)', ()
     expect(privilegeCatalogViolations(10, 'CATALOGO CENTRAL')).toEqual([])
     expect(privilegeCatalogViolations(10, 'cancelar').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])
     expect(privilegeCatalogViolations(null, 'Faturar').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])
+    expect(privilegeCatalogViolations(null, ' FATURAR ').map(x => x.code)).toEqual(['PRIVILEGE_IN_USE'])
     expect(privilegeCatalogViolations(null, 'AUTORIZAR')).toEqual([])
   })
 

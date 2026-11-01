@@ -381,11 +381,19 @@ export interface PrivilegeCatalogProblems {
 }
 
 /**
- * A MESMA comparação do app (`MenuInterface.can`, `menu_entity.dart`): `toLowerCase` dos dois lados, SEM trim — um " ALTERAR"
- * salvo na tela Privilégios esconde o botão, então a conferência também tem de acusar.
+ * O nome do privilégio consumido é EXATO (A-PV26, gate adversarial da costura A1): quem DECIDE é a `vw_user_access` + a biblioteca
+ * `fiscal-api/access` — binário, sem PAD SPACE (migration 075) e o vocabulário fechado `PRIVILEGE_NAMES` (D-PV53). O app só recebe o que
+ * passou por esse filtro (`accessRows`). Antes da A1 a API decidia pelo ID e o app comparava sem caixa — por isso a regra antiga aceitava
+ * 'faturar'; hoje 'faturar' tiraria o FATURAR de todos, inclusive do super.
  */
-const sameName = (description: string | null, name: PrivilegeName): boolean =>
-  description !== null && description.toLowerCase() === name.toLowerCase()
+const exactName = (description: string | null, name: PrivilegeName): boolean => description === name
+
+/**
+ * OUTRA linha "com o nome" de um consumido — a comparação MAIS FROUXA de qualquer leitor (caixa e espaços das pontas não contam): uma
+ * 2ª 'FATURAR ' (PAD SPACE) ou 'faturar' é sempre recusada/acusada, mesmo que a view de hoje já a ignore (A-PV26).
+ */
+const collidesWith = (description: string | null, name: PrivilegeName): boolean =>
+  description !== null && description.trim().toUpperCase() === name
 
 export function privilegeCatalogProblems(
   facts: CatalogFacts,
@@ -454,8 +462,8 @@ export function privilegeCatalogProblems(
   for (const name of used) {
     const id = PRIVILEGE_ID[name]
     const description = byId.has(id) ? byId.get(id)! : null
-    if (!sameName(description, name)) out.misnamed.push({ privilege: name, id, description })
-    const otherIds = rows.filter(r => r.id !== id && sameName(r.description, name)).map(r => r.id).sort((a, b) => a - b)
+    if (!exactName(description, name)) out.misnamed.push({ privilege: name, id, description })
+    const otherIds = rows.filter(r => r.id !== id && collidesWith(r.description, name)).map(r => r.id).sort((a, b) => a - b)
     if (otherIds.length) out.duplicateNames.push({ privilege: name, id, otherIds })
   }
   out.misnamed.sort((a, b) => a.id - b.id)
@@ -619,15 +627,15 @@ export function interfaceCatalogViolations(
 
 /**
  * A mudança num privilégio (`id` null = criação; `description` null = exclusão) recria o C1? Recusa: apagar ou renomear um
- * privilégio que o código consome pelo NOME (app: `toLowerCase`, sem trim; view: exato — D-PV53) e dar a OUTRA linha o nome de um
- * privilégio consumido (o app liberaria o botão por qualquer das duas, a API decide pelo id).
+ * privilégio que o código consome pelo NOME — EXATO, nem a caixa muda (view + biblioteca — D-PV53/A-PV26) — e dar a OUTRA linha o nome
+ * de um privilégio consumido, na comparação mais frouxa (caixa e espaços das pontas não contam — um 2º verbo confundido com o 1º).
  */
 export function privilegeCatalogViolations(
   id: number | null, description: string | null, consumed: readonly ConsumedPrivilege[] = consumedPrivileges(),
 ): CatalogViolation[] {
   const out: CatalogViolation[] = []
   const own = id === null ? null : consumedNameOf(id, consumed)
-  if (own && (description === null || !sameName(description, own))) {
+  if (own && (description === null || !exactName(description, own))) {
     out.push({
       code: 'PRIVILEGE_IN_USE', field: description === null ? 'id' : 'description',
       message: `O privilégio ${own} (${id}) é consumido pelo NOME — ${description === null ? 'não pode ser excluído' : `o nome tem de ser "${own}"`}: ` +
@@ -637,7 +645,7 @@ export function privilegeCatalogViolations(
   if (description !== null) {
     for (const name of Object.keys(PRIVILEGE_ID) as PrivilegeName[]) {
       const pid = PRIVILEGE_ID[name]
-      if (pid === id || !sameName(description, name) || !privilegeConsumersOf(pid, consumed).length) continue
+      if (pid === id || !collidesWith(description, name) || !privilegeConsumersOf(pid, consumed).length) continue
       out.push({
         code: 'PRIVILEGE_IN_USE', field: 'description',
         message: `"${description}" é o nome do privilégio ${name} (${pid}), consumido pelo código — outra linha com o mesmo nome faria o app ` +

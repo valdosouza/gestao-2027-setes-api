@@ -1,4 +1,5 @@
 import pool from '@shared/db/connection'
+import { PRIVILEGE_CONFIGURAR } from '@shared/auth/privileges'
 import { ListQuery, PagedRows, SearchCriterion, escapeLike } from '@shared/list'
 import { InterfaceRow, InterfaceInput, InterfaceConfigInput } from './interfaces.interface'
 
@@ -154,25 +155,52 @@ export async function updateInterface(id: number, input: InterfaceInput): Promis
  * Upsert de UMA configuração do catálogo (tb_interface_has_config — seção
  * "Configurações" da tela de Interfaces; ressuscita soft-deleted).
  */
+/**
+ * Grava a config do catálogo E garante o par (interface × CONFIGURAR) na MESMA transação — a regra da D-PV25: o par existe para toda
+ * interface com config ou campo no catálogo (a cerca da D-PV51 cobra no boot). Gate socrático da costura A1: antes, a 1ª config criada pelo
+ * Super deixava a interface sem o CONFIGURAR — a engrenagem sumia para quem não é admin e o boot gritava. Revive o par soft-deletado (o
+ * Super não o tira enquanto houver config — D-PV15). Sem o verbo vivo em tb_privilege (antes do seed 68), não há par a garantir.
+ */
 export async function upsertInterfaceConfig(
   interfaceId: number, name: string, input: InterfaceConfigInput
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO setes_central.tb_interface_has_config
-       (tb_interface_id, name, description, kind, options,
-        default_content, scope, created_at, updated_at, deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
-     ON DUPLICATE KEY UPDATE
-       description     = VALUES(description),
-       kind            = VALUES(kind),
-       options         = VALUES(options),
-       default_content = VALUES(default_content),
-       scope           = VALUES(scope),
-       deleted         = 'N',
-       updated_at      = NOW()`,
-    [interfaceId, name, input.description, input.kind,
-     input.options ?? null, input.defaultContent, input.scope]
-  )
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await conn.query(
+      `INSERT INTO setes_central.tb_interface_has_config
+         (tb_interface_id, name, description, kind, options,
+          default_content, scope, created_at, updated_at, deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 'N')
+       ON DUPLICATE KEY UPDATE
+         description     = VALUES(description),
+         kind            = VALUES(kind),
+         options         = VALUES(options),
+         default_content = VALUES(default_content),
+         scope           = VALUES(scope),
+         deleted         = 'N',
+         updated_at      = NOW()`,
+      [interfaceId, name, input.description, input.kind,
+       input.options ?? null, input.defaultContent, input.scope]
+    )
+    const [verb] = await conn.query<any[]>(
+      `SELECT 1 FROM setes_central.tb_privilege WHERE id = ? AND deleted = 'N'`, [PRIVILEGE_CONFIGURAR])
+    if (verb.length > 0) {
+      // updated_at ANTES de active/deleted: no ON DUPLICATE KEY UPDATE cada atribuição já vê as anteriores
+      await conn.query(
+        `INSERT INTO setes_central.tb_interface_has_privilege
+           (tb_interface_id, tb_privilege_id, active, created_at, updated_at, deleted)
+         VALUES (?, ?, 'S', NOW(), NOW(), 'N')
+         ON DUPLICATE KEY UPDATE updated_at = IF(active = 'S' AND deleted = 'N', updated_at, NOW()), active = 'S', deleted = 'N'`,
+        [interfaceId, PRIVILEGE_CONFIGURAR])
+    }
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /** Existe a configuração (não deletada) no catálogo da interface? */

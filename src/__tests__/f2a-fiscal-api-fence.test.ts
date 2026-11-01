@@ -20,7 +20,8 @@ const ALLOWED = new Set(['fiscal-api/reading', 'fiscal-api/federal-id'])
 // Costura A1 da auth-api (D-AU6, Valdo 2026-10-31): o 3º subpath é o LEITOR do veredito de acesso `fiscal-api/access` (a pilha de views
 // publicada — nada de escrita). Só o ADAPTADOR o importa (`@shared/access` — um leitor no setes-api) e a prova das views em banco descartável.
 const ALLOWED_ONLY_IN: Readonly<Record<string, readonly string[]>> = {
-  'fiscal-api/access': ['src/shared/access/index.ts', 'scripts/prove-user-access-views.ts'],
+  // as duas provas em banco DESCARTÁVEL leem a biblioteca direto (a prova das views e a sonda do gate adversarial da costura A1)
+  'fiscal-api/access': ['src/shared/access/index.ts', 'scripts/prove-user-access-views.ts', 'scripts/adv-a1-probe.ts'],
 }
 
 describe('cerca F2a — o setes-api só importa `fiscal-api/reading`, `fiscal-api/federal-id` e (só no adaptador) `fiscal-api/access`', () => {

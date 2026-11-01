@@ -127,10 +127,13 @@ describe('D-PV51 — conferência do catálogo, igualdade por interface (pura)',
     expect(extra.surplus.map(s => `${s.interface}|${s.privilege}`)).toEqual(['cashier|CONFIGURAR'])
   })
 
-  it('o nome compara como o APP (toLowerCase, SEM trim): caixa não importa; espaço, nome trocado ou privilégio morto grita', () => {
+  it('o nome é EXATO (A-PV26 — view + biblioteca decidem pelo nome binário): caixa, espaço, nome trocado ou privilégio morto grita', () => {
     const catalog = expectedCatalog()
-    expect(privilegeCatalogProblems(facts(catalog, { privileges: PRIVILEGES.map(r => ({ ...r, description: r.description!.toLowerCase() })) }))
-      .misnamed).toEqual([])
+    expect(privilegeCatalogProblems(facts(catalog)).misnamed).toEqual([])
+    const lower = privilegeCatalogProblems(facts(catalog, { privileges: PRIVILEGES.map(r => (r.id === 5 ? { ...r, description: 'faturar' } : r)) }))
+    expect(lower.misnamed.map(m => `${m.id}:${m.description}`)).toEqual(['5:faturar'])
+    const padded = privilegeCatalogProblems(facts(catalog, { privileges: PRIVILEGES.map(r => (r.id === 5 ? { ...r, description: 'FATURAR ' } : r)) }))
+    expect(padded.misnamed.map(m => `${m.id}:${m.description}`)).toEqual(['5:FATURAR '])
     const spaced = privilegeCatalogProblems(facts(catalog, { privileges: PRIVILEGES.map(r => (r.id === 2 ? { ...r, description: ' ALTERAR' } : r)) }))
     expect(spaced.misnamed.map(m => `${m.id}:${m.description}`)).toEqual(['2: ALTERAR'])
     const renamed = PRIVILEGES.map(r => (r.id === 2 ? { ...r, description: 'EDITAR' } : r)).filter(r => r.id !== 12)
@@ -143,9 +146,11 @@ describe('D-PV51 — conferência do catálogo, igualdade por interface (pura)',
     expect(p.misnamed.map(m => `${m.id}:${m.privilege}`)).toEqual(['11:CONFIGURAR', '12:CONSULTAR'])
   })
 
-  it('nome de privilégio consumido repetido em OUTRA linha: o app libera por qualquer uma, a API pelo id — grita', () => {
+  it('nome de privilégio consumido repetido em OUTRA linha (mesmo com outra caixa ou espaço nas pontas) — grita', () => {
     const p = privilegeCatalogProblems(facts(expectedCatalog(), { privileges: [...PRIVILEGES, { id: 13, description: 'alterar' }] }))
     expect(p.duplicateNames).toEqual([{ privilege: 'ALTERAR', id: 2, otherIds: [13] }])
+    const pad = privilegeCatalogProblems(facts(expectedCatalog(), { privileges: [...PRIVILEGES, { id: 13, description: 'FATURAR ' }] }))
+    expect(pad.duplicateNames).toEqual([{ privilege: 'FATURAR', id: 5, otherIds: [13] }])
   })
 
   it('i18n_key pela regra do BANCO (sem caixa, sem espaço no fim): acha o par, mas grita a forma (D-PV42) e a repetição', () => {

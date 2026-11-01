@@ -17,7 +17,13 @@ const changePerEmail   = perEmailRateLimit(CHANGE_PER_EMAIL.windowMinutes, CHANG
 
 function fail(res: Response, err: unknown, context: string) {
   if (err instanceof HttpError) {
-    res.status(err.statusCode).json({ error: err.message })
+    // o MESMO envelope do Framework de Mensagens (`handleError`): sem o `code`, o 401 SESSION_REVOKED da seleção (D-EA7) chegava ao app
+    // como um 401 qualquer (gate adversarial da costura A1)
+    res.status(err.statusCode).json({
+      error: err.message,
+      ...(err.code ? { code: err.code } : {}),
+      ...(err.fields ? { fields: err.fields } : {}),
+    })
     return
   }
   logger.error(`Erro em auth/${context}`, { err })

@@ -171,8 +171,8 @@ async function main(): Promise<void> {
       (await accessVerdict(pool, who(2, 2), ['cfop'], 'VISUALIZAR')) === 'not-contracted')
     check('veredito: chave EXATA (`Orders` não é `orders`)',
       (await accessVerdict(pool, who(1, 1), ['Orders'], 'VISUALIZAR')) === 'not-contracted')
-    check('veredito: verbo EXATO pelo nome (`Faturar` fora do vocabulário nega)',
-      (await accessVerdict(pool, who(3, 2), ['orders'], 'Faturar' as any)) === 'not-contracted')
+    check('veredito: verbo EXATO pelo nome (`Faturar` fora do vocabulário nega — o motivo é o verbo)',
+      (await accessVerdict(pool, who(3, 2), ['orders'], 'Faturar' as any)) === 'no-privilege')
     check('alcance do admin do cliente: a delegável NÃO (mesmo licenciada)',
       eq(await reachableKeys(pool, who(2, 2), ['orders', 'customers', 'institution-interfaces', 'cfop']), ['orders', 'customers']))
     check('alcance do admin da Setes: a delegável SIM (vendor), cfop não',
@@ -184,6 +184,42 @@ async function main(): Promise<void> {
       (await accessVerdict(pool, who(3, 2), ['orders'], 'FATURAR')) === 'no-privilege')
     await conn.query(`UPDATE \`${CENTRAL}\`.tb_institution_has_user SET active = 'N' WHERE tb_user_id = 3 AND tb_institution_id = 2`)
     check('D-UC9: vínculo inativado → nenhuma linha na hora', eq(await verbsOf(3, 2), []))
+
+    // ── PAD SPACE (gate adversarial da A1): o `utf8mb4_bin` do MariaDB 10.4 iguala 'x ' a 'x' — kind, chave e verbo com espaço no fim
+    // nunca DECIDEM (sql/70 + 075: `CHAR_LENGTH(x) = CHAR_LENGTH(RTRIM(x))`) ──────────────────────────────────────────────────────────
+    await conn.query(`INSERT INTO \`${CENTRAL}\`.tb_user (id, password, active, deleted, created_at) VALUES (10, 'HASH', 'S', 'N', NOW()), (11, 'HASH', 'S', 'N', NOW())`)
+    await conn.query(`INSERT INTO \`${CENTRAL}\`.tb_institution_has_user (tb_institution_id, tb_user_id, kind, active, deleted)
+      VALUES (2, 10, 'admin ', 'S', 'N'), (1, 10, 'super ', 'S', 'N'), (2, 11, 'user', 'S', 'N')`)
+    const [padKind] = await conn.query<any[]>(`SELECT tb_institution_id i, profile FROM \`${CENTRAL}\`.vw_user_link WHERE tb_user_id = 10 ORDER BY 1`)
+    check("PAD SPACE: kind 'admin ' e 'super ' (espaço no fim) viram 'user' — como 'SYNC'",
+      eq(padKind.map((r: any) => `${r.i}:${r.profile}`), ['1:user', '2:user']), JSON.stringify(padKind))
+    // a interface 'orders ' (outra linha, licenciada, com par e concessão) NUNCA responde por 'orders'
+    await conn.query(`INSERT INTO \`${CENTRAL}\`.tb_interface (id, i18n_key, description, kind, group_default, deleted)
+      VALUES (14, 'orders ', 'orders torta', 'T', 'Comercial', 'N')`)
+    await conn.query(`INSERT INTO \`${CENTRAL}\`.tb_interface_has_privilege (tb_interface_id, tb_privilege_id, active, deleted) VALUES (14, 5, 'S', 'N')`)
+    await conn.query(`INSERT INTO \`${CLIENT}\`.tb_institution_has_interface (tb_institution_id, tb_interface_id, active, deleted) VALUES (2, 14, 'S', 'N')`)
+    await conn.query(`INSERT INTO \`${CLIENT}\`.tb_user_has_privilege (tb_user_id, tb_interface_id, tb_privilege_id, active, deleted) VALUES (11, 14, 5, 'S', 'N')`)
+    // o 2º verbo 'FATURAR ' (outro id) registrado em orders e concedido NUNCA vale como o FATURAR
+    await conn.query(`INSERT INTO \`${CENTRAL}\`.tb_privilege (id, description, deleted) VALUES (15, 'FATURAR ', 'N')`)
+    await conn.query(`INSERT INTO \`${CENTRAL}\`.tb_interface_has_privilege (tb_interface_id, tb_privilege_id, active, deleted) VALUES (10, 15, 'S', 'N')`)
+    await conn.query(`INSERT INTO \`${CLIENT}\`.tb_user_has_privilege (tb_user_id, tb_interface_id, tb_privilege_id, active, deleted) VALUES (11, 10, 15, 'S', 'N')`)
+    const [padRaw] = await conn.query<any[]>(`SELECT COUNT(*) n FROM \`${CLIENT}\`.vw_user_access
+      WHERE tb_user_id = 11 AND tb_institution_id = 2 AND interface_key = 'orders' AND privilege = 'FATURAR'`)
+    check("PAD SPACE: a interface 'orders ' e o verbo 'FATURAR ' não dão FATURAR em 'orders' (SQL cru na view)", Number(padRaw[0].n) === 0,
+      JSON.stringify(padRaw))
+    check('PAD SPACE: a biblioteca nega o FATURAR ao usuário 11 em orders', await accessVerdict(pool, who(11, 2), ['orders'], 'FATURAR') !== 'ok')
+    const [padReach] = await conn.query<any[]>(`SELECT COUNT(*) n FROM \`${CLIENT}\`.vw_user_reach WHERE tb_interface_id = 14`)
+    check("PAD SPACE: a interface 'orders ' (licenciada) fica fora do alcance de todos — fora do catálogo", Number(padReach[0].n) === 0,
+      JSON.stringify(padReach))
+    check('PAD SPACE: nada disso mexeu no FATURAR legítimo (o super em orders segue ok)',
+      await accessVerdict(pool, who(1, 1), ['orders'], 'FATURAR') === 'ok')
+    await conn.query(`DELETE FROM \`${CLIENT}\`.tb_user_has_privilege WHERE tb_user_id = 11`)
+    await conn.query(`DELETE FROM \`${CLIENT}\`.tb_institution_has_interface WHERE tb_interface_id = 14`)
+    await conn.query(`DELETE FROM \`${CENTRAL}\`.tb_interface_has_privilege WHERE tb_interface_id = 14 OR tb_privilege_id = 15`)
+    await conn.query(`DELETE FROM \`${CENTRAL}\`.tb_privilege WHERE id = 15`)
+    await conn.query(`DELETE FROM \`${CENTRAL}\`.tb_interface WHERE id = 14`)
+    await conn.query(`DELETE FROM \`${CENTRAL}\`.tb_institution_has_user WHERE tb_user_id IN (10, 11)`)
+    await conn.query(`DELETE FROM \`${CENTRAL}\`.tb_user WHERE id IN (10, 11)`)
 
     // ── D-EA7: a sessão compara o iat com o instante em que a senha foi definida (a MESMA leitura da biblioteca) ───────────────
     const sessionRows = async (u: number, i: number, iatLiteral: string) => (await conn.query<any[]>(
