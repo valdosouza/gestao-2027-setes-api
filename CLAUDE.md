@@ -140,8 +140,10 @@ Authorization: Bearer <jwt_token>
 PRIVADA; nfse-api/nfe-api só a PÚBLICA. HS256/`JWT_SECRET` aposentados — sem a chave o boot NÃO sobe. Testes assinam
 pelo `testToken` (`src/test-setup/test-token.ts`; par de TESTE gerado pelo setup do jest). NUNCA segredo em script versionado.
 
-**Licença × privilégio** (D-F37): as guardas de ação (`@shared/auth/require-privilege`) conferem a interface CONTRATADA
-para TODOS; super/admin passam só o privilégio.
+**Licença × privilégio** (D-F37, revista pela A-PV1 e pela D-PV62): as guardas de ação (`@shared/auth/require-privilege`) conferem a
+interface CONTRATADA para todos menos o super (A-PV1); super e admin dispensam a CONCESSÃO (o admin, menos nas telas delegáveis do Super —
+D-PV11), mas NUNCA o REGISTRO: só passam em par que existe em `tb_interface_has_privilege` (D-PV62 — verbo conferido sem seed = negado a
+todos até o seed; a cerca da D-PV51 e o `check:privileges` barram antes de publicar).
 
 **Veredito de acesso = UMA peça (costura A1 da frente auth-api — D-AU3/D-AU6/D-AU8, 2026-10-31)**: a regra "usuário U pode o verbo V
 na interface I" mora numa pilha de VIEWS (`setes_central.vw_user_link`/`vw_interface_catalog` — script `sql/70`; `<schema>.vw_user_reach`

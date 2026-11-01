@@ -9,7 +9,8 @@
 --                    viva — D-F14/D-F37). É a "licença sozinha" das leituras (Q-N32) e o MOTIVO do 403 (lida só na negação).
 --   vw_user_access — verbo PERMITIDO (presença = permissão — D-AU3): todo par REGISTRADO (`tb_interface_has_privilege` vivo) da interface
 --                    alcançada, para o super; para o admin, menos nas delegáveis (D-PV11 (b): até o admin precisa do privilégio marcado
---                    pelo Super); para os demais (e a delegável), a CONCESSÃO viva sobre par registrado (D-PV50 item 4).
+--                    pelo Super); para os demais (e a delegável), a CONCESSÃO viva sobre par registrado (D-PV50 item 4). Nem o
+--                    super passa em par NÃO registrado (D-PV62, Valdo 2026-11-01 — o catálogo é a fonte única do que existe).
 -- O grupo Super NÃO entra aqui (D-PV55 é regra do MENU, segue no SQL do menu). O único leitor é a biblioteca `fiscal-api/access`.
 --
 -- FUNDÍVEL (PADROES §11 regra 3): um SELECT por view, sem UNION/DISTINCT/GROUP BY/LIMIT; a de acesso compõe a de alcance (o MariaDB funde
