@@ -17,7 +17,8 @@
 -- as duas). As linhas da institution 1 aparecem também nos schemas de outros clientes nos ramos super/delegável — inalcançáveis: o leitor
 -- filtra pela institution do token e a sessão viva confere o `schema_name` (fecha por construção na D-GE22, onda 1 do grupo).
 -- Lugares reservados (só uma linha cada, quando a decisão executar): D-GE3 (onda 0 do grupo) → `AND g.tb_institution_id =
--- r.tb_institution_id` na concessão; D-GE22 (onda 1) → a licença pela chave do GRUPO; Q-EA7 (não decidida) → coluna na vw_user_link.
+-- r.tb_institution_id` na concessão; D-GE22 (onda 1) → a licença pela chave do GRUPO. (A revogação pela troca de senha — a antiga Q-EA7,
+-- decidida como D-EA7 em 2026-10-31 — JÁ entrou: `password_set_at` na vw_user_link, sql/70; a inativação cai pela leitura viva.)
 --
 -- `privilege` com COLLATE utf8mb4_bin: o verbo é citado pelo NOME (D-PV53), exato — e SEM PAD SPACE (gate adversarial da A1: o
 -- `utf8mb4_bin` do MariaDB 10.4 iguala 'FATURAR ' a 'FATURAR'; um 2º verbo com espaço no fim valeria como o FATURAR): privilégio com

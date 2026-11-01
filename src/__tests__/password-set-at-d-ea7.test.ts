@@ -40,6 +40,9 @@ function passwordWrites(): { file: string; sql: string }[] {
   return out
 }
 
+// Conhecimento negativo para a D-EA9 (scrypt, Onda 4 do `prompt_endurecer_autenticacao.md`): a regravação do hash no login (mesma senha,
+// outro formato) NÃO toca o `password_set_at` — não derruba sessão. Ela nasce como a EXCEÇÃO NOMEADA desta cerca (função própria que grava
+// só o hash), nunca afrouxando a regra para os outros escritores.
 describe('D-EA7 — o par (hash, T): quem grava a senha grava o instante junto', () => {
   it('todo SQL de produção que grava tb_user.password grava password_set_at no MESMO comando', () => {
     const writes = passwordWrites()
