@@ -202,7 +202,8 @@ describe('[ACHADO LOW] a 1ª senha opcional: na aba Usuários do Estabelecimento
     expect([userUpdateDto.safeParse({ ...base, password: 'abc12' }).success, userUpdateDto.safeParse({ ...base, password: null }).success])
       .toEqual([true, true])
   })
-  it.failing('PUT /api/users/:id com password só de espaços é recusado na validação', () => {
+  // D-EA13 (Valdo 2026-11-01, "(b) Recusar já"): a regra entrou na peça `newPasswordSchema` (users POST/PUT e admin do onboarding)
+  it('PUT /api/users/:id com password só de espaços é recusado na validação', () => {
     const parsed = userUpdateDto.safeParse({ nameCompany: 'Fulano', nickTrade: 'Fulano', email: 'fulano@x.com', password: '     ' })
     expect(parsed.success).toBe(false)
   })

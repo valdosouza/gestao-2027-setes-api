@@ -91,3 +91,24 @@ describe('D-PV58 — todo verbo leva o VISUALIZAR (regra ÚNICA da escrita da co
     expect(set).toHaveBeenCalledWith('setes_acme', 9, 30, [3, 6])
   })
 })
+
+describe('D-EA13 (Valdo 2026-11-01, "(b) Recusar já") — senha nova nunca só espaços, em toda porta do cadastro', () => {
+  it('users POST/PUT e o admin do onboarding recusam senha só de espaços; espaço DENTRO vale (frase-senha)', () => {
+    const { userCreateDto, userUpdateDto } = jest.requireActual('../modules/users/users.dto')
+    const { newPasswordSchema } = jest.requireActual('../shared/auth/password')
+    const base = { nameCompany: 'Fulano', nickTrade: 'Fulano', email: 'fulano@x.com' }
+    for (const blank of ['     ', '\t\t\t\t\t', ' \n \n ']) {
+      expect(userCreateDto.safeParse({ ...base, password: blank }).success).toBe(false)
+      expect(userUpdateDto.safeParse({ ...base, password: blank }).success).toBe(false)
+      expect(newPasswordSchema.safeParse(blank).success).toBe(false)
+    }
+    expect(newPasswordSchema.safeParse('uma frase senha').success).toBe(true)
+    expect(newPasswordSchema.safeParse('abc12').success).toBe(true)
+    expect(userUpdateDto.safeParse({ ...base, password: null }).success).toBe(true)
+    // o admin do onboarding usa a MESMA peça (o corpo do POST de institutions é a cadeia fiscal inteira — a peça é conferida no fonte)
+    const fs = jest.requireActual('fs') as typeof import('fs')
+    const path = jest.requireActual('path') as typeof import('path')
+    const dto = fs.readFileSync(path.resolve(__dirname, '../modules/institutions/institutions.dto.ts'), 'utf8')
+    expect(dto).toMatch(/password:\s+newPasswordSchema,/)
+  })
+})

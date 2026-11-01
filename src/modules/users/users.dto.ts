@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { newPasswordSchema } from '@shared/auth/password'
 
 /** Perfis do vínculo tb_institution_has_user.kind (vira o role do JWT) — D-BA23: domínio
  *  TIPADO (a tela user_institutions_section já só oferecia estes três; roles.ts reconhece
@@ -25,7 +26,7 @@ const base = {
 // alvo FORÇADO para a institution do JWT no service).
 export const userCreateDto = z.object({
   ...base,
-  password:      z.string().min(5).max(100),
+  password:      newPasswordSchema,                  // D-EA13: nunca só espaços
   institutionId: z.number().int().positive().nullable().optional(),
   kind:          z.enum(USER_KINDS).nullable().optional(),
 })
@@ -36,7 +37,7 @@ export const userUpdateDto = z.object({
   nameCompany: base.nameCompany,
   nickTrade:   base.nickTrade,
   email:       base.email,
-  password:      z.string().min(5).max(100).nullable().optional(),
+  password:      newPasswordSchema.nullable().optional(),   // D-EA13: nunca só espaços
   active:        z.enum(['S', 'N']).optional(),
   institutionId: z.number().int().positive().nullable().optional(),
 })

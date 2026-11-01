@@ -1,4 +1,5 @@
 import { createHash } from 'crypto'
+import { z } from 'zod'
 
 /**
  * Hash de senha da casa (decisão 2 da Fase 2): MD5 UPPERCASE, sem salt
@@ -8,6 +9,15 @@ import { createHash } from 'crypto'
 export function md5Password(value: string): string {
   return createHash('md5').update(value).digest('hex').toUpperCase()
 }
+
+/**
+ * A senha NOVA de uma credencial, em TODA porta que a define pelo cadastro (criar usuário, 1ª senha de conta sem credencial — A-PV23 —,
+ * admin do onboarding): 5 a 100 caracteres e NUNCA só espaços — D-EA13 (Valdo 2026-11-01, literal: *"(b) Recusar já"*;
+ * `prompt_endurecer_autenticacao.md`). Espaço DENTRO vale (frase-senha). A peça da política da D-EA5 (Onda 3 do endurecer, mínimo 8)
+ * absorve esta regra depois.
+ */
+export const newPasswordSchema = z.string().min(5).max(100)
+  .refine(value => value.trim().length > 0, { message: 'A senha não pode ser só espaços' })
 
 /**
  * D-EA7 (Valdo 2026-10-31 — `prompt_endurecer_autenticacao.md`; parecer do guardião): o FATO "a senha que vale hoje foi definida no instante
