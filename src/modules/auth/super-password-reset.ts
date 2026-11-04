@@ -1,9 +1,8 @@
 import { randomInt } from 'crypto'
 import { PoolConnection } from 'mysql2/promise'
-import { z } from 'zod'
 import { md5Password } from '@shared/auth/password'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
-import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog } from '@shared/mailer/mailer'
+import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog, singleMailAddress } from '@shared/mailer/mailer'
 import { institutionZoneFor, isValidTimeZone, DEFAULT_TIME_ZONE, Queryable } from '@shared/time-zone'
 import logger from '@shared/logger/logger'
 import { lockUserForPasswordReset, updatePassword } from './auth.repository'
@@ -54,8 +53,6 @@ export async function listSuperAccounts(conn: Pick<PoolConnection, 'query'>): Pr
   }))
 }
 
-const LOGIN_EMAIL = z.string().email()
-
 /**
  * D-EA23 (Valdo 2026-11-01, "(a) Regra única"): "o e-mail de login do Super" para o script é UM só, escolhido por UMA regra — o 1º (na
  * ordem do id) e-mail de login vivo que, APARADO, é um endereço válido pelo MESMO validador do cadastro (`z.email()`); devolvido aparado.
@@ -65,8 +62,8 @@ const LOGIN_EMAIL = z.string().email()
  */
 export function pickLoginEmail(candidates: Array<string | null | undefined>): string | null {
   for (const raw of candidates) {
-    const v = (raw ?? '').trim()
-    if (v && LOGIN_EMAIL.safeParse(v).success) return v
+    const v = singleMailAddress(raw)                     // D-EA26: o MESMO predicado da peça de envio (aparado + `z.email()`)
+    if (v) return v
   }
   return null
 }
@@ -244,7 +241,8 @@ export async function sendSuperResetNotice(
     }
     // gate adversarial (ADV-RS13-02): o e-mail GRAVADO pode ter entrado fora da porta validada (SQL, carga) — o nodemailer lê "a@x, b@y"
     // como LISTA e mandaria o aviso de segurança também a um terceiro. Só sai para UM endereço, pelo MESMO validador do cadastro.
-    if (!z.string().email().safeParse(account.loginEmail).success) {
+    // D-EA26: a regra é a da peça (`singleMailAddress`); a `sendMail` também recusa — aqui só para o log dizer a causa
+    if (singleMailAddress(account.loginEmail) !== account.loginEmail) {
       logger.error('D-RS13: e-mail de login GRAVADO do Super não é um endereço único válido — aviso NÃO enviado; a senha SEGUE redefinida',
         { userId: account.id, to: maskEmail(account.loginEmail) })
       return 'failed'

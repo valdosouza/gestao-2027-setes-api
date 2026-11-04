@@ -156,14 +156,14 @@ describe('D-RS5 — pré-voo: verifyMailerConnection autentica sem enviar e falh
 describe('D-RS5 — sendMail', () => {
   it('sem SMTP não cria transporte nem envia (modo dev: aviso no log)', async () => {
     env({})
-    await sendMail({ to: 'a@x', subject: 's', html: '<p/>' })
+    await sendMail({ to: 'a@x.com', subject: 's', html: '<p/>' })
     expect(nodemailer.createTransport).not.toHaveBeenCalled()
     expect(mockSendMail).not.toHaveBeenCalled()
   })
 
   it('com SMTP envia pelo remetente configurado', async () => {
     env({ ...complete })
-    await sendMail({ to: 'a@x', subject: 's', html: '<p/>', text: 't' })
-    expect(mockSendMail).toHaveBeenCalledWith(expect.objectContaining({ from: complete.SMTP_FROM, to: 'a@x', subject: 's' }))
+    await sendMail({ to: 'a@x.com', subject: 's', html: '<p/>', text: 't' })
+    expect(mockSendMail).toHaveBeenCalledWith(expect.objectContaining({ from: complete.SMTP_FROM, to: 'a@x.com', subject: 's' }))
   })
 })

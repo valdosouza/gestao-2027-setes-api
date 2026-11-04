@@ -734,3 +734,32 @@ describe('D-RS5 — o código vai ao log só em dev', () => {
   /** em produção o código só existe no HMAC — nenhum caminho de leitura o devolve */
   const lastCodeFromDb = () => undefined
 })
+
+// =====================================================================================================================
+// D-EA26 (Valdo 2026-11-04, "(a) Recusar em todos"): a peça de envio recusa destinatário que não seja UM endereço válido. Aqui, o caminho
+// da recuperação com o e-mail GRAVADO como lista (entrou fora da porta validada — SQL, carga): a peça REAL recusa antes do transporte,
+// o service trata como falha de envio e, em produção, o código não vai a lugar nenhum — nem ao terceiro, nem ao log.
+// =====================================================================================================================
+describe('D-EA26 — e-mail gravado como lista nunca recebe o código', () => {
+  const actualSendMail = jest.requireActual('../shared/mailer/mailer').sendMail
+  const prod = isProduction as jest.Mock
+  afterEach(() => { mail.mockReset().mockResolvedValue(undefined); prod.mockImplementation(() => false) })
+
+  it('PRODUÇÃO: a resposta segue neutra, o código fica só no HMAC, o erro vai ao log mascarado e nenhum código sai', async () => {
+    const lista = 'lista@x.com; terceiro@y.com'
+    users.set(95, { id: 95, password: 'HASH95', active: 'S', deleted: 'N', email: lista })
+    mail.mockImplementation(actualSendMail)
+    prod.mockImplementation(() => true)
+    const r = await recover(lista)
+    expect(r.status).toBe(200)                                                   // neutra (D-PV13): o público não sabe de nada
+    expect(resets.filter(x => x.userId === 95)).toHaveLength(1)                  // emitido — e não entregue
+    const err = (logger.error as jest.Mock).mock.calls.find(c => /Falha no envio do email de recuperação/.test(c[0]))
+    expect(err).toBeDefined()
+    expect(err![1]).toEqual(expect.objectContaining({ code: 'MAIL_RECIPIENT_INVALID', userId: 95 }))
+    const everything = JSON.stringify([
+      (logger.info as jest.Mock).mock.calls, (logger.warn as jest.Mock).mock.calls, (logger.error as jest.Mock).mock.calls,
+    ])
+    expect(everything).not.toMatch(/terceiro@y\.com|lista@x\.com/)              // D-EA21: nada inteiro no log
+    expect(everything).not.toMatch(/"code":"\d{6}"/)                            // D-RS5: código nunca no log de produção
+  })
+})

@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer'
+import { z } from 'zod'
 import logger from '@shared/logger/logger'
 
 // =====================================================================
@@ -183,19 +184,53 @@ export function mailErrorForLog(err: unknown): { code?: unknown; responseCode?: 
   }
 }
 
+/**
+ * D-EA26 (Valdo 2026-11-04, "(a) Recusar em todos"): a casa só manda e-mail para UM endereço válido — a regra é UMA e mora AQUI.
+ * Endereço único válido = o valor APARADO passa no MESMO validador do cadastro (`z.string().email()`); é o valor aparado que vai ao
+ * transporte (o que valida é o que envia). Motivo: o e-mail GRAVADO pode ter entrado fora da porta validada (SQL direto, carga do ERP
+ * Desktop); o nodemailer lê "a@x; b@y" / "a@x, b@y" / "Nome <a@x>, b@y" como LISTA e mandaria o código de recuperação — que troca a senha
+ * da conta — a todos (socrático do delta do item 0, Q-B). Vale para todo e-mail da casa: código de recuperação, aviso ao dono (D-RS4),
+ * aviso ao Super (D-RS13) e o que vier.
+ */
+const SINGLE_ADDRESS = z.string().email()
+
+/** O endereço único válido que [raw] representa (aparado), ou null — o predicado da D-EA26, para quem precisa decidir ANTES de enviar. */
+export function singleMailAddress(raw: string | null | undefined): string | null {
+  // a porta é tipada como texto, o DADO pode não ser (arranjo vindo de JSON/SQL): não-texto é recusa, nunca TypeError (teste da D-EA26)
+  if (typeof raw !== 'string') return null
+  const v = raw.trim()
+  return v && SINGLE_ADDRESS.safeParse(v).success ? v : null
+}
+
+/** Recusa da D-EA26: o destinatário não é UM endereço válido. A mensagem nunca leva o endereço cru (D-EA21 — vai mascarado). */
+export class MailRecipientRejectedError extends Error {
+  readonly code = 'MAIL_RECIPIENT_INVALID'
+  constructor(raw: string | null | undefined) {
+    super(`destinatário recusado (D-EA26): não é um endereço único válido — ${typeof raw === 'string' ? maskEmail(raw) : `(${typeof raw})`}`)
+    this.name = 'MailRecipientRejectedError'
+  }
+}
+
+/**
+ * A ÚNICA porta de envio. LANÇA `MailRecipientRejectedError` (D-EA26) quando o destinatário não é um endereço único válido — ANTES do
+ * transporte e ANTES do modo dev (a recusa é a mesma com e sem SMTP; o conteúdo da mensagem recusada não vai ao log). Quem chama trata
+ * a recusa como falha de envio (todos já tratam: log mascarado + segue).
+ */
 export async function sendMail(message: MailMessage): Promise<void> {
+  const to = singleMailAddress(message.to)
+  if (!to) throw new MailRecipientRejectedError(message.to)
   if (!isMailerConfigured()) {
     logger.warn('SMTP não configurado — email NÃO enviado (modo dev, conteúdo no log)', {
-      to: maskEmail(message.to), subject: message.subject,          // D-EA21
+      to: maskEmail(to), subject: message.subject,          // D-EA21
     })
     return
   }
   await transporter().sendMail({
     from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
-    to:      message.to,
+    to,
     subject: message.subject,
     html:    message.html,
     text:    message.text,
   })
-  logger.info('Email enviado', { to: maskEmail(message.to), subject: message.subject })   // D-EA21
+  logger.info('Email enviado', { to: maskEmail(to), subject: message.subject })   // D-EA21
 }
