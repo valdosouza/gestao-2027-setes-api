@@ -91,13 +91,12 @@ const msg = (to: any) => ({ to, subject: 'Assunto ADV', text: 'segredo 654321', 
 // ======================================================================================================================================
 // Parte 1 — D-EA26: o predicado × o que o nodemailer REAL faz com o valor aceito
 // ======================================================================================================================================
-/** Valores que PASSAM no `z.string().email()` da zod 3.25 e têm cara de ataque (aspas simples, sinais, controle no fim, BOM, NBSP). */
+/** Valores que PASSAM no predicado (zod 3.25 + D-EA27: só o espaço do fim aparado) e têm cara de ataque (aspas simples, sinais). */
 const ACEITOS_HOSTIS: Array<[string, string]> = [
   ["o'brien@x.com", "o'brien@x.com"], ["'a@x.com", "'a@x.com"], ["''a@x.com", "''a@x.com"], ["a''b@x.com", "a''b@x.com"],
   ['-a@x.com', '-a@x.com'], ['+a@x.com', '+a@x.com'], ['_@x.com', '_@x.com'], ['a@x-.com', 'a@x-.com'], ['a@1.com', 'a@1.com'],
   ['a@xn--bcher-kva.com', 'a@xn--bcher-kva.com'], ['A@X.COM', 'A@X.COM'],
-  ['a@x.com\n', 'a@x.com'], ['a@x.com\r', 'a@x.com'], ['\ta@x.com\t', 'a@x.com'], ['a@x.com\u000B', 'a@x.com'],
-  ['﻿a@x.com﻿', 'a@x.com'], ['a@x.com ', 'a@x.com'], ['a@x.com ', 'a@x.com'],
+  ['a@x.com ', 'a@x.com'], ['a@x.com   ', 'a@x.com'],   // D-EA27: so o espaco (U+0020) do FIM e aparado — a igualdade do login (PAD SPACE)
 ]
 /** Valores que o nodemailer leria como lista/cabeçalho/endereço diferente, ou que não são ASCII — todos têm de ser recusados. */
 const RECUSADOS_HOSTIS = [
@@ -107,6 +106,8 @@ const RECUSADOS_HOSTIS = [
   "a'b,c@x.com", "a'<b>@x.com", "a@x.com'", 'a.@x.com', 'a..b@x.com', '.a@x.com', 'a@x..com', 'a@[127.0.0.1]', 'a@localhost',
   'a@x.com\nBcc: e@evil.test', 'a@x.com\r\nTo: e@evil.test', 'a@x.com,', ',a@x.com', 'a@x.com;e@evil.test', 'a@x.com e@evil.test',
   '=?utf-8?Q?a=40x.com?= <e@evil.test>', 'a@x.com <e@evil.test>',
+  // D-EA27 (Valdo 2026-11-04): branco nas pontas que NAO e o espaco do fim = recusa (com o trim() do JS eles eram aparados e aceitos)
+  'a@x.com\n', 'a@x.com\r', '\ta@x.com\t', 'a@x.com\u000B', '\uFEFFa@x.com\uFEFF', 'a@x.com\u00A0', 'a@x.com\u2028', ' a@x.com',
 ]
 
 describe('ADV-FG D-EA26 — o que valida é o que vai ao transporte (nodemailer REAL, jsonTransport)', () => {

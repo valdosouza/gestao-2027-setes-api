@@ -94,7 +94,8 @@ describe('D-PV46 — a peça do reset do Super (dublê)', () => {
   })
 
   it('D-EA23: a peça pickLoginEmail é a regra única (1º válido aparado; nenhum = null)', () => {
-    expect(pickLoginEmail(['  ', null, 'x', ' b@c.test ', 'd@e.test'])).toBe('b@c.test')
+    expect(pickLoginEmail(['  ', null, 'x', ' b@c.test ', 'd@e.test'])).toBe('d@e.test')   // D-EA27: espaço no INÍCIO = recusa
+    expect(pickLoginEmail(['  ', null, 'x', 'b@c.test  ', 'd@e.test'])).toBe('b@c.test')   // o espaço do FIM é aparado
     expect(pickLoginEmail([])).toBeNull()
     expect(pickLoginEmail(['a@x, b@y'])).toBeNull()
   })

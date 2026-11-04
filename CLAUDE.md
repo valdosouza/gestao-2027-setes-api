@@ -167,7 +167,7 @@ mascara TODO endereço, inclusive de valor gravado em lista) e todo erro de envi
 o nodemailer põe o endereço na mensagem e em `response`/`rejected`); as três rotas públicas de `/auth` também nunca logam o `err` cru
 (o erro do mysql2 traz o `sql` com o e-mail digitado). FORA da regra, por ora: o remetente (`SMTP_FROM`/`SMTP_USER`, mostrado no boot e
 no ensaio para conferência) e o erro de banco das demais telas (`handleError` — D-EA25: frente própria "dado pessoal no log").
-**D-EA26**: a `sendMail` só manda para UM endereço válido — o valor APARADO passa no `z.string().email()` do cadastro e é ele que vai ao
+**D-EA26**: a `sendMail` só manda para UM endereço válido — o valor APARADO (só o espaço do FIM — D-EA27, a mesma igualdade do login; outro branco nas pontas = recusa) passa no `z.string().email()` do cadastro e é ele que vai ao
 transporte (`singleMailAddress`); lista, nome + endereço, quebra de linha ou não-texto = `MailRecipientRejectedError`
 (`MAIL_RECIPIENT_INVALID`), ANTES do transporte e do modo dev, para TODO e-mail da casa. Quem chama trata como falha de envio (a
 recuperação segue neutra; em produção o código não vai a lugar nenhum). Nenhuma outra regra de endereço: quem precisa decidir antes usa

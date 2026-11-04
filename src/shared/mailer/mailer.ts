@@ -189,7 +189,7 @@ export function mailErrorForLog(err: unknown): { code?: unknown; responseCode?: 
 
 /**
  * D-EA26 (Valdo 2026-11-04, "(a) Recusar em todos"): a casa só manda e-mail para UM endereço válido — a regra é UMA e mora AQUI.
- * Endereço único válido = o valor APARADO passa no MESMO validador do cadastro (`z.string().email()`); é o valor aparado que vai ao
+ * Endereço único válido = o valor APARADO (só o espaço do fim — D-EA27) passa no MESMO validador do cadastro (`z.string().email()`); é o valor aparado que vai ao
  * transporte (o que valida é o que envia). Motivo: o e-mail GRAVADO pode ter entrado fora da porta validada (SQL direto, carga do ERP
  * Desktop); o nodemailer lê "a@x; b@y" / "a@x, b@y" / "Nome <a@x>, b@y" como LISTA e mandaria o código de recuperação — que troca a senha
  * da conta — a todos (socrático do delta do item 0, Q-B). Vale para todo e-mail da casa: código de recuperação, aviso ao dono (D-RS4),
@@ -201,7 +201,10 @@ const SINGLE_ADDRESS = z.string().email()
 export function singleMailAddress(raw: string | null | undefined): string | null {
   // a porta é tipada como texto, o DADO pode não ser (arranjo vindo de JSON/SQL): não-texto é recusa, nunca TypeError (teste da D-EA26)
   if (typeof raw !== 'string') return null
-  const v = raw.trim()
+  // D-EA27 (Valdo 2026-11-04, "(a) Só o do fim"): "aparado" = SÓ o espaço (U+0020) do FIM — a MESMA igualdade com que o login acha a conta
+  // (PAD SPACE da colação). Espaço no início, tab, quebra, NBSP, BOM etc. nas pontas = RECUSA (o `z.email()` não os aceita): com o `trim()`
+  // do JS o script do Super trocava a senha e avisava "a@x.com" numa conta gravada " a@x.com", com que ninguém entra (gate socrático).
+  const v = raw.replace(/ +$/, '')
   return v && SINGLE_ADDRESS.safeParse(v).success ? v : null
 }
 

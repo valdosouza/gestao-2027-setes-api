@@ -38,21 +38,23 @@ const RECUSADOS = [
 describe('D-EA26 — o predicado da peça', () => {
   it('aceita UM endereço válido e devolve o valor APARADO (o que valida é o que envia)', () => {
     expect(singleMailAddress('valdo@setes.com.br')).toBe('valdo@setes.com.br')
-    expect(singleMailAddress('  valdo@setes.com.br  ')).toBe('valdo@setes.com.br')
+    expect(singleMailAddress('valdo@setes.com.br   ')).toBe('valdo@setes.com.br')     // D-EA27: só o espaço do FIM
+    for (const raw of ['  valdo@setes.com.br', '\tvaldo@setes.com.br', 'valdo@setes.com.br\t', 'valdo@setes.com.br\u00A0', 'valdo@setes.com.br\n'])
+      expect(singleMailAddress(raw)).toBeNull()                                         // D-EA27: outro branco nas pontas = recusa
     expect(singleMailAddress('ti+avisos@cliente.com.br')).toBe('ti+avisos@cliente.com.br')
   })
   it.each(RECUSADOS)('recusa %j', raw => { expect(singleMailAddress(raw)).toBeNull() })
   it('recusa null/undefined', () => { expect(singleMailAddress(null)).toBeNull(); expect(singleMailAddress(undefined)).toBeNull() })
   it('a escolha do e-mail de login do Super usa o MESMO predicado (uma regra só — D-EA23 × D-EA26)', () => {
     for (const raw of RECUSADOS) expect(pickLoginEmail([raw])).toBeNull()
-    expect(pickLoginEmail(['a@x.com; b@y.com', ' ok@x.com '])).toBe('ok@x.com')
+    expect(pickLoginEmail(['a@x.com; b@y.com', ' ok@x.com', 'ok@x.com  '])).toBe('ok@x.com')   // D-EA27: o do início é recusado
   })
 })
 
 describe('D-EA26 — sendMail recusa antes do transporte', () => {
   it('com SMTP: endereço único vai ao transporte APARADO', async () => {
     Object.assign(process.env, SMTP)
-    await sendMail(msg(' valdo@setes.com.br '))
+    await sendMail(msg('valdo@setes.com.br  '))
     expect(mockSendMail).toHaveBeenCalledWith(expect.objectContaining({ to: 'valdo@setes.com.br' }))
   })
 

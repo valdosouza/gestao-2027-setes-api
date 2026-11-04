@@ -64,7 +64,7 @@ export async function listSuperAccounts(conn: Pick<PoolConnection, 'query'>): Pr
 
 /**
  * D-EA23 (Valdo 2026-11-01, "(a) Regra única"): "o e-mail de login do Super" para o script é UM só, escolhido por UMA regra — o 1º (na
- * ordem do id) e-mail de login vivo que, APARADO, é um endereço válido pelo MESMO validador do cadastro (`z.email()`); devolvido aparado.
+ * ordem do id) e-mail de login vivo que, APARADO (só o espaço do fim — D-EA27), é um endereço válido pelo MESMO validador do cadastro (`z.email()`); devolvido aparado.
  * Nenhum válido = null (o script recusa — D-EA20). A lista, o ensaio e o ATO (sob a trava) usam esta peça; o aviso vai ao e-mail que o
  * ATO escolheu (devolvido no veredito). Antes eram três regras e, com dado sujo (1º em branco, espaço no fim, troca por SQL entre a lista e
  * o ato), a senha era trocada e o aviso não saía ou ia ao e-mail velho (gate adversarial do delta, ADV-EA20-01/02).
