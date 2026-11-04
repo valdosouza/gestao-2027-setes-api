@@ -6,7 +6,7 @@ import { assertActDate, catalogPlan, assertPlanArgs, assertPlanMatches, PlanInpu
 const base = (): PlanInput => ({
   date: '2026-10-10', itFile: 'a'.repeat(64), itVersion: 'IT 2025.002 v1.70',
   it: {
-    csts: [{ id: '000', description: 'Tributação integral' }],
+    csts: [{ id: '000', description: 'Tributação integral', requiresGroup: true }],
     classifications: [{ code: '000001', cst: '000', name: 'n', description: 'd', validFrom: '2026-01-01', validUntil: null,
       requiresRegularTaxation: false, updatedAt: '2026-01-01', models: ['SE'] }],
   },

@@ -1,4 +1,5 @@
 import pool from '@shared/db/connection'
+import logger from '@shared/logger/logger'
 import { HttpError, FieldError } from '@shared/errors/http-error'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { escapeLike } from '@shared/list'
@@ -28,7 +29,11 @@ import { escapeLike } from '@shared/list'
  *   - D-IB36: linha SUPERADA (ausente da fonte desde uma versão — `absent_since_version`) é
  *     ignorada em toda resolução; a exibição de um código gravado só a mostra se não houver outra;
  *   - D-IB37: `classificationAcceptedToday` diz se a classificação gravada é aceita HOJE pela
- *     regra do cadastro (o GET devolve e a tela mostra um selo quando não é).
+ *     regra do cadastro (o GET devolve e a tela mostra um selo quando não é);
+ *   - D-IB113: classificação de CST que NÃO leva o grupo IBS/CBS (ind_gIBSCBS = 0 — o fisco proíbe `cIndOp` e
+ *     `gIBSCBS`: E0859/E0961) é recusada ("ainda não suportado na NFS-e"): a nfse-api emite `cIndOp` + `gIBSCBS` para
+ *     todo grupo declarado, por construção. Indicador DESCONHECIDO (NULL — CST gravado antes do script 73) também é
+ *     recusado (falha fechada) até a próxima carga do catálogo.
  * Não calcula nada (o fisco calcula — §1.2) e não conhece ERP: recebe códigos e uma data.
  */
 
@@ -57,6 +62,8 @@ export interface ClassificationAt {
   applicable:              boolean
   /** D-IB36: a linha sumiu da fonte (ausente desde uma versão do IT) — nunca é escolhida. */
   superseded:              boolean
+  /** D-IB113: o CST leva o grupo IBS/CBS (ind_gIBSCBS)? null = indicador desconhecido (CST gravado antes do script 73). */
+  cstRequiresGroup:        boolean | null
 }
 
 const dateStr = (v: any): string | null =>
@@ -65,9 +72,10 @@ const dateStr = (v: any): string | null =>
 const CLASSIFICATION_SELECT =
   `SELECT v.code, c.tb_tax_ibscbs_id AS cst, v.name, v.valid_from AS validFrom, v.valid_until AS validUntil,
           v.requires_regular_taxation AS requiresRegular, v.absent_since_version AS absentSince,
-          (a.code IS NOT NULL) AS applicable
+          (a.code IS NOT NULL) AS applicable, t.requires_ibscbs_group AS requiresGroup
      FROM setes_central.tb_tax_ibscbs_classification_validity v
      JOIN setes_central.tb_tax_ibscbs_classification c ON c.code = v.code AND c.deleted = 'N'
+     JOIN setes_central.tb_tax_ibscbs t ON t.id = c.tb_tax_ibscbs_id
      LEFT JOIN setes_central.tb_tax_ibscbs_classification_applicability a
        ON a.code = v.code AND a.valid_from = v.valid_from AND a.model = ? AND a.deleted = 'N'`
 
@@ -77,6 +85,8 @@ const toClassification = (r: any): ClassificationAt => ({
   requiresRegularTaxation: r.requiresRegular === 'S',
   applicable: Number(r.applicable) === 1,
   superseded: r.absentSince != null,
+  // D-IB113: só 'S'/'N' decidem; qualquer outra coisa (NULL — carga anterior ao script 73) é desconhecido → recusado
+  cstRequiresGroup: r.requiresGroup === 'S' ? true : r.requiresGroup === 'N' ? false : null,
 })
 
 /**
@@ -99,8 +109,9 @@ export async function findClassificationAt(
 }
 
 /** Por que o código NÃO é aceito: sem linha (inexistente/fora de vigência) · sem presença no modelo (ou ainda não confirmado
- *  pela Calculadora — A-IB1) · exige o grupo de tributação regular, que o builder não emite (parecer do guardião §10.3 (a.ii)). */
-export type ClassificationRefusal = 'no-line' | 'not-applicable' | 'requires-regular'
+ *  pela Calculadora — A-IB1) · exige o grupo de tributação regular, que o builder não emite (parecer do guardião §10.3 (a.ii)) ·
+ *  D-IB113: o CST não leva o grupo IBS/CBS (ind_gIBSCBS = 0, ou indicador ainda não carregado) — ainda não suportado na NFS-e. */
+export type ClassificationRefusal = 'no-line' | 'not-applicable' | 'requires-regular' | 'cst-without-group'
 
 export interface ClassificationVerdict {
   accepted: boolean
@@ -114,7 +125,16 @@ export function verdictOf(c: ClassificationAt | null): ClassificationVerdict {
   if (!c) return { accepted: false, reason: 'no-line', line: null }
   if (!c.applicable) return { accepted: false, reason: 'not-applicable', line: c }
   if (c.requiresRegularTaxation) return { accepted: false, reason: 'requires-regular', line: c }
+  // D-IB113: por ÚLTIMO — todo veredito anterior fica idêntico; só o que era aceito pode virar recusa por este motivo
+  if (c.cstRequiresGroup !== true) return { accepted: false, reason: 'cst-without-group', line: c }
   return { accepted: true, reason: null, line: c }
+}
+
+/** D-IB113: a frase do motivo `cst-without-group` — a MESMA no 422 do cadastro e no do faturamento (o desconhecido diz o que fazer). */
+export function groupRefusalText(code: string, line: Pick<ClassificationAt, 'cst' | 'cstRequiresGroup'>): string {
+  return line.cstRequiresGroup === null
+    ? `cClassTrib ${code}: o indicador do grupo IBS/CBS do CST ${line.cst} ainda não foi carregado no catálogo — recusado até a próxima carga (rotina do Super)`
+    : `cClassTrib ${code} (CST ${line.cst}) não leva o grupo IBS/CBS na NFS-e — ainda não suportado`
 }
 const accepts = (c: ClassificationAt | null): boolean => verdictOf(c).accepted
 
@@ -274,19 +294,95 @@ export async function classificationAcceptedToday(
   return a.classification && a.placeIndicator
 }
 
+/** Conexão da sonda do boot (transação SEMPRE desfeita). */
+export type ProbeConnection = Queryable & { beginTransaction(): Promise<void>; rollback(): Promise<void>; release(): void }
+
+/** D-IB113: nome do CHECK binário do indicador do grupo (script sql/73) — a sonda do boot só aceita a recusa vinda DELE. */
+export const CST_GROUP_CHECK = 'ck_tax_ibscbs_requires_group'
+
 /** Boot (gate socrático da Rodada 4 — molde D-IB26/D-F45): o que a peça presume do catálogo central
  *  EXISTE. Sem o script sql/63 a coluna `absent_since_version` falta e o cadastro de serviços daria
- *  500 com o boot limpo — agora a API não sobe e diz qual script aplicar. */
-export async function assertIbscbsCatalogSchema(q: Queryable = pool): Promise<string> {
-  try {
-    await q.query(`SELECT absent_since_version FROM setes_central.tb_tax_ibscbs_classification_validity LIMIT 0`)
-  } catch (err: any) {
-    if (err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR') {
-      throw new Error('Catálogo IBS/CBS sem a coluna absent_since_version — aplique o script sql/63_ibscbs_validity_absent_since.sql em setes_central ANTES do setes-api (D-IB36)')
+ *  500 com o boot limpo — agora a API não sobe e diz qual script aplicar. D-IB113: o mesmo para a coluna
+ *  `requires_ibscbs_group` do script sql/73 (lida em toda resolução) + o CHECK binário dela provado pelo NOME
+ *  (PADROES_BANCO §11 regra 11: um valor fora do domínio e a minúscula de um válido, PK própria cada, numa
+ *  transação SEMPRE desfeita). D-IB120 (Valdo 2026-11-01): CST com o indicador DESCONHECIDO (carga anterior ao 73) que
+ *  ainda tem cClassTrib com linha VIVA (não superada — o código segue na fonte) = o boot NÃO sobe: a carga do catálogo tem
+ *  de rodar ANTES do deploy (ordem script 73 → carga → deploy), e "D-IB113 no ar" (D-IB115) passa a exigi-la por
+ *  construção. CST desconhecido SEM linha viva (saiu da fonte antes da 1ª carga depois do 73 — a carga não o alcança) =
+ *  só ALERTA. `central` existe só para a prova em schema descartável (`scripts/prove-ibscbs-cst-group.ts`). */
+export async function assertIbscbsCatalogSchema(
+  db: Queryable & { getConnection(): Promise<ProbeConnection> } = pool as any, central = 'setes_central',
+): Promise<string> {
+  if (!/^[a-z0-9_]+$/.test(central)) throw new Error(`schema central inválido: ${central}`)
+  const column = async (sql: string, message: string) => {
+    try {
+      await db.query(sql)
+    } catch (err: any) {
+      if (err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR') throw new Error(message)
+      throw err
     }
-    throw err
+  }
+  await column(`SELECT absent_since_version FROM ${central}.tb_tax_ibscbs_classification_validity LIMIT 0`,
+    'Catálogo IBS/CBS sem a coluna absent_since_version — aplique o script sql/63_ibscbs_validity_absent_since.sql em setes_central ANTES do setes-api (D-IB36)')
+  await column(`SELECT requires_ibscbs_group FROM ${central}.tb_tax_ibscbs LIMIT 0`,
+    'Catálogo IBS/CBS sem a coluna requires_ibscbs_group — aplique o script sql/73_ibscbs_cst_requires_group.sql em setes_central ANTES do setes-api (D-IB113)')
+  await assertCstGroupCheckRefuses(db, central)
+  // D-IB120: por CST de indicador desconhecido, se ainda há cClassTrib com linha viva (não superada) — o que a carga alcança
+  const [rows] = await db.query(
+    `SELECT t.id, EXISTS (SELECT 1 FROM ${central}.tb_tax_ibscbs_classification c
+                            JOIN ${central}.tb_tax_ibscbs_classification_validity v
+                              ON v.code = c.code AND v.deleted = 'N' AND v.absent_since_version IS NULL
+                           WHERE c.tb_tax_ibscbs_id = t.id AND c.deleted = 'N') AS live
+       FROM ${central}.tb_tax_ibscbs t
+      WHERE t.deleted = 'N' AND t.requires_ibscbs_group IS NULL
+      ORDER BY t.id`)
+  const unknown = (rows as any[]).map(r => ({ id: String(r.id), live: Number(r.live) === 1 }))
+  const inUse = unknown.filter(u => u.live).map(u => u.id)
+  if (inUse.length) {
+    throw new Error(`Catálogo IBS/CBS com o indicador do grupo DESCONHECIDO no(s) CST ${inUse.join(', ')}, que ainda têm cClassTrib vivo `
+      + '— rode a carga do catálogo (rotina do Super, com o código da D-IB113) ANTES do deploy do setes-api '
+      + '(D-IB120; ordem: script sql/73 → carga → deploy)')
+  }
+  if (unknown.length) {
+    logger.warn(`[D-IB113] ${unknown.length} CST(s) do catálogo IBS/CBS com o indicador do grupo DESCONHECIDO e SEM cClassTrib vivo `
+      + `(${unknown.map(u => u.id).join(', ')} — saíram da fonte antes da carga): não travam o boot; nenhuma classificação deles é aceita`)
+    return `ok (${unknown.length} CST com o indicador desconhecido fora da fonte — ALERTA acima)`
   }
   return 'ok'
+}
+
+/** ADV-IB113-02 (gate adversarial): o CHECK é avaliado ANTES de a linha ir ao índice (provado no MariaDB 10.4 — com ele a sonda
+ *  não espera a trava da carga do catálogo nem colide com um CST real 998/999). Então a PK ocupada (1062) e a espera pela trava
+ *  (1205) só acontecem SEM o CHECK — o boot diz isso, em vez do erro cru. */
+const PROBE_NOT_REFUSED: Readonly<Record<number, string>> = { 1062: 'colidiu com a PK', 1205: 'esperou a trava da carga do catálogo' }
+
+async function assertCstGroupCheckRefuses(db: { getConnection(): Promise<ProbeConnection> }, central: string): Promise<void> {
+  const conn = await db.getConnection()
+  const accepted: string[] = []
+  try {
+    await conn.beginTransaction()
+    for (const [id, value] of [['998', 'X'], ['999', 's']] as const) {
+      try {
+        await conn.query(
+          `INSERT INTO ${central}.tb_tax_ibscbs (id, description, requires_ibscbs_group, source_version, deleted)
+           VALUES (?, 'conferência do boot (D-IB113)', ?, 'boot', 'S')`, [id, value])
+        accepted.push(`'${value}'`)
+      } catch (err: any) {
+        // ER_CONSTRAINT_FAILED (MariaDB 4025) · ER_CHECK_CONSTRAINT_VIOLATED (MySQL 3819) — e só a recusa DESTE CHECK prova o domínio
+        const byName = (err?.errno === 4025 || err?.errno === 3819) && String(err?.sqlMessage ?? err?.message).includes(CST_GROUP_CHECK)
+        if (byName) continue
+        if (PROBE_NOT_REFUSED[err?.errno]) { accepted.push(`'${value}' ${PROBE_NOT_REFUSED[err.errno]} (${err.errno})`); continue }
+        throw err
+      }
+    }
+  } finally {
+    try { await conn.rollback() } catch { /* a conexão pode ter caído — o release resolve */ }
+    conn.release()
+  }
+  if (accepted.length) {
+    throw new Error(`O banco ACEITOU requires_ibscbs_group fora do domínio (${accepted.join(', ')}) — falta o CHECK `
+      + `${CST_GROUP_CHECK}: aplique o script sql/73_ibscbs_cst_requires_group.sql em setes_central ANTES do setes-api (D-IB113)`)
+  }
 }
 
 export async function findPlaceIndicator(
@@ -368,6 +464,9 @@ export async function assertServiceClassification(
     } else if (verdict.reason === 'requires-regular') {
       fields.push({ field: 'ibscbs.classificationCode', message: `cClassTrib ${classificationCode} exige o grupo de tributação regular, que ainda não é emitido` })
       code ??= ErrorCodes.IBSCBS_CLASSIFICATION_REQUIRES_REGULAR
+    } else if (verdict.reason === 'cst-without-group') {
+      fields.push({ field: 'ibscbs.classificationCode', message: `${groupRefusalText(classificationCode, verdict.line!)} — escolha outra classificação` })
+      code ??= ErrorCodes.IBSCBS_CLASSIFICATION_GROUP_UNSUPPORTED
     }
     const place = checks.placeIndicator ? await findPlaceIndicator(q, placeIndicatorCode, model) : undefined
     if (place !== undefined && (!place || !place.applicable)) {
@@ -531,12 +630,12 @@ export interface ServicePresumption {
  */
 export const IBSCBS_OMISSIONS = Object.freeze([
   'not-classified', 'no-line', 'not-applicable', 'requires-regular',
-  'place-indicator', 'nbs-missing', 'nbs-not-accepted', 'divergent',
+  'place-indicator', 'nbs-missing', 'nbs-not-accepted', 'divergent', 'cst-without-group',
 ] as const)
 export type IbscbsOmission = typeof IBSCBS_OMISSIONS[number]
 
 const OMISSION_ORDER: readonly IbscbsOmission[] = [
-  'divergent', 'not-classified', 'no-line', 'not-applicable', 'requires-regular',
+  'divergent', 'not-classified', 'no-line', 'not-applicable', 'requires-regular', 'cst-without-group',
   'place-indicator', 'nbs-missing', 'nbs-not-accepted',
 ]
 
@@ -628,6 +727,8 @@ export async function evaluateIbscbsDeclaration(
       omitted.add('not-applicable'); all(`cClassTrib ${code} não aceito na NFS-e (ou ainda não confirmado pela Calculadora oficial)`)
     } else if (verdict.reason === 'requires-regular') {
       omitted.add('requires-regular'); all(`cClassTrib ${code} exige o grupo de tributação regular, que ainda não é emitido`)
+    } else if (verdict.reason === 'cst-without-group') {
+      omitted.add('cst-without-group'); all(groupRefusalText(code, verdict.line!))
     }
     const indicator = await findPlaceIndicator(q, place, MODEL_NFSE)
     if (!indicator || !indicator.applicable) {

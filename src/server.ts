@@ -29,7 +29,7 @@ async function bootstrap() {
     logger.info(`innodb_rollback_on_timeout: ${await assertRollbackOnTimeoutOff()}`)   // L7
     logger.info(`Fuso da sessão do banco: ${await assertSessionTimeZoneUtc()}`)          // Q-TZ1
     logger.info(`CHECK do banco: ${await assertCheckConstraintsEnforced()}`)           // D-IB26
-    logger.info(`Catálogo IBS/CBS (script 63): ${await assertIbscbsCatalogSchema()}`)   // D-IB36
+    logger.info(`Catálogo IBS/CBS (scripts 63/73): ${await assertIbscbsCatalogSchema()}`)   // D-IB36 · D-IB113
     logger.info(`Pedido de troca de senha (script 67): ${await assertPasswordResetReady()}`)   // Q-PV38
     // Costura A1 da auth-api (D-AU3/D-UC9): as views centrais do veredito (script 70) — sem elas NENHUMA rota autentica
     logger.info(`Veredito de acesso (script 70): ${await assertAccessViews(SETES_INSTITUTION_ID, DELEGABLE_SUPER_INTERFACES)}`)

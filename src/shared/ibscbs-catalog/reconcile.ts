@@ -53,8 +53,9 @@ export const CALCULATOR_NFSE_SIGLA = 'NFS-e'
 /** Item da lista da Calculadora numa data: código + aceitação na NFS-e (D-IB28 (a)). */
 export interface CalculatorEntry { code: string; nfse: boolean }
 
-/** Atributos do par NFS-e × cClassTrib na data (endpoint por par). */
-export interface CalculatorPair { valid: boolean; requiresRegular: boolean }
+/** Atributos do par NFS-e × cClassTrib na data (endpoint por par). `requiresGroup` = `exigeGrupoIbsCbs` — o que o fisco
+ *  consulta nas regras E0859/E0860/E0960/E0961 do leiaute da NT 009 (D-IB113: conferido contra o ind_gIBSCBS do CST no IT). */
+export interface CalculatorPair { valid: boolean; requiresRegular: boolean; requiresGroup: boolean }
 
 export const pairKey = (date: string, code: string): string => `${date}|${code}`
 
@@ -74,14 +75,15 @@ export function parseCalculatorList(json: unknown, date: string): CalculatorEntr
   return out
 }
 
-/** Resposta do par NFS-e × cClassTrib — os dois booleanos que o código consome. */
+/** Resposta do par NFS-e × cClassTrib — os três booleanos que o código consome. */
 export function parseCalculatorPair(json: unknown, code: string, date: string): CalculatorPair {
   const x = json as any
-  if (typeof x?.validoParaSiglaDfeInformado !== 'boolean' || typeof x?.exigeGrupoTributacaoRegular !== 'boolean') {
+  if (typeof x?.validoParaSiglaDfeInformado !== 'boolean' || typeof x?.exigeGrupoTributacaoRegular !== 'boolean'
+      || typeof x?.exigeGrupoIbsCbs !== 'boolean') {
     throw new CatalogSourceError(`Calculadora (${date}): resposta do par ${CALCULATOR_NFSE_SIGLA} × ${code} mudou de estrutura`,
       [JSON.stringify(x).slice(0, 200)])
   }
-  return { valid: x.validoParaSiglaDfeInformado, requiresRegular: x.exigeGrupoTributacaoRegular }
+  return { valid: x.validoParaSiglaDfeInformado, requiresRegular: x.exigeGrupoTributacaoRegular, requiresGroup: x.exigeGrupoIbsCbs }
 }
 
 /** Linhas que pedem a consulta por PAR: aceitas na NFS-e pelo IT E pela lista da Calculadora na data delas. */
@@ -130,7 +132,8 @@ export function conferenceDates(catalog: ItCatalog, loadDate: string): string[] 
  * `attributes` (D-IB28 (a) — OBRIGATÓRIO: nenhum chamador pula a conferência): a lista com os documentos de cada
  * código e os PARES NFS-e × cClassTrib. Linha confirmada que o IT aceita na NFS-e perde a
  * aplicabilidade na NFS-e quando a Calculadora não a aceita (lista ou par), quando o par
- * não foi consultado (fail-closed) ou quando a tributação regular diverge do IT.
+ * não foi consultado (fail-closed), quando a tributação regular diverge do IT ou — D-IB113 —
+ * quando o grupo IBS/CBS do par (`exigeGrupoIbsCbs`) diverge do ind_gIBSCBS do CST no IT.
  */
 export function reconcileWithCalculator(
   catalog: ItCatalog,
@@ -180,6 +183,7 @@ export function reconcileWithCalculator(
 
   const blocked: BlockedRow[] = []
   const divergences: string[] = []
+  const cstGroup = new Map(catalog.csts.map(c => [c.id, c.requiresGroup]))
   {
     const isUnconfirmed = new Set(unconfirmed.map(u => `${u.code}|${u.validFrom}`))
     for (const row of catalog.classifications) {
@@ -198,6 +202,9 @@ export function reconcileWithCalculator(
       else if (!pair.valid) blocked.push({ ...base, reason: 'o par NFS-e × cClassTrib não é válido na Calculadora' })
       else if (pair.requiresRegular !== row.requiresRegularTaxation) {
         blocked.push({ ...base, reason: `tributação regular diverge (IT ${row.requiresRegularTaxation ? 'exige' : 'não exige'} × Calculadora ${pair.requiresRegular ? 'exige' : 'não exige'})` })
+      } else if (pair.requiresGroup !== cstGroup.get(row.cst)) {
+        // D-IB113: o fisco decide o grupo pela Calculadora (E0961 "conforme consulta à calculadora") — divergir do IT = a linha sai da NFS-e
+        blocked.push({ ...base, reason: `grupo IBS/CBS diverge (IT: CST ${row.cst} ${cstGroup.get(row.cst) ? 'exige' : 'não leva'} × Calculadora ${pair.requiresGroup ? 'exige' : 'não leva'})` })
       }
     }
     blocked.sort((a, b) => a.code.localeCompare(b.code) || a.validFrom.localeCompare(b.validFrom))

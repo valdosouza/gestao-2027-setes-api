@@ -33,7 +33,7 @@ function fakeCatalog(opts: CatalogOpts = {}) {
         if (opts.classification === null) return [[]]
         return [[{
           code: params[1][0], cst: '000', name: 'Tributação integral', validFrom: '2026-01-01', validUntil: null,
-          requiresRegular: 'N', absentSince: null, applicable: 1, ...(opts.classification ?? {}),
+          requiresRegular: 'N', absentSince: null, applicable: 1, requiresGroup: 'S', ...(opts.classification ?? {}),
         }]]
       }
       if (/tb_ibscbs_place_indicator/.test(sql)) {
@@ -137,6 +137,11 @@ describe('evaluateIbscbsDeclaration — o TRIO (D-IB62, E0322)', () => {
     ['sem linha vigente na data', { classification: null }, 'no-line', /inexistente ou fora de vigência em 2027-01-05/],
     ['sem presença na NFS-e', { classification: { applicable: 0 } }, 'not-applicable', /não aceito na NFS-e/],
     ['exige tributação regular', { classification: { requiresRegular: 'S' } }, 'requires-regular', /tributação regular/],
+    // D-IB113: CST que não leva o grupo IBS/CBS (ind_gIBSCBS = 0) e indicador DESCONHECIDO (carga anterior ao script 73) — o MESMO motivo
+    ['CST sem o grupo IBS/CBS', { classification: { cst: '410', requiresGroup: 'N' } }, 'cst-without-group',
+      /CST 410\) não leva o grupo IBS\/CBS na NFS-e — ainda não suportado/],
+    ['indicador do grupo desconhecido', { classification: { cst: '410', requiresGroup: null } }, 'cst-without-group',
+      /indicador do grupo IBS\/CBS do CST 410 ainda não foi carregado/],
     ['cIndOp sem presença', { place: false }, 'place-indicator', /cIndOp 100301 inexistente ou não aceito/],
     ['cIndOp inexistente', { place: null }, 'place-indicator', /cIndOp 100301/],
   ] as const)('%s → motivo %s (o veredito da peça — D-IB47; nunca re-derivado)', async (_n, opts, reason, msg) => {

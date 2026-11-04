@@ -13,14 +13,24 @@ import {
  * classificação do serviço conferida no catálogo central na DATA, para a NFS-e (modelo SE).
  */
 
-interface Validity { code: string; cst: string; name: string; from: string; until: string | null; regular: 'S' | 'N'; models: string[]; absent?: string }
+interface Validity {
+  code: string; cst: string; name: string; from: string; until: string | null; regular: 'S' | 'N'; models: string[]; absent?: string
+  /** D-IB113: indicador do grupo do CST (ausente = 'S'; null = desconhecido — carga anterior ao script 73). */
+  group?: 'S' | 'N' | null
+}
+const groupOf = (v: Validity) => (v.group === undefined ? 'S' : v.group)
 
 function fakeCatalog(opts: { validity: Validity[]; places: Record<string, string[]>; nbs: string[] }): Queryable {
   return {
     query: async (sql: string, params: unknown[] = []) => {
+      // D-IB113: toda resolução lê o indicador do CST (JOIN com tb_tax_ibscbs) — consulta sem ele = defeito
+      if (sql.includes('tb_tax_ibscbs_classification_validity v') && !/t\.requires_ibscbs_group[\s\S]*JOIN setes_central\.tb_tax_ibscbs t ON/.test(sql)) {
+        throw new Error('resolução sem o indicador do grupo do CST (D-IB113)')
+      }
       const row = (hit: Validity, model: string) => ({
         code: hit.code, cst: hit.cst, name: hit.name, validFrom: hit.from, validUntil: hit.until,
         requiresRegular: hit.regular, applicable: hit.models.includes(model) ? 1 : 0, absentSince: hit.absent ?? null,
+        requiresGroup: groupOf(hit),
       })
       // CADASTRO / EXIBIÇÃO (rowsOfCode): todas as linhas do código, com a presença do modelo
       if (sql.includes('tb_tax_ibscbs_classification_validity v') && /WHERE v\.code = \? AND v\.deleted = 'N'\s+ORDER BY v\.valid_from\s*$/.test(sql)) {
@@ -53,7 +63,7 @@ function fakeCatalog(opts: { validity: Validity[]; places: Record<string, string
           .sort((a, b) => (a.from < b.from ? 1 : -1))[0]
         return [hit ? [{
           code: hit.code, cst: hit.cst, name: hit.name, validFrom: hit.from, validUntil: hit.until,
-          requiresRegular: hit.regular, applicable: hit.models.includes(model) ? 1 : 0,
+          requiresRegular: hit.regular, applicable: hit.models.includes(model) ? 1 : 0, requiresGroup: groupOf(hit),
         }] : []]
       }
       if (sql.includes('tb_ibscbs_place_indicator p')) {
@@ -208,7 +218,7 @@ describe('@shared/ibscbs-classification — janela do cadastro (D-IB29)', () => 
 
   it('pickForRegistration: vigente com presença → futura com presença → vigente sem presença; nada na janela = null', () => {
     const r = (validFrom: string, applicable: boolean, validUntil: string | null = null) =>
-      ({ code: 'x', cst: '000', name: validFrom, validFrom, validUntil, requiresRegularTaxation: false, applicable, superseded: false })
+      ({ code: 'x', cst: '000', name: validFrom, validFrom, validUntil, requiresRegularTaxation: false, applicable, superseded: false, cstRequiresGroup: true })
     expect(pickForRegistration([r('2026-01-01', true), r('2026-06-01', true)], '2026-10-10')?.validFrom).toBe('2026-06-01')
     expect(pickForRegistration([r('2026-01-01', false), r('2026-12-01', true)], '2026-10-10')?.validFrom).toBe('2026-12-01')
     expect(pickForRegistration([r('2026-01-01', false)], '2026-10-10')?.applicable).toBe(false)
@@ -242,7 +252,7 @@ describe('@shared/ibscbs-classification — linha superada (D-IB36)', () => {
 
   it('pickForRegistration nunca escolhe a superada, nem como último recurso', () => {
     const r = (validFrom: string, superseded: boolean) =>
-      ({ code: 'x', cst: '000', name: validFrom, validFrom, validUntil: null, requiresRegularTaxation: false, applicable: true, superseded })
+      ({ code: 'x', cst: '000', name: validFrom, validFrom, validUntil: null, requiresRegularTaxation: false, applicable: true, superseded, cstRequiresGroup: true })
     expect(pickForRegistration([r('2026-01-01', false), r('2026-09-01', true)], '2026-10-10')?.validFrom).toBe('2026-01-01')
     expect(pickForRegistration([r('2026-09-01', true)], '2026-10-10')).toBeNull()
   })
@@ -273,13 +283,83 @@ describe('@shared/ibscbs-classification — correções do gate da Rodada 4', ()
     expect(await classificationAcceptance(catalog(), '000006', '100301', '2026-10-10')).toEqual({ classification: false, placeIndicator: true })
   })
 
-  it('boot: sem a coluna do script 63 a API não sobe e diz qual script aplicar; outro erro sobe como está', async () => {
-    const ok = { query: async () => [[]] }
-    await expect(assertIbscbsCatalogSchema(ok)).resolves.toBe('ok')
-    const missing = { query: async () => { throw Object.assign(new Error("Unknown column 'absent_since_version'"), { errno: 1054 }) } }
-    await expect(assertIbscbsCatalogSchema(missing)).rejects.toThrow(/sql\/63_ibscbs_validity_absent_since\.sql/)
-    const other = { query: async () => { throw Object.assign(new Error('denied'), { errno: 1142 }) } }
-    await expect(assertIbscbsCatalogSchema(other)).rejects.toMatchObject({ errno: 1142 })
+  // D-IB113: o boot também confere a coluna do script 73 e PROVA o CHECK dela pelo NOME (PADROES §11 regra 11)
+  const refusedByCheck = () => Object.assign(
+    new Error("CONSTRAINT `ck_tax_ibscbs_requires_group` failed for `setes_central`.`tb_tax_ibscbs`"), { errno: 4025 })
+  const bootDb = (opts: {
+    column?: (sql: string) => unknown; insert?: (params: unknown[]) => unknown
+    /** D-IB120: CSTs de indicador desconhecido — `live` = ainda têm cClassTrib com linha viva. */
+    unknown?: Array<{ id: string; live: number }>
+  } = {}) => {
+    const conn = {
+      beginTransaction: jest.fn(async () => undefined), rollback: jest.fn(async () => undefined), release: jest.fn(),
+      query: jest.fn(async (_sql: string, params: unknown[] = []) => {
+        if (opts.insert) return opts.insert(params)
+        throw refusedByCheck()
+      }),
+    }
+    const db = {
+      conn,
+      getConnection: jest.fn(async () => conn),
+      query: jest.fn(async (sql: string) => {
+        if (/LIMIT 0/.test(sql)) return opts.column ? opts.column(sql) : [[]]
+        if (/requires_ibscbs_group IS NULL/.test(sql)) {
+          if (!/absent_since_version IS NULL/.test(sql)) throw new Error('D-IB120 sem o filtro da linha superada')
+          return [opts.unknown ?? []]
+        }
+        throw new Error(`SQL inesperado: ${sql}`)
+      }),
+    }
+    return db
+  }
+  const unknownColumn = (col: string) => (sql: string) => {
+    if (sql.includes(col)) throw Object.assign(new Error(`Unknown column '${col}'`), { errno: 1054 })
+    return [[]]
+  }
+
+  it('boot: sem a coluna do script 63 ou do 73 a API não sobe e diz qual script aplicar; outro erro sobe como está', async () => {
+    await expect(assertIbscbsCatalogSchema(bootDb())).resolves.toBe('ok')
+    await expect(assertIbscbsCatalogSchema(bootDb({ column: unknownColumn('absent_since_version') })))
+      .rejects.toThrow(/sql\/63_ibscbs_validity_absent_since\.sql/)
+    await expect(assertIbscbsCatalogSchema(bootDb({ column: unknownColumn('requires_ibscbs_group') })))
+      .rejects.toThrow(/sql\/73_ibscbs_cst_requires_group\.sql.*D-IB113/)
+    const denied = bootDb({ column: () => { throw Object.assign(new Error('denied'), { errno: 1142 }) } })
+    await expect(assertIbscbsCatalogSchema(denied)).rejects.toMatchObject({ errno: 1142 })
+  })
+
+  it('boot D-IB113: o CHECK binário é PROVADO pelo nome — duas sondas (fora do domínio e minúscula), PK própria, transação desfeita', async () => {
+    const db = bootDb()
+    await assertIbscbsCatalogSchema(db)
+    const probes = db.conn.query.mock.calls.map(c => c[1])
+    expect(probes).toEqual([['998', 'X'], ['999', 's']])
+    expect(db.conn.rollback).toHaveBeenCalled()
+    expect(db.conn.release).toHaveBeenCalled()
+    // o banco ACEITA a sonda (sem o CHECK) → o boot recusa e diz o script; a transação é desfeita mesmo assim
+    const open = bootDb({ insert: () => [{ affectedRows: 1 }] })
+    await expect(assertIbscbsCatalogSchema(open)).rejects.toThrow(/ACEITOU requires_ibscbs_group fora do domínio \('X', 's'\).*sql\/73/)
+    expect(open.conn.rollback).toHaveBeenCalled()
+    // aceita só a minúscula (CHECK sem COLLATE binário) → recusa também
+    const ci = bootDb({ insert: (p) => { if (p[1] === 's') return [{ affectedRows: 1 }]; throw refusedByCheck() } })
+    await expect(assertIbscbsCatalogSchema(ci)).rejects.toThrow(/\('s'\)/)
+    // recusa vinda de OUTRO CHECK não prova o domínio — sobe como está
+    const other = bootDb({ insert: () => { throw Object.assign(new Error('CONSTRAINT `ck_tax_ibscbs_id` failed'), { errno: 4025 }) } })
+    await expect(assertIbscbsCatalogSchema(other)).rejects.toThrow(/ck_tax_ibscbs_id/)
+  })
+
+  it('boot D-IB120: CST de indicador DESCONHECIDO que ainda tem cClassTrib vivo = o boot NÃO sobe e manda rodar a carga antes', async () => {
+    const db = bootDb({ unknown: [{ id: '000', live: 1 }, { id: '410', live: 1 }, { id: '999', live: 0 }] })
+    await expect(assertIbscbsCatalogSchema(db)).rejects.toThrow(/DESCONHECIDO no\(s\) CST 000, 410, que ainda têm cClassTrib vivo.*carga do catálogo.*ANTES do deploy.*D-IB120/)
+  })
+
+  it('boot D-IB120: CST desconhecido SEM cClassTrib vivo (saiu da fonte antes da carga) = só alerta — a carga não o alcança', async () => {
+    await expect(assertIbscbsCatalogSchema(bootDb({ unknown: [{ id: '999', live: 0 }] })))
+      .resolves.toMatch(/^ok \(1 CST com o indicador desconhecido fora da fonte/)
+  })
+
+  it('boot: schema central fora do formato é recusado antes de qualquer consulta', async () => {
+    const db = bootDb()
+    await expect(assertIbscbsCatalogSchema(db, 'x; DROP')).rejects.toThrow(/schema central inválido/)
+    expect(db.query).not.toHaveBeenCalled()
   })
 })
 
@@ -313,7 +393,7 @@ describe('@shared/ibscbs-classification — regra única da NBS aceita (D-IB40)'
 // Gate socrático do delta R7: "aceito" é UM veredito com motivo (R7-S3) e tem porta em LOTE (R7-S5)
 describe('@shared/ibscbs-classification — veredito e lotes (D-IB47)', () => {
   const line = (over: Record<string, unknown> = {}) => ({ code: '000001', cst: '000', name: 'n', validFrom: '2026-01-01', validUntil: null,
-    requiresRegularTaxation: false, applicable: true, superseded: false, ...over }) as any
+    requiresRegularTaxation: false, applicable: true, superseded: false, cstRequiresGroup: true, ...over }) as any
   it('verdictOf: sem linha · sem presença · exige tributação regular · aceito', () => {
     expect(verdictOf(null)).toMatchObject({ accepted: false, reason: 'no-line' })
     expect(verdictOf(line({ applicable: false }))).toMatchObject({ accepted: false, reason: 'not-applicable' })
@@ -322,7 +402,7 @@ describe('@shared/ibscbs-classification — veredito e lotes (D-IB47)', () => {
   })
 
   const row = (code: string, from: string, over: Record<string, unknown> = {}) => ({ code, cst: '000', name: 'n', validFrom: from, validUntil: null,
-    requiresRegular: 'N', absentSince: null, applicable: 1, ...over })
+    requiresRegular: 'N', absentSince: null, applicable: 1, requiresGroup: 'S', ...over })
 
   it('em lote na data: a linha vigente MAIS NOVA de cada código (como findClassificationAt); código ausente = sem linha', async () => {
     const calls: unknown[][] = []
@@ -366,7 +446,7 @@ describe('@shared/ibscbs-classification — veredito e lotes (D-IB47)', () => {
 // D-IB57 (Rodada 10): o cadastro prefere a linha ACEITA (presença e sem tributação regular) antes da só aplicável
 describe('pickForRegistration — D-IB57 a linha aceita antes da só aplicável', () => {
   const l = (over: Record<string, unknown>) => ({ code: '000001', cst: '000', name: 'n', validFrom: '2026-01-01', validUntil: null,
-    requiresRegularTaxation: false, applicable: true, superseded: false, ...over }) as any
+    requiresRegularTaxation: false, applicable: true, superseded: false, cstRequiresGroup: true, ...over }) as any
   it('vigente que exige tributação regular × futura aceita na janela → a futura (o cadastro aceita)', () => {
     const picked = pickForRegistration([l({ requiresRegularTaxation: true }), l({ validFrom: '2026-12-01' })], '2026-10-10')
     expect(picked?.validFrom).toBe('2026-12-01')
@@ -460,7 +540,7 @@ describe('D-IB59 — lista × salvar sob filtro e LIMIT; cadastro = data do fato
 
   it('propriedade: depois da obrigação (janela vazia) o cadastro escolhe a MESMA linha que a data do fato (a vigente mais nova)', () => {
     const l = (from: string, until: string | null, over: Record<string, unknown> = {}) => ({ code: '000001', cst: '000', name: from,
-      validFrom: from, validUntil: until, requiresRegularTaxation: false, applicable: true, superseded: false, ...over }) as any
+      validFrom: from, validUntil: until, requiresRegularTaxation: false, applicable: true, superseded: false, cstRequiresGroup: true, ...over }) as any
     const shapes = [{}, { applicable: false }, { requiresRegularTaxation: true }]
     for (const a of shapes) for (const b of shapes) for (const c of shapes) {
       const rows = [l('2026-01-01', null, a), l('2026-06-01', '2027-03-31', b), l('2027-02-01', null, c)]

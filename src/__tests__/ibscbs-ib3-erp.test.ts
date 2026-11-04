@@ -15,7 +15,7 @@ function fakeDb(presumption: { nbs?: string | null; c?: string; p?: string }, re
       if (/tb_product p/.test(sql)) return [[{ productId: 40, description: 'Suporte mensal' }]]
       if (/simples_regime/.test(sql)) return [[{ simplesRegime: regime }]]
       if (/tb_tax_ibscbs_classification_validity/.test(sql)) {
-        return [[{ code: params[1][0], cst: '000', name: 'x', validFrom: '2026-01-01', validUntil: null, requiresRegular: 'N', absentSince: null, applicable: 1 }]]
+        return [[{ code: params[1][0], cst: '000', name: 'x', validFrom: '2026-01-01', validUntil: null, requiresRegular: 'N', absentSince: null, applicable: 1, requiresGroup: 'S' }]]
       }
       if (/tb_ibscbs_place_indicator/.test(sql)) return [[{ code: params[1], description: 'oneroso', applicable: 1 }]]
       if (/tb_nbs/.test(sql)) return [[{ ok: 1 }]]

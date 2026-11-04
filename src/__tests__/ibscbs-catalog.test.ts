@@ -283,8 +283,9 @@ describe('reconcileWithCalculator — atributos IT × Calculadora (D-IB28 a)', (
   const D = '2026-10-10'
   const list = (nfse: Record<string, boolean>) => new Map([[D, Object.entries(nfse).map(([code, v]) => ({ code, nfse: v }))]])
   const codesOf = (m: Map<string, Array<{ code: string }>>) => new Map([...m].map(([d, l]) => [d, l.map(e => e.code)]))
-  const pairs = (p: Record<string, { valid: boolean; requiresRegular: boolean }>) =>
-    new Map(Object.entries(p).map(([code, v]) => [pairKey(D, code), v]))
+  // D-IB113: o par traz o grupo IBS/CBS — por padrão o do CST no IT (000/200 levam o grupo)
+  const pairs = (p: Record<string, { valid: boolean; requiresRegular: boolean; requiresGroup?: boolean }>) =>
+    new Map(Object.entries(p).map(([code, v]) => [pairKey(D, code), { requiresGroup: true, ...v }]))
 
   it('tudo coerente: nenhuma linha bloqueada; IT que não aceita e Calculadora que aceita = só informativo', () => {
     const entries = list({ '000001': true, '200052': true, '200053': true })
@@ -327,8 +328,11 @@ describe('reconcileWithCalculator — atributos IT × Calculadora (D-IB28 a)', (
       { codigo: '200053', tiposDfeClassificacao: [{ tipo: 55 }] }], D))
       .toEqual([{ code: '000001', nfse: true }, { code: '200053', nfse: false }])
     expect(() => parseCalculatorList([{ codigo: '000001' }], D)).toThrow(/tiposDfeClassificacao ausente/)
-    expect(parseCalculatorPair({ validoParaSiglaDfeInformado: true, exigeGrupoTributacaoRegular: false }, '000001', D))
-      .toEqual({ valid: true, requiresRegular: false })
+    expect(parseCalculatorPair({ validoParaSiglaDfeInformado: true, exigeGrupoTributacaoRegular: false, exigeGrupoIbsCbs: true }, '000001', D))
+      .toEqual({ valid: true, requiresRegular: false, requiresGroup: true })
+    // D-IB113: sem o exigeGrupoIbsCbs (ou fora do tipo) = estrutura mudada — nunca vira "leva o grupo"
+    expect(() => parseCalculatorPair({ validoParaSiglaDfeInformado: true, exigeGrupoTributacaoRegular: false }, '000001', D)).toThrow(/mudou de estrutura/)
+    expect(() => parseCalculatorPair({ validoParaSiglaDfeInformado: true, exigeGrupoTributacaoRegular: false, exigeGrupoIbsCbs: 'true' }, '000001', D)).toThrow(/mudou de estrutura/)
     expect(() => parseCalculatorPair({ valido: true }, '000001', D)).toThrow(/mudou de estrutura/)
   })
 })
