@@ -166,7 +166,12 @@ ao LOG. Valores reais só no `.env` vivo (Valdo). Pré-voo: `scripts/pre-deploy-
 mascara TODO endereço, inclusive de valor gravado em lista) e todo erro de envio passa por `mailErrorForLog` (ambos da `@shared/mailer`;
 o nodemailer põe o endereço na mensagem e em `response`/`rejected`); as três rotas públicas de `/auth` também nunca logam o `err` cru
 (o erro do mysql2 traz o `sql` com o e-mail digitado). FORA da regra, por ora: o remetente (`SMTP_FROM`/`SMTP_USER`, mostrado no boot e
-no ensaio para conferência) e o erro de banco das demais telas (`handleError` — Q-EA25 do `prompt_endurecer_autenticacao.md`).
+no ensaio para conferência) e o erro de banco das demais telas (`handleError` — D-EA25: frente própria "dado pessoal no log").
+**D-EA26**: a `sendMail` só manda para UM endereço válido — o valor APARADO passa no `z.string().email()` do cadastro e é ele que vai ao
+transporte (`singleMailAddress`); lista, nome + endereço, quebra de linha ou não-texto = `MailRecipientRejectedError`
+(`MAIL_RECIPIENT_INVALID`), ANTES do transporte e do modo dev, para TODO e-mail da casa. Quem chama trata como falha de envio (a
+recuperação segue neutra; em produção o código não vai a lugar nenhum). Nenhuma outra regra de endereço: quem precisa decidir antes usa
+o mesmo predicado (a escolha do e-mail de login do Super — `pickLoginEmail` — já usa).
 Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publicação, §13.10 execução de 2026-10-21).
 
 ### Senha perdida do SUPER — procedimento do OPERADOR (D-PV46 + D-RS7/D-RS13/D-RS14/D-RS16; exceção explícita — PADROES §3.1)

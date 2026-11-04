@@ -34,23 +34,32 @@ export interface SuperAccount {
  */
 export async function listSuperAccounts(conn: Pick<PoolConnection, 'query'>): Promise<SuperAccount[]> {
   // D-EA23: TODOS os candidatos a e-mail de login (grupo 2, vivos, não brancos, na ordem do id) — quem escolhe é a peça `pickLoginEmail`,
-  // a MESMA regra que o ato aplica sob a trava (o separador é a quebra de linha: endereço válido nunca a contém)
+  // a MESMA regra que o ato aplica sob a trava. O separador é a quebra de linha; o e-mail GRAVADO que a contém fica FORA da lista (gate
+  // adversarial do delta final, ADV-FG-01: "lixo\natacante@x" se partia num pedaço válido que a lista escolhia e o ato não) — o ato o
+  // recusa inteiro pela mesma peça, então os dois lados ficam com o MESMO conjunto de candidatos. `gcMax` = o limite do GROUP_CONCAT do
+  // servidor: a lista que o atinge saiu CORTADA (MySQL 8 padrão = 1024) e é recusada, nunca lida pela metade.
   const [rows] = await conn.query<any[]>(
-    `SELECT u.id, IF(u.active = 'S' AND ihu.active = 'S', 'S', 'N') AS active,
+    `SELECT u.id, IF(u.active = 'S' AND ihu.active = 'S', 'S', 'N') AS active, @@SESSION.group_concat_max_len AS gcMax,
             (SELECT GROUP_CONCAT(m.email ORDER BY m.id SEPARATOR '\\n') FROM setes_central.tb_entity_has_mailing ehm
                INNER JOIN setes_central.tb_mailing m ON (m.id = ehm.tb_mailing_id)
               WHERE ehm.tb_entity_id = u.id AND ehm.tb_mailing_group_id = 2 AND ehm.deleted = 'N' AND m.deleted = 'N'
-                AND TRIM(m.email) <> '') AS loginEmails
+                AND TRIM(m.email) <> '' AND INSTR(m.email, CHAR(10)) = 0) AS loginEmails
        FROM setes_central.tb_user u
       INNER JOIN setes_central.tb_institution_has_user ihu ON (ihu.tb_user_id = u.id)
       WHERE ihu.tb_institution_id = ? AND BINARY ihu.kind = 'super' AND ihu.deleted = 'N' AND u.deleted = 'N'
       ORDER BY u.id`,
     [SETES_INSTITUTION_ID]
   )
-  return rows.map(r => ({
-    id: Number(r.id), active: String(r.active),
-    loginEmail: pickLoginEmail(r.loginEmails == null ? [] : String(r.loginEmails).split('\n')),
-  }))
+  return rows.map(r => {
+    if (r.loginEmails != null && r.gcMax != null && Buffer.byteLength(String(r.loginEmails), 'utf8') >= Number(r.gcMax)) {
+      throw new Error(`lista de e-mails de login do Super id=${r.id} CORTADA pelo group_concat_max_len (${r.gcMax}) do servidor — `
+        + 'aumente-o e rode de novo (nada foi gravado)')
+    }
+    return {
+      id: Number(r.id), active: String(r.active),
+      loginEmail: pickLoginEmail(r.loginEmails == null ? [] : String(r.loginEmails).split('\n')),
+    }
+  })
 }
 
 /**
@@ -189,14 +198,32 @@ export const SUPER_RESET_NOTICE_SUBJECT = 'Setes — a senha da sua conta foi re
  * Zona do estabelecimento da Setes (config `time_zone`, a mesma da casa) para o instante do aviso. O script não tem JWT: lê o schema da
  * institution da Setes e pede a zona pela peça do fuso. Qualquer falha cai na zona padrão — o aviso nunca depende dela para sair.
  */
-export async function setesInstitutionZone(q: Queryable): Promise<string> {
+/**
+ * Teto da leitura da zona (gate socrático do delta final): ela roda DEPOIS do COMMIT e ANTES do aviso; com o banco travado ela segurava a
+ * senha sem limite, fora do teto da D-EA24. Estourado = zona padrão (a mesma saída de qualquer falha — o aviso nunca depende dela).
+ */
+export const SUPER_ZONE_CAP_MS = 5_000
+
+export async function setesInstitutionZone(q: Queryable, capMs: number = SUPER_ZONE_CAP_MS): Promise<string> {
+  const reading = (async () => {
+    try {
+      const [rows] = await q.query('SELECT schema_name AS schemaName FROM setes_central.tb_institution WHERE id = ? LIMIT 1', [SETES_INSTITUTION_ID])
+      const schema = (rows as any[])?.[0]?.schemaName
+      return schema ? await institutionZoneFor(String(schema), SETES_INSTITUTION_ID, q) : DEFAULT_TIME_ZONE
+    } catch (err) {
+      logger.warn('D-RS13: zona do estabelecimento da Setes ilegível — o aviso usa a zona padrão', { message: (err as Error)?.message })
+      return DEFAULT_TIME_ZONE
+    }
+  })()                                                    // nunca rejeita: a leitura que perder a corrida termina sozinha, sem rejeição solta
+  let timer: NodeJS.Timeout | undefined
+  const cap = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), capMs) })
   try {
-    const [rows] = await q.query('SELECT schema_name AS schemaName FROM setes_central.tb_institution WHERE id = ? LIMIT 1', [SETES_INSTITUTION_ID])
-    const schema = (rows as any[])?.[0]?.schemaName
-    return schema ? await institutionZoneFor(String(schema), SETES_INSTITUTION_ID, q) : DEFAULT_TIME_ZONE
-  } catch (err) {
-    logger.warn('D-RS13: zona do estabelecimento da Setes ilegível — o aviso usa a zona padrão', { message: (err as Error)?.message })
+    const zone = await Promise.race([reading, cap])
+    if (zone !== null) return zone
+    logger.warn(`D-RS13: zona do estabelecimento da Setes sem resposta em ${Math.round(capMs / 1000)} s — o aviso usa a zona padrão`)
     return DEFAULT_TIME_ZONE
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -241,8 +268,9 @@ export async function sendSuperResetNotice(
     }
     // gate adversarial (ADV-RS13-02): o e-mail GRAVADO pode ter entrado fora da porta validada (SQL, carga) — o nodemailer lê "a@x, b@y"
     // como LISTA e mandaria o aviso de segurança também a um terceiro. Só sai para UM endereço, pelo MESMO validador do cadastro.
-    // D-EA26: a regra é a da peça (`singleMailAddress`); a `sendMail` também recusa — aqui só para o log dizer a causa
-    if (singleMailAddress(account.loginEmail) !== account.loginEmail) {
+    // D-EA26: a regra é a da peça (`singleMailAddress`, a MESMA da `sendMail`, que também recusa) — aqui só para o log dizer a causa
+    // (gate socrático do delta final: a conferência própria era mais estrita que a peça)
+    if (!singleMailAddress(account.loginEmail)) {
       logger.error('D-RS13: e-mail de login GRAVADO do Super não é um endereço único válido — aviso NÃO enviado; a senha SEGUE redefinida',
         { userId: account.id, to: maskEmail(account.loginEmail) })
       return 'failed'

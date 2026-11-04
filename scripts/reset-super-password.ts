@@ -120,18 +120,20 @@ async function main(): Promise<void> {
   // Quem rodou e quando: LOG (sem a senha) — a exceção explícita do PADROES §3.1 fica rastreável pelo instante em tb_user.updated_at.
   const at = new Date()
   logger.warn('D-PV46: senha do Super REDEFINIDA pelo operador', {
-    userId: target.id, login: maskEmail(target.loginEmail), operator, at: at.toISOString(), host: os.hostname(), pid: process.pid,
+    userId: target.id, login: maskEmail(verdict.loginEmail), operator,   // D-EA23: o e-mail que o ATO escolheu (gate ADV-FG-02) at: at.toISOString(), host: os.hostname(), pid: process.pid,
   })
   // D-RS13 + D-EA19 (Valdo 2026-11-01, "(b) Aviso primeiro"): o aviso ao Super sai DEPOIS do COMMIT, FORA do withDeadlockRetry (um aviso
   // por troca gravada) e ANTES de a senha aparecer — o sinal fora da máquina precede a entrega do segredo; fechar o terminal com a senha
   // na tela já não mata o aviso. A peça nunca lança; falha = log, a troca fica. Ctrl+C nesta espera: a senha fica GRAVADA e ninguém a viu
   // — rodar de novo (sai outro aviso). D-EA24 (Valdo 2026-11-01): teto TOTAL de 60 s na espera (os tetos do SMTP — D-RS17 — contam só
   // silêncio: servidor que responde aos poucos prendia o aviso sem fim); estourado, "não confirmado — pode ainda sair" e a senha aparece.
+  // gate socrático do delta final: a zona é lida ANTES da promessa dos 60 s, com teto próprio (SUPER_ZONE_CAP_MS — estourado, zona padrão)
+  const zone = await setesInstitutionZone(pool)
   console.log('\n Senha redefinida. Enviando o aviso ao Super ANTES de mostrar a senha (no máximo 60 s)…')
   console.log(' Se cancelar agora, a senha fica trocada e desconhecida — basta rodar o script de novo.')
   // D-EA23: o aviso vai ao e-mail de login que o ATO escolheu SOB a trava (o da lista pode ter mudado entre a lista e o ato)
   const noticeTo = { ...target, loginEmail: verdict.loginEmail }
-  const notice = await sendSuperResetNotice(noticeTo, at, await setesInstitutionZone(pool))
+  const notice = await sendSuperResetNotice(noticeTo, at, zone)
   console.log(notice === 'sent'
     ? ` Aviso enviado ao e-mail de login do Super (${maskEmail(noticeTo.loginEmail)}).`
     : notice === 'logged'
@@ -143,7 +145,7 @@ async function main(): Promise<void> {
         : ` ⚠ Aviso ao Super NÃO enviado (${notice === 'no-email' ? 'sem e-mail de login' : 'falha do envio — ver o log'}); a senha SEGUE redefinida.`)
 
   console.log('\n===================================================================')
-  console.log(` Senha INICIAL do Super id=${target.id} (${maskEmail(target.loginEmail)}) — impressa UMA vez, não fica em lugar nenhum:`)
+  console.log(` Senha INICIAL do Super id=${target.id} (${maskEmail(noticeTo.loginEmail)}) — impressa UMA vez, não fica em lugar nenhum:`)
   console.log(`\n     ${password}\n`)
   console.log(' Entregue ao titular por canal seguro; ele define a própria senha em seguida ("Esqueci minha senha" / troca da senha).')
   console.log(`===================================================================`)

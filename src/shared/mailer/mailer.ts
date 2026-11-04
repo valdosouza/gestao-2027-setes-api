@@ -154,7 +154,10 @@ export interface MailMessage {
  * O logger da casa é o console: o e-mail inteiro aparecia no terminal do operador e no log do servidor, para TODO e-mail que a casa envia
  * (código de recuperação, aviso ao dono — D-RS4 —, aviso ao Super — D-RS13). Vale para quem loga destinatário, não só para esta peça.
  */
-const ADDRESS_CHARS = `[^\\s<>"'(),;:[\\]]`
+// gate adversarial do delta final (ADV-FG-03): a aspa simples é caractere VÁLIDO da parte local (o `z.email()` a aceita e o endereço vai ao
+// transporte) — tratada como separador, o log levava "joao.silva'x***@…" em vez de "j***@…". Endereço citado entre aspas simples num texto
+// ('a@x.com') sai com a aspa da frente no lugar da 1ª letra ("'***@x.com'") — nada da parte local vaza.
+const ADDRESS_CHARS = `[^\\s<>"(),;:[\\]]`
 const ADDRESS = `${ADDRESS_CHARS}+@${ADDRESS_CHARS}+`
 const maskOne = (addr: string): string => `${addr[0]}***${addr.slice(addr.indexOf('@'))}`
 
