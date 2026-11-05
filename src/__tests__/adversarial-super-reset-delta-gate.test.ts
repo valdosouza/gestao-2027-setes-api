@@ -698,6 +698,30 @@ const hasEnv = fs.existsSync(path.join(REPO, '.env'))
     await peca.sendSuperResetNotice({ ...target, loginEmail: v.loginEmail }, new Date(), 'America/Sao_Paulo')
     expect(mails().map(m => m.to)).toEqual(['p307new@probe.test'])
   }, 30000)
+
+  // D-EA28 (Valdo 2026-11-04, "(a) Limite conhecido" — Q-EA28 do gate socrático do delta final): a troca do e-mail de login pela tela
+  // (`syncLoginEmail`, módulo users) não toma a trava da linha do usuário; se ela confirma DEPOIS de o ato ler o e-mail e ANTES do COMMIT,
+  // o ato grava e o aviso vai ao e-mail que o ato LEU (o velho). Mesma família e mesma razão da D-EA22: o desfecho é o de uma ordem serial
+  // válida ("redefine → troca o e-mail"), nada escala e a senha nunca vai a ninguém. SEMÂNTICA FIXADA — se a ordem estrita for decidida, este
+  // teste muda (a troca teria de esperar o ato).
+  it('[SEMÂNTICA D-EA28] e-mail de login TROCADO durante o ato: o ato grava e o aviso vai ao e-mail que o ato leu', async () => {
+    const before = (await superById(900307)).loginEmail as string
+    let finishedWhileOpen = false
+    const { v, hash } = await act(900307, async () => {
+      await admin.query(`UPDATE \`${PROBE}\`.tb_entity_has_mailing SET deleted = 'S' WHERE tb_entity_id = 900307 AND tb_mailing_group_id = 2`)
+      await admin.query(`INSERT INTO \`${PROBE}\`.tb_mailing (id, email, created_at, updated_at, deleted) VALUES (900373, 'p307newer@probe.test', NOW(), NOW(), 'N')`)
+      await admin.query(`INSERT INTO \`${PROBE}\`.tb_entity_has_mailing (tb_entity_id, tb_mailing_id, tb_mailing_group_id, created_at, updated_at, deleted)
+                         VALUES (900307, 900373, 2, NOW(), NOW(), 'N')`)
+      finishedWhileOpen = true
+    })
+    expect(finishedWhileOpen).toBe(true)                                         // a troca NÃO esperou o ato
+    expect(v).toEqual({ status: 'reset', userId: 900307, loginEmail: before })   // o ato ficou com o e-mail que leu
+    expect(await passwordIn(900307)).toBe(hash)
+    expect((await superById(900307)).loginEmail).toBe('p307newer@probe.test')    // depois do COMMIT, o login é o novo
+    if (v.status !== 'reset') throw new Error('o ato devia gravar')
+    await peca.sendSuperResetNotice({ ...(await superById(900307)), loginEmail: v.loginEmail }, new Date(), 'America/Sao_Paulo')
+    expect(mails().map(m => m.to)).toEqual([before])                             // o aviso foi ao e-mail velho — o limite conhecido
+  }, 30000)
 })
 
 // ======================================================================================================================================
