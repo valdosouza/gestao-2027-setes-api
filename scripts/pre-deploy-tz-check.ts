@@ -22,6 +22,8 @@
  *        conexão REAL (EHLO/STARTTLS/AUTH, sem enviar nada — `verifyMailerConnection`). Em PRODUÇÃO (NODE_ENV=production)
  *        SMTP ausente/incompleto/sem resposta é item BLOQUEANTE (o boot do setes-api também recusaria subir); fora de
  *        produção é só aviso (modo dev: o código vai ao log). A senha nunca é impressa.
+ * D-EA29 (2026-11-05): CENSO dos e-mails de login que a peça de envio recusaria (D-EA26/D-EA27) — ALARME com a contagem e os ids
+ *        (e-mail mascarado), nunca item bloqueante.
  *
  *   npx tsx --require tsconfig-paths/register scripts/pre-deploy-tz-check.ts
  * Sai com código 1 se houver algo em voo.
@@ -29,6 +31,7 @@
 import 'dotenv/config'
 import pool from '../src/shared/db/connection'
 import { isMailerConfigured, isProduction, mailerConfigProblems, verifyMailerConnection, nodeEnvWarning } from '../src/shared/mailer/mailer'
+import { censusUnsendableLoginEmails } from '../src/modules/auth/login-email-census'
 
 // janela sobre updated_at gravado em hora local × NOW() UTC: ~1h efetiva no dado antigo — cobre o TTL de 15 min das chaves
 const RECENT_MINUTES = 240
@@ -97,6 +100,9 @@ async function main(): Promise<void> {
   // D-RS5: o SMTP do ambiente — em produção, OBRIGATÓRIO e respondendo; fora dela, aviso.
   inFlight += await checkMailer()
 
+  // D-EA29: censo dos e-mails de login que a peça de envio recusaria — ALARME, nunca conta como item em voo (não muda o código de saída)
+  await checkLoginEmails()
+
   console.log(inFlight
     ? `\n✗ ${inFlight} item(ns) em voo — resolva (ou aceite ciente) antes do deploy.`
     : '\n✓ nada em voo — deploy da regra de tempo liberado.')
@@ -127,6 +133,24 @@ async function checkMailer(): Promise<number> {
   const verified = await verifyMailerConnection()
   console.log(verified.ok ? `  ✓ conexão e autenticação ok — ${verified.detail}` : `  ${prod ? '✗' : '⚠️'} SMTP sem resposta: ${verified.detail}`)
   return verified.ok || !prod ? 0 : 1
+}
+
+/**
+ * D-EA29 (Valdo 2026-11-05, "(a) Alarme no pré-voo"): conta os e-mails de login que a peça de envio recusaria (D-EA26/D-EA27). Para essas
+ * contas a recuperação de senha emite o código e não entrega nada. Só ALARME: o pré-voo não muda o código de saída por isso; quem corrige o
+ * cadastro acha a conta pelo id (o e-mail sai mascarado — D-EA21).
+ */
+const LOGIN_EMAIL_CENSUS_SHOWN = 20
+async function checkLoginEmails(): Promise<void> {
+  const { checked, unsendable } = await censusUnsendableLoginEmails(pool)
+  console.log(`— D-EA29: e-mails de login que o envio recusaria (${checked} conferido(s))`)
+  if (!unsendable.length) { console.log('  ✓ nenhum'); return }
+  console.log(`  ⚠️ ALARME: ${unsendable.length} e-mail(s) de login com defeito — a recuperação de senha dessas contas NÃO entrega o código`
+    + ' (corrija o cadastro; o deploy não é barrado por isto):')
+  for (const u of unsendable.slice(0, LOGIN_EMAIL_CENSUS_SHOWN)) {
+    console.log(`    usuário id=${u.userId}${u.active ? '' : ' (inativo)'} — ${u.masked}`)
+  }
+  if (unsendable.length > LOGIN_EMAIL_CENSUS_SHOWN) console.log(`    … e mais ${unsendable.length - LOGIN_EMAIL_CENSUS_SHOWN}`)
 }
 
 main().catch(async err => { console.error(err); await pool.end(); process.exit(2) })
