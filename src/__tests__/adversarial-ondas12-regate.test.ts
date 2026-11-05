@@ -398,19 +398,21 @@ describe('REGATE-02 — o contexto lido DEPOIS do COMMIT', () => {
   // transação → alarme com ref + a MESMA 401 (D-EA6). Agora acontece depois do COMMIT, fora do try da recusa → sobe crua → 500 "Erro
   // interno" sem ref na crashlytics. Na conta de 1 vínculo cujo schema não lê `tb_salesman` (ER_NO_SUCH_TABLE determinístico), a senha
   // CERTA dá 500 e a errada 401: quem testa senhas aprende a certa (sem ganhar token).
-  it.failing('ADV-REGATE-02 contexto ilegível (ER_NO_SUCH_TABLE) → senha certa e errada respondem IGUAL pela rota', async () => {
+  // D-EA30 (Valdo 2026-11-05, "(a) Entra com padrão"): a admissão já decidida sob a trava fica; contexto ilegível = contexto padrão
+  // + alarme com ref. Nunca 500 (o oráculo da senha certa acabou: a certa entra, a errada recebe a 401 de sempre)
+  it('[CORRIGIDO D-EA30] ADV-REGATE-02 contexto ilegível (ER_NO_SUCH_TABLE) → senha certa ENTRA com o contexto padrão + alarme com ref', async () => {
     salesman.mockRejectedValue(Object.assign(new Error("Table 'setes_setes.tb_salesman' does not exist"), { code: 'ER_NO_SUCH_TABLE', errno: 1146 }))
     const certa = await request(app).post('/auth/login').send({ email: 'c6@x.com', password: PASS })
-    const errada = await request(app).post('/auth/login').send({ email: 'c7@x.com', password: 'errada' })
-    expect([certa.status, certa.body]).toEqual([errada.status, errada.body])
+    expect(certa.status).toBe(200)
+    expect(certa.body.context).toEqual({ isSalesman: false })
+    expect(typeof certa.body.token).toBe('string')
+    expect(recordCrash).toHaveBeenCalledTimes(1)
   })
 
-  it('[SEMÂNTICA] ADV-REGATE-02 hoje: senha certa + contexto ilegível = 500 "Erro interno"; senha errada = 401', async () => {
+  it('[CORRIGIDO D-EA30] ADV-REGATE-02 a senha errada, com o mesmo contexto ilegível, segue a 401 de sempre (nunca 500)', async () => {
     salesman.mockRejectedValue(Object.assign(new Error("Table 'setes_setes.tb_salesman' does not exist"), { code: 'ER_NO_SUCH_TABLE', errno: 1146 }))
-    const certa = await request(app).post('/auth/login').send({ email: 'c6@x.com', password: PASS })
     const errada = await request(app).post('/auth/login').send({ email: 'c7@x.com', password: 'errada' })
-    expect([certa.status, errada.status]).toEqual([500, 401])
-    expect(recordCrash).not.toHaveBeenCalled()
+    expect(errada.status).toBe(401)
   })
 
   it('[RESISTIU] usuário inativado entre o COMMIT e o contexto → o token sai (veredito tomado sob a trava); o contexto é só UX', async () => {

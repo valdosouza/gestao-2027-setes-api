@@ -256,8 +256,17 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
 
   if (outcome.kind === 'admitted') return outcome.result
   if (outcome.kind === 'admitted-final') {
-    // o bloco `context` DEPOIS do COMMIT (conexão e trava já devolvidas)
-    return { status: 'ok', token: outcome.token, context: await getSessionContext(outcome.payload) }
+    // o bloco `context` DEPOIS do COMMIT (conexão e trava já devolvidas). D-EA30 (Valdo 2026-11-05, "(a) Entra com padrão"): a admissão já
+    // foi decidida sob a trava e o contexto é só ajuda de tela (decisão 17) — leitura que falha = contexto PADRÃO + alarme com ref; nunca
+    // 500 (seria oráculo da senha certa: a errada responde 401)
+    let context: SessionContext
+    try {
+      context = await getSessionContext(outcome.payload)
+    } catch (err) {
+      alarmNeutral('auth/login (contexto depois do COMMIT)', user.id, err, { deadlockIsAlarm: true })
+      context = { isSalesman: false }
+    }
+    return { status: 'ok', token: outcome.token, context }
   }
   if (outcome.kind === 'inactive') throw refuseLogin(email, meta, 'inativo', user.id)
   if (outcome.kind === 'no-link') throw refuseLogin(email, meta, 'sem vínculo', user.id)
