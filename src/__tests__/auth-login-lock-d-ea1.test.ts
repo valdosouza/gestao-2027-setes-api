@@ -399,11 +399,14 @@ describe('L6 / L10b — trocar a senha NÃO desbloqueia (conhecimento negativo d
 })
 
 describe('L7 — contenção nunca vira oráculo', () => {
-  it('L7 lock wait (1205) na trava → a MESMA 401 + logger.warn de contenção; nunca 409 RESOURCE_BUSY', async () => {
+  it('L7 lock wait (1205) na trava → a MESMA 401 + UMA linha de recusa com motivo "contenção" (D-EA11); nunca 409 RESOURCE_BUSY', async () => {
     lockError = lockWaitErr
     const r = await request(app).post('/auth/login').send({ email: 'c11@x.com', password: PASS })
     expect([r.status, r.body]).toEqual([401, { error: 'Email ou senha inválidos' }])
-    expect((logger.warn as jest.Mock).mock.calls.some(c => /contenção na trava/.test(c[0]))).toBe(true)
+    // gate socrático das Ondas 1+2: a linha extra "contenção na trava" saiu — o motivo vai na ÚNICA linha da recusa
+    const warns = (logger.warn as jest.Mock).mock.calls
+    expect(warns.filter(c => /Login recusado \(D-EA11\)/.test(c[0])).map(c => c[1].reason)).toEqual(['contenção'])
+    expect(warns.some(c => /contenção na trava/.test(c[0]))).toBe(false)
     expect(recordCrash).not.toHaveBeenCalled()
   })
 
@@ -559,9 +562,10 @@ describe('L12 — D-UC12 ainda não existe; a ordem do login fica pronta para el
     const src = fs.readFileSync(path.join(__dirname, '..', 'modules', 'auth', 'auth.service.ts'), 'utf8')
     const body = src.slice(src.indexOf('async function loginOrRefuse'), src.indexOf('/** Assunto do aviso de bloqueio do login'))
     const judged = body.indexOf('judgeLoginAttempt(conn')
-    const linksAt = body.indexOf('getInstitutionsForUser(user.id)')
+    const linksAt = body.indexOf('getInstitutionsForUser(user.id, conn)')   // gates: pela conexão da transação, nunca pelo pool
     expect(judged).toBeGreaterThan(0)
     expect(linksAt).toBeGreaterThan(judged)
+    expect(body).not.toMatch(/getInstitutionsForUser\(user\.id\)/)
     expect(src).not.toMatch(/acceptInvite|aceitarConvite/)
   })
 })

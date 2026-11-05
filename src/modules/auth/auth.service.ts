@@ -23,7 +23,7 @@ import { SessionContext, getSessionContext } from '@shared/session-context'
 import { liveSession } from '@shared/access'
 import { md5Password, passwordMatches } from '@shared/auth/password'
 import { HttpError } from '@shared/errors/http-error'
-import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog } from '@shared/mailer/mailer'
+import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog, singleMailAddress } from '@shared/mailer/mailer'
 import logger from '@shared/logger/logger'
 
 // D-F13 (F2a, etapa A2): os tokens (final 24h — decisão 19 — e de seleção 5m) são RS256 com `kid`, assinados e
@@ -53,7 +53,8 @@ function resolveRole(link: UserInstitution): string {
   return link.profile ?? 'user'
 }
 
-async function signFinalToken(userId: number, link: UserInstitution): Promise<IssuedSession> {
+/** A assinatura pura (sem banco) — pode rodar com a trava da linha do usuário segura (ajuste (d) do parecer §P.3). */
+function signFinalPayload(userId: number, link: UserInstitution): { token: string; payload: InstitutionPayload } {
   const payload: InstitutionPayload = {
     institutionId: link.institutionId,
     userId,
@@ -62,7 +63,11 @@ async function signFinalToken(userId: number, link: UserInstitution): Promise<Is
   }
   // JWT segue IDENTIDADE MÍNIMA (invariante da Fase 2); fatos derivados vão
   // FORA do token, no bloco context (decisão 17 — fim das GB_* do Delphi).
-  const token   = signProductToken(payload)
+  return { token: signProductToken(payload), payload }
+}
+
+async function signFinalToken(userId: number, link: UserInstitution): Promise<IssuedSession> {
+  const { token, payload } = signFinalPayload(userId, link)
   const context = await getSessionContext(payload)
   return { token, context }
 }
@@ -119,8 +124,11 @@ export interface LoginMeta {
  * motivo da D-EA21 no log do código em dev). A recusa também conta no alarme global (D-EA4 — inclusive o e-mail inexistente).
  */
 function refuseLogin(email: string, meta: LoginMeta, reason: LoginRefusalReason, userId?: number): HttpError {
+  // gate adversarial (ADV-O12-03): o campo e-mail é texto LIVRE — "joao@x.com MinhaSenha#2026" levava a senha ao log com o endereço
+  // mascarado ao lado. Só um endereço ÚNICO (a regra da peça — D-EA26/D-EA27) vai mascarado; qualquer outro texto vai como '***'
+  const addr = singleMailAddress(email)
   logger.warn('Login recusado (D-EA11)', {
-    email: maskEmail(email), ip: meta.ip ?? null, reason, at: new Date().toISOString(), ...(userId !== undefined ? { userId } : {}),
+    email: addr ? maskEmail(addr) : '***', ip: meta.ip ?? null, reason, at: new Date().toISOString(), ...(userId !== undefined ? { userId } : {}),
   })
   recordLoginRefusal(email)
   return new HttpError(401, LOGIN_REFUSED_MESSAGE)
@@ -177,8 +185,14 @@ type LoginTxOutcome =
   | { kind: 'judged'; judgement: LoginJudgement }
   | { kind: 'inactive' } | { kind: 'no-link' }
   | { kind: 'admitted'; result: LoginResult }
+  | { kind: 'admitted-final'; token: string; payload: InstitutionPayload }
+
+/** Teto do e-mail digitado (gate socrático, LOW: a porta pública levava até 2 MB ao banco e ao hash): acima dele, a mesma recusa de
+ *  e-mail inexistente, sem tocar o banco — nenhum e-mail de login gravado passa disso (RFC 5321: 254 no caminho). */
+export const LOGIN_EMAIL_MAX_LENGTH = 320
 
 async function loginOrRefuse(email: string, password: string, meta: LoginMeta): Promise<LoginResult> {
+  if (email.length > LOGIN_EMAIL_MAX_LENGTH) throw refuseLogin('', meta, 'inexistente')   // '' = nem o hash do alarme sobre o texto gigante
   const user = await findUserByEmail(email)
   if (!user) throw refuseLogin(email, meta, 'inexistente')
   if (!user.password) throw refuseLogin(email, meta, 'sem credencial', user.id)    // A-EA3: sem linha de falha
@@ -208,12 +222,14 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
         if (judgement.verdict === 'right') {
           if (judgement.active !== 'S') out = { kind: 'inactive' }
           else {
-            const institutions = await getInstitutionsForUser(user.id)
+            // Gates das Ondas 1+2 (HIGH): sob a trava, NADA pede outra conexão ao pool — os vínculos vêm pela conexão da transação e
+            // a assinatura não usa o banco; o bloco `context` (fato derivado, sem efeito de segurança) é lido DEPOIS do COMMIT
+            const institutions = await getInstitutionsForUser(user.id, conn)
             if (!institutions.length) out = { kind: 'no-link' }
             else if (institutions.length === 1) {
               // (d) do parecer: o token é ASSINADO com a trava segura (fecha a troca de senha entre a admissão e a assinatura)
-              const issued = await signFinalToken(user.id, institutions[0])
-              out = { kind: 'admitted', result: { status: 'ok', token: issued.token, context: issued.context } }
+              const signed = signFinalPayload(user.id, institutions[0])
+              out = { kind: 'admitted-final', token: signed.token, payload: signed.payload }
             } else {
               out = { kind: 'admitted', result: { status: 'select', token: signSelectionToken(user.id), institutions } }
             }
@@ -231,7 +247,7 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
   } catch (err) {
     if (isLockWaitTimeout(err)) {
       // L7: contenção (1205) NUNCA vira 409 RESOURCE_BUSY — seria oráculo (a conta inexistente nunca espera)
-      logger.warn('auth/login: contenção na trava do usuário — resposta neutra', { userId: user.id })
+      // D-EA11: UMA linha por recusa — o motivo 'contenção' já vai na linha da recusa (gate socrático: eram duas)
       throw refuseLogin(email, meta, 'contenção', user.id)
     }
     alarmNeutral('auth/login', user.id, err, { deadlockIsAlarm: true })   // deadlock que esgotou o retry também é alarme com ref (L7)
@@ -239,6 +255,10 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
   }
 
   if (outcome.kind === 'admitted') return outcome.result
+  if (outcome.kind === 'admitted-final') {
+    // o bloco `context` DEPOIS do COMMIT (conexão e trava já devolvidas)
+    return { status: 'ok', token: outcome.token, context: await getSessionContext(outcome.payload) }
+  }
   if (outcome.kind === 'inactive') throw refuseLogin(email, meta, 'inativo', user.id)
   if (outcome.kind === 'no-link') throw refuseLogin(email, meta, 'sem vínculo', user.id)
   const { judgement } = outcome

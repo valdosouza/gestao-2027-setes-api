@@ -40,8 +40,12 @@ export async function findUserByEmail(email: string): Promise<AuthUser | null> {
 // Institutions ativas do usuário (Passo 2 do fluxo de login). Costura A1 da auth-api (D-AU3/D-AU6, 2026-10-31): o vínculo VIVO e o
 // PERFIL saem da `setes_central.vw_user_link` — o ÚNICO intérprete de `tb_institution_has_user.kind` ('super' só na Setes; qualquer
 // outro valor que não admin = 'user'), o MESMO que a sessão de cada requisição relê (D-UC9). O `resolveRole` do login morreu.
-export async function getInstitutionsForUser(userId: number): Promise<UserInstitution[]> {
-  const [rows] = await pool.query<any[]>(
+// Gates das Ondas 1+2 (HIGH, 2026-11-05): dentro de transação aberta, chame com a CONEXÃO da transação (`q`) — pedir uma 2ª conexão ao
+// pool segurando a 1ª (e a trava da linha do usuário) trava o pool inteiro com N logins certos simultâneos (conhecimento negativo).
+export async function getInstitutionsForUser(
+  userId: number, q: { query: (sql: string, params?: any[]) => Promise<any> } = pool,
+): Promise<UserInstitution[]> {
+  const [rows] = await (q as typeof pool).query<any[]>(
     `SELECT l.tb_institution_id AS institutionId, l.schema_name AS schemaName, e.nick_trade AS name, l.profile
      FROM setes_central.vw_user_link l
        INNER JOIN setes_central.tb_entity e ON (e.id = l.tb_institution_id)
