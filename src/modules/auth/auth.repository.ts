@@ -79,12 +79,16 @@ export interface LockedUser {
   password: string | null
 }
 
-/** Espera máxima pela trava da linha do usuário: a rota é PÚBLICA — quem espera mais recebe 1205 (resposta neutra), nunca prende o pool. */
-export const PASSWORD_RESET_LOCK_WAIT_SECONDS = 5
+/** Espera máxima pela trava da linha do usuário: as rotas são PÚBLICAS — quem espera mais recebe 1205 (resposta neutra), nunca prende o pool. */
+export const CREDENTIAL_LOCK_WAIT_SECONDS = 5
 
-/** 1º lock de toda transação do pedido de troca de senha: a linha do usuário (null = excluído). Espera limitada (D-A23 — `WAIT n`). */
-export async function lockUserForPasswordReset(conn: PoolConnection, userId: number): Promise<LockedUser | null> {
-  const wait = isLockWaitSupported() ? ` WAIT ${PASSWORD_RESET_LOCK_WAIT_SECONDS}` : ''
+/**
+ * O SERIALIZADOR de TODO fato da credencial (parecer do guardião, §P.3 do `prompt_endurecer_autenticacao.md` — nome pelo conceito): 1º
+ * lock de toda transação do pedido de troca de senha, do login (D-EA2) e do script do Super — a linha do usuário (null = excluído).
+ * Espera limitada (D-A23 — `WAIT n`). Na A2 a auth-api troca ESTA função (a trava passa a ser a linha de `tb_user_credential`).
+ */
+export async function lockUserCredential(conn: PoolConnection, userId: number): Promise<LockedUser | null> {
+  const wait = isLockWaitSupported() ? ` WAIT ${CREDENTIAL_LOCK_WAIT_SECONDS}` : ''
   const [rows] = await conn.query<any[]>(
     `SELECT id, active, password FROM setes_central.tb_user WHERE id = ? AND deleted = 'N' FOR UPDATE${wait}`,
     [userId]
@@ -236,25 +240,120 @@ export async function updatePassword(conn: PoolConnection, userId: number, passw
   )
 }
 
+// ---------------------------------------------------------------------
+// D-EA1/D-EA2 (Valdo, 2026-10-31; parecer do guardião 2026-11-01 — `prompt_endurecer_autenticacao.md` §P.3; sql/74): a FALHA DE LOGIN —
+// setes_central.tb_user_login_failure, filha de tb_user: "uma senha ERRADA foi julgada contra a credencial num login ADMITIDO". O BLOQUEIO
+// é DERIVADO (10+ falhas na janela deslizante de 15 min). Mesmo protocolo de trava das filhas do 67 (acima): a linha do usuário é o
+// serializador; as leituras do filho são CONSISTENTES (sem FOR UPDATE de faixa); gravação = INSERT pela PK com seq MAX+1 POR USUÁRIO.
+// A leitura que decide conta TODA linha (nem `deleted` nem `password_set_at` entram — soft delete e troca de senha NÃO desbloqueiam).
+// ---------------------------------------------------------------------
+
+/** D-EA1: falhas na janela que bloqueiam a conta. */
+export const LOGIN_MAX_FAILURES = 10
+/** D-EA1: a janela DESLIZANTE (minutos) — o bloqueio expira quando a falha mais velha dela envelhece. */
+export const LOGIN_FAILURE_WINDOW_MINUTES = 15
+/** D-EA3/D-EA15: no máximo UM aviso de bloqueio por conta por hora. */
+export const LOGIN_BLOCK_NOTICE_WINDOW_MINUTES = 60
+
 /**
- * Boot (molde do D-IB36): sem a tabela do pedido de troca de senha o setes-api NÃO sobe — senão a recuperação de
- * senha viraria 500 na 1ª chamada. Aplique sql/67 em setes_central ANTES do deploy.
+ * Falhas do usuário na janela da D-EA1 — pelo índice `idx_user_login_failure_window` (range + Using index; nunca passa de 10 entradas,
+ * porque a tentativa no bloqueio não grava). Com `conn` = a leitura que DECIDE, sob a trava (consistente — regra 13); sem `conn` = o
+ * PRÉ-FILTRO, fora de transação (autocommit), sem trava (A-EA2).
  */
-export async function assertPasswordResetSchema(): Promise<string> {
-  // as DUAS tabelas do script 67: o pedido (Q-PV38) e o aviso ao dono (D-RS4)
-  for (const [table, columns, ref] of [
-    ['tb_user_password_reset', 'tb_user_id, seq, code_hmac, failed_attempts, used_at, created_at, deleted', 'Q-PV38'],
-    ['tb_user_password_reset_notice', 'tb_user_id, seq, kind, created_at, deleted', 'D-RS4'],
-  ] as const) {
+export async function countLoginFailuresInWindow(userId: number, conn?: PoolConnection): Promise<number> {
+  const [rows] = await (conn ?? pool).query<any[]>(
+    `SELECT COUNT(*) AS n FROM setes_central.tb_user_login_failure
+      WHERE tb_user_id = ? AND created_at > NOW() - INTERVAL ${LOGIN_FAILURE_WINDOW_MINUTES} MINUTE`,
+    [userId]
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+/** Grava a falha (seq = MAX+1 POR USUÁRIO, sob a trava da linha dele em tb_user — leitura consistente, protocolo acima). */
+export async function insertLoginFailure(conn: PoolConnection, userId: number): Promise<number> {
+  const [rows] = await conn.query<any[]>(
+    `SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM setes_central.tb_user_login_failure WHERE tb_user_id = ?`,
+    [userId]
+  )
+  const seq = Number(rows[0]?.nextSeq ?? 1)
+  await conn.query(
+    `INSERT INTO setes_central.tb_user_login_failure (tb_user_id, seq, created_at, updated_at, deleted)
+     VALUES (?, ?, NOW(), NOW(), 'N')`,
+    [userId, seq]
+  )
+  return seq
+}
+
+/** D-EA3/D-EA14: já existe aviso de bloqueio desta conta dentro da hora? Leitura consistente depois da trava do usuário. */
+export async function hasRecentLoginBlockNotice(conn: PoolConnection, userId: number): Promise<boolean> {
+  const [rows] = await conn.query<any[]>(
+    `SELECT EXISTS(SELECT 1 FROM setes_central.tb_user_login_block_notice
+                    WHERE tb_user_id = ? AND created_at > NOW() - INTERVAL ? MINUTE) AS recent`,
+    [userId, LOGIN_BLOCK_NOTICE_WINDOW_MINUTES]
+  )
+  return Number(rows[0]?.recent ?? 0) === 1
+}
+
+/** D-EA3/D-EA14: toma a vaga da hora — INSERT pela PK com seq = MAX+1 POR USUÁRIO (sob a trava do usuário). */
+export async function insertLoginBlockNotice(conn: PoolConnection, userId: number): Promise<number> {
+  const [rows] = await conn.query<any[]>(
+    `SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM setes_central.tb_user_login_block_notice WHERE tb_user_id = ?`,
+    [userId]
+  )
+  const seq = Number(rows[0]?.nextSeq ?? 1)
+  await conn.query(
+    `INSERT INTO setes_central.tb_user_login_block_notice (tb_user_id, seq, created_at, updated_at, deleted)
+     VALUES (?, ?, NOW(), NOW(), 'N')`,
+    [userId, seq]
+  )
+  return seq
+}
+
+/** Um fato da credencial que o boot confere pelas colunas: tabela, colunas lidas pelo código, script que a cria e a decisão. */
+interface CredentialFactTable { table: string; columns: string; script: string; ref: string }
+
+/**
+ * Conferência POR LISTA dos fatos da credencial (parecer do guardião §P.3): sem a tabela (ou sem uma coluna que o código lê) o setes-api
+ * NÃO sobe — senão a 1ª chamada da rota viraria 500. A mensagem nomeia o script a aplicar em setes_central ANTES do setes-api.
+ */
+async function assertCredentialFactTables(list: readonly CredentialFactTable[]): Promise<string> {
+  for (const { table, columns, script, ref } of list) {
     try {
       await pool.query(`SELECT ${columns} FROM setes_central.${table} LIMIT 0`)
     } catch (err: any) {
       if (err?.errno === 1146 || err?.code === 'ER_NO_SUCH_TABLE' || err?.errno === 1054 || err?.code === 'ER_BAD_FIELD_ERROR') {
-        throw new Error(`setes_central.${table} ausente ou incompleta — aplique o script sql/67_user_password_reset_ddl.sql `
+        throw new Error(`setes_central.${table} ausente ou incompleta — aplique o script sql/${script} `
           + `em setes_central ANTES do setes-api (${ref})`)
       }
       throw err
     }
   }
   return 'ok'
+}
+
+/**
+ * Boot (molde do D-IB36): sem a tabela do pedido de troca de senha o setes-api NÃO sobe — senão a recuperação de
+ * senha viraria 500 na 1ª chamada. Aplique sql/67 em setes_central ANTES do deploy.
+ */
+export async function assertPasswordResetSchema(): Promise<string> {
+  // as DUAS tabelas do script 67: o pedido (Q-PV38) e o aviso ao dono (D-RS4)
+  return assertCredentialFactTables([
+    { table: 'tb_user_password_reset', columns: 'tb_user_id, seq, code_hmac, failed_attempts, used_at, created_at, deleted',
+      script: '67_user_password_reset_ddl.sql', ref: 'Q-PV38' },
+    { table: 'tb_user_password_reset_notice', columns: 'tb_user_id, seq, kind, created_at, deleted',
+      script: '67_user_password_reset_ddl.sql', ref: 'D-RS4' },
+  ])
+}
+
+/**
+ * Boot (D-EA2/D-EA3): sem as DUAS tabelas do script 74 o setes-api NÃO sobe — senão toda senha errada viraria 500 (e a conta nunca
+ * bloquearia). O índice da janela NÃO é conferido aqui (sem ele o login fica certo, só lento — a prova confere o EXPLAIN).
+ */
+export async function assertLoginLockSchema(): Promise<string> {
+  return assertCredentialFactTables([
+    { table: 'tb_user_login_failure', columns: 'tb_user_id, seq, created_at, deleted',
+      script: '74_user_login_failure_ddl.sql', ref: 'D-EA2' },
+    { table: 'tb_user_login_block_notice', columns: 'tb_user_id, seq, created_at, deleted',
+      script: '74_user_login_failure_ddl.sql', ref: 'D-EA3/D-EA14' },
+  ])
 }

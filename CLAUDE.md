@@ -174,6 +174,29 @@ recuperação segue neutra; em produção o código não vai a lugar nenhum). Ne
 o mesmo predicado (a escolha do e-mail de login do Super — `pickLoginEmail` — já usa).
 Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publicação, §13.10 execução de 2026-10-21).
 
+### Login com limite POR CONTA, resposta única e alarme (Ondas 1+2 do endurecer — D-EA1…D-EA4/D-EA6/D-EA11/D-EA14/D-EA15, 2026-11-05)
+
+`POST /auth/login` (`auth.service.ts` `login` → `judgeLoginAttempt`; `Infra-IA/prompts/prompt_endurecer_autenticacao.md`, protocolo do §P.3):
+- **Limite por conta (D-EA1/D-EA2)**: 10 senhas erradas em 15 min (janela DESLIZANTE) bloqueiam a conta até a falha mais velha envelhecer —
+  sem botão de desbloquear; durante o bloqueio até a senha CERTA é recusada; vale para todo perfil, Super inclusive. O fato é
+  `setes_central.tb_user_login_failure` (script `sql/74` — o boot NÃO sobe sem ela: `assertLoginLockReady`), só falhas, append-only,
+  `seq` MAX+1 sob a trava da linha do usuário (`lockUserCredential` — o serializador de TODO fato da credencial, ex-`lockUserForPasswordReset`).
+  Trocar a senha (código, script do Super) NÃO desbloqueia — a contagem nunca filtra por `password_set_at` (conhecimento negativo).
+- **Protocolo**: busca da conta → PRÉ-FILTRO sem trava (bloqueada = recusa sem conferir a senha e sem travar) → senha conferida FORA da
+  trava (`passwordMatches`, tempo constante — `@shared/auth/password`) → transação: trava (WAIT 5) → hash travado ≠ conferido = reconfere →
+  contagem refeita → errada grava a falha; certa: inativo/sem vínculo = recusa sem gravar, senão o token é ASSINADO com a trava segura. 1205
+  = recusa neutra (nunca 409); 1213 reexecuta e, esgotado, recusa + alarme com ref. Conta sem credencial e e-mail inexistente: nenhuma linha.
+- **Uma resposta (D-EA6)**: toda recusa = a MESMA 401 `{ error: 'Email ou senha inválidos' }` (o "Usuário inativo" e o 403 morreram), depois
+  do piso `LOGIN_REFUSAL_FLOOR_MS` (só nas recusas — A-EA4); `email`/`password` que não são texto = 400. O motivo real vai só ao LOG: UMA
+  linha `Login recusado (D-EA11)` por recusa, com e-mail MASCARADO, IP, motivo e instante — nunca a senha.
+- **Aviso ao dono (D-EA3/D-EA14/D-EA15)**: na falha que leva a janela a 10, vaga horária em `tb_user_login_block_notice` (sob SAVEPOINT — a
+  falha do aviso nunca desfaz a 10ª falha) e e-mail neutro ao e-mail de login GRAVADO depois do COMMIT, em segundo plano.
+- **Alarme global (D-EA4, `login-watch.ts`)**: contador em MEMÓRIA de toda recusa (inclusive e-mail inexistente): > 100/min ou > 30 contas
+  distintas em 5 min → `[ALARME LOGIN]` no log + `recordCrash` + e-mail à operação, no máximo 1 a cada 15 min; NUNCA bloqueia. **`OPS_ALERT_EMAIL`
+  é OBRIGATÓRIO em produção** (o boot recusa subir sem ele válido — `assertOpsAlertReady`; o pré-voo confere); fora de produção vazio = só log.
+- Prova ao vivo em schema descartável: `scripts/prove-login-lock.ts` (50 erradas paralelas = 10 linhas; contas em paralelo sem deadlock;
+  EXPLAIN da janela; trava S das FKs de negócio — o login da conta espera até 5 s e, passado isso, recusa: limite aceito até a A2).
+
 ### Senha perdida do SUPER — procedimento do OPERADOR (D-PV46 + D-RS7/D-RS13/D-RS14/D-RS16; exceção explícita — PADROES §3.1)
 
 Nenhuma porta HTTP redefine a senha do Super — nem de ninguém com credencial: D-PV48 (2026-10-27) — depois de criada a credencial, só o

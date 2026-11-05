@@ -1,4 +1,4 @@
-import { createHash } from 'crypto'
+import { createHash, timingSafeEqual } from 'crypto'
 import { z } from 'zod'
 
 /**
@@ -8,6 +8,17 @@ import { z } from 'zod'
  */
 export function md5Password(value: string): string {
   return createHash('md5').update(value).digest('hex').toUpperCase()
+}
+
+/**
+ * A CONFERÊNCIA da senha digitada contra o hash gravado (login — Onda 1 do endurecer, `prompt_endurecer_autenticacao.md`), em tempo
+ * CONSTANTE (`timingSafeEqual` — antes o login comparava por `!==`). Hash ausente (NULL/'') = não confere. Hoje MD5 maiúsculo (decisão 2);
+ * a Onda 4 (D-EA9) troca ESTA peça por scrypt + MD5 legado — quem confere senha passa por aqui.
+ */
+export function passwordMatches(plain: string, storedHash: string | null | undefined): boolean {
+  if (!storedHash) return false
+  const a = Buffer.from(md5Password(plain)), b = Buffer.from(String(storedHash).toUpperCase())
+  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 /**

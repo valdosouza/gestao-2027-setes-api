@@ -3,13 +3,16 @@ import { performance } from 'perf_hooks'
 import { PoolConnection } from 'mysql2/promise'
 import {
   findUserByEmail, getInstitutionsForUser, UserInstitution, AuthUser,
-  lockUserForPasswordReset, countPasswordResetsIssued, nextPasswordResetSeq, insertPasswordReset,
+  lockUserCredential, countPasswordResetsIssued, nextPasswordResetSeq, insertPasswordReset,
   readCurrentPasswordReset, recordFailedPasswordResetAttempt, markPasswordResetUsed, updatePassword,
   assertPasswordResetSchema, hasRecentPasswordResetNotice, insertPasswordResetNotice, PasswordResetNoticeKind,
+  countLoginFailuresInWindow, insertLoginFailure, hasRecentLoginBlockNotice, insertLoginBlockNotice, assertLoginLockSchema,
+  LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW_MINUTES,
 } from './auth.repository'
+import { recordLoginRefusal } from './login-watch'
 import pool from '@shared/db/connection'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
-import { contentionToHttpError } from '@shared/db/contention'
+import { contentionToHttpError, isLockWaitTimeout } from '@shared/db/contention'
 import { newCrashRef, recordCrash } from '@shared/errors/crash.repository'
 import { ErrorCodes } from '@shared/errors/error-codes'
 import { InstitutionPayload } from '@shared/types/express'
@@ -18,7 +21,7 @@ import {
 } from '@shared/auth/product-token'
 import { SessionContext, getSessionContext } from '@shared/session-context'
 import { liveSession } from '@shared/access'
-import { md5Password } from '@shared/auth/password'
+import { md5Password, passwordMatches } from '@shared/auth/password'
 import { HttpError } from '@shared/errors/http-error'
 import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog } from '@shared/mailer/mailer'
 import logger from '@shared/logger/logger'
@@ -64,27 +67,229 @@ async function signFinalToken(userId: number, link: UserInstitution): Promise<Is
   return { token, context }
 }
 
-// Passo 1-3 do fluxo: autentica e decide pela quantidade de institutions
-export async function login(email: string, password: string): Promise<LoginResult> {
+// ---------------------------------------------------------------------
+// LOGIN — Ondas 1+2 do endurecer (`Infra-IA/prompts/prompt_endurecer_autenticacao.md`; D-EA1/D-EA2/D-EA3/D-EA6/D-EA11/D-EA14/D-EA15,
+// A-EA1…A-EA8; protocolo do parecer do guardião §P.3; sql/74).
+//   D-EA1: 10 erradas em 15 min (janela DESLIZANTE) bloqueiam a CONTA até a falha mais velha envelhecer — sem botão; durante o bloqueio
+//          até a senha CERTA recebe a mesma recusa. Vale para todo perfil, Super inclusive (o script do Super NÃO desbloqueia).
+//   D-EA6: UMA resposta — 401 "Email ou senha inválidos" — para senha errada, e-mail inexistente, conta sem credencial, usuário inativo,
+//          sem estabelecimento ativo, conta bloqueada e contenção; o motivo real vai só ao LOG (D-EA11). A senha CERTA em conta
+//          inativa/sem vínculo NÃO conta como falha.
+//   Piso de tempo SÓ nas recusas (A-EA4): todo 401 sai depois de LOGIN_REFUSAL_FLOOR_MS; o 200 sai sem esperar (o token já o distingue).
+// O PROTOCOLO (A-EA2 — parecer §P.3):
+//   1. conta = findUserByEmail (fora de transação); sem conta ou sem credencial (NULL/'') → recusa, nenhuma transação (A-EA3)
+//   2. PRÉ-FILTRO sem trava: falhas na janela (consistente, autocommit) ≥ 10 → recusa SEM conferir a senha e SEM travar
+//   3. a senha é conferida FORA da trava (na Onda 4: scrypt — o hash nunca segura a linha nem a conexão)
+//   4. transação: trava da linha do usuário (1º statement, WAIT 5) → o hash travado ≠ o conferido = reconfere contra o travado → a
+//      contagem REFEITA sob a trava (≥ 10 = recusa sem gravar e sem olhar o veredito) → errada: INSERT da falha e, se ela leva a janela a
+//      10, a vaga do aviso ao dono sob SAVEPOINT (D-EA15/D-RS10) → certa: inativo/sem vínculo = recusa sem gravar; senão o token é
+//      ASSINADO com a trava segura → COMMIT. O caminho CERTO também passa pela trava (senão o 1205 viraria palpite grátis).
+//   1205 (lock wait) → a MESMA recusa, nada gravado, aviso de contenção no log; 1213 reexecuta (withDeadlockRetry) e, esgotado, a mesma
+//   recusa + alarme com ref.
+// Conhecimento negativo: o julgamento NÃO filtra as falhas por `password_set_at` — senão trocar a senha desbloquearia (contra a D-EA1).
+// D-UC12 (o login é o aceite do convidado) ainda não existe no `main`: quando entrar, roda só DEPOIS da admissão (passo 4, caminho certo)
+// e ANTES da contagem de vínculos ativos — nunca em paralelo com esta onda (D-EA10).
+// ---------------------------------------------------------------------
+
+/** D-EA6: a ÚNICA recusa do login. */
+export const LOGIN_REFUSED_MESSAGE = 'Email ou senha inválidos'
+
+/**
+ * Piso do tempo das RECUSAS do login (A-EA4): a conta inexistente para na busca; a existente faz pré-filtro, transação e COMMIT da falha —
+ * mesma 401, tempos diferentes diriam quem existe. Valor provisório (o do pedido de troca de senha); MEDIR no gate e de novo na Onda 4
+ * (o piso tem de ficar acima do p99 do hash — D-EA17).
+ */
+export const LOGIN_REFUSAL_FLOOR_MS = 400
+let loginRefusalFloorMs = LOGIN_REFUSAL_FLOOR_MS
+/** Testes: zera ou ajusta o piso (o padrão segue o da produção). */
+export function setLoginRefusalFloor(ms: number): void { loginRefusalFloorMs = ms }
+
+/** D-EA11: o motivo INTERNO da recusa — só ao log, nunca à resposta. */
+export type LoginRefusalReason =
+  'senha errada' | 'inexistente' | 'sem credencial' | 'inativo' | 'sem vínculo' | 'bloqueado' | 'contenção' | 'falha interna'
+
+export interface LoginMeta {
+  /** IP de quem pediu (D-EA11; até o `trust proxy` da Onda 4 do deploy, atrás de proxy é o do PROXY — D-RS2) */
+  ip?: string
+}
+
+/**
+ * D-EA11: UMA linha de log por recusa — e-mail DIGITADO mascarado (D-EA21), IP, motivo interno, instante; NUNCA a senha nem o e-mail
+ * inteiro. O `userId` entra quando a conta foi achada (com o e-mail mascarado, duas contas `v***@x` seriam indistinguíveis — o mesmo
+ * motivo da D-EA21 no log do código em dev). A recusa também conta no alarme global (D-EA4 — inclusive o e-mail inexistente).
+ */
+function refuseLogin(email: string, meta: LoginMeta, reason: LoginRefusalReason, userId?: number): HttpError {
+  logger.warn('Login recusado (D-EA11)', {
+    email: maskEmail(email), ip: meta.ip ?? null, reason, at: new Date().toISOString(), ...(userId !== undefined ? { userId } : {}),
+  })
+  recordLoginRefusal(email)
+  return new HttpError(401, LOGIN_REFUSED_MESSAGE)
+}
+
+export type LoginJudgementVerdict = 'blocked' | 'wrong' | 'right' | 'gone' | 'no-credential'
+export interface LoginJudgement {
+  verdict: LoginJudgementVerdict
+  /** só no 'right': o `active` da linha TRAVADA (inativo = recusa sem gravar — D-EA6) */
+  active?: string
+  /** só no 'wrong': falhas na janela DEPOIS desta */
+  failuresInWindow?: number
+  /** só no 'wrong': esta falha levou a janela a 10 e a vaga do aviso ao dono foi tomada (D-EA15) — o e-mail sai depois do COMMIT */
+  notice?: boolean
+}
+
+/**
+ * O JULGAMENTO do login sob a trava da linha do usuário (passo 4 do protocolo, até a decisão): devolve o veredito; o caller faz o resto
+ * (vínculos e token no caminho certo) NA MESMA transação. `preVerdict` = a senha conferida FORA da trava contra `user.password`.
+ */
+export async function judgeLoginAttempt(
+  conn: PoolConnection, user: AuthUser, password: string, preVerdict: boolean,
+): Promise<LoginJudgement> {
+  const locked = await lockUserCredential(conn, user.id)
+  if (!locked) return { verdict: 'gone' }
+  if (!locked.password) return { verdict: 'no-credential' }
+  // (b) do parecer: o hash travado tem de ser o conferido — mudou entre a conferência e a trava = reconfere contra o travado
+  const right = locked.password === user.password ? preVerdict : passwordMatches(password, locked.password)
+  const before = await countLoginFailuresInWindow(user.id, conn)
+  if (before >= LOGIN_MAX_FAILURES) return { verdict: 'blocked' }        // nada gravado, o veredito NÃO é olhado
+  if (!right) {
+    await insertLoginFailure(conn, user.id)
+    const notice = before + 1 === LOGIN_MAX_FAILURES
+      ? await claimNoticeSlot(conn, 'auth/login', user.id, LOGIN_BLOCK_NOTICE_PORT)
+      : false
+    return { verdict: 'wrong', failuresInWindow: before + 1, notice }
+  }
+  return { verdict: 'right', active: locked.active }
+}
+
+/** Passo 1-3 do fluxo: autentica e decide pela quantidade de institutions. Toda recusa = a MESMA 401, depois do piso. */
+export async function login(email: string, password: string, meta: LoginMeta = {}): Promise<LoginResult> {
+  const started = performance.now()                    // monotônico: ajuste de relógio (NTP) no meio não distorce a espera
+  try {
+    return await loginOrRefuse(email, password, meta)
+  } catch (err) {
+    const rest = loginRefusalFloorMs - (performance.now() - started)
+    if (rest > 0) await new Promise(r => setTimeout(r, rest))
+    throw err
+  }
+}
+
+type LoginTxOutcome =
+  | { kind: 'judged'; judgement: LoginJudgement }
+  | { kind: 'inactive' } | { kind: 'no-link' }
+  | { kind: 'admitted'; result: LoginResult }
+
+async function loginOrRefuse(email: string, password: string, meta: LoginMeta): Promise<LoginResult> {
   const user = await findUserByEmail(email)
-  if (!user || !user.password || user.password.toUpperCase() !== md5(password)) {
-    throw new HttpError(401, 'Email ou senha inválidos')
+  if (!user) throw refuseLogin(email, meta, 'inexistente')
+  if (!user.password) throw refuseLogin(email, meta, 'sem credencial', user.id)    // A-EA3: sem linha de falha
+
+  // 2. pré-filtro SEM trava: a conta bloqueada nem confere a senha (o hash e a fila da trava não amplificam o ataque)
+  let failures: number
+  try {
+    failures = await countLoginFailuresInWindow(user.id)
+  } catch (err) {
+    alarmNeutral('auth/login', user.id, err)
+    throw refuseLogin(email, meta, 'falha interna', user.id)
   }
-  if (user.active !== 'S') throw new HttpError(401, 'Usuário inativo')
+  if (failures >= LOGIN_MAX_FAILURES) throw refuseLogin(email, meta, 'bloqueado', user.id)
 
-  const institutions = await getInstitutionsForUser(user.id)
+  // 3. a senha conferida FORA da trava
+  const preVerdict = passwordMatches(password, user.password)
 
-  if (institutions.length === 0) {
-    throw new HttpError(403, 'Usuário sem institution ativa')
+  // 4. sob a trava
+  let outcome: LoginTxOutcome
+  try {
+    outcome = await withDeadlockRetry('auth/login', { userId: user.id }, 3, async () => {
+      const conn = await pool.getConnection()
+      try {
+        await conn.beginTransaction()
+        const judgement = await judgeLoginAttempt(conn, user, password, preVerdict)
+        let out: LoginTxOutcome = { kind: 'judged', judgement }
+        if (judgement.verdict === 'right') {
+          if (judgement.active !== 'S') out = { kind: 'inactive' }
+          else {
+            const institutions = await getInstitutionsForUser(user.id)
+            if (!institutions.length) out = { kind: 'no-link' }
+            else if (institutions.length === 1) {
+              // (d) do parecer: o token é ASSINADO com a trava segura (fecha a troca de senha entre a admissão e a assinatura)
+              const issued = await signFinalToken(user.id, institutions[0])
+              out = { kind: 'admitted', result: { status: 'ok', token: issued.token, context: issued.context } }
+            } else {
+              out = { kind: 'admitted', result: { status: 'select', token: signSelectionToken(user.id), institutions } }
+            }
+          }
+        }
+        await conn.commit()
+        return out
+      } catch (err) {
+        await conn.rollback().catch(() => undefined)
+        throw err
+      } finally {
+        conn.release()
+      }
+    })
+  } catch (err) {
+    if (isLockWaitTimeout(err)) {
+      // L7: contenção (1205) NUNCA vira 409 RESOURCE_BUSY — seria oráculo (a conta inexistente nunca espera)
+      logger.warn('auth/login: contenção na trava do usuário — resposta neutra', { userId: user.id })
+      throw refuseLogin(email, meta, 'contenção', user.id)
+    }
+    alarmNeutral('auth/login', user.id, err, { deadlockIsAlarm: true })   // deadlock que esgotou o retry também é alarme com ref (L7)
+    throw refuseLogin(email, meta, (err as { code?: unknown })?.code === 'ER_LOCK_DEADLOCK' ? 'contenção' : 'falha interna', user.id)
   }
 
-  if (institutions.length === 1) {
-    const issued = await signFinalToken(user.id, institutions[0])
-    return { status: 'ok', token: issued.token, context: issued.context }
+  if (outcome.kind === 'admitted') return outcome.result
+  if (outcome.kind === 'inactive') throw refuseLogin(email, meta, 'inativo', user.id)
+  if (outcome.kind === 'no-link') throw refuseLogin(email, meta, 'sem vínculo', user.id)
+  const { judgement } = outcome
+  if (judgement.verdict === 'wrong') {
+    // D-EA3/D-EA15: a vaga foi tomada na transação (COMMIT feito) — o e-mail ao dono sai em SEGUNDO PLANO (a 401 não espera o SMTP)
+    if (judgement.notice) runInBackground('auth/login', user.id, () => sendLoginBlockNotice(user))
+    throw refuseLogin(email, meta, 'senha errada', user.id)
   }
+  if (judgement.verdict === 'blocked') throw refuseLogin(email, meta, 'bloqueado', user.id)
+  if (judgement.verdict === 'no-credential') throw refuseLogin(email, meta, 'sem credencial', user.id)
+  throw refuseLogin(email, meta, 'inexistente', user.id)                       // 'gone': excluída entre a busca e a trava
+}
 
-  const selectionToken = signSelectionToken(user.id)
-  return { status: 'select', token: selectionToken, institutions }
+/** Assunto do aviso de bloqueio do login (D-EA3) — distinto do aviso da recuperação (D-RS4); os testes separam os dois por ele. */
+export const LOGIN_BLOCK_NOTICE_SUBJECT = 'Setes — tentativas de acesso à sua conta'
+
+/**
+ * D-EA3: o e-mail ao dono da conta BLOQUEADA no login — pelo e-mail de login GRAVADO, texto NEUTRO e único, sem link de ação, sem dizer
+ * quantas tentativas: "registramos tentativas de acesso que não foram concluídas; se não foi você, troque a senha" (pela D-PV48 = o
+ * titular pede código pela recuperação). Sai depois do COMMIT da vaga, em segundo plano; falha do SMTP = log (a vaga da hora fica
+ * tomada — limite conhecido, como o da D-RS4). Em dev sem SMTP vai ao log.
+ */
+async function sendLoginBlockNotice(user: AuthUser): Promise<void> {
+  const text = 'Registramos, há pouco, tentativas de acesso à sua conta do Setes ERP que não foram concluídas. '
+    + 'Se não foi você, troque a sua senha pela opção "Esqueci minha senha" da tela de login. Não respondemos a este e-mail.'
+  try {
+    await sendMail({
+      to: user.loginEmail,
+      subject: LOGIN_BLOCK_NOTICE_SUBJECT,
+      text,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto">
+          <h2 style="color:#1B3A5F">Aviso de segurança</h2>
+          <p>Registramos, há pouco, tentativas de acesso à sua conta do Setes ERP que não foram concluídas.</p>
+          <p><strong>Se não foi você</strong>, troque a sua senha pela opção "Esqueci minha senha" da tela de login.</p>
+          <p style="color:#8793B2;font-size:12px">Não respondemos a este e-mail.</p>
+        </div>`,
+    })
+  } catch (err) {
+    logger.error('Falha no envio do aviso de bloqueio do login (D-EA3)', { userId: user.id, ...mailErrorForLog(err) })   // D-EA21
+    return
+  }
+  if (!isMailerConfigured() && !isProduction()) {
+    logger.info('Aviso de bloqueio do login (D-EA3, modo dev, SMTP ausente)', { userId: user.id, email: maskEmail(user.loginEmail) })
+  }
+}
+
+/** Boot (D-EA2/D-EA3): as duas tabelas do script 74 — sem elas o setes-api NÃO sobe. */
+export async function assertLoginLockReady(): Promise<string> {
+  await assertLoginLockSchema()
+  return `ok (${LOGIN_MAX_FAILURES} erradas em ${LOGIN_FAILURE_WINDOW_MINUTES} min)`
 }
 
 // Passo 4: valida o token de seleção e o vínculo antes de emitir o JWT final
@@ -195,8 +400,9 @@ async function inPasswordResetTx<T>(label: string, userId: number, fn: (conn: Po
  * A resposta é NEUTRA para o cliente, mas a pane não pode sumir (gate socrático da Q-PV38): contenção (lock wait) é carga normal —
  * só aviso; qualquer outro erro depois de achar a conta (banco, chave do HMAC, bug) vira ALARME com ref na tb_crashlytics central.
  */
-function alarmNeutral(where: string, userId: number, err: unknown): void {
-  if (contentionToHttpError(err)) {
+function alarmNeutral(where: string, userId: number, err: unknown, opts: { deadlockIsAlarm?: boolean } = {}): void {
+  // o login (L7): deadlock que chega aqui ESGOTOU o retry — vira alarme com ref, não aviso de contenção
+  if (contentionToHttpError(err) && !(opts.deadlockIsAlarm && (err as { code?: unknown })?.code === 'ER_LOCK_DEADLOCK')) {
     logger.warn(`${where}: contenção na trava do usuário — resposta neutra`, { userId })
     return
   }
@@ -236,32 +442,64 @@ function runInBackground(where: string, userId: number, work: () => Promise<void
 }
 
 /**
- * D-RS4: toma a vaga do aviso ao dono da conta — no máximo UM por hora por conta — sob a trava do usuário, na MESMA transação que
- * detectou o gatilho (regras 12/13). Devolve a causa quando a vaga foi tomada (o e-mail sai depois do COMMIT, em segundo plano) e
- * `undefined` quando a hora já tem aviso. Tabela própria: não entra no teto de códigos.
+ * A PORTA da tabela de aviso de cada processo (parecer do guardião §P.3): a receita da vaga é UMA (abaixo); cada processo entrega a SUA
+ * tabela — nunca um `kind` que misture processos (D-EA3/D-EA14: o bloqueio do login é outro processo que a recuperação).
+ */
+interface NoticeSlotPort {
+  /** nome do SAVEPOINT (identificador simples) */
+  savepoint: string
+  hasRecent(conn: PoolConnection, userId: number): Promise<boolean>
+  insert(conn: PoolConnection, userId: number): Promise<unknown>
+}
+
+/**
+ * Toma a vaga do aviso ao dono da conta — no máximo UM por hora por conta — sob a trava do usuário, na MESMA transação que detectou o
+ * gatilho (regras 12/13). Devolve true quando a vaga foi tomada (o e-mail sai depois do COMMIT, em segundo plano) e false quando a hora
+ * já tem aviso ou o trecho foi desfeito.
+ * Q-RS10/D-RS10 (gates socrático e adversarial, MEDIUM): o aviso é fato SECUNDÁRIO — a falha dele (GRANT sem INSERT na irmã, CHECK/coluna
+ * divergente, banco) NUNCA pode desfazer o fato PRIMÁRIO da mesma transação (o +1 da tentativa errada; a 10ª falha do login): sem isto a
+ * conta nunca bloquearia. SAVEPOINT em volta da vaga (a receita da `@shared/db/savepoint.runIsolated`, aqui com alarme COM REF em vez do
+ * log cru — o erro do mysql2 leva o `sql`); falha = alarme (nunca silêncio) e a transação segue. 1213 desfaz a transação inteira: sobe.
+ */
+async function claimNoticeSlot(conn: PoolConnection, where: string, userId: number, port: NoticeSlotPort): Promise<boolean> {
+  await conn.query(`SAVEPOINT ${port.savepoint}`)
+  try {
+    if (await port.hasRecent(conn, userId)) {
+      await conn.query(`RELEASE SAVEPOINT ${port.savepoint}`)
+      return false
+    }
+    await port.insert(conn, userId)
+    await conn.query(`RELEASE SAVEPOINT ${port.savepoint}`)
+    return true
+  } catch (err) {
+    const e = err as { code?: unknown } | null
+    if (e?.code === 'ER_LOCK_DEADLOCK') throw err              // 1213 desfaz a transação inteira: cabe ao retry refazê-la toda
+    await conn.query(`ROLLBACK TO SAVEPOINT ${port.savepoint}`)
+    alarmNeutral(`${where} (aviso ao dono)`, userId, err)       // pane = ref na crashlytics; contenção = aviso — a vaga NÃO foi tomada
+    return false
+  }
+}
+
+/** D-EA3/D-EA14: a porta do aviso de BLOQUEIO do login (`tb_user_login_block_notice`, sql/74). */
+const LOGIN_BLOCK_NOTICE_PORT: NoticeSlotPort = {
+  savepoint: 'login_block_notice',
+  hasRecent: hasRecentLoginBlockNotice,
+  insert:    insertLoginBlockNotice,
+}
+
+/**
+ * D-RS4: a vaga do aviso ao dono na recuperação (`tb_user_password_reset_notice`, sql/67) — causa forense `kind` E/C. Devolve a causa
+ * quando a vaga foi tomada e `undefined` quando a hora já tem aviso. Tabela própria: não entra no teto de códigos.
  */
 async function claimOwnerNotice(
   conn: PoolConnection, where: string, userId: number, kind: PasswordResetNoticeKind,
 ): Promise<PasswordResetNoticeKind | undefined> {
-  // Q-RS10 (gates socrático e adversarial, MEDIUM): o aviso é fato SECUNDÁRIO — a falha dele (GRANT sem INSERT na irmã, CHECK/coluna
-  // divergente, banco) NUNCA pode desfazer o fato PRIMÁRIO da mesma transação (o +1 da tentativa errada): sem isto, toda 5ª errada
-  // faria rollback do +1 e o código nunca esgotaria. SAVEPOINT em volta da vaga; falha = alarme (nunca silêncio) e a transação segue.
-  await conn.query('SAVEPOINT owner_notice')
-  try {
-    if (await hasRecentPasswordResetNotice(conn, userId)) {
-      await conn.query('RELEASE SAVEPOINT owner_notice')
-      return undefined
-    }
-    await insertPasswordResetNotice(conn, userId, kind)
-    await conn.query('RELEASE SAVEPOINT owner_notice')
-    return kind
-  } catch (err) {
-    const e = err as { code?: unknown } | null
-    if (e?.code === 'ER_LOCK_DEADLOCK') throw err              // 1213 desfaz a transação inteira: cabe ao retry refazê-la toda
-    await conn.query('ROLLBACK TO SAVEPOINT owner_notice')
-    alarmNeutral(`${where} (aviso ao dono)`, userId, err)       // pane = ref na crashlytics; contenção = aviso — a vaga NÃO foi tomada
-    return undefined
-  }
+  const claimed = await claimNoticeSlot(conn, where, userId, {
+    savepoint: 'owner_notice',
+    hasRecent: hasRecentPasswordResetNotice,
+    insert:    (c, id) => insertPasswordResetNotice(c, id, kind),
+  })
+  return claimed ? kind : undefined
 }
 
 export type IssueVerdict = 'issued' | 'capped' | 'inactive'
@@ -276,7 +514,7 @@ export interface IssueOutcome {
  * é calado e, se a hora ainda não tem aviso, a vaga do aviso ao dono é tomada aqui (kind 'C').
  */
 export async function issuePasswordResetCode(conn: PoolConnection, user: AuthUser, code: string): Promise<IssueOutcome> {
-  const locked = await lockUserForPasswordReset(conn, user.id)
+  const locked = await lockUserCredential(conn, user.id)
   if (!locked || locked.active !== 'S') return { verdict: 'inactive' }
   const issued = await countPasswordResetsIssued(conn, user.id)
   if (issued.lastHour >= PASSWORD_RESET_MAX_PER_HOUR || issued.lastDay >= PASSWORD_RESET_MAX_PER_DAY) {
@@ -306,7 +544,7 @@ export interface ConsumeOutcome {
 export async function judgePasswordResetCode(
   conn: PoolConnection, user: AuthUser, code: string, newPasswordHash: string,
 ): Promise<ConsumeOutcome> {
-  const locked = await lockUserForPasswordReset(conn, user.id)
+  const locked = await lockUserCredential(conn, user.id)
   if (!locked || locked.active !== 'S') return { verdict: 'inactive' }
   const current = await readCurrentPasswordReset(conn, user.id, PASSWORD_RESET_TTL_MINUTES)
   if (!current) return { verdict: 'none' }

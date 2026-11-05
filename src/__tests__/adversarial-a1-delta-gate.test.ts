@@ -27,6 +27,7 @@ jest.mock('../feature-flags/flag.service', () => ({ __esModule: true, isModuleEn
 import pool from '../shared/db/connection'
 import app from '../app'
 import { md5Password } from '../shared/auth/password'
+import { setLoginRefusalFloor, LOGIN_REFUSAL_FLOOR_MS } from '../modules/auth/auth.service'
 import { privilegeCatalogViolations, privilegeCatalogProblems } from '../shared/auth/privilege-catalog'
 import { PRIVILEGE_FATURAR } from '../shared/auth/privileges'
 import { upsertInterfaceConfig } from '../modules/interfaces/interfaces.repository'
@@ -42,8 +43,8 @@ beforeEach(() => {
 })
 
 describe('[RESISTIU] o envelope do login com o `fail()` novo — nenhum canal NOVO entre "senha errada" e "conta existe"', () => {
-  // D-EA6 (decidida 2026-10-31, NÃO executada nesta onda): "Usuário inativo" (401) e "sem institution ativa" (403) com a senha CERTA
-  // seguem distintos — achado PRÉ-EXISTENTE, já decidido; o `fail()` do delta não lhes acrescenta `code`/`fields`.
+  // D-EA6 (decidida 2026-10-31) EXECUTADA nas Ondas 1+2 do endurecer: o login passa pela trava da linha do usuário (dublada abaixo pelo
+  // MESMO `q`) e toda recusa é a mesma 401.
   const users: Record<string, { id: number; password: string | null; active: string }> = {
     'ok@x.com': { id: 1, password: md5Password('certa123'), active: 'S' },
     'inativo@x.com': { id: 2, password: md5Password('certa123'), active: 'N' },
@@ -56,9 +57,18 @@ describe('[RESISTIU] o envelope do login com o `fail()` novo — nenhum canal NO
         const u = users[String(params[0])]
         return [u ? [{ ...u, loginEmail: params[0] }] : [], []]
       }
-      return [[], []]                                         // nenhum vínculo vivo (vw_user_link)
+      if (/FROM setes_central\.tb_user WHERE id = \? AND deleted = 'N' FOR UPDATE/.test(t)) {
+        const u = Object.values(users).find(x => x.id === Number(params[0]))
+        return [u ? [u] : [], []]
+      }
+      return [[], []]                                         // nenhum vínculo vivo (vw_user_link); nenhuma falha na janela
     })
+    ;(pool as any).getConnection.mockImplementation(async () => ({
+      beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn(), query: q,
+    }))
+    setLoginRefusalFloor(0)
   })
+  afterAll(() => setLoginRefusalFloor(LOGIN_REFUSAL_FLOOR_MS))
   const login = (email: string, password: string) => request(app).post('/auth/login').send({ email, password })
 
   it('senha errada, e-mail inexistente e conta sem credencial (sync) → o MESMO 401, sem `code` nem `fields`', async () => {
@@ -66,10 +76,11 @@ describe('[RESISTIU] o envelope do login com o `fail()` novo — nenhum canal NO
     for (const r of replies) expect([r.status, r.body]).toEqual([401, { error: 'Email ou senha inválidos' }])
   })
 
-  it('com a senha CERTA: inativo (401) e sem vínculo (403) — o `fail()` não lhes dá `code`/`fields` (D-EA6 pendente, pré-existente)', async () => {
+  // D-EA6 EXECUTADA (Ondas 1+2 do endurecer, 2026-11-05): com a senha CERTA, inativo e sem vínculo recebem a MESMA 401 da senha errada
+  it('com a senha CERTA: inativo e sem vínculo → a MESMA 401 "Email ou senha inválidos" (D-EA6 executada nas Ondas 1+2)', async () => {
     const inactive = await login('inativo@x.com', 'certa123')
     const noLink = await login('ok@x.com', 'certa123')
-    expect([inactive.status, Object.keys(inactive.body), noLink.status, Object.keys(noLink.body)]).toEqual([401, ['error'], 403, ['error']])
+    for (const r of [inactive, noLink]) expect([r.status, r.body]).toEqual([401, { error: 'Email ou senha inválidos' }])
   })
 })
 

@@ -5,14 +5,14 @@ import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
 import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog, singleMailAddress } from '@shared/mailer/mailer'
 import { institutionZoneFor, isValidTimeZone, DEFAULT_TIME_ZONE, Queryable } from '@shared/time-zone'
 import logger from '@shared/logger/logger'
-import { lockUserForPasswordReset, updatePassword } from './auth.repository'
+import { lockUserCredential, updatePassword } from './auth.repository'
 
 // =====================================================================================================================
 // D-PV46 (Valdo, 2026-10-20 — fecha a Q-PV54 = (a)): a senha perdida do SUPER é PROCEDIMENTO DO OPERADOR, exceção explícita e
 // documentada — nenhuma porta HTTP. Núcleo do `scripts/reset-super-password.ts` (roda no servidor, com o `.env` do destino).
 // Parecer do guardião (2026-10-21, §13.10 do prompt de privilégios): o FATO vai na linha do domínio pela MESMA peça do fluxo normal
 // (`updatePassword` — senha + `activation_key = NULL` + `updated_at`; por construção MATA qualquer código de recuperação aberto, cujo
-// HMAC carrega o hash da senha), sob a MESMA trava da linha do usuário (`lockUserForPasswordReset`, regra 12 do PADROES §9); o AUTOR
+// HMAC carrega o hash da senha), sob a MESMA trava da linha do usuário (`lockUserCredential`, regra 12 do PADROES §9); o AUTOR
 // (operador do SO) vai ao LOG do script + roteiro — `tb_user` não tem `updated_by`, e o `updated_by` da casa significa id de tb_user.
 // "Super" = vínculo `tb_institution_has_user.kind = 'super'` com a institution da Setes (id 1), vivo — a MESMA regra do login
 // (comparado em BINÁRIO, sem caixa nem PAD SPACE — o mesmo julgamento da `vw_user_link`; re-gate socrático da costura A1, L2)
@@ -157,7 +157,7 @@ export type SuperResetVerdict =
  */
 export async function resetSuperPasswordTx(conn: PoolConnection, userId: number, passwordHash: string): Promise<SuperResetVerdict> {
   if (!/^[0-9A-F]{32}$/.test(passwordHash)) throw new Error('hash da senha fora da forma da casa (md5Password)')
-  const locked = await lockUserForPasswordReset(conn, userId)
+  const locked = await lockUserCredential(conn, userId)
   if (!locked) return { status: 'not-super', userId }
   const [link] = await conn.query<any[]>(
     `SELECT active FROM setes_central.tb_institution_has_user

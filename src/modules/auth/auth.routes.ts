@@ -47,7 +47,14 @@ function authErrorForLog(err: unknown): { code?: unknown; errno?: unknown; messa
  * /auth/login:
  *   post:
  *     summary: Autenticação unificada (retorna token ou lista de institutions)
- *     description: Login com email/password. Retorna JWT se usuário tem uma institution; se múltiplas, retorna selectionToken para escolher.
+ *     description: |
+ *       Login com email/password. Retorna JWT se o usuário tem uma institution; se múltiplas, retorna selectionToken para escolher.
+ *       **Limite por CONTA (D-EA1)**: 10 senhas erradas em 15 minutos (janela deslizante) bloqueiam a conta até a falha mais velha da
+ *       janela envelhecer — durante o bloqueio até a senha CERTA é recusada; não há desbloqueio manual. **Uma resposta só (D-EA6)**:
+ *       senha errada, e-mail inexistente, conta sem senha, usuário inativo, usuário sem estabelecimento ativo, conta bloqueada e
+ *       contenção recebem a MESMA 401 `{ "error": "Email ou senha inválidos" }`, no MESMO tempo mínimo (o 200 não espera o piso).
+ *       Ao bloquear, o dono recebe um e-mail neutro (no máximo 1 por hora — D-EA3). Muitas falhas no total disparam um alarme à
+ *       operação da Setes, nunca um bloqueio global (D-EA4). Limite por IP do gateway (300/min) — 429.
  *     tags: [Auth]
  *     security: []
  *     requestBody:
@@ -56,6 +63,7 @@ function authErrorForLog(err: unknown): { code?: unknown; errno?: unknown; messa
  *         application/json:
  *           schema:
  *             type: object
+ *             required: [email, password]
  *             properties:
  *               email:
  *                 type: string
@@ -78,6 +86,9 @@ function authErrorForLog(err: unknown): { code?: unknown; errno?: unknown; messa
  *                     token:
  *                       type: string
  *                       description: JWT válido
+ *                     context:
+ *                       type: object
+ *                       description: Estado de sessão derivado (decisão 17)
  *                 - type: object
  *                   properties:
  *                     ok:
@@ -94,20 +105,32 @@ function authErrorForLog(err: unknown): { code?: unknown; errno?: unknown; messa
  *                       items:
  *                         type: object
  *       400:
- *         description: Email ou password ausente
+ *         description: Email ou password ausente, ou não é texto (array, objeto, número)
  *       401:
- *         description: Credenciais inválidas
+ *         description: Credenciais inválidas — a MESMA resposta para toda recusa (D-EA6), nunca diz o motivo
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: Email ou senha inválidos
+ *       429:
+ *         description: Limite de requisições por IP excedido
  *       500:
  *         description: Erro interno
  */
 router.post('/login', async (req: Request, res: Response) => {
   const { email, password } = req.body ?? {}
-  if (!email || !password) {
+  // A-EA8 / L8: só TEXTO entra — array, objeto ou número em `email`/`password` = 400 (antes, o array virava SQL inválido e o objeto
+  // derrubava o hash: 500). O 400 não depende da conta (é a mesma recusa do campo ausente).
+  if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
     res.status(400).json({ error: 'Os campos "email" e "password" são obrigatórios' })
     return
   }
   try {
-    const result = await login(email, password)
+    const result = await login(email, password, { ip: req.ip })
     if (result.status === 'ok') {
       // context = estado de sessão derivado (decisão 17) — UX do app;
       // enforcement continua na API.

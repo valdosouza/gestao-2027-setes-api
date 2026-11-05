@@ -5,15 +5,30 @@ import jwt from 'jsonwebtoken'
 import { testToken } from '../test-setup/test-token'
 import * as authRepo from '../modules/auth/auth.repository'
 import * as sessionRepo from '../shared/session-context/session-context.repository'
-import { login, selectInstitution, switchInstitution } from '../modules/auth/auth.service'
+import { login, selectInstitution, switchInstitution, setLoginRefusalFloor, LOGIN_REFUSAL_FLOOR_MS } from '../modules/auth/auth.service'
+import pool from '../shared/db/connection'
 
-jest.mock('../modules/auth/auth.repository')
+jest.mock('../modules/auth/auth.repository', () => ({
+  ...jest.requireActual('../modules/auth/auth.repository'),
+  findUserByEmail: jest.fn(), getInstitutionsForUser: jest.fn(),
+  // Ondas 1+2 do endurecer (D-EA1/D-EA2): o login passa pelo pré-filtro e pela trava da linha do usuário — aqui sem falhas na janela
+  // (o limite por conta é provado em `auth-login-lock-d-ea1.test.ts` e ao vivo por `scripts/prove-login-lock.ts`)
+  countLoginFailuresInWindow: jest.fn(), lockUserCredential: jest.fn(), insertLoginFailure: jest.fn(),
+}))
 jest.mock('../shared/session-context/session-context.repository')
+jest.mock('../shared/db/connection', () => ({
+  __esModule: true, default: { query: jest.fn(), getConnection: jest.fn(), on: jest.fn(), end: jest.fn() },
+}))
 
 const mockFindUser         = authRepo.findUserByEmail        as jest.Mock
 const mockGetInstitutions  = authRepo.getInstitutionsForUser as jest.Mock
 const mockExistsSalesman   = sessionRepo.existsSalesman      as jest.Mock
 mockExistsSalesman.mockResolvedValue(false)
+const mockCountFailures    = authRepo.countLoginFailuresInWindow as jest.Mock
+const mockLock             = authRepo.lockUserCredential     as jest.Mock
+const fakeConn = { beginTransaction: jest.fn(), commit: jest.fn(), rollback: jest.fn(), release: jest.fn(), query: jest.fn() }
+beforeAll(() => setLoginRefusalFloor(0))
+afterAll(() => setLoginRefusalFloor(LOGIN_REFUSAL_FLOOR_MS))
 
 // D-F13 (F2a, etapa A2): os tokens saem em RS256 com o kid de assinatura — conferidos com a chave PÚBLICA de teste
 const PUBLIC = createPublicKey(createPrivateKey(fs.readFileSync(process.env.JWT_PRIVATE_KEY_PATH!, 'utf8')))
@@ -33,6 +48,9 @@ describe('auth.service — login', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockFindUser.mockResolvedValue({ id: 1, password: MD5_12345, active: 'S' })
+    mockCountFailures.mockResolvedValue(0)
+    mockLock.mockResolvedValue({ id: 1, password: MD5_12345, active: 'S' })
+    ;(pool.getConnection as jest.Mock).mockResolvedValue(fakeConn)
   })
 
   it('senha errada retorna 401', async () => {
@@ -44,9 +62,9 @@ describe('auth.service — login', () => {
     await expect(login('nao@existe.com', '12345')).rejects.toMatchObject({ statusCode: 401 })
   })
 
-  it('usuário sem institution ativa retorna 403', async () => {
+  it('usuário sem institution ativa retorna a MESMA 401 da senha errada (D-EA6 — o 403 morreu)', async () => {
     mockGetInstitutions.mockResolvedValue([])
-    await expect(login('valdo@setes.com.br', '12345')).rejects.toMatchObject({ statusCode: 403 })
+    await expect(login('valdo@setes.com.br', '12345')).rejects.toMatchObject({ statusCode: 401, message: 'Email ou senha inválidos' })
   })
 
   it('1 institution: emite JWT final direto com institutionId/schemaName', async () => {
@@ -82,8 +100,8 @@ describe('auth.service — login', () => {
   it("'super' fora da institution 1 é rebaixado para 'user' (decisão 14) — pela VIEW; o login repassa o perfil da linha", async () => {
     // (1) o repositório REAL lê o vínculo e o perfil da view (nunca `tb_institution_has_user.kind` cru)
     const realRepo = jest.requireActual('../modules/auth/auth.repository') as typeof authRepo
-    const pool = (jest.requireActual('../shared/db/connection') as any).default
-    const spy = jest.spyOn(pool, 'query').mockResolvedValueOnce([
+    // o pool está dublado neste arquivo (a trava do login — Ondas 1+2): o repositório REAL lê pelo pool dublado
+    const spy = jest.spyOn(pool as any, 'query').mockResolvedValueOnce([
       [{ institutionId: 2, schemaName: 'setes_alpha', name: 'Empresa Alpha', profile: 'user' }], [],
     ] as any)
     try {

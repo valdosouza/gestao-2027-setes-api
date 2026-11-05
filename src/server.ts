@@ -6,8 +6,8 @@ import {
 import { detectLockWaitSupport } from '@shared/db/counters'
 import { assertIbscbsCatalogSchema } from '@shared/ibscbs-classification'
 import { assertJwtKeys } from '@shared/auth/product-token'
-import { assertPasswordResetReady } from '@modules/auth/auth.service'
-import { assertMailerReady, nodeEnvWarning } from '@shared/mailer/mailer'
+import { assertPasswordResetReady, assertLoginLockReady } from '@modules/auth/auth.service'
+import { assertMailerReady, assertOpsAlertReady, nodeEnvWarning } from '@shared/mailer/mailer'
 import { assertFiscalVoiceReadable } from '@shared/fiscal-voice'
 import pool from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
@@ -31,6 +31,7 @@ async function bootstrap() {
     logger.info(`CHECK do banco: ${await assertCheckConstraintsEnforced()}`)           // D-IB26
     logger.info(`Catálogo IBS/CBS (scripts 63/73): ${await assertIbscbsCatalogSchema()}`)   // D-IB36 · D-IB113
     logger.info(`Pedido de troca de senha (script 67): ${await assertPasswordResetReady()}`)   // Q-PV38
+    logger.info(`Limite por conta do login (script 74): ${await assertLoginLockReady()}`)      // D-EA1/D-EA2/D-EA3
     // Costura A1 da auth-api (D-AU3/D-UC9): as views centrais do veredito (script 70) — sem elas NENHUMA rota autentica
     logger.info(`Veredito de acesso (script 70): ${await assertAccessViews(SETES_INSTITUTION_ID, DELEGABLE_SUPER_INTERFACES)}`)
     // D-RS5: em produção (NODE_ENV=production) o SMTP é OBRIGATÓRIO — sem ele o setes-api NÃO sobe (o código de recuperação
@@ -38,6 +39,8 @@ async function bootstrap() {
     const envWarning = nodeEnvWarning()
     if (envWarning) logger.warn(envWarning)
     logger.info(`E-mail (SMTP): ${assertMailerReady()}`)
+    // D-EA4: em produção o e-mail da OPERAÇÃO (alarme do login) é OBRIGATÓRIO junto do SMTP — sem ele o setes-api NÃO sobe
+    logger.info(`E-mail da operação (alarmes): ${assertOpsAlertReady()}`)
     // D-F113/D-F127 (F2a A3): a voz do fisco é LIDA no fiscal_api — sem a view de cada família (ou sem o GRANT) o setes-api NÃO sobe
     // (nunca 500 na 1ª leitura da lista de OS). Ordem de deploy: nfse-api (as migrations das views) ANTES do setes-api.
     logger.info(`Voz do fisco (views): ${await assertFiscalVoiceReadable(pool)}`)
