@@ -69,6 +69,8 @@ function seedUsers(): void {
     'a9@x.com', 'a10@x.com', 'a11@x.com', 'a12@x.com', 'a13@x.com', 'a14@x.com', 'a15@x.com', 'a16@x.com', 'fulano@gmail.com',
     // reservados aos testes da D-RS4/D-RS5 (o limite por e-mail em memória é do PROCESSO — e-mails já gastos acima dariam 429)
     'n1@x.com', 'n2@x.com', 'n3@x.com', 'n4@x.com', 'n5@x.com', 'n6@x.com', 'n7@x.com', 'n8@x.com', 'n9@x.com',
+    // reservados à Onda 3 (D-EA5 — política de senha na troca pelo código)
+    'p1@x.com', 'p2@x.com', 'p3@x.com', 'p4@x.com',
   ]) {
     users.set(id, { id, password: `HASH${id}`, active: 'S', deleted: 'N', email })
     id++
@@ -761,5 +763,70 @@ describe('D-EA26 — e-mail gravado como lista nunca recebe o código', () => {
     ])
     expect(everything).not.toMatch(/terceiro@y\.com|lista@x\.com/)              // D-EA21: nada inteiro no log
     expect(everything).not.toMatch(/"code":"\d{6}"/)                            // D-RS5: código nunca no log de produção
+  })
+})
+
+describe('D-EA5 — política de senha na troca pelo código (Onda 3 — §P.5 PP1/PP5)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { md5Password } = require('../shared/auth/password') as typeof import('../shared/auth/password')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { PASSWORD_PROBLEM_MESSAGES } = require('../shared/auth/password-policy') as typeof import('../shared/auth/password-policy')
+
+  it('PP5: senha IGUAL à atual com o código CERTO = 422 no campo newPassword; o código NÃO é gasto nem conta erro; outra senha passa', async () => {
+    const email = 'p1@x.com'
+    userByEmail(email).password = md5Password('atual-kq7#mv2x')
+    await recover(email)
+    const code = lastCode(email)
+    const same = await change(email, code, 'atual-kq7#mv2x')
+    expect([same.status, same.body]).toEqual([422, {
+      error: PASSWORD_PROBLEM_MESSAGES['same-as-current'], code: 'PASSWORD_SAME_AS_CURRENT',
+      fields: [{ field: 'newPassword', message: PASSWORD_PROBLEM_MESSAGES['same-as-current'] }],
+    }])
+    expect(passwordWrites).toEqual([])
+    expect(resets[0].usedAt).toBeNull()
+    expect(resets[0].failed).toBe(0)
+    const ok = await change(email, code, 'outra-kq7#mv2x')
+    expect([ok.status, ok.body]).toEqual([200, { ok: true }])
+  })
+
+  it('PP5 (oráculo): a senha igual à atual com o código ERRADO recebe a MESMA 401 neutra e conta como erro', async () => {
+    const email = 'p2@x.com'
+    userByEmail(email).password = md5Password('atual-kq7#mv2x')
+    await recover(email)
+    const code = lastCode(email)
+    const same = await change(email, wrongOf(code), 'atual-kq7#mv2x')
+    const other = await change(email, wrongOf(code, 1), 'outra-kq7#mv2x')
+    expect([same.status, same.body]).toEqual([401, { error: INVALID_PASSWORD_RESET_CODE }])
+    expect([other.status, other.body]).toEqual([401, { error: INVALID_PASSWORD_RESET_CODE }])
+    expect(resets[0].failed).toBe(2)
+  })
+
+  it('PP5 (oráculo): sem pedido de troca aberto, a senha igual à atual é a MESMA 401 neutra', async () => {
+    const email = 'p3@x.com'
+    userByEmail(email).password = md5Password('atual-kq7#mv2x')
+    const r = await change(email, '123456', 'atual-kq7#mv2x')
+    expect([r.status, r.body]).toEqual([401, { error: INVALID_PASSWORD_RESET_CODE }])
+  })
+
+  it.each([
+    ['abc1234', 'too-short'], ['senha123', 'common'], ['flamengo', 'common'], ['xp4-p4zz', null],
+  ] as const)('PP1: %j é julgada ANTES do código, igual para conta que existe e que não existe, sem tocar o banco', async (pwd, problem) => {
+    for (const email of ['p4@x.com', 'ninguem-p4@x.com']) {
+      seenSql = []
+      const r = await change(email, '123456', pwd)
+      if (problem) {
+        expect([r.status, r.body.fields]).toEqual([400, [{ field: 'newPassword', message: PASSWORD_PROBLEM_MESSAGES[problem] }]])
+        expect(seenSql).toEqual([])
+      } else {
+        expect(r.status).toBe(401)
+      }
+    }
+  })
+
+  it('PP1/D-EA16: a parte local do e-mail DIGITADO conta (só o texto da requisição — não diz nada sobre a conta)', async () => {
+    for (const email of ['p4@x.com', 'p4zz@x.com']) {
+      const r = await change(email, '123456', 'xyz-P4ZZ-2026')
+      expect(r.status).toBe(email === 'p4zz@x.com' ? 400 : 401)
+    }
   })
 })

@@ -287,7 +287,9 @@ router.post('/recovery-password', recoveryPerEmail, async (req: Request, res: Re
  *                 description: Código de 6 dígitos enviado por email
  *               newPassword:
  *                 type: string
- *                 minLength: 5
+ *                 minLength: 8
+ *                 maxLength: 100
+ *                 description: Política de senha (D-EA5) — mínimo 8, não pode ser só espaços, estar na lista de senhas comuns nem conter o trecho antes do @ do e-mail (4+ letras)
  *     responses:
  *       200:
  *         description: Senha alterada com sucesso
@@ -300,7 +302,9 @@ router.post('/recovery-password', recoveryPerEmail, async (req: Request, res: Re
  *                   type: boolean
  *                   example: true
  *       400:
- *         description: Campos obrigatórios ausentes ou senha muito curta
+ *         description: Campos obrigatórios ausentes ou a nova senha fora da política (D-EA5) — `fields[0].field = newPassword`; julgado antes do código, só pelo texto da requisição
+ *       422:
+ *         description: Código CERTO, mas a nova senha é igual à atual (`PASSWORD_SAME_AS_CURRENT`) — o código segue valendo
  *       401:
  *         description: Código inválido ou expirado (a mesma resposta para toda recusa)
  *       429:

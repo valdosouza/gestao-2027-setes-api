@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { newPasswordSchema } from '@shared/auth/password'
+import { newPasswordSchema, refinePassword } from '@shared/auth/password-policy'
 
 /** Perfis do vínculo tb_institution_has_user.kind (vira o role do JWT) — D-BA23: domínio
  *  TIPADO (a tela user_institutions_section já só oferecia estes três; roles.ts reconhece
@@ -26,10 +26,10 @@ const base = {
 // alvo FORÇADO para a institution do JWT no service).
 export const userCreateDto = z.object({
   ...base,
-  password:      newPasswordSchema,                  // D-EA13: nunca só espaços
+  password:      newPasswordSchema,                  // D-EA5: mínimo 8, nunca só espaços (D-EA13)
   institutionId: z.number().int().positive().nullable().optional(),
   kind:          z.enum(USER_KINDS).nullable().optional(),
-})
+}).superRefine(refinePassword('password', 'email'))   // D-EA5/D-EA16: lista de comuns e parte local do e-mail
 
 // PUT: senha opcional — null/ausente mantém a atual. D-PV19 (2026-10-20): `active` é do VÍNCULO (ausente = não mexe) e o
 // alvo é `institutionId` (só o super informa; o admin tem o alvo forçado ao JWT); o e-mail tem de ser o atual (imutável — D-UC1).
@@ -37,10 +37,10 @@ export const userUpdateDto = z.object({
   nameCompany: base.nameCompany,
   nickTrade:   base.nickTrade,
   email:       base.email,
-  password:      newPasswordSchema.nullable().optional(),   // D-EA13: nunca só espaços
+  password:      newPasswordSchema.nullable().optional(),   // D-EA5: mínimo 8, nunca só espaços (D-EA13)
   active:        z.enum(['S', 'N']).optional(),
   institutionId: z.number().int().positive().nullable().optional(),
-})
+}).superRefine(refinePassword('password', 'email'))   // D-EA5/D-EA16 (o e-mail do PUT é o atual — D-UC1)
 
 // PUT /:id/institutions — vínculos com kind (perfil por institution).
 export const userInstitutionsDto = z.object({

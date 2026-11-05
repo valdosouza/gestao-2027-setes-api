@@ -103,7 +103,9 @@ describe('D-EA13 (Valdo 2026-11-01, "(b) Recusar já") — senha nova nunca só 
       expect(newPasswordSchema.safeParse(blank).success).toBe(false)
     }
     expect(newPasswordSchema.safeParse('uma frase senha').success).toBe(true)
-    expect(newPasswordSchema.safeParse('abc12').success).toBe(true)
+    // Onda 3 (D-EA5): o mínimo subiu de 5 para 8 — 5 caracteres agora recusa, 8 passa (a regra do só-espaços segue igual)
+    expect(newPasswordSchema.safeParse('abc12').success).toBe(false)
+    expect(newPasswordSchema.safeParse('abc12xyz').success).toBe(true)
     expect(userUpdateDto.safeParse({ ...base, password: null }).success).toBe(true)
     // o admin do onboarding usa a MESMA peça (o corpo do POST de institutions é a cadeia fiscal inteira — a peça é conferida no fonte)
     const fs = jest.requireActual('fs') as typeof import('fs')

@@ -132,7 +132,8 @@ export function inactiveTargetExit(supers: SuperAccount[], target: SuperAccount)
 export const INITIAL_PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
 export const INITIAL_PASSWORD_LENGTH = 16
 
-/** Senha inicial aleatória (CSPRNG), 16 caracteres do alfabeto acima (~91 bits). Cabe no DTO do usuário (5–100). */
+/** Senha inicial aleatória (CSPRNG), 16 caracteres do alfabeto acima (~91 bits). Cumpre a política de senha (D-EA5 — §P.5 PP6;
+ *  o teste `password-policy-d-ea5` confere amostras contra a peça). */
 export function generateInitialPassword(length = INITIAL_PASSWORD_LENGTH): string {
   let out = ''
   for (let i = 0; i < length; i++) out += INITIAL_PASSWORD_ALPHABET[randomInt(INITIAL_PASSWORD_ALPHABET.length)]

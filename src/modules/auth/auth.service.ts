@@ -22,6 +22,7 @@ import {
 import { SessionContext, getSessionContext } from '@shared/session-context'
 import { liveSession } from '@shared/access'
 import { md5Password, passwordMatches } from '@shared/auth/password'
+import { passwordProblems, PASSWORD_PROBLEM_MESSAGES } from '@shared/auth/password-policy'
 import { HttpError } from '@shared/errors/http-error'
 import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog, singleMailAddress } from '@shared/mailer/mailer'
 import logger from '@shared/logger/logger'
@@ -558,7 +559,7 @@ export async function createPasswordResetCode(conn: PoolConnection, user: AuthUs
   return (await issuePasswordResetCode(conn, user, code)).verdict
 }
 
-export type ConsumeVerdict = 'changed' | 'inactive' | 'none' | 'used' | 'expired' | 'exhausted' | 'wrong'
+export type ConsumeVerdict = 'changed' | 'inactive' | 'none' | 'used' | 'expired' | 'exhausted' | 'wrong' | 'same-as-current'
 export interface ConsumeOutcome {
   verdict: ConsumeVerdict
   /** D-RS4: esta tentativa errada ESGOTOU o código e a vaga do aviso ao dono foi tomada (kind 'E') — e-mail depois do COMMIT */
@@ -569,9 +570,11 @@ export interface ConsumeOutcome {
  * Julga e CONTA a tentativa sob a trava da linha do usuário (rajadas paralelas não passam do teto): o código vigente certo troca a
  * senha e grava o uso na MESMA transação; o errado soma 1 (o esgotamento é derivado). Esgotado/vencido/usado não somam.
  * A tentativa errada que ESGOTA o código (a N-ésima) toma a vaga do aviso ao dono (D-RS4) — as seguintes (já esgotado) não.
+ * D-EA5 (Onda 3 — §P.5 PP5): com `newPasswordPlain`, a senha IGUAL À ATUAL é recusada SÓ AQUI, DEPOIS do código certo e sob a trava —
+ * antes do código seria ORÁCULO da senha atual sem prova de posse. Nessa recusa o código NÃO é gasto nem conta como erro.
  */
 export async function judgePasswordResetCode(
-  conn: PoolConnection, user: AuthUser, code: string, newPasswordHash: string,
+  conn: PoolConnection, user: AuthUser, code: string, newPasswordHash: string, newPasswordPlain?: string,
 ): Promise<ConsumeOutcome> {
   const locked = await lockUserCredential(conn, user.id)
   if (!locked || locked.active !== 'S') return { verdict: 'inactive' }
@@ -585,6 +588,7 @@ export async function judgePasswordResetCode(
     const exhaustedNow = current.failedAttempts + 1 >= PASSWORD_RESET_MAX_FAILED_ATTEMPTS
     return { verdict: 'wrong', notice: exhaustedNow ? await claimOwnerNotice(conn, 'auth/change-password', user.id, 'E') : undefined }
   }
+  if (newPasswordPlain !== undefined && passwordMatches(newPasswordPlain, locked.password)) return { verdict: 'same-as-current' }
   await updatePassword(conn, user.id, newPasswordHash)
   await markPasswordResetUsed(conn, user.id, current.seq)
   return { verdict: 'changed' }
@@ -717,7 +721,13 @@ async function sendOwnerNotice(user: AuthUser, kind: PasswordResetNoticeKind): P
 // conta também sai como a recusa neutra (com o erro no log) — a contenção não pode virar oráculo de existência.
 // MD5 aplicado AQUI no backend (decisão 2) — o app envia texto puro por HTTPS.
 export async function changePassword(email: string, code: string, newPassword: string): Promise<void> {
-  if (newPassword.length < 5) throw new HttpError(400, 'A nova senha deve ter pelo menos 5 caracteres')
+  // D-EA5/D-EA16: a política que NÃO depende da conta (tamanho, lista de comuns, parte local do e-mail DIGITADO) vem ANTES do código —
+  // julga só o texto da requisição, então não diz nada sobre a conta (400, como era o mínimo 5). A "igual à atual" fica no julgamento.
+  const problem = passwordProblems(newPassword, email)[0]
+  if (problem) {
+    throw new HttpError(400, PASSWORD_PROBLEM_MESSAGES[problem], [{ field: 'newPassword', message: PASSWORD_PROBLEM_MESSAGES[problem] }],
+      ErrorCodes.VALIDATION_FAILED)
+  }
   return withResponseFloor(() => changePasswordByCode(email, code, newPassword))
 }
 
@@ -728,12 +738,16 @@ async function changePasswordByCode(email: string, code: string, newPassword: st
   let outcome: ConsumeOutcome
   try {
     outcome = await inPasswordResetTx('auth/change-password', user.id,
-      conn => judgePasswordResetCode(conn, user, code, md5(newPassword)))
+      conn => judgePasswordResetCode(conn, user, code, md5(newPassword), newPassword))
   } catch (err) {
     alarmNeutral('auth/change-password', user.id, err)
     throw new HttpError(401, INVALID_PASSWORD_RESET_CODE)
   }
   if (outcome.verdict === 'changed') return
+  if (outcome.verdict === 'same-as-current') {
+    const message = PASSWORD_PROBLEM_MESSAGES['same-as-current']
+    throw new HttpError(422, message, [{ field: 'newPassword', message }], ErrorCodes.PASSWORD_SAME_AS_CURRENT)
+  }
   // forense: o motivo interno vai ao log (nunca o código); a resposta é uma só
   if (outcome.verdict === 'wrong' || outcome.verdict === 'exhausted') {
     logger.warn('Troca de senha por código recusada', { userId: user.id, verdict: outcome.verdict, ownerNotice: outcome.notice })

@@ -373,7 +373,7 @@ describe('[ataque] furar o "no máximo 1 aviso por hora por conta"', () => {
     await recover(email)
     const code = lastCode(email)
     await wrongs(email, code, PASSWORD_RESET_MAX_FAILED_ATTEMPTS - 1)
-    const r = await Promise.allSettled([changePassword(email, wrongOf(code, 7), 'x-nova'), changePassword(email, wrongOf(code, 8), 'x-nova')])
+    const r = await Promise.allSettled([changePassword(email, wrongOf(code, 7), 'x-nova-kq7'), changePassword(email, wrongOf(code, 8), 'x-nova-kq7')])
     expect(r.every(x => x.status === 'rejected' && (x.reason as any).statusCode === 401)).toBe(true)
     expect(resets[0].failed).toBe(PASSWORD_RESET_MAX_FAILED_ATTEMPTS)
     expect(notices).toHaveLength(1)
@@ -456,7 +456,7 @@ describe('[ataque] derrubar o aviso para reabrir a força bruta', () => {
     const verdicts = await wrongs(email, code, PASSWORD_RESET_MAX_FAILED_ATTEMPTS + 3)       // 8 erradas: a 5ª, 6ª, 7ª e 8ª "esgotariam"
     expect(verdicts.every(v => v === 401)).toBe(true)                                           // o atacante vê a MESMA 401 em todas
     expect(resets[0].failed).toBe(PASSWORD_RESET_MAX_FAILED_ATTEMPTS)                           // SEGURA: o contador tem de chegar ao teto…
-    await expect(changePassword(email, code, 'tomada')).rejects.toMatchObject({ statusCode: 401 }) // …e o certo depois tem de ser recusado
+    await expect(changePassword(email, code, 'tomada-kq7')).rejects.toMatchObject({ statusCode: 401 }) // …e o certo depois tem de ser recusado
     expect(passwordWrites).toEqual([])
   })
 

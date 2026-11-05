@@ -163,6 +163,8 @@ export const ErrorCodes = {
   LOGIN_EMAIL_IMMUTABLE: 'LOGIN_EMAIL_IMMUTABLE',
   // D-PV48 (2026-10-27): depois de criada a credencial, só o titular troca a senha (recuperação)
   PASSWORD_OWNER_ONLY: 'PASSWORD_OWNER_ONLY',
+  // D-EA5 (Onda 3 do endurecer): a troca pelo código recusa a senha igual à atual — julgada SÓ depois do código certo (o código não é gasto)
+  PASSWORD_SAME_AS_CURRENT: 'PASSWORD_SAME_AS_CURRENT',
   OWN_ESTABLISHMENT_READ_ONLY: 'OWN_ESTABLISHMENT_READ_ONLY',
   INTERFACE_STRUCTURAL_LOCKED: 'INTERFACE_STRUCTURAL_LOCKED',
   INTERFACE_NOT_SELLABLE: 'INTERFACE_NOT_SELLABLE',
@@ -359,6 +361,7 @@ export const ErrorCatalog: Record<ErrorCode, string> = {
   MODULE_NOT_ENABLED: 'Módulo não habilitado para este estabelecimento (flag técnica)',
   USER_MANAGED_BY_SUPER: 'Conta com vínculo de super — só o Super altera (D-PV12; a A-PV13 morreu com a D-PV19)',
   LOGIN_EMAIL_IMMUTABLE: 'O e-mail de login nunca muda (D-UC1/D-PV19) — a credencial é do titular; inative o vínculo e crie outro usuário',
+  PASSWORD_SAME_AS_CURRENT: 'A nova senha é igual à atual — escolha outra (D-EA5); o código de recuperação segue valendo',
   PASSWORD_OWNER_ONLY: 'Depois de criada a credencial, só o próprio usuário troca a senha — pelo "Esqueci minha senha" (D-PV48); o cadastro define a senha uma vez só, na criação',
   OWN_ESTABLISHMENT_READ_ONLY: 'A entidade é o próprio estabelecimento: a cadeia (razão social, IE/IM, endereços, contatos) e a tributação só se editam em Meu Estabelecimento (D-PV32) — os campos do papel seguem editáveis',
   INTERFACE_STRUCTURAL_LOCKED: 'Interface ESTRUTURAL (users, modules, interface-configs, establishment, general-configs) não se revoga pela porta delegada — só o Super (D-PV35)',

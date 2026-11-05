@@ -127,7 +127,7 @@ router.get('/:id', controller.getById)
  *                   nameCompany: { type: string, example: 'Fulano de Tal' }
  *                   nickTrade:   { type: string, example: 'Fulano' }
  *                   email:       { type: string, format: email, description: 'Login do admin — ÚNICO no grupo 2' }
- *                   password:    { type: string, minLength: 5, description: 'Texto puro; o hash MD5 é aplicado no service' }
+ *                   password:    { type: string, minLength: 8, maxLength: 100, description: 'Texto puro (hash no service). Política D-EA5: mínimo 8, nunca só espaços, fora da lista de senhas comuns, sem o trecho antes do @ do e-mail (4+ letras)' }
  *     responses:
  *       201: { description: '{ ok, data: { id, schemaName, active, adminUserId } }' }
  *       409: { description: 'schemaName em uso, CPF/CNPJ duplicado ou e-mail já usado como login' }

@@ -210,7 +210,7 @@ describe('[ACHADO LOW] a 1ª senha opcional: na aba Usuários do Estabelecimento
   // código do app (Dart não roda aqui); a ponta testável é a porta da API.
   it('[controle] o MESMO corpo com uma senha de verdade (ou sem senha) passa na validação', () => {
     const base = { nameCompany: 'Fulano', nickTrade: 'Fulano', email: 'fulano@x.com' }
-    expect([userUpdateDto.safeParse({ ...base, password: 'abc12' }).success, userUpdateDto.safeParse({ ...base, password: null }).success])
+    expect([userUpdateDto.safeParse({ ...base, password: 'kq7#mv2x' }).success /* Onda 3 (D-EA5): mínimo 8 */, userUpdateDto.safeParse({ ...base, password: null }).success])
       .toEqual([true, true])
   })
   // D-EA13 (Valdo 2026-11-01, "(b) Recusar já"): a regra entrou na peça `newPasswordSchema` (users POST/PUT e admin do onboarding)

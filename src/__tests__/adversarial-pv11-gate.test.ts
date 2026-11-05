@@ -305,7 +305,7 @@ describe('(2) auto-concessão pelo cadastro de privilégios', () => {
       .send({ links: [{ institutionId: 1, kind: 'super' }] })
     expect(r.status).toBe(403)
     const c = await request(app).post('/api/users').set('Authorization', SETES_ADMIN)
-      .send({ nameCompany: 'X', nickTrade: 'X', email: 'x@x.com', password: '12345', kind: 'super' })
+      .send({ nameCompany: 'X', nickTrade: 'X', email: 'x@x.com', password: 'kq7#mv2x' /* Onda 3: mínimo 8 */, kind: 'super' })
     expect(c.status).toBe(400)
   })
 
@@ -641,7 +641,7 @@ describe('(R2) barreira da conta — outras portas, vínculo adormecido, corrida
   it('[RESISTIU] (a) criar usuário com o e-mail de login do Super → 409, nada gravado', async () => {
     for (const token of [SETES_ADMIN, OTHER_ADMIN]) {
       const r = await request(app).post('/api/users').set('Authorization', token)
-        .send({ nameCompany: 'X', nickTrade: 'X', email: SUPER_EMAIL, password: '12345', kind: 'admin' })
+        .send({ nameCompany: 'X', nickTrade: 'X', email: SUPER_EMAIL, password: 'kq7#mv2x' /* Onda 3: mínimo 8 */, kind: 'admin' })
       expect(r.status).toBe(409)
     }
     expect(userWrites).toEqual([])
@@ -673,10 +673,10 @@ describe('(R2) barreira da conta — outras portas, vínculo adormecido, corrida
 
   it.failing('[ACHADO MEDIUM — pré-existente, fora do delta] (a) /auth/change-password: o código de 6 dígitos não morre depois de N tentativas erradas (força bruta só freada pelo limite por IP)', async () => {
     for (let i = 0; i < 25; i++) {
-      const w = await request(app).post('/auth/change-password').send({ email: SUPER_EMAIL, code: String(100000 + i), newPassword: 'tomada' })
+      const w = await request(app).post('/auth/change-password').send({ email: SUPER_EMAIL, code: String(100000 + i), newPassword: 'tomada-kq7' })
       expect(w.status).toBe(401)
     }
-    const ok = await request(app).post('/auth/change-password').send({ email: SUPER_EMAIL, code: RECOVERY_CODE, newPassword: 'tomada' })
+    const ok = await request(app).post('/auth/change-password').send({ email: SUPER_EMAIL, code: RECOVERY_CODE, newPassword: 'tomada-kq7' })
     expect(ok.status).toBe(401)
     expect(passwordWrites()).toEqual([])
   })

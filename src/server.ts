@@ -8,6 +8,7 @@ import { assertIbscbsCatalogSchema } from '@shared/ibscbs-classification'
 import { assertJwtKeys } from '@shared/auth/product-token'
 import { assertPasswordResetReady, assertLoginLockReady } from '@modules/auth/auth.service'
 import { assertMailerReady, assertOpsAlertReady, nodeEnvWarning } from '@shared/mailer/mailer'
+import { assertPasswordPolicyReady } from '@shared/auth/password-policy'
 import { assertFiscalVoiceReadable } from '@shared/fiscal-voice'
 import pool from '@shared/db/connection'
 import { runMigrationsForAllInstitutions } from './migrations/runner'
@@ -32,6 +33,7 @@ async function bootstrap() {
     logger.info(`Catálogo IBS/CBS (scripts 63/73): ${await assertIbscbsCatalogSchema()}`)   // D-IB36 · D-IB113
     logger.info(`Pedido de troca de senha (script 67): ${await assertPasswordResetReady()}`)   // Q-PV38
     logger.info(`Limite por conta do login (script 74): ${await assertLoginLockReady()}`)      // D-EA1/D-EA2/D-EA3
+  logger.info(`Política de senha: lista de senhas comuns com ${assertPasswordPolicyReady()} entradas`)   // D-EA5/A-EA9
     // Costura A1 da auth-api (D-AU3/D-UC9): as views centrais do veredito (script 70) — sem elas NENHUMA rota autentica
     logger.info(`Veredito de acesso (script 70): ${await assertAccessViews(SETES_INSTITUTION_ID, DELEGABLE_SUPER_INTERFACES)}`)
     // D-RS5: em produção (NODE_ENV=production) o SMTP é OBRIGATÓRIO — sem ele o setes-api NÃO sobe (o código de recuperação
