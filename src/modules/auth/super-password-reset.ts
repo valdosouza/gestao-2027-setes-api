@@ -1,6 +1,7 @@
 import { randomInt } from 'crypto'
 import { PoolConnection } from 'mysql2/promise'
 import { md5Password } from '@shared/auth/password'
+import { passwordProblems } from '@shared/auth/password-policy'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
 import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog, singleMailAddress } from '@shared/mailer/mailer'
 import { institutionZoneFor, isValidTimeZone, DEFAULT_TIME_ZONE, Queryable } from '@shared/time-zone'
@@ -135,9 +136,13 @@ export const INITIAL_PASSWORD_LENGTH = 16
 /** Senha inicial aleatória (CSPRNG), 16 caracteres do alfabeto acima (~91 bits). Cumpre a política de senha (D-EA5 — §P.5 PP6;
  *  o teste `password-policy-d-ea5` confere amostras contra a peça). */
 export function generateInitialPassword(length = INITIAL_PASSWORD_LENGTH): string {
-  let out = ''
-  for (let i = 0; i < length; i++) out += INITIAL_PASSWORD_ALPHABET[randomInt(INITIAL_PASSWORD_ALPHABET.length)]
-  return out
+  // a MESMA peça da política (gate socrático da Onda 3, LOW 4): se o alfabeto ou o tamanho mudarem, o sorteio nunca entrega senha fora dela
+  for (let attempt = 0; attempt < 100; attempt++) {
+    let out = ''
+    for (let i = 0; i < length; i++) out += INITIAL_PASSWORD_ALPHABET[randomInt(INITIAL_PASSWORD_ALPHABET.length)]
+    if (passwordProblems(out).length === 0) return out
+  }
+  throw new Error('generateInitialPassword: o alfabeto/tamanho não produz senha dentro da política de senha (D-EA5)')
 }
 
 /** A senha em claro vira o hash da casa AQUI (uma só vez) e segue para a transação; a peça nunca guarda a senha. */

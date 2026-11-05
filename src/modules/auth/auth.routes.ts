@@ -314,7 +314,10 @@ router.post('/recovery-password', recoveryPerEmail, async (req: Request, res: Re
  */
 router.post('/change-password', changePerEmail, async (req: Request, res: Response) => {
   const body = req.body ?? {}
-  const email = bodyText(body.email), code = bodyText(body.code), newPassword = bodyText(body.newPassword)
+  const email = bodyText(body.email), code = bodyText(body.code)
+  // A-EA8 (gate adversarial da Onda 3, ADV-O3-07): a senha nova só entra como TEXTO — `{}` virava a senha "[object Object]" e passava na
+  // política. O 400 não depende da conta (é a mesma recusa do campo ausente), como no login.
+  const newPassword = typeof body.newPassword === 'string' ? body.newPassword : ''
   if (!email || !code || !newPassword) {
     res.status(400).json({ error: 'Os campos "email", "code" e "newPassword" são obrigatórios' })
     return

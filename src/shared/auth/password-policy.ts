@@ -51,18 +51,37 @@ const ACCENT_FOLD: Record<string, string> = {
   'ç': 'c', 'ñ': 'n', 'ý': 'y', 'ÿ': 'y',
 }
 
+/**
+ * "Branco" com lista EXPLÍCITA, igual nas duas pontas (gate adversarial da Onda 3, ADV-O3-01): o `trim()` do JS não apara U+0085 (NEL) e
+ * o do Dart apara — oito NEL passavam na API e caíam no app. A lista = a do `trim()` do JS + U+0085.
+ */
+const BLANK = '\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff'
+const ONLY_BLANK = new RegExp(`^[${BLANK}]*$`)
+const EDGE_BLANK = new RegExp(`^[${BLANK}]+|[${BLANK}]+$`, 'g')
+/** Marcas combinantes (U+0300–U+036F): saem DEPOIS do `toLowerCase()` — o acento em NFD (`a` + U+0303) e o `İ` minúsculo do JS (`i` +
+ *  U+0307, que o Dart VM devolve sem a marca) ficam iguais nas duas pontas (ADV-O3-02/ADV-O3-03). */
+const COMBINING = /[̀-ͯ]/g
+
+export function isBlankPassword(value: string): boolean { return ONLY_BLANK.test(value) }
+function trimBlank(value: string): string { return value.replace(EDGE_BLANK, '') }
+
 /** Sem caixa e sem acento (D-EA16) — a forma em que a senha e a parte local do e-mail são comparadas. */
 export function foldForComparison(value: string): string {
   let out = ''
   for (const ch of value.toLowerCase()) out += ACCENT_FOLD[ch] ?? ch
-  return out
+  return out.replace(COMBINING, '')
+}
+
+/** A chave de comparação com a lista de comuns (A-EA9 — sem caixa; as marcas combinantes saem pelo mesmo motivo de cima). */
+export function commonListKey(value: string): string {
+  return value.toLowerCase().replace(COMBINING, '')
 }
 
 /** A parte local (antes do 1º `@`) do e-mail de login, já dobrada; vazia quando não há `@` ou o valor não é texto. */
 export function emailLocalPart(email: string | null | undefined): string {
   if (typeof email !== 'string') return ''
   const at = email.indexOf('@')
-  return at > 0 ? foldForComparison(email.slice(0, at).trim()) : ''
+  return at > 0 ? foldForComparison(trimBlank(email.slice(0, at))) : ''
 }
 
 // ---------------------------------------------------------------- lista de senhas comuns (A-EA9)
@@ -75,11 +94,18 @@ export const COMMON_PASSWORDS_FILE = process.env.COMMON_PASSWORDS_FILE
 /** Lê o arquivo: uma senha por linha, já em minúsculas; linhas vazias e as que começam por `#` (cabeçalho de origem/licença) ignoradas. */
 export function parseCommonPasswords(text: string): Set<string> {
   const set = new Set<string>()
-  for (const raw of text.split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
+    const raw = line.replace(/^﻿/, '')                // BOM no início do arquivo (ADV-O3-06): a 1ª entrada não se perde
     if (!raw || raw.startsWith('#')) continue
-    set.add(raw.toLowerCase())
+    set.add(commonListKey(raw))
   }
   return set
+}
+
+/** A contagem que o gerador grava no cabeçalho (`… N entradas.`) — o boot confere contra o que foi lido (gate socrático, LOW 3). */
+export function declaredCommonCount(text: string): number | null {
+  const m = /^# .* (\d+) entradas\.\s*$/m.exec(text)
+  return m ? Number(m[1]) : null
 }
 
 let commonCache: Set<string> | null = null
@@ -90,16 +116,23 @@ export function commonPasswords(): Set<string> {
   return commonCache
 }
 
-/** Boot (A-EA9): sem o arquivo, ou com ele vazio, o setes-api NÃO sobe — a política sem a lista aceitaria "12345678". */
+/**
+ * Boot (A-EA9): sem o arquivo, com ele vazio, ou com MENOS entradas do que o cabeçalho do gerador declara (arquivo truncado ou trocado —
+ * gate socrático da Onda 3, LOW 3), o setes-api NÃO sobe — a política sem a lista aceitaria "12345678".
+ */
 export function assertPasswordPolicyReady(): number {
-  let size: number
+  const where = `a lista de senhas comuns ${COMMON_PASSWORDS_FILE}`
+  let text: string
   try {
-    size = commonPasswords().size
+    text = fs.readFileSync(COMMON_PASSWORDS_FILE, 'utf-8')
   } catch (err) {
-    throw new Error(`Política de senha (D-EA5/A-EA9): a lista de senhas comuns ${COMMON_PASSWORDS_FILE} não pôde ser lida — `
-      + `${(err as Error).message}`)
+    throw new Error(`Política de senha (D-EA5/A-EA9): ${where} não pôde ser lida — ${(err as Error).message}`)
   }
-  if (size === 0) throw new Error(`Política de senha (D-EA5/A-EA9): a lista de senhas comuns ${COMMON_PASSWORDS_FILE} está vazia`)
+  const size = commonPasswords().size
+  if (size === 0) throw new Error(`Política de senha (D-EA5/A-EA9): ${where} está vazia`)
+  const declared = declaredCommonCount(text)
+  if (declared === null) throw new Error(`Política de senha (D-EA5/A-EA9): ${where} não tem o cabeçalho do gerador (scripts/gerar-common-passwords.ts)`)
+  if (declared !== size) throw new Error(`Política de senha (D-EA5/A-EA9): ${where} declara ${declared} entradas e tem ${size}`)
   return size
 }
 
@@ -112,10 +145,10 @@ export function assertPasswordPolicyReady(): number {
  */
 export function passwordProblems(password: string, loginEmail?: string | null, common: Set<string> = commonPasswords()): PasswordProblem[] {
   const problems: PasswordProblem[] = []
-  if (password.trim().length === 0) return ['blank']
+  if (isBlankPassword(password)) return ['blank']
   if (password.length < PASSWORD_MIN_LENGTH) problems.push('too-short')
   if (password.length > PASSWORD_MAX_LENGTH) problems.push('too-long')
-  if (common.has(password.toLowerCase())) problems.push('common')
+  if (common.has(commonListKey(password))) problems.push('common')
   const local = emailLocalPart(loginEmail)
   if (local.length >= EMAIL_LOCAL_MIN_LENGTH && foldForComparison(password).includes(local)) problems.push('contains-email')
   return problems
@@ -136,8 +169,8 @@ export function refinePassword<T extends Record<string, unknown>>(passwordKey: k
   return (value: T, ctx: z.RefinementCtx) => {
     const password = value[passwordKey]
     if (typeof password !== 'string') return
-    const first = passwordProblems(password, value[emailKey] as string | undefined)
-      .find(p => p === 'common' || p === 'contains-email')
-    if (first) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [passwordKey], message: PASSWORD_PROBLEM_MESSAGES[first] })
+    // UMA pendência por campo (ADV-O3-08): se a forma já falhou, o `newPasswordSchema` já falou — o objeto não soma a 2ª
+    const first = passwordProblems(password, value[emailKey] as string | undefined)[0]
+    if (first === 'common' || first === 'contains-email') ctx.addIssue({ code: z.ZodIssueCode.custom, path: [passwordKey], message: PASSWORD_PROBLEM_MESSAGES[first] })
   }
 }

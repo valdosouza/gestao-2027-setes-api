@@ -89,6 +89,34 @@ describe('A-EA9/D-EA36 — a lista de senhas comuns', () => {
     expect(assertPasswordPolicyReady()).toBe(commonPasswords().size)
   })
 
+  it('o boot recusa a lista truncada (menos entradas que o cabeçalho declara) e a lista sem o cabeçalho do gerador (gate socrático, LOW 3)', () => {
+    const tmp = (name: string, body: string) => {
+      const f = path.join(require('os').tmpdir(), `${name}-${process.pid}.txt`)
+      fs.writeFileSync(f, body)
+      return f
+    }
+    for (const [file, msg] of [
+      [tmp('truncada', '# Filtro: x. 2231 entradas.\n12345678\n'), /declara 2231 entradas e tem 1/],
+      [tmp('sem-cabecalho', '12345678\nsenha123\n'), /não tem o cabeçalho do gerador/],
+    ] as const) {
+      jest.isolateModules(() => {
+        process.env.COMMON_PASSWORDS_FILE = file
+        try {
+          const peça = require('../shared/auth/password-policy') as typeof import('../shared/auth/password-policy')
+          expect(() => peça.assertPasswordPolicyReady()).toThrow(msg)
+        } finally { delete process.env.COMMON_PASSWORDS_FILE; fs.unlinkSync(file) }
+      })
+    }
+  })
+
+  it('a licença MIT vai INTEIRA nas duas cópias (gate socrático, LOW 7)', () => {
+    const text = fs.readFileSync(COMMON_PASSWORDS_FILE, 'utf-8')
+    expect(text).toMatch(/Copyright \(c\) 2018 Daniel Miessler/)
+    expect(text).toMatch(/The above copyright notice and this permission notice shall be included in all/)
+    const dartFile = path.resolve(__dirname, '..', '..', '..', 'setes-app', 'packages', 'setes_validators', 'lib', 'src', 'common_passwords.g.dart')
+    if (fs.existsSync(dartFile)) expect(fs.readFileSync(dartFile, 'utf-8')).toMatch(/The above copyright notice and this permission notice shall be included in all/)
+  })
+
   it('a cópia do app é a mesma lista (A-EA9 — conferida também do lado Dart, entrada por entrada)', () => {
     const dartFile = path.resolve(__dirname, '..', '..', '..', 'setes-app', 'packages', 'setes_validators', 'lib', 'src', 'common_passwords.g.dart')
     if (!fs.existsSync(dartFile)) return   // sem o setes-app ao lado; o lado Dart confere de qualquer forma
