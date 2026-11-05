@@ -93,7 +93,7 @@ describe('A-EA9/D-EA36 — a lista de senhas comuns', () => {
     const dartFile = path.resolve(__dirname, '..', '..', '..', 'setes-app', 'packages', 'setes_validators', 'lib', 'src', 'common_passwords.g.dart')
     if (!fs.existsSync(dartFile)) return   // sem o setes-app ao lado; o lado Dart confere de qualquer forma
     const dart = fs.readFileSync(dartFile, 'utf-8')
-    const fromDart = [...dart.matchAll(/^ {2}r?(['"])(.*)\1,$/gm)].map(m => m[2])
+    const fromDart = [...dart.matchAll(/^ {2}r?(['"])(.*)\1,\r?$/gm)   /* o checkout no Windows pode trazer CRLF */].map(m => m[2])
     expect(createHash('sha256').update(fromDart.join('\n')).digest('hex'))
       .toBe(createHash('sha256').update([...commonPasswords()].join('\n')).digest('hex'))
   })
