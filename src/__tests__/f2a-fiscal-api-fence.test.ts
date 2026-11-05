@@ -46,8 +46,11 @@ describe('cerca F2a — o setes-api só importa `fiscal-api/reading`, `fiscal-ap
     }
     expect(bad).toEqual([])
   })
-  it('a dependência existe e aponta para a biblioteca irmã', () => {
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'))
-    expect(pkg.dependencies['fiscal-api']).toBe('file:../fiscal-api')
+  it('a dependência existe e aponta para o PACOTE versionado do núcleo, guardado no repositório (D-F221/D-F222 — nunca a pasta irmã)', () => {
+    const root = path.join(__dirname, '..', '..')
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+    const spec = String(pkg.dependencies['fiscal-api'])
+    expect(spec).toMatch(/^file:vendor\/fiscal-api-\d+\.\d+\.\d+\.tgz$/)
+    expect(fs.existsSync(path.join(root, spec.slice('file:'.length)))).toBe(true)
   })
 })

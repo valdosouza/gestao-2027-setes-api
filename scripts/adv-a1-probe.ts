@@ -178,10 +178,11 @@ async function viewsExperiment(conn: mysql.PoolConnection): Promise<void> {
     check('(a) chave com espaço no fim é tratada como a MESMA decisão nas 3 leituras (exata)', vPad !== 'ok' && rPad.length === 0 && gPad.length === 0,
       `accessVerdict='${vPad}' (PAD SPACE do utf8mb4_bin casa 'orders'), reachableKeys=${JSON.stringify(rPad)}`)
 
-    // a leitura da SESSÃO da biblioteca usa `setes_central.vw_user_link` fixo — a sonda roda o MESMO texto (extraído do fonte) no central descartável
-    const libSrc = fs.readFileSync(path.resolve(__dirname, '../../fiscal-api/src/access/access.ts'), 'utf8')
+    // a leitura da SESSÃO da biblioteca usa `setes_central.vw_user_link` fixo — a sonda roda o MESMO texto (extraído do PACOTE instalado — D-F222:
+    // o que vai para produção; o `dist` mantém a template string) no central descartável
+    const libSrc = fs.readFileSync(path.join(path.dirname(require.resolve('fiscal-api/package.json')), 'dist', 'access', 'access.js'), 'utf8')
     const sm = libSrc.match(/`(SELECT profile, vendor FROM setes_central\.vw_user_link[\s\S]*?LIMIT 2)`/)
-    if (!sm) throw new Error('SQL da sessão não encontrado no fonte da biblioteca')
+    if (!sm) throw new Error('SQL da sessão não encontrado no pacote da biblioteca')
     const sessionSql = sm[1].replace('setes_central.', `\`${V_CENTRAL}\`.`)
     const sessionOf = async (w: { userId: number; institutionId: number; schemaName: string }, iat: number) => {
       const [rows] = await pool.query<any[]>(sessionSql, [w.userId, w.institutionId, w.schemaName, iatAsUtcDatetime(iat)])
