@@ -22,11 +22,13 @@ export const PASSWORD_MAX_LENGTH = 100
 /** D-EA16: a parte local do e-mail só é julgada com 4+ caracteres (já sem caixa e sem acento). */
 export const EMAIL_LOCAL_MIN_LENGTH = 4
 
-export type PasswordProblem = 'blank' | 'too-short' | 'too-long' | 'common' | 'contains-email' | 'same-as-current'
+export type PasswordProblem =
+  'blank' | 'invalid-char' | 'too-short' | 'too-long' | 'common' | 'contains-email' | 'same-as-current'
 
 /** Uma mensagem por problema (Framework de Mensagens — uma pendência por vez). O espelho Dart repete o MESMO texto (o vetor confere). */
 export const PASSWORD_PROBLEM_MESSAGES: Record<PasswordProblem, string> = {
   'blank':           'A senha não pode ser só espaços',
+  'invalid-char':    'A senha tem um caractere que não pode ser usado',
   'too-short':       `A senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`,
   'too-long':        `A senha deve ter no máximo ${PASSWORD_MAX_LENGTH} caracteres`,
   'common':          'Esta senha é muito comum — escolha outra',
@@ -63,6 +65,31 @@ const EDGE_BLANK = new RegExp(`^[${BLANK}]+|[${BLANK}]+$`, 'g')
 const COMBINING = /[̀-ͯ]/g
 
 export function isBlankPassword(value: string): boolean { return ONLY_BLANK.test(value) }
+
+/**
+ * D-EA39 (Valdo, "(a) Recusar"): caracteres que a pessoa não vê nem consegue redigitar — controle (C0, DEL, C1 — inclui tab, quebra de
+ * linha e U+0085), hífen suave, marcas de direção do texto, espaços de largura zero, U+FEFF — e meio emoji (substituto UTF-16 sem o par:
+ * o MD5 de hoje grava todos como U+FFFD, então senhas diferentes teriam o mesmo hash). A lista é por UNIDADE UTF-16, igual no espelho Dart.
+ * Emoji inteiro, acento e os espaços visíveis seguem valendo.
+ */
+const FORBIDDEN_UNITS: [number, number][] = [
+  [0x0000, 0x001f], [0x007f, 0x009f], [0x00ad, 0x00ad], [0x061c, 0x061c], [0x180e, 0x180e],
+  [0x200b, 0x200f], [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb],
+]
+export function hasForbiddenChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const u = value.charCodeAt(i)
+    if (u >= 0xd800 && u <= 0xdbff) {                       // 1ª metade do par: a 2ª tem de vir logo depois
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : -1
+      if (next < 0xdc00 || next > 0xdfff) return true
+      i++
+      continue
+    }
+    if (u >= 0xdc00 && u <= 0xdfff) return true             // 2ª metade sem a 1ª
+    if (FORBIDDEN_UNITS.some(([a, b]) => u >= a && u <= b)) return true
+  }
+  return false
+}
 function trimBlank(value: string): string { return value.replace(EDGE_BLANK, '') }
 
 /** Sem caixa e sem acento (D-EA16) — a forma em que a senha e a parte local do e-mail são comparadas. */
@@ -146,6 +173,7 @@ export function assertPasswordPolicyReady(): number {
 export function passwordProblems(password: string, loginEmail?: string | null, common: Set<string> = commonPasswords()): PasswordProblem[] {
   const problems: PasswordProblem[] = []
   if (isBlankPassword(password)) return ['blank']
+  if (hasForbiddenChar(password)) problems.push('invalid-char')
   if (password.length < PASSWORD_MIN_LENGTH) problems.push('too-short')
   if (password.length > PASSWORD_MAX_LENGTH) problems.push('too-long')
   // D-EA38 (Valdo, "(a) Ignorar as pontas"): a lista compara a senha SEM o branco das pontas (" 12345678" e "password " são comuns);
@@ -158,7 +186,7 @@ export function passwordProblems(password: string, loginEmail?: string | null, c
 
 /** A forma do campo sozinho (tamanho e só espaços) — a peça Zod de quem ainda não conhece o e-mail. O resto vem pelo `refinePassword`. */
 export const newPasswordSchema = z.string().superRefine((value, ctx) => {
-  const first = passwordProblems(value, null, new Set()).find(p => p === 'blank' || p === 'too-short' || p === 'too-long')
+  const first = passwordProblems(value, null, new Set()).find(p => p === 'blank' || p === 'invalid-char' || p === 'too-short' || p === 'too-long')
   if (first) ctx.addIssue({ code: z.ZodIssueCode.custom, message: PASSWORD_PROBLEM_MESSAGES[first] })
 })
 

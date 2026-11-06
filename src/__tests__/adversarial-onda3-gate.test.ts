@@ -59,10 +59,12 @@ describe('Onda 3 — ACHADOS (it.failing = comportamento correto ainda não cump
     expect(passwordProblems('ilda2026', 'ılda@x.com')).toContain('contains-email')
   })
 
-  it.failing('[ACHADO LOW] pares substitutos ÓRFÃOS: 8 surrogates soltos passam na política e o MD5 os iguala a U+FFFD — senhas "diferentes" com o mesmo hash', () => {
+  it('[CORRIGIDO·LOW — D-EA39] pares substitutos ÓRFÃOS: a política recusa (invalid-char) antes de o MD5 os igualar a U+FFFD', () => {
     const a = '\uD800'.repeat(8), b = '\uDC01'.repeat(8)
-    expect(passwordProblems(a)).toEqual([])                // a política aceita (8 unidades, nada em branco)
-    expect(md5Password(a)).not.toBe(md5Password(b))        // FALHA: Buffer utf-8 troca todo surrogate órfão por U+FFFD
+    expect(passwordProblems(a)).toContain('invalid-char')
+    expect(passwordProblems(b)).toContain('invalid-char')
+    // conhecimento negativo (segue valendo até a Onda 4 trocar o MD5): o Buffer utf-8 troca todo substituto órfão por U+FFFD
+    expect(md5Password(a)).toBe(md5Password(b))
   })
 
   it('[CORRIGIDO·LOW] lista com BOM: `parseCommonPasswords` não tira o U+FEFF — a 1ª entrada de um arquivo sem cabeçalho se perde', () => {
