@@ -51,6 +51,7 @@ const ACCENT_FOLD: Record<string, string> = {
   'ó': 'o', 'ò': 'o', 'ô': 'o', 'õ': 'o', 'ö': 'o',
   'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
   'ç': 'c', 'ñ': 'n', 'ý': 'y', 'ÿ': 'y',
+  'ς': 'σ',   // sigma final: o toLowerCase do JS escreve Σ como ς no fim de palavra; o Dart VM não (gate do delta da Onda 3)
 }
 
 /**
@@ -74,7 +75,7 @@ export function isBlankPassword(value: string): boolean { return ONLY_BLANK.test
  */
 const FORBIDDEN_UNITS: [number, number][] = [
   [0x0000, 0x001f], [0x007f, 0x009f], [0x00ad, 0x00ad], [0x061c, 0x061c], [0x180e, 0x180e],
-  [0x200b, 0x200f], [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb],
+  [0x200b, 0x200f], [0x2028, 0x2029], [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb],
 ]
 export function hasForbiddenChar(value: string): boolean {
   for (let i = 0; i < value.length; i++) {

@@ -193,3 +193,65 @@ describe('Onda 3 — RESISTIU', () => {
     }
   })
 })
+
+// ======================================================================================================== delta pós-gate
+// Gate do DELTA (3a4cdb5..onda3 no setes-api · e7119c6..onda3 no setes-app): BLANK/EDGE_BLANK explícitos, marcas combinantes, BOM e
+// contagem da lista, uma pendência por campo, D-EA37/D-EA38/D-EA39. A concordância TS × Dart foi conferida FORA do jest (script no
+// scratchpad: as 65.536 unidades UTF-16 em 5 formas de senha — branco, invalid-char e a ORDEM dos problemas iguais em todas).
+describe('Onda 3 — delta pós-gate', () => {
+  it('[CORRIGIDO·LOW] sigma final: o toLowerCase do JS escreve "Σ" como "ς" no fim de palavra — a senha que CONTÉM a parte local do e-mail passa', () => {
+    // e-mail gravado "αβγσ@…", senha "ΑΒΓΣ1234x": em minúsculas a senha vira "αβγς1234x" (Σ antes de não-letra = ς) e não contém "αβγσ".
+    // O Dart VM (Android) não aplica a regra do sigma final e RECUSA (contains-email) — as duas pontas divergem (e o app web, que é JS, concorda com a API).
+    expect(passwordProblems('ΑΒΓΣ1234x', 'αβγσ@x.com')).toContain('contains-email')
+  })
+
+  it('[CORRIGIDO·LOW — D-EA39] U+2028/U+2029 (separadores de linha/parágrafo) ficam fora do invalid-char — quebra de linha que a pessoa não redigita', () => {
+    // a D-EA39 diz "controle … inclui tab, quebra de linha"; a lista explícita não traz os separadores Unicode (nem seletores de variação
+    // U+FE00–FE0F e as TAGs U+E0000–E007F, invisíveis). Mesmo comportamento no espelho Dart — é decisão de lista, não divergência.
+    expect(passwordProblems('kq7# mv2x')).toContain('invalid-char')
+  })
+
+  it('[RESISTIU] branco × invalid-char: só tab/NEL/BOM = "blank" (uma pendência); tab no meio ou na ponta = "invalid-char" primeiro', () => {
+    expect(passwordProblems('\t'.repeat(8))).toEqual(['blank'])
+    expect(passwordProblems('﻿'.repeat(8))).toEqual(['blank'])
+    expect(passwordProblems('kq7#\tmv2x')).toEqual(['invalid-char'])
+    expect(passwordProblems('\tpassword')).toEqual(['invalid-char', 'common'])
+    expect(passwordProblems('​'.repeat(8))).toEqual(['invalid-char'])
+    expect(passwordProblems('kq‮')[0]).toBe('invalid-char')
+  })
+
+  it('[RESISTIU] D-EA38: espaço visível nas pontas não esconde a senha comum; espaço no MEIO não é aparado', () => {
+    expect(passwordProblems(' password　')).toEqual(['common'])
+    expect(passwordProblems('pass word')).toEqual([])
+  })
+
+  it('[RESISTIU] uma pendência por campo no DTO: invalid-char + comum = só a 1ª (invalid-char) no campo password', () => {
+    const r = userCreateDto.safeParse({ nameCompany: 'a', nickTrade: 'a', email: 'x@y.com', password: 'senha123\u0085' })
+    const onPassword = issuesOf(r).filter(([p]) => p === 'password')
+    expect(onPassword).toHaveLength(1)
+    expect(onPassword[0][1]).toBe('A senha tem um caractere que não pode ser usado')
+  })
+
+  it('[RESISTIU] contagem do boot: CRLF e BOM+CRLF batem; só-CR, cabeçalho alterado, contagem errada e arquivo cortado não batem', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { declaredCommonCount } = require('../shared/auth/password-policy') as typeof import('../shared/auth/password-policy')
+    const orig = fs.readFileSync(path.resolve(__dirname, '..', '..', 'data', 'common-passwords.txt'), 'utf-8')
+    const fits = (text: string) => declaredCommonCount(text) === parseCommonPasswords(text).size && parseCommonPasswords(text).size > 0
+    expect(fits(orig)).toBe(true)
+    expect(fits(orig.replace(/\n/g, '\r\n'))).toBe(true)
+    expect(fits('﻿' + orig.replace(/\n/g, '\r\n'))).toBe(true)
+    expect(fits(orig.replace(/\n/g, '\r'))).toBe(false)
+    expect(fits(orig.replace(/ (\d+) entradas\./, ' $1 entradas'))).toBe(false)
+    expect(fits(orig.replace(/ (\d+) entradas\./, (_m, n) => ` ${Number(n) + 1} entradas.`))).toBe(false)
+    expect(fits(orig.slice(0, orig.length - 40))).toBe(false)
+    expect(fits('# 1 entradas.\n' + orig)).toBe(true)   // linha falsa sem o texto do gerador antes do número não captura
+  })
+
+  it('[RESISTIU] o sorteio da senha do Super nunca devolve senha fora da política (e é texto ASCII sem branco)', () => {
+    for (let i = 0; i < 200; i++) {
+      const s = generateInitialPassword()
+      expect(passwordProblems(s)).toEqual([])
+      expect(/^[\x21-\x7e]+$/.test(s)).toBe(true)
+    }
+  })
+})
