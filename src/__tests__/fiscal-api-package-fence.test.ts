@@ -36,7 +36,7 @@ function tgzFiles(file: string): Map<string, Buffer> {
 
 describe('núcleo fiscal pelo pacote versionado — vendor = lock = instalado (D-F221/D-F222, achado 1 do gate socrático)', () => {
   // D-F226: número de RASCUNHO por iteração de frente (`1.1.0-ne3.1`) — arquivo novo a cada tentativa; nunca no `main`
-  const m = /^file:(vendor\/fiscal-api-(\d+\.\d+\.\d+(?:-[0-9a-z]+(?:\.[0-9a-z]+)*)?)\.tgz)$/.exec(spec)
+  const m = /^file:(vendor\/fiscal-api-((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[a-z][0-9a-z]*\.[1-9]\d*)?)\.tgz)$/.exec(spec)
 
   it('a dependência é o arquivo do pacote em vendor/, com versão marcada no nome (nunca a pasta irmã)', () => {
     expect(m).not.toBeNull()
@@ -44,9 +44,15 @@ describe('núcleo fiscal pelo pacote versionado — vendor = lock = instalado (D
   })
 
   it('[D-F226] no `main` o núcleo é uma versão FINAL — número de rascunho (`X.Y.Z-frente.N`) só em branch de frente', () => {
-    let branch = ''
-    try { branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim() } catch { /* sem git: nada a conferir */ }
-    if (branch === 'main') expect(m![2]).toMatch(/^\d+\.\d+\.\d+$/)
+    const git = (...a: string[]) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    let onMain = false
+    try {
+      const branch = git('rev-parse', '--abbrev-ref', 'HEAD')
+      if (branch === 'main') onMain = true
+      // HEAD destacado (gate adversarial do delta, LOW 3): o commit que já está no `main` também é "o main"
+      else if (branch === 'HEAD') { try { git('merge-base', '--is-ancestor', 'HEAD', 'main'); onMain = true } catch { /* fora do main */ } }
+    } catch { /* sem git: nada a conferir aqui — o boot registra a versão do núcleo */ }
+    if (onMain) expect(m![2]).toMatch(/^\d+\.\d+\.\d+$/)
   })
 
   it('o lock aponta para o MESMO arquivo e guarda a integridade DELE (sha512 do vendor = integrity do lock)', () => {
@@ -55,6 +61,28 @@ describe('núcleo fiscal pelo pacote versionado — vendor = lock = instalado (D
     const sha = 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(path.join(ROOT, m![1]))).digest('base64')
     expect(entry?.integrity).toBe(sha)
     expect(entry?.version).toBe(m![2])
+  })
+
+  it('o `fiscal-api` que ESTE processo resolve é o pacote instalado; o tsconfig EFETIVO (com `extends`) não o mapeia; nada de jest.config.* (gate adversarial do delta, M1)', () => {
+    const realModules = fs.realpathSync(path.join(ROOT, 'node_modules')) + path.sep
+    expect(fs.realpathSync(require.resolve('fiscal-api')).startsWith(realModules)).toBe(true)
+    const ts = require('typescript') as typeof import('typescript')
+    const host = { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => { /* tsconfig ilegível: o compilador já recusa */ } }
+    const parsed = ts.getParsedCommandLineOfConfigFile(path.join(ROOT, 'tsconfig.json'), {}, host)
+    expect(JSON.stringify(parsed?.options.paths ?? {})).not.toMatch(/fiscal-api/)
+    expect(fs.readdirSync(ROOT).filter(f => /^jest\.config\./.test(f))).toEqual([])
+  })
+
+  it('[gate adversarial do delta, LOW 4] o arquivo de uma versão NUNCA é regravado: o vendor/ é o MESMO blob do commit que o acrescentou', () => {
+    const rel = m![1]
+    let added = ''
+    try {
+      added = execFileSync('git', ['log', '--diff-filter=A', '--format=%H', '--', rel], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n').pop() ?? ''
+    } catch { /* sem git */ }
+    if (!added) return                                                          // arquivo ainda não commitado (iteração de frente) ou sem git
+    const blobThen = execFileSync('git', ['rev-parse', `${added}:${rel}`], { cwd: ROOT, encoding: 'utf8' }).trim()
+    const blobNow = execFileSync('git', ['hash-object', rel], { cwd: ROOT, encoding: 'utf8' }).trim()
+    expect(blobNow).toBe(blobThen)
   })
 
   it('nenhum atalho para a pasta irmã volta: nem `paths` no tsconfig, nem `moduleNameMapper` no jest para `fiscal-api` (D-F222)', () => {
@@ -67,7 +95,7 @@ describe('núcleo fiscal pelo pacote versionado — vendor = lock = instalado (D
   })
 
   it('o instalado em node_modules É o conteúdo do arquivo — nenhum arquivo a mais, a menos ou diferente (pega o cache do npm)', () => {
-    expect(fs.lstatSync(installedDir).isSymbolicLink()).toBe(false)              // junção/link = a pasta irmã de volta
+    expect(installedDir.startsWith(fs.realpathSync(path.join(ROOT, 'node_modules')) + path.sep)).toBe(true)   // junção/link para fora = a pasta irmã de volta
     expect(JSON.parse(fs.readFileSync(path.join(installedDir, 'package.json'), 'utf8')).version).toBe(m![2])
     const packed = tgzFiles(path.join(ROOT, m![1]))
     const installed = new Map<string, Buffer>()
