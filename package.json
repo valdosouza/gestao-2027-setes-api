@@ -22,7 +22,7 @@
     "fflate": "^0.8.3",
     "fiscal-api": "file:vendor/fiscal-api-1.0.0.tgz",
     "jsonwebtoken": "^9.0.2",
-    "mysql2": "^3.6.5",
+    "mysql2": "3.24.5",
     "nodemailer": "^6.9.13",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1",

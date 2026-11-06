@@ -93,8 +93,8 @@ export const NFSE_PRIMITIVES: readonly Primitive[] = [
   { name: 'grantedKeys',            key: { arg: 2 },                        priv: { arg: 3 } },
 ]
 export const NFSE_IMPL = ['src/modules/guards.ts']
-/** O vocabulário dos verbos do núcleo (`PRIVILEGE_NAMES`) — a cerca o confere contra `PRIVILEGE_ID` (D-PV53). */
-export const CORE_ACCESS_FILE = 'src/access/access.ts'
+// D-F228: o vocabulário dos verbos do núcleo (`PRIVILEGE_NAMES`) é lido do pacote INSTALADO (o valor que roda — `@shared/access`), não do
+// fonte da pasta irmã; a cerca o confere contra `PRIVILEGE_ID` (D-PV53).
 
 export const APP_ROUTES_FILE = 'apps/web/lib/app/modules/home/interface_routes.dart'
 export const APP_IMPL = [
@@ -107,11 +107,12 @@ export const APP_IMPL = [
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const SIBLING_ENV: Record<string, string> = {
-  'nfse-api': 'NFSE_API_DIR', 'setes-app': 'SETES_APP_DIR', 'fiscal-api': 'FISCAL_API_DIR', sql: 'SQL_DIR',
+  // D-F228 ("Cada um no seu"): o núcleo `fiscal-api` NÃO é repositório irmão desta cerca — entra só pelo pacote em `vendor/`
+  'nfse-api': 'NFSE_API_DIR', 'setes-app': 'SETES_APP_DIR', sql: 'SQL_DIR',
 }
 
 /**
- * O repositório irmão: a variável de ambiente (`NFSE_API_DIR`, `SETES_APP_DIR`, `FISCAL_API_DIR`, `SQL_DIR`) ou o `<nome>` ao lado do
+ * O repositório irmão: a variável de ambiente (`NFSE_API_DIR`, `SETES_APP_DIR`, `SQL_DIR`) ou o `<nome>` ao lado do
  * ancestral MAIS PRÓXIMO que o tenha (worktree aninhada `D:\Gestao2027\<frente>\setes-api` acha `D:\Gestao2027\<frente>\setes-app` se
  * existir, senão o da raiz). `null` = não achado — a cerca REPROVA (cerca que pula em silêncio não cerca).
  */

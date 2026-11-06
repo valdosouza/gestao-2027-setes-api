@@ -15,13 +15,13 @@ import {
   pairKey, PrivilegeConsumer, consumedPrivileges, routerConsumedPrivileges, absentMarkHolds, privilegeNameById,
 } from '../shared/auth/privilege-catalog'
 import { APP_INTERFACE_ROUTE_KEYS } from '../shared/auth/app-interface-routes'
-import { PRIVILEGE_NAME_BY_ID } from '../shared/access'
+import { PRIVILEGE_NAME_BY_ID, PRIVILEGE_NAMES } from '../shared/access'
 import { CATALOG_PAIRS_SQL, SCREEN_INTERFACES_SQL, CONFIGURABLE_INTERFACES_SQL } from '../shared/auth/assert-privilege-catalog'
 import {
   scanTs, repoTsSources, findSiblingRepo, orderInterfaceKeyDomain, appModuleInterfaces, scanDartFile, appDartSources, grantSqlCounts, identifierUses,
   appImportGraph, sharedFileInterfaces, exportedNames, privilegeConstants, constStringArray, expandSharedSite, SharedConsumerEntry,
   API_PRIMITIVES, API_IMPL, API_IMPL_REASONS, API_DECLARATIONS, API_RESOLVERS, RESOLVER_FILE, NFSE_PRIMITIVES, NFSE_IMPL, APP_ROUTES_FILE,
-  CORE_ACCESS_FILE, TS_PROBES, LOOSE_PROBES, DART_PROBES, DART_PROBE_MODULES, DART_PROBE_CONSTANTS, dartStringConstants, FoundPair, FenceScan,
+  TS_PROBES, LOOSE_PROBES, DART_PROBES, DART_PROBE_MODULES, DART_PROBE_CONSTANTS, dartStringConstants, FoundPair, FenceScan,
 } from '../test-setup/privilege-fence'
 
 void router                                                     // montar o gateway registra as guardas (a tabela da D-PV14)
@@ -29,8 +29,11 @@ void router                                                     // montar o gate
 const ROOT = path.resolve(__dirname, '..', '..')
 const NFSE = findSiblingRepo(ROOT, 'nfse-api', 'src/modules/guards.ts')
 const APP = findSiblingRepo(ROOT, 'setes-app', APP_ROUTES_FILE)
-/** O núcleo fiscal: o vocabulário dos verbos (`PRIVILEGE_NAMES`) e o domínio `erp.orderInterface` que as guardas da nfse-api usam. */
-const CORE = findSiblingRepo(ROOT, 'fiscal-api', 'src/erp/facts.ts')
+/**
+ * O núcleo fiscal: o vocabulário dos verbos (`PRIVILEGE_NAMES`) e o domínio `erp.orderInterface` que as guardas da nfse-api usam. D-F228
+ * ("Cada um no seu"): o PACOTE instalado (`vendor/` → `node_modules/fiscal-api`) — o que roda e o que o compilador lê; nunca a pasta irmã.
+ */
+const CORE = path.dirname(require.resolve('fiscal-api/package.json'))
 /** O repositório `sql`: o script 70 (as views centrais) e o seed 68 (a REGRA do CONFIGURAR). */
 const SQL = findSiblingRepo(ROOT, 'sql', '70_user_access_central_views.sql')
 
@@ -207,8 +210,9 @@ function scanAll(): { pairs: FoundPair[]; api: FenceScan; nfse: FenceScan; app: 
 }
 
 describe('D-PV9/D-PV14 — cerca: todo par operado pelo código está no conjunto (lista à mão ∪ tabela do roteador)', () => {
-  it('os repositórios irmãos foram achados (cerca que pula não cerca — defina NFSE_API_DIR / SETES_APP_DIR / FISCAL_API_DIR / SQL_DIR)', () => {
-    expect({ nfse: NFSE !== null, app: APP !== null, core: CORE !== null, sql: SQL !== null }).toEqual({ nfse: true, app: true, core: true, sql: true })
+  it('os repositórios irmãos foram achados (cerca que pula não cerca — defina NFSE_API_DIR / SETES_APP_DIR / SQL_DIR) e o núcleo é o pacote instalado', () => {
+    expect({ nfse: NFSE !== null, app: APP !== null, core: fs.existsSync(path.join(CORE, 'dist', 'erp', 'facts.d.ts')), sql: SQL !== null })
+      .toEqual({ nfse: true, app: true, core: true, sql: true })
   })
 
   it('o gateway montou a tabela da guarda por roteador e cada módulo guardado tem o <m>.routes.ts (onde o marcador é lido)', () => {
@@ -325,11 +329,12 @@ describe('D-PV9/D-PV51 — a lista é coerente com o código que ela descreve', 
     expect(code).toMatch(/resolveInterfaceKey\(interfaceId\)/)
   })
 
-  it('D-PV53: o núcleo fiscal NÃO guarda número de privilégio; o vocabulário dele = os nomes de PRIVILEGE_ID; o domínio do ramo é o mesmo', () => {
-    const facts = fs.readFileSync(path.join(CORE!, 'src', 'erp', 'facts.ts'), 'utf8')
-    expect(privilegeConstants(facts)).toEqual({})
-    const names = constStringArray(fs.readFileSync(path.join(CORE!, CORE_ACCESS_FILE), 'utf8'), 'PRIVILEGE_NAMES')
-    expect([...(names ?? [])].sort()).toEqual(Object.keys(PRIVILEGE_ID).sort())
+  it('D-PV53: o vocabulário do núcleo fiscal = os nomes de PRIVILEGE_ID; o domínio do ramo é o mesmo (o núcleo NÃO guardar número de privilégio é conferido na suíte dele — D-F228)', () => {
+    // D-F228 ("Cada um no seu"): o CONTRATO entre os dois lados é lido do pacote INSTALADO — o vocabulário é o valor que RODA (o adaptador
+    // `@shared/access` o reexporta de `fiscal-api/access`) e o domínio do ramo é o tipo PUBLICADO (`dist/erp/facts.d.ts`, o que o compilador
+    // lê). "Nenhum `PRIVILEGE_<NOME> = <número>` no núcleo" mora em `fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco H
+    const facts = fs.readFileSync(path.join(CORE, 'dist', 'erp', 'facts.d.ts'), 'utf8')
+    expect([...PRIVILEGE_NAMES].sort()).toEqual(Object.keys(PRIVILEGE_ID).sort())
     expect((orderInterfaceKeyDomain(facts) ?? []).sort()).toEqual([...ORDER_BRANCH_INTERFACES].sort())
     expect(fs.existsSync(path.join(NFSE!, 'src', 'modules', 'privileges.ts'))).toBe(false)   // D-PV53: o arquivo local MORREU
   })
