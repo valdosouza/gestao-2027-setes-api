@@ -20,8 +20,10 @@ jest.mock('../shared/db/connection', () => ({ __esModule: true, default: { query
 import { f2aFreezeTriggerSpecs } from '../migrations/f2a-freeze-triggers'
 
 const REPO = path.join(__dirname, '..', '..')
-const CORE = path.resolve(REPO, '..', 'fiscal-api')
-const CORE_ISSUER_SRC = path.join(CORE, 'src', 'establishment', 'establishment.repository.ts')
+// D-F228 ("Cada um no seu"): o núcleo é o PACOTE instalado (`vendor/` → `node_modules/fiscal-api`) — nunca a pasta irmã. O que RODA
+// (a peça que cria a habilitação) vem do `dist` dele; o FONTE do núcleo é conferido na suíte do núcleo
+// (`fiscal-api/src/__tests__/cercas-portadas-dos-consumidores.test.ts`, bloco G)
+const CORE = path.dirname(require.resolve('fiscal-api/package.json'))
 const CORE_ISSUER_DIST = path.join(CORE, 'dist', 'establishment', 'establishment.repository.js')
 const ATO_SRC = path.resolve(REPO, '..', 'nfse-api', 'scripts', 'migrate-from-setes-api.ts')
 // scripts/ fica fora do rootDir do tsc (src) — require com o tipo usado
@@ -62,11 +64,11 @@ function fakeDb(o: { owners: Record<string, number[]>; erpSe: Record<number, 'N'
 // =================================================================================================
 describe('R13-ADV-03 — a premissa da D-F190 ("cutover_at em qualquer linha = o merge da 1ª janela aconteceu")', () => {
   it('[FATO R13-ADV-03 — o fato do núcleo] a habilitação que NASCE pela API fiscal nasce com `cutover_at = NOW()` (D-F39) — para uma institution que o ERP nunca habilitou (lacuna (b) fechada: sem SE no ERP) e para 55/65 (que "nascem virados e não dependem da SE": a réplica da SE NÃO barra a habilitação da NF-e da MESMA institution). Nenhuma dessas linhas depende do merge da F2a na árvore principal', () => {
-    expect([CORE_ISSUER_SRC, fs.existsSync(CORE_ISSUER_SRC)]).toEqual([CORE_ISSUER_SRC, true])   // a cerca cruzada falha ALTO sem o núcleo
-    const src = fs.readFileSync(CORE_ISSUER_SRC, 'utf8')
-    expect(src).toContain("VALUES (?, ?, ?, ?, 0, ?, NOW(), NOW(), 'N', NOW())")
-    expect(src).toContain('habilitação que NASCE pela API fiscal nasce virada (cutover_at = NOW())')
-    expect(src).toContain('55/65 nascem virados e não dependem')
+    // o que RODA: o `dist` do pacote instalado grava `cutover_at` com NOW() (falha ALTO sem o pacote); o texto do FONTE e o porquê
+    // (comentário) são conferidos na suíte do núcleo — D-F228 (`cercas-portadas-dos-consumidores.test.ts`, bloco G)
+    expect([CORE_ISSUER_DIST, fs.existsSync(CORE_ISSUER_DIST)]).toEqual([CORE_ISSUER_DIST, true])
+    const dist = fs.readFileSync(CORE_ISSUER_DIST, 'utf8')
+    expect(dist).toContain("VALUES (?, ?, ?, ?, 0, ?, NOW(), NOW(), 'N', NOW())")
     // e o ATO da nfse-api diz "virada" pela LINHA SE (D-F57 / ADV-R8-08) — uma 55/65 virada NÃO é a virada da SE
     expect(fs.readFileSync(ATO_SRC, 'utf8')).toContain('"já VIRADA" pela LINHA SE (uma 55/65 que nasceu virada não é a virada da SE)')
   })

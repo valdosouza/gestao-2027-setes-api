@@ -251,7 +251,8 @@ describe('1 — D-F130: a porta tipa a falha de LEITURA da voz (503 + ref + alar
     const typed = new HttpError(409, 'x', undefined, 'QUALQUER')
     const e: any = await readServiceVoiceOfLife({ query: jest.fn().mockRejectedValue(typed) }, 1, ORDER, 1).catch(x => x)
     expect([e.statusCode, e.code]).toEqual([503, 'FISCAL_VOICE_UNAVAILABLE'])
-    const reader = fs.readFileSync(path.join(REPO, 'node_modules', 'fiscal-api', 'dist', 'voice', 'family-reader.js'), 'utf8')
+    // D-F228: o `dist` do pacote INSTALADO, achado pelo resolvedor (nunca montando o caminho — `sibling-core-fence.test.ts`)
+    const reader = fs.readFileSync(path.join(path.dirname(require.resolve('fiscal-api/package.json')), 'dist', 'voice', 'family-reader.js'), 'utf8')
     expect(reader).not.toMatch(/HttpError/)
   })
 

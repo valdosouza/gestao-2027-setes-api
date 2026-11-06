@@ -1,6 +1,6 @@
 # Dependências
 node_modules/
-package-lock.json
+# package-lock.json VERSIONADO desde a D-F224 (2026-11-05): o núcleo fiscal entra por pacote com integridade no lock
 yarn.lock
 npm-debug.log*
 yarn-error.log*

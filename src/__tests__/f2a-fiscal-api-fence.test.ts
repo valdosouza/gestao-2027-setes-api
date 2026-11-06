@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 // F2a, etapa A2 (D-NE77 + gate socrático da A2, achado 10 — prompt_apis_fiscais_isoladas.md §22.9): o setes-api depende
-// da biblioteca do núcleo (`file:../fiscal-api`), mas só pode importar a SUPERFÍCIE DE LEITURA `fiscal-api/reading`. O
+// da biblioteca do núcleo (pelo pacote `vendor/fiscal-api-X.Y.Z.tgz` — D-F221), mas só pode importar a SUPERFÍCIE DE LEITURA `fiscal-api/reading`. O
 // `exports` do pacote publica também a raiz (o barrel com o lado de ESCRITA — descritor da família, `withInvoiceTx`, emitente,
 // A1); a cerca do núcleo (`ne1a-superficie.test.ts`) vigia daqui de fora, esta vigia de DENTRO, na suíte do próprio setes-api.
 import fs from 'fs'
@@ -46,8 +46,15 @@ describe('cerca F2a — o setes-api só importa `fiscal-api/reading`, `fiscal-ap
     }
     expect(bad).toEqual([])
   })
-  it('a dependência existe e aponta para a biblioteca irmã', () => {
+  it('a dependência existe e aponta para o PACOTE versionado do núcleo, guardado no repositório (D-F221/D-F222 — nunca a pasta irmã)', () => {
+    const root = path.join(__dirname, '..', '..')
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+    const spec = String(pkg.dependencies['fiscal-api'])
+    expect(spec).toMatch(/^file:vendor\/fiscal-api-\d+\.\d+\.\d+(?:-[0-9a-z]+(?:\.[0-9a-z]+)*)?\.tgz$/)   // rascunho só fora do main (D-F226 — fiscal-api-package-fence)
+    expect(fs.existsSync(path.join(root, spec.slice('file:'.length)))).toBe(true)
+  })
+  it('o driver do banco do ERP é decisão do setes-api: `mysql2` em versão EXATA, nunca faixa (D-F227 — o núcleo não o move pelo dedupe)', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'))
-    expect(pkg.dependencies['fiscal-api']).toBe('file:../fiscal-api')
+    expect(pkg.dependencies['mysql2']).toMatch(/^\d+\.\d+\.\d+$/)
   })
 })
