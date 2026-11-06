@@ -80,7 +80,7 @@ describe('Onda 3 — ACHADOS (it.failing = comportamento correto ainda não cump
       expect(r.status).toBe(400)
     }
     expect(passwordProblems(bodyText({}))).toEqual([])   // o motivo do achado: a coerção sozinha passaria na política
-  })
+  }, 60_000)   // a 1ª carga do app inteiro (require('../app')) passa de 5 s sob carga
 
   it('[CORRIGIDO·LOW] uma pendência por vez (PP1): o DTO devolve DUAS pendências para o campo password ("valdo" + valdo@…)', () => {
     const r = userCreateDto.safeParse({ nameCompany: 'a', nickTrade: 'a', email: 'valdo@setes.com.br', password: 'valdo' })

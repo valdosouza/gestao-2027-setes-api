@@ -745,6 +745,9 @@ async function changePasswordByCode(email: string, code: string, newPassword: st
   }
   if (outcome.verdict === 'changed') return
   if (outcome.verdict === 'same-as-current') {
+    // D-EA37 (Valdo, "(a) Registrar no log"): a recusa não gasta o código nem conta erro (PP5), mas quem tem o código pode testar
+    // palpites da senha atual — cada recusa deixa UMA linha forense (conta + e-mail mascarado; nunca a senha nem o código)
+    logger.warn('Troca de senha recusada: nova senha igual à atual (D-EA37)', { userId: user.id, email: maskEmail(user.loginEmail) })
     const message = PASSWORD_PROBLEM_MESSAGES['same-as-current']
     throw new HttpError(422, message, [{ field: 'newPassword', message }], ErrorCodes.PASSWORD_SAME_AS_CURRENT)
   }
