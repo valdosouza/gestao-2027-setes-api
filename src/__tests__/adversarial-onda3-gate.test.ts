@@ -53,10 +53,13 @@ describe('Onda 3 — ACHADOS (it.failing = comportamento correto ainda não cump
     expect(passwordProblems('minhaSenhaJoão1', 'joao@x.com')).toContain('contains-email')
   })
 
-  it.failing('[ACHADO LOW] troca pelo código julga o e-mail DIGITADO: variante que a colação do banco iguala ao login (ı = i) contorna a regra do e-mail', () => {
+  it('[LIMITE CONHECIDO — D-EA40] troca pelo código julga o e-mail DIGITADO: variante que a colação do banco iguala ao login (ı = i, ß = ss) passa pela regra do e-mail', () => {
     // `findUserByEmail` acha 'ilda@x.com' digitando 'ılda@x.com' (general_ci: ı = i — `normalizeLoginEmail`), mas a dobra da
-    // política não conhece 'ı': o titular grava 'ilda2026'. Mesma família: 'ß' × 's'.
-    expect(passwordProblems('ilda2026', 'ılda@x.com')).toContain('contains-email')
+    // política não conhece 'ı': o titular (que tem o código) grava 'ilda2026'. Valdo (D-EA40, "(a) Limite conhecido"): é o próprio
+    // titular escolhendo senha fraca, não ataque — este teste FIXA a semântica para ninguém "consertar" sem decisão.
+    expect(passwordProblems('ilda2026', 'ılda@x.com')).not.toContain('contains-email')
+    expect(passwordProblems('ilda2026', 'ilda@x.com')).toContain('contains-email')   // com o e-mail igual ao da conta, recusa
+    expect(passwordProblems('strasse-2026', 'straße@x.com')).not.toContain('contains-email')
   })
 
   it('[CORRIGIDO·LOW — D-EA39] pares substitutos ÓRFÃOS: a política recusa (invalid-char) antes de o MD5 os igualar a U+FFFD', () => {
