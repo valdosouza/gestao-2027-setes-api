@@ -148,7 +148,9 @@ export function passwordProblems(password: string, loginEmail?: string | null, c
   if (isBlankPassword(password)) return ['blank']
   if (password.length < PASSWORD_MIN_LENGTH) problems.push('too-short')
   if (password.length > PASSWORD_MAX_LENGTH) problems.push('too-long')
-  if (common.has(commonListKey(password))) problems.push('common')
+  // D-EA38 (Valdo, "(a) Ignorar as pontas"): a lista compara a senha SEM o branco das pontas (" 12345678" e "password " são comuns);
+  // a senha gravada segue como foi digitada
+  if (common.has(commonListKey(trimBlank(password)))) problems.push('common')
   const local = emailLocalPart(loginEmail)
   if (local.length >= EMAIL_LOCAL_MIN_LENGTH && foldForComparison(password).includes(local)) problems.push('contains-email')
   return problems
