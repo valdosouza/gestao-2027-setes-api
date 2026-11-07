@@ -127,6 +127,7 @@ export function setLoginRefusalFloor(ms: number): void { loginRefusalFloorMs = m
 /** D-EA11: o motivo INTERNO da recusa — só ao log, nunca à resposta. */
 export type LoginRefusalReason =
   'senha errada' | 'inexistente' | 'sem credencial' | 'inativo' | 'sem vínculo' | 'bloqueado' | 'contenção' | 'falha interna'
+  | 'rajada'   // D-EA44: falhas gravadas + tentativas em andamento da conta chegaram a 10 — recusada sem calcular
 
 export interface LoginMeta {
   /** IP de quem pediu (D-EA11; até o `trust proxy` da Onda 4 do deploy, atrás de proxy é o do PROXY — D-RS2) */
@@ -238,7 +239,29 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
     throw refuseLogin(email, meta, 'falha interna', user.id)
   }
   if (failures >= LOGIN_MAX_FAILURES) throw refuseLogin(email, meta, 'bloqueado', user.id)
+  // D-EA44 (Valdo 2026-11-07, "(a) contar"): o pré-filtro só vê falhas JÁ gravadas — uma rajada paralela passava inteira por ele e cada
+  // palpite pagava um scrypt (30 erradas = 10 falhas, 30 cálculos — ADV-O4-01). Falhas gravadas + tentativas EM ANDAMENTO da conta ≥ 10 =
+  // a recusa do bloqueio, SEM calcular. Contagem em memória, por processo (com várias instâncias, o teto vale por instância — limite conhecido).
+  if (failures + (loginsInFlight.get(user.id) ?? 0) >= LOGIN_MAX_FAILURES) throw refuseLogin(email, meta, 'rajada', user.id)
+  loginsInFlight.set(user.id, (loginsInFlight.get(user.id) ?? 0) + 1)
+  let outcome: LoginTxOutcome | undefined
+  try {
+    outcome = await judgeRounds(email, meta, user, password)
+  } finally {
+    const left = (loginsInFlight.get(user.id) ?? 1) - 1                    // depois do COMMIT: a errada já está gravada (a conta dela muda de lugar)
+    if (left > 0) loginsInFlight.set(user.id, left)
+    else loginsInFlight.delete(user.id)
+  }
+  if (!outcome) throw refuseLogin(email, meta, 'contenção', user.id)
+  return finishLogin(email, meta, user, outcome)
+}
 
+/** D-EA44: tentativas de login EM ANDAMENTO por conta (entre o pré-filtro e o fim do julgamento) — memória do processo. */
+const loginsInFlight = new Map<number, number>()
+/** Testes: quantas contas têm tentativa em andamento (zero ao fim de cada login — nada vaza). */
+export function loginsInFlightSize(): number { return loginsInFlight.size }
+
+async function judgeRounds(email: string, meta: LoginMeta, user: AuthUser, password: string): Promise<LoginTxOutcome | undefined> {
   // 3. a senha conferida FORA da trava (D-EA9: scrypt, centenas de ms — nunca segura a linha nem uma conexão do pool). Certa em formato ou
   // peso antigo (MD5 legado; scrypt de peso anterior — D-EA18): o hash NOVO também é calculado aqui, fora da trava; errada nunca recalcula.
   // 4. sob a trava. O hash travado ≠ o conferido = 'stale': nada gravado, a trava é solta e os passos 3–4 repetem contra o hash TRAVADO —
@@ -252,8 +275,7 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
       outcome = undefined
     }
   }
-  if (!outcome) throw refuseLogin(email, meta, 'contenção', user.id)
-  return finishLogin(email, meta, user, outcome)
+  return outcome
 }
 
 /** D-EA9: rodadas do login quando o hash muda entre a conferência e a trava (a 1ª + até 2 de novo). */

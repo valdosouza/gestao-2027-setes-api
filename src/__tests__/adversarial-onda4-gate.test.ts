@@ -404,7 +404,8 @@ describe('ADV-O4 B — login', () => {
   // ADV-O4-01 (MEDIUM): o pré-filtro (≥ 10 falhas = não calcula) olha as falhas JÁ GRAVADAS; uma RAJADA paralela passa inteira por ele antes
   // de a 1ª falha ser gravada — 30 erradas simultâneas numa conta limpa gravam 10 falhas (correto) mas calculam 30 scrypt. O §P.3/§819 diz
   // "bloqueada = sem conferir senha — o scrypt e a fila não amplificam o ataque"; a rajada amplifica até o teto do IP (300/min) por conta.
-  it.failing('[FALHOU] ADV-O4-01 rajada de 30 erradas paralelas numa conta limpa calcula no máximo 10 scrypt', async () => {
+  // CORRIGIDO pela D-EA44 (Valdo 2026-11-07, '(a) contar'): tentativas em andamento por conta somam ao pré-filtro
+  it('[CORRIGIDO D-EA44] ADV-O4-01 rajada de 30 erradas paralelas numa conta limpa calcula no máximo 10 scrypt', async () => {
     useScrypt(10)
     const c = countScrypt()
     try {
@@ -412,6 +413,7 @@ describe('ADV-O4 B — login', () => {
       console.log(`[ADV-O4-01] 30 erradas paralelas: falhas gravadas=${failuresOf(10).length}, scrypt calculados=${c.calls()}`)
       expect(failuresOf(10).length).toBe(10)
       expect(c.calls()).toBeLessThanOrEqual(10)
+      expect(require('../modules/auth/auth.service').loginsInFlightSize()).toBe(0)   // nada vaza na memória
     } finally { c.restore() }
   }, 60_000)
 
