@@ -43,7 +43,7 @@ import {
 } from '../modules/auth/super-password-reset'
 import logger from '../shared/logger/logger'
 import { recordCrash } from '../shared/errors/crash.repository'
-import { md5Password } from '../shared/auth/password'
+import { md5Password, checkPassword } from '../shared/auth/password'
 
 const q = (pool as any).query as jest.Mock
 const getConn = (pool as any).getConnection as jest.Mock
@@ -191,6 +191,16 @@ async function run(sql: string, params: any[], owner: object | null, undo: Array
     const r = resets.find(x => x.userId === Number(userId) && x.seq === Number(seq) && x.usedAt === null)
     if (r) { r.usedAt = now; undo.push(() => { r.usedAt = null }) }
     return [{ affectedRows: r ? 1 : 0 }]
+  }
+  // D-EA9 (Onda 4): a REGRAVAÇÃO do hash no login certo — compare-and-set, SEM o instante T (exceção nomeada da cerca D-EA7)
+  if (/UPDATE setes_central\.tb_user SET password = \? WHERE id = \? AND BINARY password = \?/.test(sql)) {
+    const [hash, userId, from] = params
+    const u = users.get(Number(userId))
+    if (!u || u.password !== from) return [{ affectedRows: 0 }]
+    const before = u.password
+    u.password = hash
+    undo.push(() => { u.password = before })
+    return [{ affectedRows: 1 }]
   }
   if (/UPDATE setes_central\.tb_user SET password = \?/.test(sql)) {
     if (failUpdatePasswordWith) throw failUpdatePasswordWith(params)
@@ -608,7 +618,7 @@ describe('[ataque] D-RS5 — variantes do .env contra assertMailerReady / mailer
 // (g) D-PV46 — a peça do Super: viés da senha, forma do hash = o que o login compara, e o "ativo" do vínculo
 // =====================================================================================================================
 describe('[ataque] D-PV46 — a senha inicial e a definição de "Super ativo"', () => {
-  it('[RESISTIU] senha inicial: 16 do alfabeto (55 símbolos, sem 0/O/1/l/I), sem viés mensurável (χ² em 110.000 símbolos), cabe no DTO 5–100, hash = login', () => {
+  it('[RESISTIU] senha inicial: 16 do alfabeto (55 símbolos, sem 0/O/1/l/I), sem viés mensurável (χ² em 110.000 símbolos), cabe no DTO 5–100, hash = login', async () => {
     const counts = new Map<string, number>()
     const N = 110_000 / INITIAL_PASSWORD_LENGTH
     for (let i = 0; i < N; i++) {
@@ -623,9 +633,9 @@ describe('[ataque] D-PV46 — a senha inicial e a definição de "Super ativo"',
     const chi2 = [...INITIAL_PASSWORD_ALPHABET].reduce((s, ch) => s + ((counts.get(ch) ?? 0) - expected) ** 2 / expected, 0)
     expect(chi2).toBeLessThan(110)                                                               // 54 graus de liberdade: p ≈ 0,9999 → sem viés de módulo
     const p = generateInitialPassword()
-    expect(hashInitialPassword(p)).toBe(md5Password(p))
-    expect(hashInitialPassword(p).toUpperCase()).toBe(md5Password(p))                             // o login compara password.toUpperCase() === md5(…)
-  })
+    const h = await hashInitialPassword(p)                                                       // D-EA9: scrypt da peça do login
+    expect((await checkPassword(p, h)).ok).toBe(true)
+  }, 30000)
 
   function superConn(world: { user?: { id: number; active: string; password: string | null }; link?: { active: string; deleted: string } }) {
     const sql: string[] = []
@@ -645,11 +655,11 @@ describe('[ataque] D-PV46 — a senha inicial e a definição de "Super ativo"',
     })
     return { c: { query } as any, sql, world }
   }
-  const HASH = md5Password('qualquer')
+  const HASH = 'scrypt$N=32768,r=8,p=3$' + 'A'.repeat(22) + '==$' + 'A'.repeat(43) + '='   // forma da casa (D-EA9), sem custo
 
   it('[RESISTIU] hash fora da forma (minúsculo/curto/senha em claro) recusado ANTES da trava; conta inexistente e admin = not-super sem escrita', async () => {
     const a = superConn({ user: { id: 7, active: 'S', password: 'OLD' }, link: { active: 'S', deleted: 'N' } })
-    for (const bad of [HASH.toLowerCase(), HASH.slice(1), 'senha-em-claro', HASH + 'A']) await expect(resetSuperPasswordTx(a.c, 7, bad)).rejects.toThrow(/fora da forma/)
+    for (const bad of [HASH.toLowerCase(), HASH.slice(1), 'senha-em-claro', HASH + 'A', md5Password('qualquer')]) await expect(resetSuperPasswordTx(a.c, 7, bad)).rejects.toThrow(/fora da forma/)
     expect(a.sql).toEqual([])
     const b = superConn({ user: { id: 8, active: 'S', password: 'OLD' } })
     await expect(resetSuperPasswordTx(b.c, 8, HASH)).resolves.toEqual({ status: 'not-super', userId: 8 })

@@ -183,9 +183,23 @@ Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publi
   `seq` MAX+1 sob a trava da linha do usuário (`lockUserCredential` — o serializador de TODO fato da credencial, ex-`lockUserForPasswordReset`).
   Trocar a senha (código, script do Super) NÃO desbloqueia — a contagem nunca filtra por `password_set_at` (conhecimento negativo).
 - **Protocolo**: busca da conta → PRÉ-FILTRO sem trava (bloqueada = recusa sem conferir a senha e sem travar) → senha conferida FORA da
-  trava (`passwordMatches`, tempo constante — `@shared/auth/password`) → transação: trava (WAIT 5) → hash travado ≠ conferido = reconfere →
+  trava (`checkPassword`, scrypt assíncrono, tempo constante — `@shared/auth/password`) → transação: trava (WAIT 5) → hash travado ≠ conferido = reconfere →
   contagem refeita → errada grava a falha; certa: inativo/sem vínculo = recusa sem gravar, senão o token é ASSINADO com a trava segura. 1205
   = recusa neutra (nunca 409); 1213 reexecuta e, esgotado, recusa + alarme com ref. Conta sem credencial e e-mail inexistente: nenhuma linha.
+
+### Hash da senha = scrypt (Onda 4 do endurecer — D-EA9/D-EA17/D-EA18, 2026-11-07)
+
+- A ÚNICA peça que grava e confere senha é `@shared/auth/password`: `hashPassword` (todo escritor — cadastro de usuário, admin do onboarding,
+  troca pelo código, script do Super) e `checkPassword` (login, "igual à atual" da troca). Formato `scrypt$N=…,r=…,p=…$<sal b64>$<hash b64>`
+  (≤ 93 caracteres, cabe no `varchar(100)`); peso VIGENTE só em `SCRYPT_CURRENT` (`N=2^15,r=8,p=3` — provisório até a medição no servidor
+  real, D-EA17); `maxmem` explícito (sem ele o Node recusa o peso). Valor gravado fora das formas = recusa neutra + alarme, nunca cálculo.
+- **NUNCA `scryptSync`** e nunca o hash sob a trava da linha nem com conexão do pool presa: o scrypt leva centenas de ms no pool do libuv —
+  calcula-se ANTES da transação (cercas no `password-scrypt-d-ea9.test.ts`).
+- **MD5 legado**: só conferido; o login CERTO e ADMITIDO regrava em scrypt (e senha de peso antigo no peso vigente) na MESMA transação, por
+  compare-and-set (`rehashPassword` — a exceção nomeada da cerca D-EA7: NÃO grava `password_set_at`, a sessão não cai). A regravação mata o
+  código de recuperação aberto daquela conta (HMAC amarrado ao hash). A suíte grava no peso leve `N=2^14,p=1` (`test-setup/scrypt-weight.ts`).
+- Medição: `scripts/measure-scrypt.ts` (rodar no SERVIDOR REAL antes de fechar o peso e o piso das recusas — H11); prova em schema
+  descartável: `scripts/prove-scrypt-migration.ts`.
 - **Uma resposta (D-EA6)**: toda recusa = a MESMA 401 `{ error: 'Email ou senha inválidos' }` (o "Usuário inativo" e o 403 morreram), depois
   do piso `LOGIN_REFUSAL_FLOOR_MS` (só nas recusas — A-EA4); `email`/`password` que não são texto = 400. O motivo real vai só ao LOG: UMA
   linha `Login recusado (D-EA11)` por recusa, com e-mail MASCARADO, IP, motivo e instante — nunca a senha.

@@ -9,7 +9,7 @@
  *   npx tsx --require tsconfig-paths/register scripts/reset-super-password.ts --email x@y --vai    # …ou pelo e-mail de login
  *
  * O que faz com `--vai` (núcleo em `src/modules/auth/super-password-reset.ts`): gera senha inicial ALEATÓRIA (16 caracteres), grava com
- * o MESMO hash do login (md5Password) sob a trava da linha do usuário em tb_user, imprime a senha UMA vez na saída padrão (nunca em log,
+ * o MESMO hash do login (`hashPassword`, scrypt — D-EA9) sob a trava da linha do usuário em tb_user, imprime a senha UMA vez na saída padrão (nunca em log,
  * arquivo ou banco) e registra no LOG quem rodou (usuário do SO + host), quando e o id do Super; `tb_user.updated_at` e
  * `tb_user.password_set_at` (D-EA7 — as sessões abertas do Super caem) recebem o instante. Códigos de recuperação abertos do Super morrem
  * com a troca (HMAC amarrado ao hash da senha). Depois de gravar e ANTES de mostrar a senha (D-EA19), AVISA o Super por e-mail (D-RS13 —
@@ -94,11 +94,12 @@ async function main(): Promise<void> {
   if (!target.loginEmail) fail(`o Super id=${target.id} está SEM E-MAIL DE LOGIN — nada gravado: ${NO_LOGIN_EMAIL_EXIT}`)
 
   const password = generateInitialPassword()
+  const passwordHash = await hashInitialPassword(password)   // D-EA9: scrypt FORA da transação (nunca sob a trava)
   const verdict = await withDeadlockRetry('reset-super-password', { userId: target.id }, 3, async () => {
     const conn = await pool.getConnection()
     try {
       await conn.beginTransaction()
-      const v = await resetSuperPasswordTx(conn, target.id, hashInitialPassword(password))
+      const v = await resetSuperPasswordTx(conn, target.id, passwordHash)
       if (v.status !== 'reset') { await conn.rollback(); return v }
       await conn.commit()
       return v

@@ -24,7 +24,7 @@ import {
   INITIAL_PASSWORD_ALPHABET, INITIAL_PASSWORD_LENGTH, pickSuperTarget, SuperAccount, sendSuperResetNotice, inactiveTargetExit, pickLoginEmail,
   superResetNoticeText, wallTimeInZone, setesInstitutionZone, SUPER_RESET_NOTICE_SUBJECT, SUPER_NOTICE_CAP_MS,
 } from '../modules/auth/super-password-reset'
-import { md5Password } from '../shared/auth/password'
+import { md5Password, checkPassword, storedPasswordForm } from '../shared/auth/password'
 import * as mailer from '../shared/mailer/mailer'
 import * as timeZone from '../shared/time-zone'
 import logger from '../shared/logger/logger'
@@ -60,7 +60,7 @@ describe('D-PV46 — a peça do reset do Super (dublê)', () => {
     })
     return { c: { query } as any, sql }
   }
-  const HASH = md5Password('qualquer')
+  const HASH = 'scrypt$N=32768,r=8,p=3$' + 'A'.repeat(22) + '==$' + 'A'.repeat(43) + '='   // forma da casa (D-EA9), sem custo
 
   it('Super ativo: grava pela peça do fluxo normal (senha + activation_key = NULL + updated_at) depois da trava e do vínculo', async () => {
     const world: World = { user: { id: 7, active: 'S', password: 'OLD' }, superLink: true }
@@ -139,19 +139,21 @@ describe('D-PV46 — a peça do reset do Super (dublê)', () => {
 
   it('hash fora da forma da casa (senha em claro, minúsculas, outro tamanho) é recusado ANTES de tocar o banco', async () => {
     const { c, sql } = conn({ user: { id: 7, active: 'S', password: 'OLD' }, superLink: true })
-    for (const bad of ['minha-senha', HASH.toLowerCase(), HASH.slice(0, 31), '']) {
+    for (const bad of ['minha-senha', HASH.toLowerCase(), HASH.slice(0, 31), '', md5Password('qualquer')]) {   // D-EA9: o MD5 legado nunca é gravado
       await expect(resetSuperPasswordTx(c, 7, bad)).rejects.toThrow(/hash da senha fora da forma da casa/)
     }
     expect(sql).toEqual([])
   })
 
-  it('senha inicial: 16 caracteres do alfabeto sem ambíguos, aleatória, e o hash é o MESMO do login (md5Password)', () => {
+  it('senha inicial: 16 caracteres do alfabeto sem ambíguos, aleatória, e o hash é o da peça do login (scrypt — D-EA9)', async () => {
     const a = generateInitialPassword(), b = generateInitialPassword()
     expect(a).toHaveLength(INITIAL_PASSWORD_LENGTH)
     expect(a).toMatch(new RegExp(`^[${INITIAL_PASSWORD_ALPHABET}]{16}$`))
     expect(a).not.toMatch(/[0OIl1]/)
     expect(a).not.toBe(b)
-    expect(hashInitialPassword(a)).toBe(md5Password(a))
+    const h = await hashInitialPassword(a)
+    expect(storedPasswordForm(h)).toBe('scrypt')
+    expect((await checkPassword(a, h)).ok).toBe(true)
     expect(new Set(Array.from({ length: 50 }, () => generateInitialPassword())).size).toBe(50)
   })
 
@@ -449,7 +451,7 @@ const hasEnv = fs.existsSync(path.join(REPO, '.env'))
         return v
       } finally { await c.end() }
     }
-    const hash = hashInitialPassword(generateInitialPassword())
+    const hash = await hashInitialPassword(generateInitialPassword())
     expect(await tx(900002, hash)).toEqual({ status: 'not-super', userId: 900002 })
     expect(await tx(900004, hash)).toEqual({ status: 'not-super', userId: 900004 })
     expect(await tx(900005, hash)).toEqual({ status: 'not-super', userId: 900005 })
@@ -462,7 +464,7 @@ const hasEnv = fs.existsSync(path.join(REPO, '.env'))
     }
     expect(await tx(900001, hash)).toEqual({ status: 'reset', userId: 900001, loginEmail: 'super@probe.test' })
     const after = await passwordOf(900001)
-    expect(after.password).toBe(hash)                                        // o MESMO hash que o login compara (md5 upper)
+    expect(after.password).toBe(hash)                                        // o hash da peça do login (scrypt — D-EA9)
     expect(after.ak).toBeNull()                                              // código antigo em texto puro limpo (peça do fluxo normal)
   }, 30000)
 

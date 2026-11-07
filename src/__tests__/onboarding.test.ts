@@ -76,7 +76,7 @@ describe('createInstitution (POST /api/institutions absorve o onboarding)', () =
     expect(payload).toMatchObject({ email: admin.email, active: 'S' })
     expect(link).toEqual({ institutionId: 2, kind: 'admin' })
     expect(hash).not.toBe(admin.password)   // md5Password aplicado no service
-    expect(hash).toMatch(/^[0-9A-F]{32}$/)
+    expect(hash).toMatch(/^scrypt\$N=\d+,r=8,p=\d\$/   /* D-EA9: scrypt da peça */)
   })
 
   it('e-mail do admin já usado como login → 409 ANTES de qualquer escrita', async () => {

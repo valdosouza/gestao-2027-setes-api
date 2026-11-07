@@ -6,7 +6,7 @@ import { runMigrationsForSchema } from '../../migrations/runner'
 import {
   InstitutionInput, InstitutionListRow, InstitutionFull, SyncApiKeyRow,
 } from './institutions.interface'
-import { md5Password } from '@shared/auth/password'
+import { hashPassword } from '@shared/auth/password'
 import { findLoginEmailOwner, insertUserCascade } from '@shared/user'
 import {
   InstitutionAdminInput,
@@ -95,13 +95,15 @@ export async function createInstitution(
       `falhou — ele permanece INATIVO (active='N'). Corrija a causa e reative pela edição.`)
   }
 
+  // D-EA9: o hash (scrypt, assíncrono) do admin inicial calculado ANTES da cascata — nunca com conexão do pool presa
+  const adminHash = await hashPassword(admin.password)
   let adminUserId: number
   try {
     await grantStructuralInterfaces(schemaName, id)
     adminUserId = await insertUserCascade(
       { nameCompany: admin.nameCompany, nickTrade: admin.nickTrade,
         email: admin.email, active: 'S' },
-      md5Password(admin.password),
+      adminHash,
       { institutionId: id, kind: 'admin' }
     )
   } catch (err) {

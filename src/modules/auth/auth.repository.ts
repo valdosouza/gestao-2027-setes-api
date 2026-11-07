@@ -1,4 +1,4 @@
-import { PoolConnection } from 'mysql2/promise'
+import { PoolConnection, ResultSetHeader } from 'mysql2/promise'
 import pool from '@shared/db/connection'
 import { isLockWaitSupported } from '@shared/db/counters'
 import { passwordSetAt } from '@shared/auth/password'
@@ -242,6 +242,23 @@ export async function updatePassword(conn: PoolConnection, userId: number, passw
     `UPDATE setes_central.tb_user SET password = ?, password_set_at = ?, activation_key = NULL, updated_at = NOW() WHERE id = ?`,
     [passwordHash, passwordSetAt(), userId]
   )
+}
+
+/**
+ * D-EA9/D-EA18 (Onda 4 do endurecer — §P.14): a REGRAVAÇÃO do hash no login certo — MESMA senha, outro formato (MD5 legado → scrypt) ou
+ * outro peso (scrypt antigo → vigente). É a EXCEÇÃO NOMEADA da cerca da D-EA7: NÃO grava `password_set_at` (não é senha nova — não derruba
+ * sessão) nem `updated_at` (não é edição do cadastro). Compare-and-set (H4): só regrava se o valor gravado ainda é o que foi CONFERIDO
+ * (`BINARY` — a coluna tem colação sem caixa e o base64 do scrypt distingue maiúscula); uma troca de senha em paralelo nunca é sobrescrita.
+ * Chamada sob a trava da linha (`lockUserCredential`) — o compare-and-set é o cinto. Devolve se regravou.
+ */
+export async function rehashPassword(
+  conn: PoolConnection, userId: number, checkedHash: string, newHash: string,
+): Promise<boolean> {
+  const [res] = await conn.query<ResultSetHeader>(
+    `UPDATE setes_central.tb_user SET password = ? WHERE id = ? AND BINARY password = ?`,
+    [newHash, userId, checkedHash]
+  )
+  return (res as Partial<ResultSetHeader> | undefined)?.affectedRows === 1
 }
 
 // ---------------------------------------------------------------------

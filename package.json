@@ -58,7 +58,8 @@
     ],
     "setupFilesAfterEnv": [
       "<rootDir>/src/test-setup/time-zone.mock.ts",
-      "<rootDir>/src/test-setup/access-session.mock.ts"
+      "<rootDir>/src/test-setup/access-session.mock.ts",
+      "<rootDir>/src/test-setup/scrypt-weight.ts"
     ]
   }
 }

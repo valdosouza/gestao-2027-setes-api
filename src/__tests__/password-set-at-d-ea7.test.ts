@@ -43,12 +43,21 @@ function passwordWrites(): { file: string; sql: string }[] {
 // Conhecimento negativo para a D-EA9 (scrypt, Onda 4 do `prompt_endurecer_autenticacao.md`): a regravação do hash no login (mesma senha,
 // outro formato) NÃO toca o `password_set_at` — não derruba sessão. Ela nasce como a EXCEÇÃO NOMEADA desta cerca (função própria que grava
 // só o hash), nunca afrouxando a regra para os outros escritores.
+/** A EXCEÇÃO NOMEADA da D-EA9 (Onda 4): a regravação do hash no login — `rehashPassword`, compare-and-set, sem `password_set_at`. */
+const REHASH_SQL = 'UPDATE setes_central.tb_user SET password = ? WHERE id = ? AND BINARY password = ?'
+
 describe('D-EA7 — o par (hash, T): quem grava a senha grava o instante junto', () => {
   it('todo SQL de produção que grava tb_user.password grava password_set_at no MESMO comando', () => {
     const writes = passwordWrites()
     expect(writes.length).toBeGreaterThanOrEqual(3)                         // criação, 1ª senha (A-PV23), troca pelo código/script do Super
-    expect(writes.filter(w => !/\bpassword_set_at\b/.test(w.sql)).map(w => `${w.file}: ${w.sql.slice(0, 120)}`)).toEqual([])
-    expect(writes.map(w => w.file).sort()).toEqual(
+    // a ÚNICA exceção: o texto EXATO da regravação, só no auth.repository, só uma vez (nenhum outro escritor "sem T" passa por ela)
+    const exceptions = writes.filter(w => w.sql.slice(1, -1) === REHASH_SQL)
+    expect(exceptions.map(w => w.file)).toEqual(['modules/auth/auth.repository.ts'])
+    const repo = fs.readFileSync(path.join(SRC, 'modules', 'auth', 'auth.repository.ts'), 'utf8')
+    expect(repo).toMatch(/export async function rehashPassword\([\s\S]*?UPDATE setes_central\.tb_user SET password = \? WHERE id = \? AND BINARY password = \?/)
+    expect(writes.filter(w => w.sql.slice(1, -1) !== REHASH_SQL && !/\bpassword_set_at\b/.test(w.sql))
+      .map(w => `${w.file}: ${w.sql.slice(0, 120)}`)).toEqual([])
+    expect(writes.filter(w => w.sql.slice(1, -1) !== REHASH_SQL).map(w => w.file).sort()).toEqual(
       ['modules/auth/auth.repository.ts', 'modules/users/users.repository.ts', 'shared/user/index.ts'])
   })
 

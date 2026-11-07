@@ -3,7 +3,7 @@ import { ErrorCodes } from '@shared/errors/error-codes'
 import { isOwnVendorInstitution } from '@shared/institution-interfaces'
 import { DELEGABLE_SUPER_INTERFACES, isDelegableSuperInterface } from '@shared/auth/super-delegation'
 import { ListQuery, PagedRows, PublicSearchCriterion, SearchCriterion, publicCriteria } from '@shared/list'
-import { md5Password } from '@shared/auth/password'
+import { hashPassword } from '@shared/auth/password'
 import { PRIVILEGE_VISUALIZAR } from '@shared/auth/privileges'
 import {
   UserListRow, UserRow, UserCreateInput, UserUpdateInput, UserScope,
@@ -136,7 +136,8 @@ export async function createUser(
     institutionId !== null ? { institutionId, kind } : null
 
   await assertLoginEmailFree(input.email, null)
-  const id = await insertUserCascade(input, md5Password(input.password!), link)
+  // D-EA9: o hash (scrypt, assíncrono) é calculado ANTES da transação da cascata — nunca com conexão do pool presa
+  const id = await insertUserCascade(input, await hashPassword(input.password!), link)
   return { id }
 }
 
@@ -177,7 +178,7 @@ export async function editUser(
       throw new HttpError(409, 'Depois de criada a credencial, só o próprio usuário troca a senha — pelo "Esqueci minha senha"',
         [{ field: 'password', message: 'Senha definida só na criação da credencial (D-PV48)' }], ErrorCodes.PASSWORD_OWNER_ONLY)
     }
-    hash = md5Password(input.password)
+    hash = await hashPassword(input.password)   // D-EA9: antes da transação da cascata
   }
   await updateUserCascade(id, input, hash, linkInstitutionId)
 }

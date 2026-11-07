@@ -39,7 +39,7 @@ describe('D-PV48 — senha só na criação da credencial', () => {
   it('A-PV23: conta SEM credencial (vinda do sync) recebe a 1ª senha — o hash vai ao repositório', async () => {
     getUser.mockResolvedValue({ id: 9, nameCompany: 'F', nickTrade: 'F', email: 'ful@x.com', active: 'S', hasCredential: false })
     await editUser(adminScope, 9, body)
-    expect(update).toHaveBeenCalledWith(9, expect.anything(), expect.stringMatching(/^[0-9A-F]{32}$/), null)
+    expect(update).toHaveBeenCalledWith(9, expect.anything(), expect.stringMatching(/^scrypt\$N=\d+,r=8,p=\d\$/   /* D-EA9: scrypt da peça */), null)
   })
 })
 

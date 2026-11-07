@@ -1,6 +1,6 @@
 import { randomInt } from 'crypto'
 import { PoolConnection } from 'mysql2/promise'
-import { md5Password } from '@shared/auth/password'
+import { hashPassword, storedPasswordForm } from '@shared/auth/password'
 import { passwordProblems } from '@shared/auth/password-policy'
 import { SETES_INSTITUTION_ID } from '@shared/auth/roles'
 import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog, singleMailAddress } from '@shared/mailer/mailer'
@@ -145,9 +145,12 @@ export function generateInitialPassword(length = INITIAL_PASSWORD_LENGTH): strin
   throw new Error('generateInitialPassword: o alfabeto/tamanho não produz senha dentro da política de senha (D-EA5)')
 }
 
-/** A senha em claro vira o hash da casa AQUI (uma só vez) e segue para a transação; a peça nunca guarda a senha. */
-export function hashInitialPassword(password: string): string {
-  return md5Password(password)
+/**
+ * A senha em claro vira o hash da casa AQUI (uma só vez — a peça `@shared/auth/password`, scrypt no peso vigente; D-EA9) e segue para a
+ * transação; a peça nunca guarda a senha. Assíncrona: calculada ANTES da transação (nunca sob a trava).
+ */
+export function hashInitialPassword(password: string): Promise<string> {
+  return hashPassword(password)
 }
 
 export type SuperResetVerdict =
@@ -162,7 +165,8 @@ export type SuperResetVerdict =
  * (D-EA20) → `updatePassword` (a peça do fluxo normal). Qualquer recusa = sem escrita. [passwordHash] já vem com o hash da casa (nunca a senha em claro chega ao repositório — decisão 2).
  */
 export async function resetSuperPasswordTx(conn: PoolConnection, userId: number, passwordHash: string): Promise<SuperResetVerdict> {
-  if (!/^[0-9A-F]{32}$/.test(passwordHash)) throw new Error('hash da senha fora da forma da casa (md5Password)')
+  // D-EA9: só o formato NOVO entra — o MD5 legado (32 hex) é só conferido no login, nunca gravado
+  if (storedPasswordForm(passwordHash) !== 'scrypt') throw new Error('hash da senha fora da forma da casa (scrypt da @shared/auth/password)')
   const locked = await lockUserCredential(conn, userId)
   if (!locked) return { status: 'not-super', userId }
   const [link] = await conn.query<any[]>(

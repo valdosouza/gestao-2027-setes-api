@@ -14,6 +14,9 @@ jest.mock('../modules/auth/auth.repository', () => ({
   // Ondas 1+2 do endurecer (D-EA1/D-EA2): o login passa pelo pré-filtro e pela trava da linha do usuário — aqui sem falhas na janela
   // (o limite por conta é provado em `auth-login-lock-d-ea1.test.ts` e ao vivo por `scripts/prove-login-lock.ts`)
   countLoginFailuresInWindow: jest.fn(), lockUserCredential: jest.fn(), insertLoginFailure: jest.fn(),
+  // Onda 4 (D-EA9): a senha certa em MD5 legado é regravada em scrypt no login admitido (compare-and-set — provado em
+  // `password-scrypt-d-ea9.test.ts` e ao vivo por `scripts/prove-scrypt-migration.ts`)
+  rehashPassword: jest.fn().mockResolvedValue(true),
 }))
 jest.mock('../shared/session-context/session-context.repository')
 jest.mock('../shared/db/connection', () => ({

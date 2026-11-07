@@ -30,7 +30,7 @@ import pool from '@shared/db/connection'
 import { resetJwtKeyRing } from '@shared/auth/product-token'
 import { withDeadlockRetry } from '@shared/db/deadlock-retry'
 import { detectLockWaitSupport } from '@shared/db/counters'
-import { md5Password, passwordMatches } from '@shared/auth/password'
+import { md5Password, checkPassword } from '@shared/auth/password'
 import { splitStatements } from '../src/migrations/runner'
 import { judgeLoginAttempt, issuePasswordResetCode, judgePasswordResetCode, LoginJudgement } from '@modules/auth/auth.service'
 import { AuthUser, countLoginFailuresInWindow, updatePassword, LOGIN_MAX_FAILURES } from '@modules/auth/auth.repository'
@@ -91,7 +91,7 @@ async function asUser(id: number): Promise<AuthUser> {
 /** O login como o service faz: senha conferida FORA da trava, julgamento sob a trava (o caminho certo também passa por ela). */
 async function attempt(id: number, password: string): Promise<LoginJudgement> {
   const who = await asUser(id)
-  const pre = passwordMatches(password, who.password)
+  const pre = await checkPassword(password, who.password)
   return inTx('login', c => judgeLoginAttempt(c, who, password, pre))
 }
 async function failuresOf(id: number): Promise<Array<{ seq: number }>> {

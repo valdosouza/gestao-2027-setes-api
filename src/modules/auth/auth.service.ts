@@ -4,7 +4,7 @@ import { PoolConnection } from 'mysql2/promise'
 import {
   findUserByEmail, getInstitutionsForUser, UserInstitution, AuthUser,
   lockUserCredential, countPasswordResetsIssued, nextPasswordResetSeq, insertPasswordReset,
-  readCurrentPasswordReset, recordFailedPasswordResetAttempt, markPasswordResetUsed, updatePassword,
+  readCurrentPasswordReset, recordFailedPasswordResetAttempt, markPasswordResetUsed, updatePassword, rehashPassword,
   assertPasswordResetSchema, hasRecentPasswordResetNotice, insertPasswordResetNotice, PasswordResetNoticeKind,
   countLoginFailuresInWindow, insertLoginFailure, hasRecentLoginBlockNotice, insertLoginBlockNotice, assertLoginLockSchema,
   LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW_MINUTES,
@@ -21,7 +21,7 @@ import {
 } from '@shared/auth/product-token'
 import { SessionContext, getSessionContext } from '@shared/session-context'
 import { liveSession } from '@shared/access'
-import { md5Password, passwordMatches } from '@shared/auth/password'
+import { hashPassword, checkPassword, PasswordCheck } from '@shared/auth/password'
 import { passwordProblems, PASSWORD_PROBLEM_MESSAGES } from '@shared/auth/password-policy'
 import { HttpError } from '@shared/errors/http-error'
 import { sendMail, isMailerConfigured, isProduction, maskEmail, mailErrorForLog, singleMailAddress } from '@shared/mailer/mailer'
@@ -45,9 +45,20 @@ export interface IssuedSession {
   context: SessionContext
 }
 
-// MD5 aplicado no backend, nunca na query (decisão 2) — função compartilhada
-// com o cadastro de Usuário (@shared/auth/password).
-const md5 = md5Password
+// D-EA9 (Onda 4): o hash da senha é a peça @shared/auth/password (scrypt; MD5 só como LEGADO conferido) — aplicado no backend, nunca na
+// query, e SEMPRE fora da trava da linha do usuário (assíncrono, centenas de ms).
+
+/**
+ * H2: a conferência pela peça, com ALARME quando o valor gravado está fora das formas aceitas (texto puro, scrypt malformado, peso fora da
+ * lista) — a peça não calcula e diz `invalid`; aqui vira recusa neutra (não confere) + alarme com ref, nunca 500. Nunca loga o valor.
+ */
+async function checkStoredPassword(where: string, userId: number, plain: string, stored: string | null): Promise<PasswordCheck> {
+  const check = await checkPassword(plain, stored)
+  if (check.form === 'invalid' && stored) {
+    alarmNeutral(where, userId, new Error('hash de senha gravado fora das formas aceitas (D-EA9: scrypt da peça ou MD5 legado) — recusa neutra'))
+  }
+  return check
+}
 
 // 'super' fora da institution da Setes é ignorado (decisão 14) — quem decide é a `vw_user_link` (o perfil chega pronto: costura A1)
 function resolveRole(link: UserInstitution): string {
@@ -85,7 +96,8 @@ async function signFinalToken(userId: number, link: UserInstitution): Promise<Is
 // O PROTOCOLO (A-EA2 — parecer §P.3):
 //   1. conta = findUserByEmail (fora de transação); sem conta ou sem credencial (NULL/'') → recusa, nenhuma transação (A-EA3)
 //   2. PRÉ-FILTRO sem trava: falhas na janela (consistente, autocommit) ≥ 10 → recusa SEM conferir a senha e SEM travar
-//   3. a senha é conferida FORA da trava (na Onda 4: scrypt — o hash nunca segura a linha nem a conexão)
+//   3. a senha é conferida FORA da trava (scrypt — Onda 4/D-EA9: o hash nunca segura a linha nem a conexão; certa em formato/peso antigo =
+//      o hash novo também aqui, e a regravação por compare-and-set sob a trava, só no admitido, sem tocar password_set_at)
 //   4. transação: trava da linha do usuário (1º statement, WAIT 5) → o hash travado ≠ o conferido = reconfere contra o travado → a
 //      contagem REFEITA sob a trava (≥ 10 = recusa sem gravar e sem olhar o veredito) → errada: INSERT da falha e, se ela leva a janela a
 //      10, a vaga do aviso ao dono sob SAVEPOINT (D-EA15/D-RS10) → certa: inativo/sem vínculo = recusa sem gravar; senão o token é
@@ -135,11 +147,19 @@ function refuseLogin(email: string, meta: LoginMeta, reason: LoginRefusalReason,
   return new HttpError(401, LOGIN_REFUSED_MESSAGE)
 }
 
-export type LoginJudgementVerdict = 'blocked' | 'wrong' | 'right' | 'gone' | 'no-credential'
+export type LoginJudgementVerdict = 'blocked' | 'wrong' | 'right' | 'gone' | 'no-credential' | 'stale'
 export interface LoginJudgement {
   verdict: LoginJudgementVerdict
   /** só no 'right': o `active` da linha TRAVADA (inativo = recusa sem gravar — D-EA6) */
   active?: string
+  /**
+   * só no 'right' (D-EA9/D-EA18): a senha certa está em formato/peso antigo E o hash novo foi pré-calculado fora da trava contra o MESMO
+   * valor travado — o caller ADMITIDO regrava por compare-and-set (`rehashPassword`) na mesma transação. Ausente = nada a regravar (ou o
+   * valor mudou entre a conferência e a trava: fica para o próximo login).
+   */
+  rehash?: { from: string; to: string }
+  /** só no 'stale': o hash TRAVADO (≠ o conferido fora da trava) — o caller solta a trava e confere de novo contra ELE, fora dela */
+  lockedHash?: string
   /** só no 'wrong': falhas na janela DEPOIS desta */
   failuresInWindow?: number
   /** só no 'wrong': esta falha levou a janela a 10 e a vaga do aviso ao dono foi tomada (D-EA15) — o e-mail sai depois do COMMIT */
@@ -151,13 +171,21 @@ export interface LoginJudgement {
  * (vínculos e token no caminho certo) NA MESMA transação. `preVerdict` = a senha conferida FORA da trava contra `user.password`.
  */
 export async function judgeLoginAttempt(
-  conn: PoolConnection, user: AuthUser, password: string, preVerdict: boolean,
+  conn: PoolConnection, user: AuthUser, password: string, preVerdict: boolean | PasswordCheck, rehashTo?: string | null,
+  opts: { staleIsRetry?: boolean } = {},
 ): Promise<LoginJudgement> {
   const locked = await lockUserCredential(conn, user.id)
   if (!locked) return { verdict: 'gone' }
   if (!locked.password) return { verdict: 'no-credential' }
-  // (b) do parecer: o hash travado tem de ser o conferido — mudou entre a conferência e a trava = reconfere contra o travado
-  const right = locked.password === user.password ? preVerdict : passwordMatches(password, locked.password)
+  // (b) do parecer: o hash travado tem de ser o conferido. Mudou entre a conferência e a trava (troca de senha em paralelo — e, na Onda 4,
+  // OUTRO login certo da mesma conta que acabou de regravar o MD5): com `staleIsRetry` (o login) devolve 'stale' SEM gravar nada — o
+  // caller solta a trava e confere contra o hash novo FORA dela. Conhecimento negativo (prova H9, 2026-11-07): reconferir o scrypt SOB a
+  // trava segurava a linha pelo tempo do hash mais a fila do pool do libuv — 3 logins certos simultâneos numa conta MD5 estouravam a espera
+  // de 5 s dos outros (1205 = recusa da senha CERTA). Sem a opção (provas e testes antigos), reconfere aqui.
+  const pre: PasswordCheck = typeof preVerdict === 'boolean' ? { ok: preVerdict, needsRehash: false, form: 'md5' } : preVerdict
+  const same = locked.password === user.password
+  if (!same && opts.staleIsRetry) return { verdict: 'stale', lockedHash: locked.password }
+  const right = same ? pre.ok : (await checkStoredPassword('auth/login (reconferência sob a trava)', user.id, password, locked.password)).ok
   const before = await countLoginFailuresInWindow(user.id, conn)
   if (before >= LOGIN_MAX_FAILURES) return { verdict: 'blocked' }        // nada gravado, o veredito NÃO é olhado
   if (!right) {
@@ -167,7 +195,8 @@ export async function judgeLoginAttempt(
       : false
     return { verdict: 'wrong', failuresInWindow: before + 1, notice }
   }
-  return { verdict: 'right', active: locked.active }
+  const rehash = same && pre.needsRehash && rehashTo ? { from: locked.password, to: rehashTo } : undefined
+  return { verdict: 'right', active: locked.active, ...(rehash ? { rehash } : {}) }
 }
 
 /** Passo 1-3 do fluxo: autentica e decide pela quantidade de institutions. Toda recusa = a MESMA 401, depois do piso. */
@@ -208,17 +237,39 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
   }
   if (failures >= LOGIN_MAX_FAILURES) throw refuseLogin(email, meta, 'bloqueado', user.id)
 
-  // 3. a senha conferida FORA da trava
-  const preVerdict = passwordMatches(password, user.password)
+  // 3. a senha conferida FORA da trava (D-EA9: scrypt, centenas de ms — nunca segura a linha nem uma conexão do pool). Certa em formato ou
+  // peso antigo (MD5 legado; scrypt de peso anterior — D-EA18): o hash NOVO também é calculado aqui, fora da trava; errada nunca recalcula.
+  // 4. sob a trava. O hash travado ≠ o conferido = 'stale': nada gravado, a trava é solta e os passos 3–4 repetem contra o hash TRAVADO —
+  // no máximo LOGIN_STALE_ROUNDS vezes; esgotado (o hash mudando sem parar), a recusa neutra de contenção, sem falha gravada.
+  let current: AuthUser = user
+  let outcome: LoginTxOutcome | undefined
+  for (let round = 1; round <= LOGIN_STALE_ROUNDS && !outcome; round++) {
+    outcome = await judgeRound(email, meta, current, password)
+    if (outcome.kind === 'judged' && outcome.judgement.verdict === 'stale') {
+      current = { ...current, password: outcome.judgement.lockedHash ?? null }
+      outcome = undefined
+    }
+  }
+  if (!outcome) throw refuseLogin(email, meta, 'contenção', user.id)
+  return finishLogin(email, meta, user, outcome)
+}
 
-  // 4. sob a trava
+/** D-EA9: rodadas do login quando o hash muda entre a conferência e a trava (a 1ª + até 2 de novo). */
+export const LOGIN_STALE_ROUNDS = 3
+
+/** Passos 3–4 do protocolo numa rodada: conferência FORA da trava, julgamento SOB ela. */
+async function judgeRound(email: string, meta: LoginMeta, user: AuthUser, password: string): Promise<LoginTxOutcome> {
+  if (!user.password) throw refuseLogin(email, meta, 'sem credencial', user.id)
+  const preVerdict = await checkStoredPassword('auth/login', user.id, password, user.password)
+  const rehashTo = preVerdict.ok && preVerdict.needsRehash ? await hashPassword(password) : null
+
   let outcome: LoginTxOutcome
   try {
     outcome = await withDeadlockRetry('auth/login', { userId: user.id }, 3, async () => {
       const conn = await pool.getConnection()
       try {
         await conn.beginTransaction()
-        const judgement = await judgeLoginAttempt(conn, user, password, preVerdict)
+        const judgement = await judgeLoginAttempt(conn, user, password, preVerdict, rehashTo, { staleIsRetry: true })
         let out: LoginTxOutcome = { kind: 'judged', judgement }
         if (judgement.verdict === 'right') {
           if (judgement.active !== 'S') out = { kind: 'inactive' }
@@ -226,6 +277,11 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
             // Gates das Ondas 1+2 (HIGH): sob a trava, NADA pede outra conexão ao pool — os vínculos vêm pela conexão da transação e
             // a assinatura não usa o banco; o bloco `context` (fato derivado, sem efeito de segurança) é lido DEPOIS do COMMIT
             const institutions = await getInstitutionsForUser(user.id, conn)
+            // D-EA9/D-EA18: ADMITIDO com a senha em formato/peso antigo → regrava na MESMA transação, sob a trava, por compare-and-set,
+            // SEM tocar password_set_at (a sessão aberta não cai — exceção nomeada da cerca D-EA7). Inativo/sem vínculo não regrava.
+            if (institutions.length && judgement.rehash) {
+              await rehashPassword(conn, user.id, judgement.rehash.from, judgement.rehash.to)
+            }
             if (!institutions.length) out = { kind: 'no-link' }
             else if (institutions.length === 1) {
               // (d) do parecer: o token é ASSINADO com a trava segura (fecha a troca de senha entre a admissão e a assinatura)
@@ -254,7 +310,10 @@ async function loginOrRefuse(email: string, password: string, meta: LoginMeta): 
     alarmNeutral('auth/login', user.id, err, { deadlockIsAlarm: true })   // deadlock que esgotou o retry também é alarme com ref (L7)
     throw refuseLogin(email, meta, (err as { code?: unknown })?.code === 'ER_LOCK_DEADLOCK' ? 'contenção' : 'falha interna', user.id)
   }
+  return outcome
+}
 
+async function finishLogin(email: string, meta: LoginMeta, user: AuthUser, outcome: LoginTxOutcome): Promise<LoginResult> {
   if (outcome.kind === 'admitted') return outcome.result
   if (outcome.kind === 'admitted-final') {
     // o bloco `context` DEPOIS do COMMIT (conexão e trava já devolvidas). D-EA30 (Valdo 2026-11-05, "(a) Entra com padrão"): a admissão já
@@ -559,6 +618,12 @@ export async function createPasswordResetCode(conn: PoolConnection, user: AuthUs
   return (await issuePasswordResetCode(conn, user, code)).verdict
 }
 
+/**
+ * D-EA9 (Onda 4): o "nova senha igual à atual" pré-calculado FORA da trava (scrypt) contra o hash lido ANTES dela — vale sob a trava só se
+ * o hash travado é o mesmo `checkedHash`.
+ */
+export interface SameAsCurrentPrecheck { checkedHash: string | null; same: boolean }
+
 export type ConsumeVerdict = 'changed' | 'inactive' | 'none' | 'used' | 'expired' | 'exhausted' | 'wrong' | 'same-as-current'
 export interface ConsumeOutcome {
   verdict: ConsumeVerdict
@@ -575,6 +640,7 @@ export interface ConsumeOutcome {
  */
 export async function judgePasswordResetCode(
   conn: PoolConnection, user: AuthUser, code: string, newPasswordHash: string, newPasswordPlain?: string,
+  preSame?: SameAsCurrentPrecheck,
 ): Promise<ConsumeOutcome> {
   const locked = await lockUserCredential(conn, user.id)
   if (!locked || locked.active !== 'S') return { verdict: 'inactive' }
@@ -588,7 +654,15 @@ export async function judgePasswordResetCode(
     const exhaustedNow = current.failedAttempts + 1 >= PASSWORD_RESET_MAX_FAILED_ATTEMPTS
     return { verdict: 'wrong', notice: exhaustedNow ? await claimOwnerNotice(conn, 'auth/change-password', user.id, 'E') : undefined }
   }
-  if (newPasswordPlain !== undefined && passwordMatches(newPasswordPlain, locked.password)) return { verdict: 'same-as-current' }
+  if (newPasswordPlain !== undefined) {
+    // D-EA9: o "igual à atual" foi conferido FORA da trava contra o hash lido antes dela. Mudou entre a leitura e a trava = reconfere contra
+    // o travado — caminho na prática INALCANÇÁVEL na rota: o HMAC do código é amarrado ao hash TRAVADO (acima), então hash trocado = código
+    // 'wrong' antes de chegar aqui; fica só para quem chama a peça sem o pré-cálculo (provas e testes)
+    const same = preSame && preSame.checkedHash === locked.password
+      ? preSame.same
+      : (await checkPassword(newPasswordPlain, locked.password)).ok
+    if (same) return { verdict: 'same-as-current' }
+  }
   await updatePassword(conn, user.id, newPasswordHash)
   await markPasswordResetUsed(conn, user.id, current.seq)
   return { verdict: 'changed' }
@@ -719,7 +793,7 @@ async function sendOwnerNotice(user: AuthUser, kind: PasswordResetNoticeKind): P
 // Passo 2: valida email + código e troca a senha (o veredito do judgePasswordResetCode; toda recusa = a MESMA 401).
 // A validação do payload vem ANTES de tocar o código (senão o 400 diria "código certo"). Falha do banco depois de achar a
 // conta também sai como a recusa neutra (com o erro no log) — a contenção não pode virar oráculo de existência.
-// MD5 aplicado AQUI no backend (decisão 2) — o app envia texto puro por HTTPS.
+// O hash (scrypt — D-EA9) aplicado AQUI no backend — o app envia texto puro por HTTPS.
 export async function changePassword(email: string, code: string, newPassword: string): Promise<void> {
   // D-EA5/D-EA16: a política que NÃO depende da conta (tamanho, lista de comuns, parte local do e-mail DIGITADO) vem ANTES do código —
   // julga só o texto da requisição, então não diz nada sobre a conta (400, como era o mínimo 5). A "igual à atual" fica no julgamento.
@@ -735,10 +809,17 @@ async function changePasswordByCode(email: string, code: string, newPassword: st
   const user = await findUserByEmail(email)
   if (!user || user.active !== 'S') throw new HttpError(401, INVALID_PASSWORD_RESET_CODE)
 
+  // D-EA9: os DOIS scrypt (o hash da nova e o "igual à atual") FORA da trava e em paralelo — custo de 2 cálculos por tentativa da conta
+  // existente, contido pelo limite por e-mail e por IP da rota (registrado no gate da Onda 4)
+  const [newHash, sameNow] = await Promise.all([
+    hashPassword(newPassword),
+    checkPassword(newPassword, user.password),   // sem alarme aqui: forma inválida = 'não é igual'; o LOGIN da conta alarma
+  ])
+  const preSame: SameAsCurrentPrecheck = { checkedHash: user.password, same: sameNow.ok }
   let outcome: ConsumeOutcome
   try {
     outcome = await inPasswordResetTx('auth/change-password', user.id,
-      conn => judgePasswordResetCode(conn, user, code, md5(newPassword), newPassword))
+      conn => judgePasswordResetCode(conn, user, code, newHash, newPassword, preSame))
   } catch (err) {
     alarmNeutral('auth/change-password', user.id, err)
     throw new HttpError(401, INVALID_PASSWORD_RESET_CODE)

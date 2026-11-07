@@ -404,7 +404,7 @@ const hasEnv = fs.existsSync(path.join(REPO, '.env'))
     let chosen: string | undefined
     try {
       await c.beginTransaction()
-      const v = await peca.resetSuperPasswordTx(probeConn(c), 900401, peca.hashInitialPassword(peca.generateInitialPassword()))
+      const v = await peca.resetSuperPasswordTx(probeConn(c), 900401, await peca.hashInitialPassword(peca.generateInitialPassword()))
       chosen = v.status === 'reset' ? v.loginEmail : undefined
       await c.rollback()                                                         // nada gravado
     } finally { await c.end() }

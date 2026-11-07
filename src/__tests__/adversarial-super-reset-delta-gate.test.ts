@@ -63,8 +63,9 @@ interface Sup { id: number; userActive: 'S' | 'N'; linkActive: 'S' | 'N'; kind: 
 interface Db { supers: Sup[]; events: string[]; deadlocks?: number; afterListing?: () => void }
 let db: Db
 
-function md5(v: string): string {
-  return (require('../shared/auth/password') as typeof import('../shared/auth/password')).md5Password(v)
+async function verifies(pw: string, stored: string | null | undefined): Promise<boolean> {
+  // D-EA9: o valor gravado é scrypt com sal — confere-se pela peça (não há "o mesmo hash" para comparar)
+  return (await (require('../shared/auth/password') as typeof import('../shared/auth/password')).checkPassword(pw, stored)).ok
 }
 
 function installFakeDb(): void {
@@ -297,7 +298,7 @@ describe('ADV D-EA19 — a senha só aparece DEPOIS do desfecho do aviso (script
     expect(outcomeIdx).toBeGreaterThan(noticeIdx)
     expect(pwIdx).toBeGreaterThan(outcomeIdx)
     expect(timeline.filter(e => e.startsWith('mail:')).length).toBeLessThanOrEqual(1)
-    expect(passwordOf(7)).toBe(md5(printedPasswords(run)[0]))
+    expect(await verifies(printedPasswords(run)[0], passwordOf(7))).toBe(true)
   })
 
   it('deadlock 2× e depois sucesso: 3 transações, UMA troca, UM aviso, a MESMA senha nas três tentativas', async () => {
@@ -308,7 +309,7 @@ describe('ADV D-EA19 — a senha só aparece DEPOIS do desfecho do aviso (script
     expect(db.events.filter(e => e === 'mail')).toHaveLength(1)
     expect(db.events.indexOf('mail')).toBeGreaterThan(db.events.indexOf('commit'))
     expect(printedPasswords(run)).toHaveLength(1)
-    expect(passwordOf(7)).toBe(md5(printedPasswords(run)[0]))
+    expect(await verifies(printedPasswords(run)[0], passwordOf(7))).toBe(true)
   })
 
   it('deadlock nas 3 tentativas: falha (exit 1), NADA gravado, nenhum aviso, nenhuma senha impressa (aviso nunca sem troca)', async () => {
@@ -551,7 +552,7 @@ const hasEnv = fs.existsSync(path.join(REPO, '.env'))
     const c = await mysql.createConnection(cfg())
     try {
       await c.beginTransaction()
-      const hash = peca.hashInitialPassword(peca.generateInitialPassword())
+      const hash = await peca.hashInitialPassword(peca.generateInitialPassword())
       const v = await peca.resetSuperPasswordTx(probeConn(c, afterMailCheck), userId, hash)
       if (v.status === 'reset') await c.commit(); else await c.rollback()
       return { v, hash }

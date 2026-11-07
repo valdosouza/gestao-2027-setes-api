@@ -161,6 +161,16 @@ async function run(sql: string, params: any[], owner: object | null, undo: Array
     if (r) { r.usedAt = now; undo.push(() => { r.usedAt = null }) }
     return [{ affectedRows: r ? 1 : 0 }]
   }
+  // D-EA9 (Onda 4): a REGRAVAÇÃO do hash no login certo — compare-and-set, SEM o instante T (exceção nomeada da cerca D-EA7)
+  if (/UPDATE setes_central\.tb_user SET password = \? WHERE id = \? AND BINARY password = \?/.test(sql)) {
+    const [hash, userId, from] = params
+    const u = users.get(Number(userId))
+    if (!u || u.password !== from) return [{ affectedRows: 0 }]
+    const before = u.password
+    u.password = hash
+    undo.push(() => { u.password = before })
+    return [{ affectedRows: 1 }]
+  }
   if (/UPDATE setes_central\.tb_user SET password = \?/.test(sql)) {
     const [hash, setAt, userId] = params                 // D-EA7: a senha e o instante T vão JUNTOS (a peça "definir a senha")
     if (!/password_set_at = \?/.test(sql) || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(String(setAt))) throw new Error('senha sem o instante T (D-EA7)')
@@ -836,5 +846,43 @@ describe('D-EA5 — política de senha na troca pelo código (Onda 3 — §P.5 P
       const r = await change(email, '123456', 'xyz-P4ZZ-2026')
       expect(r.status).toBe(email === 'p4zz@x.com' ? 400 : 401)
     }
+  })
+})
+
+describe('D-EA9 — Onda 4 (scrypt) na troca pelo código (§P.5 H5)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { md5Password, hashPassword, checkPassword } = require('../shared/auth/password') as typeof import('../shared/auth/password')
+
+  it('H5: a regravação do hash no login (MD5 → scrypt, mesma senha) MATA o código aberto — o HMAC é amarrado ao hash (linha no roteiro de deploy)', async () => {
+    const email = 'p1@x.com'
+    userByEmail(email).password = md5Password('atual-kq7#mv2x')
+    await recover(email)
+    const code = lastCode(email)
+    userByEmail(email).password = await hashPassword('atual-kq7#mv2x')         // o que o login certo grava (`rehashPassword`)
+    const r = await change(email, code, 'outra-kq7#mv2x')
+    expect([r.status, r.body]).toEqual([401, { error: INVALID_PASSWORD_RESET_CODE }])
+    expect(passwordWrites).toEqual([])
+    expect(resets[0].failed).toBe(1)                                            // conta como palpite errado (o código não vale mais)
+  })
+
+  it('H6: a troca pelo código grava scrypt pela peça (nunca MD5) e a senha nova confere', async () => {
+    const email = 'p2@x.com'
+    userByEmail(email).password = md5Password('atual-kq7#mv2x')
+    await recover(email)
+    const r = await change(email, lastCode(email), 'outra-kq7#mv2x')
+    expect([r.status, r.body]).toEqual([200, { ok: true }])
+    expect(passwordWrites).toHaveLength(1)
+    expect(passwordWrites[0].hash).toMatch(/^scrypt\$N=\d+,r=8,p=\d\$/)
+    expect((await checkPassword('outra-kq7#mv2x', passwordWrites[0].hash)).ok).toBe(true)
+  })
+
+  it('PP5 com scrypt: a senha igual à atual (gravada em scrypt) é reconhecida — 422 sem gastar o código', async () => {
+    const email = 'p3@x.com'
+    userByEmail(email).password = await hashPassword('atual-kq7#mv2x')
+    await recover(email)
+    const r = await change(email, lastCode(email), 'atual-kq7#mv2x')
+    expect([r.status, r.body.code]).toEqual([422, 'PASSWORD_SAME_AS_CURRENT'])
+    expect(passwordWrites).toEqual([])
+    expect(resets[0].usedAt).toBeNull()
   })
 })

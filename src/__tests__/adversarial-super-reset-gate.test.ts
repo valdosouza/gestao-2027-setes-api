@@ -45,9 +45,9 @@ interface Sup { id: number; userActive: 'S' | 'N'; linkActive: 'S' | 'N'; kind: 
 interface Db { supers: Sup[]; events: string[]; deadlockOnce?: boolean; commitError?: Error; demoteAfterListing?: number }
 let db: Db
 
-function md5(v: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  return (require('../shared/auth/password') as typeof import('../shared/auth/password')).md5Password(v)
+async function verifies(pw: string, stored: string | null | undefined): Promise<boolean> {
+  // D-EA9: o valor gravado é scrypt com sal — confere-se pela peça (não há "o mesmo hash" para comparar)
+  return (await (require('../shared/auth/password') as typeof import('../shared/auth/password')).checkPassword(pw, stored)).ok
 }
 
 function installFakeDb(): void {
@@ -200,7 +200,7 @@ describe('ADV D-RS7 — escolha do alvo pelo script inteiro', () => {
     expect(run.exit).toBeUndefined()
     const [pw] = printedPasswords(run)
     expect(printedPasswords(run)).toHaveLength(1)                          // impressa UMA vez
-    expect(passwordOf(9)).toBe(md5(pw))
+    expect(await verifies(pw, passwordOf(9))).toBe(true)
     expect(passwordOf(7)).toBe('OLD7')
     expect(mails()).toHaveLength(1)
     expect(mails()[0].to).toBe('Bia@Setes.com.br')                         // o GRAVADO, com a caixa gravada
@@ -292,7 +292,8 @@ describe('ADV D-RS13 — o aviso pelo script inteiro (mailer real, nodemailer du
     })
     const run = await runScript(['--vai'])
     const [pw] = printedPasswords(run)
-    const h = md5(pw)
+    const h = passwordOf(7) as string
+    expect(await verifies(pw, h)).toBe(true)                                // D-EA9: o MESMO hash nas duas tentativas (calculado uma vez, fora da transação)
     expect(db.events).toEqual([
       'list', 'begin', 'lock', 'link', `update-deadlock:7:${h}`, 'rollback', 'release',
       'begin', 'lock', 'link', `update:7:${h}`, 'commit', 'release', 'mail',
@@ -315,7 +316,7 @@ describe('ADV D-RS13 — o aviso pelo script inteiro (mailer real, nodemailer du
     mockTransport.sendMail.mockRejectedValue(Object.assign(new Error('connect ETIMEDOUT 10.0.0.1:587'), { code: 'ETIMEDOUT' }))
     const run = await runScript(['--vai'])
     const [pw] = printedPasswords(run)
-    expect(passwordOf(7)).toBe(md5(pw))
+    expect(await verifies(pw, passwordOf(7))).toBe(true)
     expect(run.exit).toBeUndefined()
     expect(run.exitCode).toBeUndefined()
     expect(run.out.join('\n')).toMatch(/Aviso ao Super NÃO enviado \(falha do envio — ver o log\); a senha SEGUE redefinida/)
@@ -458,7 +459,7 @@ const hasEnv = fs.existsSync(path.join(REPO, '.env'))
     const c2 = await mysql.createConnection(cfg())
     await c2.query('SET SESSION innodb_lock_wait_timeout = 20')
     mockPool.getConnection.mockReset().mockImplementationOnce(async () => probeConn(c2))
-    const hash = hashInitialPassword(generateInitialPassword())
+    const hash = await hashInitialPassword(generateInitialPassword())
     let concurrent: Promise<void> | undefined
     let finishedWhileOpen = false
     try {

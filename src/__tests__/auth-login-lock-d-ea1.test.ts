@@ -174,6 +174,16 @@ async function run(sql: string, params: any[], owner: object | null, undo: Undo)
       return [{ affectedRows: 1 }]
     }
   }
+  // D-EA9 (Onda 4): a REGRAVAÇÃO do hash no login certo — compare-and-set, SEM o instante T (exceção nomeada da cerca D-EA7)
+  if (/UPDATE setes_central\.tb_user SET password = \? WHERE id = \? AND BINARY password = \?/.test(sql)) {
+    const [hash, userId, from] = params
+    const u = users.get(Number(userId))
+    if (!u || u.password !== from) return [{ affectedRows: 0 }]
+    const before = u.password
+    u.password = hash
+    undo.push(() => { u.password = before })
+    return [{ affectedRows: 1 }]
+  }
   if (/UPDATE setes_central\.tb_user SET password = \?/.test(sql)) {
     const [hash, , userId] = params
     const u = users.get(Number(userId))!
@@ -311,7 +321,7 @@ describe('L4 — piso de tempo nas recusas (A-EA4)', () => {
 describe('L4b — pré-filtro SEM trava e decisão refeita sob a trava', () => {
   it('L4b conta bloqueada: NÃO confere a senha (zero chamadas à peça) e NÃO toma a trava (nenhuma conexão)', async () => {
     await wrongTimes('c5@x.com', LOGIN_MAX_FAILURES)
-    const spy = jest.spyOn(passwordPiece, 'passwordMatches')
+    const spy = jest.spyOn(passwordPiece, 'checkPassword')
     getConn.mockClear()
     try {
       const e = await refused(login('c5@x.com', PASS))
