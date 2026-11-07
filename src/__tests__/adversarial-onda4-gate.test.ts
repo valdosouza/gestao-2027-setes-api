@@ -420,7 +420,9 @@ describe('ADV-O4 B — login', () => {
   // ADV-O4-02 (MEDIUM): oráculo de existência PROVOCADO pelo atacante. O piso de 700 ms fica acima do p99 de UMA conferência; com 12 palpites
   // SIMULTÂNEOS para o mesmo e-mail a fila do pool do libuv (4 threads) empurra a conta EXISTENTE para bem acima do piso, enquanto o e-mail
   // inexistente responde em 700 ms cravados. O "limite conhecido" do comentário fala de carga do sistema; aqui a carga é do próprio atacante.
-  it.failing('[FALHOU] ADV-O4-02 12 palpites simultâneos: conta existente (peso de produção) não se distingue da inexistente pelo tempo', async () => {
+  // LIMITE CONHECIDO — D-EA45 (Valdo 2026-11-07, '(a) limite conhecido'): reavaliado com a medição no servidor real (D-EA17/H11). O it.failing
+  // fixa a semântica: quando passar a falhar (o tempo deixou de distinguir), a decisão pode ser revista.
+  it.failing('[LIMITE CONHECIDO — D-EA45] ADV-O4-02 12 palpites simultâneos: conta existente (peso de produção) não se distingue da inexistente pelo tempo', async () => {
     setLoginRefusalFloor(LOGIN_REFUSAL_FLOOR_MS)
     const prev = setCurrentScryptParamsForTests(SCRYPT_CURRENT)
     try {

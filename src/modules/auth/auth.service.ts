@@ -117,7 +117,8 @@ export const LOGIN_REFUSED_MESSAGE = 'Email ou senha inválidos'
  * mesma 401, tempos diferentes diriam quem existe. D-EA43 (Valdo 2026-11-07, "(a) subir"): 700 ms — acima do p99 de UMA conferência
  * scrypt no peso vigente medida no dev (496 ms, H8); a conta inexistente NÃO calcula hash falso (D-EA9/H7). Valor revisto pela medição no
  * SERVIDOR REAL (D-EA17/H11). Limite conhecido: com muitas conferências ao mesmo tempo (20 juntas = p99 3,3 s no dev) a conta existente
- * passa do piso e a diferença volta a aparecer.
+ * passa do piso e a diferença volta a aparecer — inclusive com a carga que o PRÓPRIO atacante provoca (12 palpites simultâneos ao mesmo
+ * e-mail), e a fila do pool do libuv não tem teto: D-EA45 (LIMITE CONHECIDO até a medição no servidor real, que mede também sob carga).
  */
 export const LOGIN_REFUSAL_FLOOR_MS = 700
 let loginRefusalFloorMs = LOGIN_REFUSAL_FLOOR_MS
