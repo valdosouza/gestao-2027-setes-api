@@ -199,7 +199,11 @@ Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publi
   compare-and-set (`rehashPassword` — a exceção nomeada da cerca D-EA7: NÃO grava `password_set_at`, a sessão não cai). A regravação mata o
   código de recuperação aberto daquela conta (HMAC amarrado ao hash). A suíte grava no peso leve `N=2^14,p=1` (`test-setup/scrypt-weight.ts`).
 - **Piso das recusas = 700 ms** (D-EA43 — login, troca pelo código e pedido do código; acima do p99 de uma conferência scrypt no dev); a
-  conta inexistente NÃO calcula hash falso.
+  conta inexistente NÃO calcula hash falso. Sob carga (inclusive provocada pelo atacante) o tempo volta a distinguir — LIMITE CONHECIDO até
+  a medição no servidor real (D-EA45).
+- **Quem paga scrypt**: no login, só a conta com falhas gravadas + tentativas EM ANDAMENTO < 10 (D-EA44 — contagem em memória por
+  processo; acima, a recusa sem calcular); na troca pelo código, só a conta com código ABERTO, no prazo e não esgotado (D-EA46 — leitura
+  sem trava antes dos dois cálculos).
 - Medição: `scripts/measure-scrypt.ts` (rodar no SERVIDOR REAL antes de fechar o peso e o piso das recusas — H11); prova em schema
   descartável: `scripts/prove-scrypt-migration.ts`.
 - **Uma resposta (D-EA6)**: toda recusa = a MESMA 401 `{ error: 'Email ou senha inválidos' }` (o "Usuário inativo" e o 403 morreram), depois
