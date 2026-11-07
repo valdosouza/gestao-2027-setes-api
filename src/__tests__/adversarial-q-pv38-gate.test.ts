@@ -513,6 +513,7 @@ describe('[delta] contenção acima do piso com a trava da linha do usuário (FO
 
   it.failing('[ACHADO·LOW] t_tx = 80 ms (banco remoto/carregado) → a fila de 10 na conta existente passa do piso; deveria sair no mesmo tempo da inexistente', async () => {
     txLatencyMs = 80
+    await recover('b5@x.com')                                   // D-EA46: sem código aberto a troca recusa sem transação — a fila precisa do código
     const [ex, mi] = await withFloor(async () => [await burst('b5@x.com', 10), await burst('nao-existe-d4b@x.com', 10)])
     expect([...ex, ...mi].every(o => o.r.status === 401)).toBe(true)
     // asserção SEGURA: a mais lenta das duas rajadas tem de sair no mesmo tempo. HOJE: ~800 ms (existe) × ~400 ms (não existe).
@@ -522,6 +523,8 @@ describe('[delta] contenção acima do piso com a trava da linha do usuário (FO
 
 describe('[delta] o piso segura recurso? (pool, timers, memória sob rajada)', () => {
   it('[RESISTIU] o piso NÃO segura conexão do pool: a conexão volta antes da espera, a resposta sai no piso', async () => {
+    await recover('b11@x.com')                                  // D-EA46: só com código aberto a troca abre transação
+    releaseTimes.length = 0
     const t0 = Date.now()
     const { r } = await withFloor(() => timed(change('b11@x.com', '123456')))
     const responded = Date.now()

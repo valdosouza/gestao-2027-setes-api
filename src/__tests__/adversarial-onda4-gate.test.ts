@@ -444,7 +444,8 @@ describe('ADV-O4 C — troca pelo código', () => {
   // ADV-O4-03 (MEDIUM): os DOIS scrypt da troca são calculados ANTES de olhar se existe código aberto — qualquer um que conheça um e-mail
   // ativo compra 2 scrypt por requisição sem nunca ter pedido código (e sem o teto de 5 erradas do código, que só conta com código aberto).
   // Contido por 10/15 min por e-mail (em memória, por instância) e 300/min por IP (registrado no §P.14 item 4).
-  it.failing('[FALHOU] ADV-O4-03 troca com e-mail ativo SEM código aberto não calcula scrypt', async () => {
+  // CORRIGIDO pela D-EA46 (Valdo 2026-11-07, '(a) conferir'): sem código aberto a troca recusa sem calcular
+  it('[CORRIGIDO D-EA46] ADV-O4-03 troca com e-mail ativo SEM código aberto não calcula scrypt', async () => {
     useScrypt(10)
     const c = countScrypt()
     try {

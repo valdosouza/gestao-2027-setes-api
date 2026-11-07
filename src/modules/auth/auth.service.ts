@@ -845,8 +845,23 @@ async function changePasswordByCode(email: string, code: string, newPassword: st
   const user = await findUserByEmail(email)
   if (!user || user.active !== 'S') throw new HttpError(401, INVALID_PASSWORD_RESET_CODE)
 
-  // D-EA9: os DOIS scrypt (o hash da nova e o "igual à atual") FORA da trava e em paralelo — custo de 2 cálculos por tentativa da conta
-  // existente, contido pelo limite por e-mail e por IP da rota (registrado no gate da Onda 4)
+  // D-EA46 (Valdo 2026-11-07, "(a) conferir"): sem código ABERTO, no prazo e não esgotado, a recusa sai SEM calcular — leitura sem trava
+  // (autocommit), só para decidir se vale o custo; o julgamento de verdade segue sob a trava. Nada é gravado aqui (none/used/expired/
+  // exhausted nunca contam erro — a mesma regra do julgamento). O piso de 700 ms (D-EA43) esconde a diferença de tempo. Fecha o ADV-O4-03.
+  let open: Awaited<ReturnType<typeof readCurrentPasswordReset>>
+  try {
+    open = await readCurrentPasswordReset(pool as unknown as PoolConnection, user.id, PASSWORD_RESET_TTL_MINUTES)
+  } catch (err) {
+    alarmNeutral('auth/change-password', user.id, err)
+    throw new HttpError(401, INVALID_PASSWORD_RESET_CODE)
+  }
+  if (!open || !open.open || !open.fresh || open.failedAttempts >= PASSWORD_RESET_MAX_FAILED_ATTEMPTS) {
+    if (open?.open && open.fresh) logger.warn('Troca de senha por código recusada', { userId: user.id, verdict: 'exhausted' })
+    throw new HttpError(401, INVALID_PASSWORD_RESET_CODE)
+  }
+
+  // D-EA9: os DOIS scrypt (o hash da nova e o "igual à atual") FORA da trava e em paralelo — custo de 2 cálculos por tentativa com código
+  // aberto da conta, contido pelo teto de 5 erradas por código, pelo limite por e-mail e por IP da rota
   let newHash: string, sameNow: PasswordCheck
   try {
     ;[newHash, sameNow] = await Promise.all([
