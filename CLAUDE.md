@@ -157,7 +157,7 @@ dublada globalmente (`src/test-setup/access-session.mock.ts`) e o veredito respo
 ### Recuperação de senha, aviso ao dono e SMTP (Q-PV38 / D-RS4 / D-RS5 — 2026-10-18/21)
 
 `POST /auth/recovery-password` + `/auth/change-password` com o PEDIDO DE TROCA DE SENHA em `setes_central.tb_user_password_reset`
-(sql/67 — o boot NÃO sobe sem a tabela): 5 erradas esgotam o código, 3/h e 10/24 h por conta, resposta neutra com piso de 400 ms,
+(sql/67 — o boot NÃO sobe sem a tabela): 5 erradas esgotam o código, 3/h e 10/24 h por conta, resposta neutra com piso de 700 ms (D-EA43),
 código como HMAC. **D-RS4**: quando um código esgota ou o teto é atingido, o DONO recebe e-mail neutro (no máximo 1/h — fato na irmã
 `tb_user_password_reset_notice`, também do sql/67). **D-RS5**: em PRODUÇÃO (`NODE_ENV=production`) o SMTP é OBRIGATÓRIO — o boot
 recusa subir sem `SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASSWORD/SMTP_FROM` completos (`assertMailerReady`); em dev sem SMTP o código vai
@@ -198,6 +198,8 @@ Detalhes: `Infra-IA/prompts/prompt_privilegios_interfaces.md` §13 (§13.8 publi
 - **MD5 legado**: só conferido; o login CERTO e ADMITIDO regrava em scrypt (e senha de peso antigo no peso vigente) na MESMA transação, por
   compare-and-set (`rehashPassword` — a exceção nomeada da cerca D-EA7: NÃO grava `password_set_at`, a sessão não cai). A regravação mata o
   código de recuperação aberto daquela conta (HMAC amarrado ao hash). A suíte grava no peso leve `N=2^14,p=1` (`test-setup/scrypt-weight.ts`).
+- **Piso das recusas = 700 ms** (D-EA43 — login, troca pelo código e pedido do código; acima do p99 de uma conferência scrypt no dev); a
+  conta inexistente NÃO calcula hash falso.
 - Medição: `scripts/measure-scrypt.ts` (rodar no SERVIDOR REAL antes de fechar o peso e o piso das recusas — H11); prova em schema
   descartável: `scripts/prove-scrypt-migration.ts`.
 - **Uma resposta (D-EA6)**: toda recusa = a MESMA 401 `{ error: 'Email ou senha inválidos' }` (o "Usuário inativo" e o 403 morreram), depois

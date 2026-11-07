@@ -114,10 +114,12 @@ export const LOGIN_REFUSED_MESSAGE = 'Email ou senha inválidos'
 
 /**
  * Piso do tempo das RECUSAS do login (A-EA4): a conta inexistente para na busca; a existente faz pré-filtro, transação e COMMIT da falha —
- * mesma 401, tempos diferentes diriam quem existe. Valor provisório (o do pedido de troca de senha); MEDIR no gate e de novo na Onda 4
- * (o piso tem de ficar acima do p99 do hash — D-EA17).
+ * mesma 401, tempos diferentes diriam quem existe. D-EA43 (Valdo 2026-11-07, "(a) subir"): 700 ms — acima do p99 de UMA conferência
+ * scrypt no peso vigente medida no dev (496 ms, H8); a conta inexistente NÃO calcula hash falso (D-EA9/H7). Valor revisto pela medição no
+ * SERVIDOR REAL (D-EA17/H11). Limite conhecido: com muitas conferências ao mesmo tempo (20 juntas = p99 3,3 s no dev) a conta existente
+ * passa do piso e a diferença volta a aparecer.
  */
-export const LOGIN_REFUSAL_FLOOR_MS = 400
+export const LOGIN_REFUSAL_FLOOR_MS = 700
 let loginRefusalFloorMs = LOGIN_REFUSAL_FLOOR_MS
 /** Testes: zera ou ajusta o piso (o padrão segue o da produção). */
 export function setLoginRefusalFloor(ms: number): void { loginRefusalFloorMs = ms }
@@ -436,8 +438,10 @@ export const INVALID_PASSWORD_RESET_CODE = 'Código inválido ou expirado'
  * (trava + leituras + COMMIT da tentativa errada) e a inexistente para na busca — mesma 401, tempos diferentes = oráculo de existência.
  * Toda resposta (sucesso ou recusa, conta existente ou não) espera até o piso; o trabalho real (dezenas de ms) fica escondido nele.
  * Limite conhecido: com o banco sob carga a ponto de a conta existente passar do piso, a diferença volta a aparecer.
+ * D-EA43 (Valdo 2026-11-07): 700 ms — a troca pelo código da conta existente calcula DOIS scrypt (em paralelo, ≈ o tempo de um: p99 496 ms
+ * no dev, H8) e a inexistente nenhum; o pedido do código (mesmo piso, mesma peça) sobe junto. Revisto no servidor real (D-EA17/H11).
  */
-export const PASSWORD_RESET_RESPONSE_FLOOR_MS = 400
+export const PASSWORD_RESET_RESPONSE_FLOOR_MS = 700
 let responseFloorMs = PASSWORD_RESET_RESPONSE_FLOOR_MS
 /** Testes: zera ou ajusta o piso (o padrão segue o da produção). */
 export function setPasswordResetResponseFloor(ms: number): void { responseFloorMs = ms }

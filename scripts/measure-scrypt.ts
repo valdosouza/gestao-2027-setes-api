@@ -66,7 +66,7 @@ async function measure(params: ScryptParams): Promise<Record<string, string | nu
     'pico de memória (RSS) no paralelo': `${mib(peak)} (+${mib(peak - base)})`,
     'capacidade (verificações/s)': perSecond.toFixed(1),
     '300 req/min por IP (5/s) cabe?': perSecond >= 5 ? 'sim' : `NÃO — ${(5 / perSecond).toFixed(1)}× acima da capacidade`,
-    'piso atual das recusas (D-EA35)': ms(LOGIN_REFUSAL_FLOOR_MS),
+    'piso atual das recusas (D-EA43)': ms(LOGIN_REFUSAL_FLOOR_MS),
     'piso acima do p99 sozinho?': LOGIN_REFUSAL_FLOOR_MS > pct(serial, 99) ? 'sim' : 'NÃO',
   }
 }
