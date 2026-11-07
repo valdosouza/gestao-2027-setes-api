@@ -58,13 +58,14 @@ beforeEach(() => {
 })
 
 describe('createUser', () => {
-  it('grava com MD5 UPPERCASE aplicado no service (nunca na query)', async () => {
+  it('grava o hash da peça do login aplicado no service (scrypt — D-EA9; nunca na query)', async () => {
     const result = await createUser(superScope, input)
 
     expect(result).toEqual({ id: 9 })
-    // MD5('12345') — mesmo hash que o login compara (seed da Fase 2);
     // sem institutionId no body → sem vínculo (fluxo da tela Usuários)
-    expect(mockInsert).toHaveBeenCalledWith(input, '827CCB0EEA8A706C4C34A16891F84E7B', null)
+    expect(mockInsert).toHaveBeenCalledWith(input, expect.stringMatching(/^scrypt\$N=\d+,r=8,p=\d\$/), null)
+    const { checkPassword } = require('../shared/auth/password') as typeof import('../shared/auth/password')
+    expect((await checkPassword(input.password!, mockInsert.mock.calls[0][1])).ok).toBe(true)
   })
 
   it('super com institutionId cria o vínculo junto (aba Usuários do Estabelecimento)', async () => {

@@ -103,6 +103,8 @@ function parseScrypt(stored: string): ParsedScrypt | null {
   if (!m) return null
   const params = { N: Number(m[1]), r: Number(m[2]), p: Number(m[3]) }
   if (!isAcceptedParams(params)) return null
+  // parâmetros CANÔNICOS, como o base64 abaixo (gate adversarial ADV-O4-05: `N=032768,r=08` era aceito) — só a forma que a peça grava vale
+  if (formatParams(params) !== `N=${m[1]},r=${m[2]},p=${m[3]}`) return null
   const salt = Buffer.from(m[4], 'base64'), key = Buffer.from(m[5], 'base64')
   // base64 CANÔNICO (o decodificador do Node aceita bits sobrando no último caractere — reescrever tem de dar o MESMO texto)
   if (salt.toString('base64') !== m[4] || key.toString('base64') !== m[5]) return null
