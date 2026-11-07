@@ -262,8 +262,17 @@ export const LOGIN_STALE_ROUNDS = 3
 /** Passos 3–4 do protocolo numa rodada: conferência FORA da trava, julgamento SOB ela. */
 async function judgeRound(email: string, meta: LoginMeta, user: AuthUser, password: string): Promise<LoginTxOutcome> {
   if (!user.password) throw refuseLogin(email, meta, 'sem credencial', user.id)
-  const preVerdict = await checkStoredPassword('auth/login', user.id, password, user.password)
-  const rehashTo = preVerdict.ok && preVerdict.needsRehash ? await hashPassword(password) : null
+  // gate socrático da Onda 4 (MEDIUM): falha do scrypt (ENOMEM na alocação de 32 MiB, por ex.) só acontece para conta EXISTENTE com
+  // credencial — 500 cru diria quem tem cadastro (D-EA6). Vira a MESMA recusa, com a linha da D-EA11, o contador da D-EA4 e alarme com ref
+  let preVerdict: PasswordCheck
+  let rehashTo: string | null
+  try {
+    preVerdict = await checkStoredPassword('auth/login', user.id, password, user.password)
+    rehashTo = preVerdict.ok && preVerdict.needsRehash ? await hashPassword(password) : null
+  } catch (err) {
+    alarmNeutral('auth/login (hash da senha)', user.id, err)
+    throw refuseLogin(email, meta, 'falha interna', user.id)
+  }
 
   let outcome: LoginTxOutcome
   try {
@@ -815,10 +824,17 @@ async function changePasswordByCode(email: string, code: string, newPassword: st
 
   // D-EA9: os DOIS scrypt (o hash da nova e o "igual à atual") FORA da trava e em paralelo — custo de 2 cálculos por tentativa da conta
   // existente, contido pelo limite por e-mail e por IP da rota (registrado no gate da Onda 4)
-  const [newHash, sameNow] = await Promise.all([
-    hashPassword(newPassword),
-    checkPassword(newPassword, user.password),   // sem alarme aqui: forma inválida = 'não é igual'; o LOGIN da conta alarma
-  ])
+  let newHash: string, sameNow: PasswordCheck
+  try {
+    ;[newHash, sameNow] = await Promise.all([
+      hashPassword(newPassword),
+      checkPassword(newPassword, user.password),   // sem alarme aqui: forma inválida = 'não é igual'; o LOGIN da conta alarma
+    ])
+  } catch (err) {
+    // gate socrático da Onda 4 (MEDIUM): falha do scrypt só na conta existente — a MESMA 401 neutra, com alarme (nunca 500)
+    alarmNeutral('auth/change-password (hash da senha)', user.id, err)
+    throw new HttpError(401, INVALID_PASSWORD_RESET_CODE)
+  }
   const preSame: SameAsCurrentPrecheck = { checkedHash: user.password, same: sameNow.ok }
   let outcome: ConsumeOutcome
   try {

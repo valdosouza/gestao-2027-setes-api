@@ -10,7 +10,7 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from 'crypto'
 //     scrypt na mesma transação, por compare-and-set, sem tocar `password_set_at`).
 //   - Qualquer outra forma (texto puro, prefixo sem partes, base64 fora do canônico, peso fora da lista ACEITA) = `invalid`: NUNCA calcula
 //     (um `N` absurdo estouraria a memória) — o caller recusa neutro e alarma.
-// Conhecimento negativo: NUNCA `scryptSync` — 1,3 s por verificação (p=3, máquina do dev) segurando o laço de eventos parariam a API inteira.
+// Conhecimento negativo: NUNCA `scryptSync` — 0,4 a 1,3 s por verificação (p=3, máquina do dev ociosa × carregada) segurando o laço de eventos parariam a API inteira.
 // O `scrypt` assíncrono roda no pool do libuv (4 threads por padrão, o MESMO de `fs`/DNS) — por isso o hash nunca fica sob a trava da linha
 // nem com uma conexão do pool presa: quem chama calcula ANTES de travar (protocolo do §P.3, ajuste (b)).
 // ---------------------------------------------------------------------

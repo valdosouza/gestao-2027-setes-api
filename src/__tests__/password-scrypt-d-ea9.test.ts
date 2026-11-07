@@ -291,6 +291,42 @@ describe('H3/H4/H7 — o login certo regrava o MD5 em scrypt, sob a trava, por c
     expect(u.password).toBe(migrated)
   })
 
+  it('H7 o hash muda a cada rodada (3×): recusa neutra de contenção, SEM falha gravada e sem regravação', async () => {
+    const u = await seedUser(1, md5Password(PASS))
+    let n = 0
+    q.mockImplementation(async (sql: string, params: any[] = []) => run(sql, params, false))
+    getConn.mockImplementation(async () => {
+      const c = newConn()
+      const orig = c.query
+      c.query = jest.fn(async (sql: string, params: any[] = []) => {
+        if (/FOR UPDATE/.test(sql)) u.password = md5Password(`outra-${++n}`)   // alguém troca a senha antes de cada trava
+        return orig(sql, params)
+      })
+      return c
+    })
+    const e = await refused(login('u1@x.com', PASS))
+    expect([e.statusCode, e.message]).toEqual([401, LOGIN_REFUSED_MESSAGE])
+    expect(events.filter(x => x === 'lock')).toHaveLength(3)
+    expect(events).not.toContain('failure')
+    expect(events).not.toContain('rehash')
+    const logger = (require('../shared/logger/logger').default as { warn: jest.Mock })
+    expect(logger.warn.mock.calls.at(-1)?.[1]).toMatchObject({ reason: 'contenção', userId: 1 })
+  })
+
+  it('gate (MEDIUM): falha do scrypt no login = a MESMA 401 + alarme com ref (nunca 500); na troca pelo código, a mesma 401 neutra', async () => {
+    await seedUser(1, md5Password(PASS))
+    spyOn(piece, 'hashPassword').mockRejectedValue(Object.assign(new Error('scrypt: ENOMEM'), { code: 'ERR_CRYPTO_OPERATION_FAILED' }))
+    const e = await refused(login('u1@x.com', PASS))
+    expect([e.statusCode, e.message]).toEqual([401, LOGIN_REFUSED_MESSAGE])
+    expect(recordCrash).toHaveBeenCalledWith(expect.objectContaining({ userId: 1 }))
+    expect(events).toEqual([])                                               // nada travado, nada gravado
+    const { changePassword, INVALID_PASSWORD_RESET_CODE, setPasswordResetResponseFloor } = require('../modules/auth/auth.service')
+    setPasswordResetResponseFloor(0)
+    const c = await refused(changePassword('u1@x.com', '123456', 'outra-kq7#mv2x'))
+    expect([c.statusCode, c.message]).toEqual([401, INVALID_PASSWORD_RESET_CODE])
+    setPasswordResetResponseFloor(require('../modules/auth/auth.service').PASSWORD_RESET_RESPONSE_FLOOR_MS)
+  })
+
   it('H4 o compare-and-set do repositório: valor conferido já não é o gravado = 0 linhas, nada muda', async () => {
     const u = await seedUser(1, 'scrypt-atual-qualquer')
     const conn = newConn()

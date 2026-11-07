@@ -14,7 +14,7 @@ import { z } from 'zod'
  *
  * Senhas EXISTENTES mais curtas seguem valendo no login (nada força troca — D-EA5): a política só julga quem DEFINE senha.
  * "Igual à atual" NÃO mora aqui: depende do hash gravado e só pode ser julgada DEPOIS da prova de posse (código conferido, sob a trava —
- * §P.5 PP5); quem tem a atual chama `passwordMatches` e responde com `PASSWORD_PROBLEM_MESSAGES['same-as-current']`.
+ * §P.5 PP5); quem tem a atual chama `checkPassword` (scrypt — Onda 4) e responde com `PASSWORD_PROBLEM_MESSAGES['same-as-current']`.
  */
 
 export const PASSWORD_MIN_LENGTH = 8
